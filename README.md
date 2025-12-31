@@ -129,34 +129,31 @@ routes:
 
 ### Environment Variables
 
-All configuration parameters can be set via environment variables. This is particularly useful for containerized deployments (e.g., Docker, Kubernetes). The variables must be prefixed with `BRIDGE_`, and nested keys are separated by a double underscore `__`. For map-like structures such as `routes`, the key becomes part of the variable name.
+All configuration parameters can be set via environment variables. This is particularly useful for containerized deployments (e.g., Docker, Kubernetes). The variables must be prefixed with `MQB_`, and nested keys are separated by a double underscore `__`. For map-like structures such as `routes`, the key becomes part of the variable name.
 
 **Example using environment variables:**
 
 ```bash
 # General settings
-export BRIDGE__LOG_LEVEL="info"
-export BRIDGE__LOGGER="json"
-export BRIDGE__SLED_PATH="/var/data/dedup_db"
-export BRIDGE__DEDUP_TTL_SECONDS=86400
+export MQB__LOG_LEVEL="info"
+export MQB__LOGGER="json"
 
 # Metrics
-export BRIDGE__METRICS__ENABLED=true
-export BRIDGE__METRICS__LISTEN_ADDRESS="0.0.0.0:9090"
+export MQB__METRICS_ADDR="0.0.0.0:9090"
 
 # Route 'kafka_us_to_nats_events': kafka -> nats
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__IN__KAFKA__BROKERS="kafka-us.example.com:9092"
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__IN__KAFKA__GROUP_ID="bridge-group-us"
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__IN__KAFKA__TOPIC="raw_events" # topic is optional
+export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__KAFKA__BROKERS="kafka-us.example.com:9092"
+export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__KAFKA__GROUP_ID="bridge-group-us"
+export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__KAFKA__TOPIC="raw_events" # topic is optional
 
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__OUT__NATS__SUBJECT="processed.events"
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__OUT__NATS__URL="nats://nats.example.com:4222"
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__OUT__NATS__STREAM="events"
+export MQB__ROUTES__MY_KAFKA_TO_NATS__OUTPUT__NATS__SUBJECT="processed.events"
+export MQB__ROUTES__MY_KAFKA_TO_NATS__OUTPUT__NATS__URL="nats://nats.example.com:4222"
+export MQB__ROUTES__MY_KAFKA_TO_NATS__OUTPUT__NATS__STREAM="events"
 
 # DLQ for Route 'kafka_us_to_nats_events'
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__DLQ__KAFKA__BROKERS="kafka-dlq.example.com:9092"
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__DLQ__KAFKA__GROUP_ID="bridge-dlq-group"
-export BRIDGE__ROUTES__MY_KAFKA_TO_NATS__DLQ__KAFKA__TOPIC="dlq-kafka-us-to-nats"
+export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__MIDDLEWARES__0__DLQ__KAFKA__BROKERS="kafka-dlq.example.com:9092"
+export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__MIDDLEWARES__0__DLQ__KAFKA__GROUP_ID="bridge-dlq-group"
+export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__MIDDLEWARES__0__DLQ__KAFKA__TOPIC="dlq-kafka-us-to-nats"
 ```
 
 ### Using a `.env` file
