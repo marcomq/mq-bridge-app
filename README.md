@@ -72,13 +72,6 @@ You can create a configuration file (e.g., `config.yaml`) to specify your settin
 ```yaml
 # General settings
 log_level: "info"
-sled_path: "/var/data/dedup_db"
-dedup_ttl_seconds: 86400 # 24 hours
-
-# Metrics configuration
-metrics:
-  enabled: true
-  listen_address: "0.0.0.0:9090"
 
 # Define bridge routes from a source to a sink
 routes:

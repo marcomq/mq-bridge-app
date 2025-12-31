@@ -111,7 +111,7 @@ async fn run_app(config: AppConfig) -> anyhow::Result<()> {
     let mut shutdown_handles = Vec::new();
 
     for (name, route) in config.routes {
-        let (task, shutdown) = route.run(&name);
+        let (task, shutdown) = route.run(&name)?;
         tasks.push(task);
         shutdown_handles.push(shutdown);
     }
