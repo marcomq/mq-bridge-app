@@ -7,7 +7,5 @@ routes:
     input:
       http:
         url: "127.0.0.1:3000"
-        response_out:
-          static: "Hello, bridge!"
     output:
       file: "output.txt"

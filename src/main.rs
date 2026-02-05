@@ -106,14 +106,8 @@ async fn run_app(config: AppConfig) -> anyhow::Result<()> {
         None
     };
 
-    // --- 3. Run the bridge logic from the library ---
-    let mut tasks = Vec::new();
-    let mut shutdown_handles = Vec::new();
-
     for (name, route) in config.routes {
-        let (task, shutdown) = route.run(&name)?;
-        tasks.push(task);
-        shutdown_handles.push(shutdown);
+        route.deploy(&name).await?;
     }
 
     info!("Bridge running. Waiting for signal.");
@@ -128,8 +122,9 @@ async fn run_app(config: AppConfig) -> anyhow::Result<()> {
 
     info!("Shutdown signal received. Broadcasting to all tasks...");
 
-    for shutdown in shutdown_handles {
-        shutdown.send(()).await.ok();
+    for name in mq_bridge::list_routes() {
+        mq_bridge::stop_route(&name).await;
+    
     }
 
     // Abort the metrics task if it's running. It doesn't support graceful shutdown.
@@ -144,23 +139,5 @@ async fn run_app(config: AppConfig) -> anyhow::Result<()> {
         std::process::exit(1); // Exit with a non-zero code to indicate an issue.
     });
 
-    let wait_for_tasks = async {
-        for task in &mut tasks {
-            if let Err(e) = task.await {
-                // It's normal for a task to be cancelled during shutdown.
-                // We only warn if it's another type of error.
-                if !e.is_cancelled() {
-                    warn!("Route task join error during shutdown: {}", e);
-                }
-            }
-        }
-    };
-
-    if let Err(_) = tokio::time::timeout(std::time::Duration::from_secs(10), wait_for_tasks).await {
-        warn!("Shutdown timed out after 10 seconds. Aborting all tasks.");
-        for task in tasks {
-            task.abort();
-        }
-    }
     Ok(())
 }
