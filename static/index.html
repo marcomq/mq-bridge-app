@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MQ Bridge Configuration</title>
+    <script src="https://cdn.jsdelivr.net/npm/@json-editor/json-editor@latest/dist/jsoneditor.min.js"></script>
+    <style>body { margin: 20px; font-family: sans-serif; }</style>
+</head>
+<body>
+    <h1>MQ Bridge Configuration</h1>
+    <div id="editor_holder"></div>
+    <button id="submit">Save Configuration</button>
+    <script>
+        const element = document.getElementById('editor_holder');
+        fetch('/schema.json').then(response => response.json()).then(schema => {
+            const editor = new JSONEditor(element, {
+                schema: schema,
+                theme: 'html',
+                iconlib: 'fontawesome4'
+            });
+        });
+    </script>
+</body>
+</html>

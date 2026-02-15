@@ -2,6 +2,7 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 use config::{Config, ConfigError};
+use schemars::JsonSchema;
 
 use mq_bridge::{Route};
 
@@ -9,7 +10,7 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, JsonSchema)]
 pub struct AppConfig {
     #[serde(default = "default_log_level")]
     pub log_level: String,
@@ -18,7 +19,21 @@ pub struct AppConfig {
     #[serde(default)]
     pub metrics_addr: String,
     #[serde(default)]
+    #[schemars(schema_with = "routes_schema_gen")]
     pub routes: HashMap<String, Route>,
+}
+
+fn routes_schema_gen(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    // Since Route is external and we can't easily derive JsonSchema for it without
+    // a wrapper or remote derive, we define a schema that accepts any object for the route values.
+    schemars::schema::Schema::Object(schemars::schema::SchemaObject {
+        instance_type: Some(schemars::schema::InstanceType::Object.into()),
+        object: Some(Box::new(schemars::schema::ObjectValidation {
+            additional_properties: Some(Box::new(schemars::schema::Schema::Bool(true))),
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
 }
 
 pub fn load_config() -> Result<AppConfig, ConfigError> {
@@ -75,7 +90,7 @@ routes:
 
         let route = &config.routes["kafka_to_nats"];
         if let mq_bridge::models::EndpointType::Kafka(k) = &route.input.endpoint_type {
-            assert_eq!(k.config.brokers, "kafka:9092");
+            assert_eq!(k.url, "kafka:9092");
             assert_eq!(k.topic.as_deref(), Some("in_topic"));
         }
     }
@@ -126,7 +141,7 @@ routes:
 
         // Assert source
         if let mq_bridge::models::EndpointType::Kafka(k) = &route.input.endpoint_type {
-            assert_eq!(k.config.brokers, "env-kafka:9092"); // group_id is now optional
+            assert_eq!(k.url, "env-kafka:9092"); // group_id is now optional
             assert_eq!(k.topic.as_deref(), Some("env-in-topic"));
         } else {
             panic!("Expected Kafka source endpoint");

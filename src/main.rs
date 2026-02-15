@@ -3,28 +3,94 @@
 //  Licensed under MIT License, see License file for more details
 //  git clone https://github.com/marcomq/mq-bridge-app
 
-mod config;
-use config::load_config;
+use mq_bridge_app::config::{load_config, AppConfig};
+use mq_bridge_app::web_ui;
 use std::net::SocketAddr;
 use tracing::{info, warn};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
 
 use anyhow::Context;
+use tokio::sync::mpsc;
 
-use crate::config::AppConfig;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config: AppConfig = load_config().context("Failed to load configuration")?;
+    let mut config: AppConfig = load_config().context("Failed to load configuration")?;
     init_logging(&config);
 
-    if config.routes.is_empty() {
-        eprintln!("Warning: No routes configured. Application will not bridge any messages. Exiting.");
-        warn!("No routes configured. Application will not bridge any messages. Exiting.");
-        return Ok(());
+    let (config_tx, mut config_rx) = mpsc::channel(1);
+
+    // Start Web UI
+    let web_ui_server = web_ui::start_web_server(8080, config_tx)?;
+    let web_ui_handle = tokio::spawn(web_ui_server);
+
+    // --- 2. Initialize Prometheus Metrics Exporter ---
+    // We manually spawn the metrics server to be able to control its lifecycle.
+    // The `install()` method spawns a task that we can't shut down.
+    let metrics_task = if !config.metrics_addr.is_empty() {
+        let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
+        let addr: SocketAddr = config.metrics_addr.parse().context(format!(
+            "Failed to parse metrics listen address: {}",
+            config.metrics_addr
+        ))?;
+        let (recorder, server_future) = builder.with_http_listener(addr).build()?;
+        metrics::set_global_recorder(recorder)
+            .context("Failed to install Prometheus recorder")?;
+        info!("Prometheus exporter listening on http://{}", addr);
+        Some(tokio::spawn(server_future))
+    } else {
+        None
+    };
+
+    loop {
+        if config.routes.is_empty() {
+            warn!("No routes configured. Waiting for configuration via Web UI.");
+        } else {
+            let routes = std::mem::take(&mut config.routes);
+            for (name, route) in routes {
+                route.deploy(&name).await?;
+            }
+        }
+
+        info!("Bridge running. Waiting for signal.");
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Ctrl+C (SIGINT) received.");
+                break;
+            },
+            _ = platform_specific_shutdown() => {
+                 info!("Shutdown signal received.");
+                 break;
+            },
+            new_config_opt = config_rx.recv() => {
+                if let Some(new_config) = new_config_opt {
+                    info!("Received new configuration. Reloading...");
+                    for name in mq_bridge::list_routes() {
+                        mq_bridge::stop_route(&name).await;
+                    }
+                    config = new_config;
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
-    run_app(config).await
+    info!("Shutdown signal received. Broadcasting to all tasks...");
+
+    for name in mq_bridge::list_routes() {
+        mq_bridge::stop_route(&name).await;
+    }
+
+    // Abort the metrics task if it's running. It doesn't support graceful shutdown.
+    if let Some(task) = metrics_task {
+        task.abort();
+    }
+    
+    web_ui_handle.abort();
+
+    Ok(())
 }
 fn init_logging(config: &AppConfig) {
     // --- 1. Initialize Logging ---
@@ -65,6 +131,8 @@ async fn platform_specific_shutdown() {
         use tokio::signal::unix::{signal, SignalKind};
         match signal(SignalKind::terminate()) {
             Ok(mut stream) => {
+                use tracing::info;
+
                 stream.recv().await;
                 info!("SIGTERM received.");
             }
@@ -78,66 +146,4 @@ async fn platform_specific_shutdown() {
     #[cfg(not(unix))]
     // On non-unix, ctrl_c is the primary mechanism. This future never completes.
     std::future::pending::<()>().await
-}
-
-async fn run_app(config: AppConfig) -> anyhow::Result<()> {
-    info!("Starting MQ Multi Bridge application");
-
-    if config.routes.is_empty() {
-        warn!("No routes configured. Application will not bridge any messages. Exiting.");
-        return Ok(());
-    }
-
-    // --- 2. Initialize Prometheus Metrics Exporter ---
-    // We manually spawn the metrics server to be able to control its lifecycle.
-    // The `install()` method spawns a task that we can't shut down.
-    let metrics_task = if !config.metrics_addr.is_empty() {
-        let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
-        let addr: SocketAddr = config.metrics_addr.parse().context(format!(
-            "Failed to parse metrics listen address: {}",
-            config.metrics_addr
-        ))?;
-        let (recorder, server_future) = builder.with_http_listener(addr).build()?;
-        metrics::set_global_recorder(recorder)
-            .context("Failed to install Prometheus recorder")?;
-        info!("Prometheus exporter listening on http://{}", addr);
-        Some(tokio::spawn(server_future))
-    } else {
-        None
-    };
-
-    for (name, route) in config.routes {
-        route.deploy(&name).await?;
-    }
-
-    info!("Bridge running. Waiting for signal.");
-
-    // --- 4. Wait for shutdown signal (Ctrl+C or SIGTERM) ---
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            info!("Ctrl+C (SIGINT) received.");
-        },
-        _ = platform_specific_shutdown() => {},
-    }
-
-    info!("Shutdown signal received. Broadcasting to all tasks...");
-
-    for name in mq_bridge::list_routes() {
-        mq_bridge::stop_route(&name).await;
-    
-    }
-
-    // Abort the metrics task if it's running. It doesn't support graceful shutdown.
-    if let Some(task) = metrics_task {
-        task.abort();
-    }
-
-    // Spawn a watchdog thread to ensure the process exits even if the runtime is blocked.
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_secs(20));
-        eprintln!("Shutdown watchdog: Main thread seems to be blocked. Forcefully exiting after 20 seconds.");
-        std::process::exit(1); // Exit with a non-zero code to indicate an issue.
-    });
-
-    Ok(())
 }
