@@ -4,36 +4,26 @@ use anyhow::Result;
 use config::{Config, ConfigError};
 use schemars::JsonSchema;
 
-use mq_bridge::{Route};
+use mq_bridge::Route;
 
 fn default_log_level() -> String {
     "info".to_string()
 }
 
-#[derive(Debug, serde::Deserialize, JsonSchema)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
 pub struct AppConfig {
     #[serde(default = "default_log_level")]
     pub log_level: String,
     #[serde(default)]
     pub logger: String,
+    /// Optional url of the ui endpoint. For example "0.0.0.0:8080".
+    #[serde(default)]
+    pub ui_addr: String,
+    /// Optional url of the metrics endpoint. For example "0.0.0.0:9090".
     #[serde(default)]
     pub metrics_addr: String,
     #[serde(default)]
-    #[schemars(schema_with = "routes_schema_gen")]
     pub routes: HashMap<String, Route>,
-}
-
-fn routes_schema_gen(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    // Since Route is external and we can't easily derive JsonSchema for it without
-    // a wrapper or remote derive, we define a schema that accepts any object for the route values.
-    schemars::schema::Schema::Object(schemars::schema::SchemaObject {
-        instance_type: Some(schemars::schema::InstanceType::Object.into()),
-        object: Some(Box::new(schemars::schema::ObjectValidation {
-            additional_properties: Some(Box::new(schemars::schema::Schema::Bool(true))),
-            ..Default::default()
-        })),
-        ..Default::default()
-    })
 }
 
 pub fn load_config() -> Result<AppConfig, ConfigError> {
@@ -127,7 +117,7 @@ routes:
         );
 
         std::env::set_var("CONFIG_FILE", "_"); // ignore existing config.yaml
-        // Load config
+                                               // Load config
         let config = load_config().unwrap();
 
         // Assertions

@@ -2,22 +2,79 @@
 <html>
 <head>
     <title>MQ Bridge Configuration</title>
-    <script src="https://cdn.jsdelivr.net/npm/@json-editor/json-editor@latest/dist/jsoneditor.min.js"></script>
-    <style>body { margin: 20px; font-family: sans-serif; }</style>
+    <link rel="stylesheet" href="/bootstrap.min.css">
+    <script src="/vanilla-schema-forms.js"></script>
+    <script src="/custom-form.js"></script>
 </head>
 <body>
-    <h1>MQ Bridge Configuration</h1>
-    <div id="editor_holder"></div>
-    <button id="submit">Save Configuration</button>
+    <div class="container mt-4">
+        <h1>MQ Bridge Configuration</h1>
+        <div id="form-container"></div>
+        <button id="submit" class="btn btn-primary mt-3">Save Configuration</button>
+    </div>
+
     <script>
-        const element = document.getElementById('editor_holder');
-        fetch('/schema.json').then(response => response.json()).then(schema => {
-            const editor = new JSONEditor(element, {
-                schema: schema,
-                theme: 'html',
-                iconlib: 'fontawesome4'
-            });
-        });
+        (async function() {
+            const lib = window.VanillaSchemaForms;
+            const container = document.getElementById('form-container');
+
+            if (!lib || !lib.init) {
+                if (container) {
+                    const type = typeof lib;
+                    const keys = lib ? Object.keys(lib).join(', ') : 'null';
+                    container.innerHTML =
+                        `<div class="alert alert-danger">
+                            <strong>Error:</strong> Global <code>VanillaSchemaForms</code> not found or incomplete.<br>
+                            Expected to find an 'init' function.<br>
+                            Type: ${type}<br>
+                            Keys: ${keys}<br>
+                        </div>`;
+                }
+                return;
+            }
+
+            try {
+                // Fetch schema and config data in parallel.
+                const [schemaResponse, configResponse] = await Promise.all([
+                    fetch('/schema.json'),
+                    fetch('/config')
+                ]);
+
+                if (!schemaResponse.ok) {
+                    throw new Error(`Failed to fetch schema: ${schemaResponse.statusText}`);
+                }
+                const schema = await schemaResponse.json();
+
+                let initialData = {};
+                if (configResponse.ok) {
+                    initialData = await configResponse.json();
+                } else if (configResponse.status !== 404) {
+                    // A 404 is fine (no config saved yet), but other errors should be logged.
+                    console.error('Failed to load configuration:', configResponse.statusText);
+                }
+
+                // Initialize the form using `init` with the schema and initial data.
+                const form = await lib.init(container, schema, initialData);
+
+                document.getElementById('submit').addEventListener('click', async () => {
+                    const value = form.getData();
+                    try {
+                        const response = await fetch('/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(value)
+                        });
+                        if (!response.ok) throw new Error(`Save failed: ${response.statusText} (${await response.text()})`);
+                        alert('Configuration saved successfully!');
+                    } catch (err) {
+                        alert('Error: ' + err.message);
+                    }
+                });
+            } catch (err) {
+                container.innerHTML = `<div class="alert alert-danger"><strong>Error:</strong> Failed to initialize form: ${err.message}</div>`;
+                console.error(err);
+            }
+        })();
     </script>
 </body>
 </html>

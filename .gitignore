@@ -26,3 +26,7 @@ snap.*
 *.log
 conf
 db
+
+/node_modules
+/target
+config.yml

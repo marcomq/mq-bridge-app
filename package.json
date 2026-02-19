@@ -1,0 +1,12 @@
+{
+  "name": "mq-bridge-app",
+  "dependencies": {
+    "bootstrap": "5.3",
+    "vanilla-schema-forms": "0.1"
+  },
+  "scripts": {
+    "vendor:js": "cp node_modules/vanilla-schema-forms/dist/vanilla-schema-forms.umd.js static/vanilla-schema-forms.js",
+    "vendor:css": "cp node_modules/bootstrap/dist/css/bootstrap.min.css static/bootstrap.min.css",
+    "vendor": "mkdir -p static && npm run vendor:js && npm run vendor:css"
+  }
+}
