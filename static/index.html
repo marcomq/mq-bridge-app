@@ -2,6 +2,8 @@
 <html>
 <head>
     <title>MQ Bridge Configuration</title>
+    <meta charset="utf-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.svg">
     <link rel="stylesheet" href="/bootstrap.min.css">
     <script src="/vanilla-schema-forms.js"></script>
     <script src="/custom-form.js"></script>
@@ -10,7 +12,7 @@
     <div class="container mt-4">
         <h1>MQ Bridge Configuration</h1>
         <div id="form-container"></div>
-        <button id="submit" class="btn btn-primary mt-3">Save Configuration</button>
+        <button id="js-submit" class="btn btn-primary mt-3">Save Configuration</button>
     </div>
 
     <script>
@@ -56,8 +58,23 @@
                 // Initialize the form using `init` with the schema and initial data.
                 const form = await lib.init(container, schema, initialData);
 
-                document.getElementById('submit').addEventListener('click', async () => {
-                    const value = form.getData();
+                const submitBtn = document.getElementById('js-submit');
+                submitBtn.addEventListener('click', async () => {
+                    // 1. Validate form data first to avoid UI flicker on validation errors
+                    let value;
+                    try {
+                        value = form.getData();
+                    } catch (err) {
+                        alert(err.message);
+                        return;
+                    }
+
+                    const originalText = submitBtn.innerHTML;
+
+                    // Loading State
+                    submitBtn.disabled = true;
+                    submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>Saving...`;
+
                     try {
                         const response = await fetch('/config', {
                             method: 'POST',
@@ -65,9 +82,22 @@
                             body: JSON.stringify(value)
                         });
                         if (!response.ok) throw new Error(`Save failed: ${response.statusText} (${await response.text()})`);
-                        alert('Configuration saved successfully!');
+
+                        // Success State
+                        submitBtn.innerHTML = "✔ Saved";
+                        submitBtn.classList.remove("btn-primary");
+                        submitBtn.classList.add("btn-success");
+
+                        setTimeout(() => {
+                            submitBtn.innerHTML = originalText;
+                            submitBtn.classList.remove("btn-success");
+                            submitBtn.classList.add("btn-primary");
+                            submitBtn.disabled = false;
+                        }, 2000);
                     } catch (err) {
                         alert('Error: ' + err.message);
+                        submitBtn.innerHTML = originalText;
+                        submitBtn.disabled = false;
                     }
                 });
             } catch (err) {

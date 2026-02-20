@@ -1,29 +1,21 @@
-log_level: debug,mq_bridge=trace
+log_level: info,mq_bridge=info
 logger: plain
 ui_addr: 0.0.0.0:8080
 metrics_addr: ''
 routes:
-  http_to_file:
+  file_to_http:
     input:
       middlewares: []
       file:
         path: input.txt
         subscribe_mode: false
-        delete: null
+        delete: true
     output:
       middlewares: []
       http:
         url: 127.0.0.1:3030
         tls:
           required: false
-          ca_file: null
-          cert_file: null
-          key_file: null
-          cert_password: null
-          accept_invalid_certs: false
-        workers: null
-        message_id_header: null
-        request_timeout_ms: null
     concurrency: 1
-    batch_size: 1
+    batch_size: 128
     commit_concurrency_limit: 4096

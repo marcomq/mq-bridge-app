@@ -35,17 +35,38 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Start Web UI
-    let web_ui_handle = if config.routes.is_empty() || !config.ui_addr.is_empty() {
-        let addr = if config.ui_addr.is_empty() {
-            "0.0.0.0:8080"
+    let web_ui_handle = (|| -> anyhow::Result<_> {
+        if config.routes.is_empty() || !config.ui_addr.is_empty() {
+            let addr = if config.ui_addr.is_empty() {
+                "0.0.0.0:8080"
+            } else {
+                &config.ui_addr
+            };
+
+            let socket_addr: SocketAddr = addr
+                .parse()
+                .with_context(|| format!("Failed to parse UI listen address: {}", addr))?;
+            let port = socket_addr.port();
+            let host = if socket_addr.ip().is_unspecified() {
+                "localhost".to_string()
+            } else {
+                socket_addr.ip().to_string()
+            };
+            println!(
+                r#"
+      ┌────── mq-bridge-app ──────┐
+──────┴───────────────────────────┴──────
+      Web UI: http://{}:{}
+"#,
+                host, port
+            );
+
+            let web_ui_server = web_ui::start_web_server(addr.into(), config.clone());
+            Ok(Some(tokio::spawn(web_ui_server)))
         } else {
-            &config.ui_addr
-        };
-        let web_ui_server = web_ui::start_web_server(addr, config.clone())?;
-        Some(tokio::spawn(web_ui_server))
-    } else {
-        None
-    };
+            Ok(None)
+        }
+    })()?;
 
     if config.routes.is_empty() {
         warn!("No routes configured. Waiting for configuration via Web UI.");

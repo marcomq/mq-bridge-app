@@ -1,147 +1,215 @@
 use crate::config::AppConfig;
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use anyhow::Result;
+use async_trait::async_trait;
+use mq_bridge::models::{Endpoint, EndpointType, HttpConfig, Route};
+use mq_bridge::traits::Handler;
+use mq_bridge::{msg, CanonicalMessage, Handled, HandlerError};
 use schemars::schema_for;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
-type CurrentConfig = RwLock<AppConfig>;
+/// We are using mq-bridge here, instead of standard actix web server.
+/// This is mostly for demonstration purpose, there is no real need
+/// or benefit to use mq-bridge here.
 
-async fn health_check() -> impl Responder {
-    HttpResponse::Ok().body("OK")
+trait CanonicalMessageExt {
+    fn with_content_type(self, content_type: impl Into<String>) -> Self;
+    fn with_status_code(self, status_code: impl Into<String>) -> Self;
 }
 
-async fn get_schema() -> impl Responder {
-    let schema = schema_for!(AppConfig);
-    HttpResponse::Ok().json(schema)
+impl CanonicalMessageExt for CanonicalMessage {
+    fn with_content_type(self, content_type: impl Into<String>) -> Self {
+        self.with_metadata_kv("Content-Type", content_type)
+    }
+
+    fn with_status_code(self, status_code: impl Into<String>) -> Self {
+        self.with_metadata_kv("http_status_code", status_code)
+    }
 }
 
-async fn get_js_lib() -> impl Responder {
-    const JS_LIB: &str = include_str!("../static/vanilla-schema-forms.js");
-    HttpResponse::Ok()
-        .content_type("text/javascript")
-        .body(JS_LIB)
+struct WebUiHandler {
+    config: Arc<RwLock<AppConfig>>,
 }
 
-async fn get_js_custom_lib() -> impl Responder {
-    const JS_CUSTOM_LIB: &str = include_str!("../static/custom-form.js");
-    HttpResponse::Ok()
-        .content_type("text/javascript")
-        .body(JS_CUSTOM_LIB)
-}
+#[async_trait]
+impl Handler for WebUiHandler {
+    async fn handle(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
+        let method = msg
+            .metadata
+            .get("http_method")
+            .map(|s| s.as_str())
+            .unwrap_or("GET")
+            .to_uppercase();
+        let path = msg
+            .metadata
+            .get("http_path")
+            .map(|s| s.as_str())
+            .unwrap_or("/")
+            .to_lowercase();
 
-async fn get_bootstrap_css() -> impl Responder {
-    const CSS: &str = include_str!("../static/bootstrap.min.css");
-    HttpResponse::Ok().content_type("text/css").body(CSS)
-}
-
-async fn index() -> impl Responder {
-    let html = include_str!("../static/index.html");
-    HttpResponse::Ok().content_type("text/html").body(html)
-}
-
-async fn get_config(config: web::Data<CurrentConfig>) -> impl Responder {
-    let config_guard = config.read().unwrap();
-    let mut current_config = config_guard.clone();
-    current_config.routes = mq_bridge::list_routes()
-        .into_iter()
-        .filter_map(|name| mq_bridge::get_route(&name).map(|route| (name, route)))
-        .collect();
-    HttpResponse::Ok().json(current_config)
-}
-
-// Keep in mind, there is no auhorization or authentication here
-async fn update_config(
-    body: web::Bytes,
-    current_config_data: web::Data<CurrentConfig>,
-) -> impl Responder {
-    let mut new_config: AppConfig = match serde_json::from_slice(&body) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            let mut msg = format!("Json deserialize error: {}", e);
-            // Attempt to provide context around the error location
-            if e.line() == 1 {
-                let col = e.column();
-                let idx = col.saturating_sub(1);
-                let len = body.len();
-                let start = idx.saturating_sub(30);
-                let end = (idx + 30).min(len);
-                let snippet = String::from_utf8_lossy(&body[start..end]);
-                msg.push_str(&format!("\nAt: ...{}...", snippet));
+        let response = match (method.as_str(), path.as_str()) {
+            ("GET", "/health") => msg!("OK"),
+            ("GET", "/favicon.ico") => {
+                msg!(include_bytes!("../static/favicon.ico").to_vec()).with_content_type("image/x-icon")
             }
-            tracing::error!("{}", msg);
-            return HttpResponse::BadRequest().body(msg);
+            ("GET", "/favicon.svg") => {
+                msg!(include_str!("../static/favicon.svg")).with_content_type("image/svg+xml")
+            }
+            ("GET", "/schema.json") => {
+                let schema = schema_for!(AppConfig);
+                CanonicalMessage::from_type(&schema)
+                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                    .with_content_type("application/json")
+            }
+            ("GET", "/vanilla-schema-forms.js") => {
+                msg!(include_str!("../static/vanilla-schema-forms.js"))
+                    .with_content_type("text/javascript")
+            }
+            ("GET", "/custom-form.js") => {
+                msg!(include_str!("../static/custom-form.js")).with_content_type("text/javascript")
+            }
+            ("GET", "/bootstrap.min.css") => {
+                msg!(include_str!("../static/bootstrap.min.css")).with_content_type("text/css")
+            }
+            ("GET", "/") | ("GET", "/index.html") => {
+                msg!(include_str!("../static/index.html")).with_content_type("text/html")
+            }
+            ("GET", "/config") => {
+                let config_guard = self.config.read().unwrap();
+                let mut current_config = config_guard.clone();
+                // Populate active routes status
+                current_config.routes = mq_bridge::list_routes()
+                    .into_iter()
+                    .filter_map(|name| mq_bridge::get_route(&name).map(|route| (name, route)))
+                    .collect();
+                CanonicalMessage::from_type(&current_config)
+                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                    .with_content_type("application/json")
+            }
+            ("POST", "/config") => return self.handle_update_config(msg).await,
+            _ => msg!("Not Found").with_status_code("404"),
+        };
+
+        let response = if !response.metadata.contains_key("http_status_code") {
+            response.with_status_code("200")
+        } else {
+            response
+        };
+
+        Ok(Handled::Publish(response))
+    }
+}
+
+impl WebUiHandler {
+    async fn handle_update_config(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
+        let body = msg.payload;
+        let mut new_config: AppConfig = match serde_json::from_slice(&body) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                let mut msg_str = format!("Json deserialize error: {}", e);
+                if e.line() == 1 {
+                    let col = e.column();
+                    let idx = col.saturating_sub(1);
+                    let len = body.len();
+                    let start = idx.saturating_sub(30);
+                    let end = (idx + 30).min(len);
+                    let snippet = String::from_utf8_lossy(&body[start..end]);
+                    msg_str.push_str(&format!("\nAt: ...{}...", snippet));
+                }
+                tracing::error!("{}", msg_str);
+                return Ok(Handled::Publish(
+                    CanonicalMessage::from(msg_str).with_status_code("400"),
+                ));
+            }
+        };
+
+        tracing::info!("Received new configuration via Web UI. Reloading...");
+
+        let routes = std::mem::take(&mut new_config.routes);
+        for (name, route) in &routes {
+            if let Err(e) = route.check(name, None) {
+                let err_msg = format!("Route {}: validation failed: {}", name, e);
+                tracing::error!("{}", err_msg);
+                return Ok(Handled::Publish(
+                    CanonicalMessage::from(err_msg).with_status_code("500"),
+                ));
+            }
         }
+
+        let old_routes = mq_bridge::list_routes();
+        for name in old_routes {
+            if name == "web_ui" {
+                continue;
+            }
+            if !routes.contains_key(&name) {
+                mq_bridge::stop_route(&name).await;
+            }
+        }
+
+        {
+            let mut config_guard = self.config.write().unwrap();
+            new_config.routes = routes.clone();
+
+            let config_file =
+                std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string());
+            match serde_yaml_ng::to_string(&new_config) {
+                Ok(yaml) => {
+                    if let Err(e) = std::fs::write(&config_file, yaml) {
+                        tracing::error!("Failed to write config to {}: {}", config_file, e);
+                    } else {
+                        tracing::info!("Configuration saved to {}", config_file);
+                    }
+                }
+                Err(e) => tracing::error!("Failed to serialize config: {}", e),
+            }
+
+            *config_guard = new_config;
+        }
+
+        for (name, route) in &routes {
+            if let Err(e) = route.deploy(name).await {
+                let err_msg = format!("Failed to deploy route {}: {}", name, e);
+                return Ok(Handled::Publish(
+                    CanonicalMessage::from(err_msg).with_status_code("500"),
+                ));
+            }
+        }
+
+        Ok(Handled::Publish(
+            CanonicalMessage::from("Configuration updated").with_status_code("200"),
+        ))
+    }
+}
+
+/// Start Web UI
+pub async fn start_web_server(
+    bind_addr: String,
+    initial_config: AppConfig,
+) -> Result<(), anyhow::Error> {
+    let bind_addr = bind_addr.to_string();
+    let handler = WebUiHandler {
+        config: Arc::new(RwLock::new(initial_config)),
     };
 
-    tracing::info!("Received new configuration via Web UI. Reloading...");
+    let input = Endpoint {
+        endpoint_type: EndpointType::Http(HttpConfig {
+            url: bind_addr,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
 
-    // Check first
-    let routes = std::mem::take(&mut new_config.routes);
-    for (name, route) in &routes {
-        if let Err(e) = route.check(&name, None) {
-            tracing::error!("Route {}: validation failed: {}", name, e);
-            return HttpResponse::InternalServerError()
-                .body(format!("Failed to validate route {}: {}", name, e));
-        }
-    }
+    let output = Endpoint {
+        endpoint_type: EndpointType::Response(Default::default()),
+        ..Default::default()
+    };
 
-    let old_routes = mq_bridge::list_routes();
-    // Stop old routes that are not in the new configuration
-    for name in old_routes {
-        if !routes.contains_key(&name) {
-            mq_bridge::stop_route(&name).await;
-        }
-    }
+    let route = Route::new(input, output).with_handler(handler);
 
-    // Update shared state
-    {
-        let mut config_guard = current_config_data.write().unwrap();
-        new_config.routes = routes.clone(); // put routes back for storage
+    let handle = route.run("web_ui").await;
+    let handle = handle.expect("Failed to start Web UI");
+    // Keep the task alive
+    std::future::pending::<()>().await;
+    let _ = handle.join().await;
 
-        let config_file = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string());
-        match serde_yaml_ng::to_string(&new_config) {
-            Ok(yaml) => {
-                if let Err(e) = std::fs::write(&config_file, yaml) {
-                    tracing::error!("Failed to write config to {}: {}", config_file, e);
-                } else {
-                    tracing::info!("Configuration saved to {}", config_file);
-                }
-            }
-            Err(e) => tracing::error!("Failed to serialize config: {}", e),
-        }
-
-        *config_guard = new_config;
-    }
-    // Deploy new routes
-    for (name, route) in &routes {
-        if let Err(e) = route.deploy(name).await {
-            return HttpResponse::InternalServerError()
-                .body(format!("Failed to deploy route {}: {}", name, e));
-        }
-    }
-
-    HttpResponse::Ok().body("Configuration updated")
-}
-
-pub fn start_web_server(
-    bind_addr: &str,
-    initial_config: AppConfig,
-) -> std::io::Result<actix_web::dev::Server> {
-    tracing::info!("Starting Web UI on http://{}", bind_addr);
-    let config_data = web::Data::new(RwLock::new(initial_config));
-    let server = HttpServer::new(move || {
-        let app = App::new()
-            .app_data(config_data.clone())
-            .route("/health", web::get().to(health_check))
-            .route("/schema.json", web::get().to(get_schema))
-            .route("/vanilla-schema-forms.js", web::get().to(get_js_lib))
-            .route("/custom-form.js", web::get().to(get_js_custom_lib))
-            .route("/bootstrap.min.css", web::get().to(get_bootstrap_css))
-            .route("/", web::get().to(index))
-            .route("/config", web::post().to(update_config))
-            .route("/config", web::get().to(get_config));
-        app
-    })
-    .bind(bind_addr)?
-    .run();
-    Ok(server)
+    Ok(())
 }
