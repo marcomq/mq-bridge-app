@@ -31,19 +31,22 @@ COPY src ./src
 COPY static ./static
 
 # Build the application in release mode
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
+RUN --mount=type=cache,target=/usr/src/mq-bridge-app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    if [ "$TARGETARCH" = "amd64" ]; then \
         CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --features=ibm-mq --jobs 2; \
     else \
         CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --jobs 2; \
-    fi
+    fi && \
+    cp target/release-with-lto/mq-bridge-app mq-bridge-app
 # Strip the binary to reduce its size
-RUN strip /usr/src/mq-bridge-app/target/release-with-lto/mq-bridge-app
+RUN strip mq-bridge-app
 
 # --- Final Stage ---
 FROM gcr.io/distroless/cc-debian12 AS final
 
 # Copy the built binary from the builder stage
-COPY --from=builder /usr/src/mq-bridge-app/target/release-with-lto/mq-bridge-app /usr/local/bin/mq-bridge-app
+COPY --from=builder /usr/src/mq-bridge-app/mq-bridge-app /usr/local/bin/mq-bridge-app
 # Copy the required shared library from the builder stage.
 # The wildcard '*' handles different architecture paths (e.g., x86_64-linux-gnu, aarch64-linux-gnu).
 COPY --from=builder /usr/lib/*-linux-gnu/libz.so.* /lib/
