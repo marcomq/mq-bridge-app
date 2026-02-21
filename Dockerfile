@@ -22,6 +22,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 ENV MQ_HOME="/opt/mqm"
 ENV LIBRARY_PATH="/opt/mqm/lib64:$LIBRARY_PATH"
 ENV LD_LIBRARY_PATH="/opt/mqm/lib64:$LD_LIBRARY_PATH"
+ENV RUSTFLAGS="-L native=/opt/mqm/lib64"
 
 # Copy only the necessary files to cache dependencies
 WORKDIR /usr/src/mq-bridge-app
