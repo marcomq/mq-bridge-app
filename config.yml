@@ -1,14 +1,13 @@
 log_level: info,mq_bridge=info
 logger: plain
-ui_addr: 0.0.0.0:8080
-metrics_addr: ''
+ui_addr: 0.0.0.0:9090
+metrics_addr: 0.0.0.0:9091
 routes:
   file_to_http:
     input:
       middlewares: []
       file:
         path: input.txt
-        subscribe_mode: false
         delete: true
     output:
       middlewares: []

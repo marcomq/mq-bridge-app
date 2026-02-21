@@ -19,7 +19,8 @@ lto = true
 
 
 [dependencies]
-mq-bridge = { git = "https://github.com/marcomq/mq-bridge", branch = "dev", version="0.2.2", features = ["full", "schema"] }
+# mq-bridge = { git = "https://github.com/marcomq/mq-bridge", branch = "dev", version="0.2.2", features = ["full", "schema"] }
+mq-bridge = { version="0.2.2", features = ["full", "schema"] }
 
 config = { version = "0.15" }
 dotenvy = "0.15"
@@ -47,3 +48,4 @@ async-trait = "0.1.89"
 [features]
 default = []
 integration-test = []
+ibm-mq = ["mq-bridge/ibm-mq"]

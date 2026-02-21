@@ -2502,6 +2502,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 
 [[package]]
+name = "libmqm-constants"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c677b3697ae16611752f25387b69657dfc794281dccf37b191f46b7e7eb012ed"
+dependencies = [
+ "derive_more",
+ "libmqm-sys",
+ "phf",
+]
+
+[[package]]
+name = "libmqm-default"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e80c8844b885e46c704d537cd41e31464b35c10024fa7f19fa26df33b6a17f8a"
+dependencies = [
+ "libmqm-sys",
+]
+
+[[package]]
+name = "libmqm-sys"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d888946090ed1e149d6978906143db293b9232c9a8cca0b369a1dc4668d9082a"
+
+[[package]]
 name = "libz-sys"
 version = "1.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2608,6 +2634,12 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
+
+[[package]]
+name = "maybe-owned"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
 name = "md-5"
@@ -2795,7 +2827,8 @@ dependencies = [
 [[package]]
 name = "mq-bridge"
 version = "0.2.2"
-source = "git+https://github.com/marcomq/mq-bridge?branch=dev#53066c0532fa8e46cbef3bc3c8340303f3cf53fc"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3443fca6927b91e4f6edb5a46449ed6b9d10882902eb8ff7da745d2ac2158cc4"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -2811,6 +2844,7 @@ dependencies = [
  "lapin",
  "metrics",
  "mongodb",
+ "mqi",
  "once_cell",
  "rand 0.9.2",
  "rdkafka",
@@ -2850,6 +2884,19 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "mqi"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "298bea58d1259df694242dc973b07ce156660c897a7b3a421e324b1f37905cdc"
+dependencies = [
+ "derive_more",
+ "libmqm-constants",
+ "libmqm-default",
+ "libmqm-sys",
+ "maybe-owned",
 ]
 
 [[package]]
@@ -3160,6 +3207,24 @@ checksum = "bf1d70880e76bdc13ba52eafa6239ce793d85c8e43896507e43dd8984ff05b82"
 dependencies = [
  "pest",
  "sha2",
+]
+
+[[package]]
+name = "phf"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
+dependencies = [
+ "phf_shared",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
+dependencies = [
+ "siphasher",
 ]
 
 [[package]]
@@ -4283,6 +4348,12 @@ dependencies = [
  "digest",
  "rand_core 0.6.4",
 ]
+
+[[package]]
+name = "siphasher"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "sketches-ddsketch"

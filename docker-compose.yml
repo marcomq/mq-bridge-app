@@ -5,12 +5,11 @@ services:
       dockerfile: Dockerfile
     container_name: mq-bridge
     ports:
-      - "9090:9090" # Prometheus metrics
-    environment:
+      - "9091:9091" # Prometheus metrics
+      - "9090:9090" # UI
+    # environment:
       # The application can read its configuration from the mounted config file.
-      # You might still need some environment variables, e.g., for logging.
-      - BRIDGE_LOGGGER=json
-      - BRIDGE_LOG_LEVEL=info,mq-bridge-app=debug
+      # You might still need some environment variables, e.g., passwords
     volumes:
       - ./sled_data:/data # Persist deduplication database
       - ./config/config.yml:/etc/mq-bridge/config.yml:ro # Mount the configuration file into the container
