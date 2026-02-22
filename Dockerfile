@@ -7,7 +7,7 @@ WORKDIR /usr/src/mq-bridge-app
 # Install build dependencies
 RUN apt-get update && apt-get install -y pkg-config gcc libssl-dev zlib1g-dev zlib1g curl && rm -rf /var/lib/apt/lists/*
 
-# Install IBM MQ Redistributable Client
+# Install IBM MQ Redistributable Client which is only available for AMD64
 WORKDIR /opt/mqm
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
         curl -LO https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqdev/redist/9.4.5.0-IBM-MQC-Redist-LinuxX64.tar.gz \
@@ -20,8 +20,8 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 
 # Set environment variables for the Rust crate to find the MQ libraries
 ENV MQ_HOME="/opt/mqm"
-ENV LIBRARY_PATH="/opt/mqm/lib64:$LIBRARY_PATH"
-ENV LD_LIBRARY_PATH="/opt/mqm/lib64:$LD_LIBRARY_PATH"
+ENV LIBRARY_PATH="/opt/mqm/lib64:${LIBRARY_PATH:-}"
+ENV LD_LIBRARY_PATH="/opt/mqm/lib64:${LD_LIBRARY_PATH:-}"
 ENV RUSTFLAGS="-L native=/opt/mqm/lib64"
 
 # Copy only the necessary files to cache dependencies
