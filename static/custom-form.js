@@ -15,6 +15,7 @@ const {
   createOptionalRenderer,
   renderCompactFieldWrapper,
   hydrateNodeWithData,
+  rendererConfig,
 } = window.VanillaSchemaForms;
 
 // Apply global I18N overrides
@@ -242,13 +243,24 @@ const routesRenderer = {
     // its children (the individual Route objects) so that we can apply a
     // specific collapsible renderer to each one.
 
-    // 1. Get the container for all route rows
-    const apItemsContainer = h("div", {
-      className: "ap-items-container js-ap-items",
-    });
+    // 1. Get the standard container (wrapper + add button) from the default renderer.
+    // We pass an empty defaultValue so it doesn't render the items automatically.
+    // This wrapper contains the 'data-element-id' attribute required for events.
+    const nodeForButton = { ...node, defaultValue: {} };
+    const wrapper = domRenderer.renderAdditionalProperties(
+      nodeForButton,
+      elementId,
+      { title: null },
+    );
 
-    // 2. Render existing routes from data
+    // 2. Find the items container within the wrapper where we will inject our custom rows.
+    const itemsContainer = wrapper.querySelector(
+      `.${rendererConfig.triggers.additionalPropertyItems}`,
+    );
+
+    // 3. Render existing routes from data manually
     if (
+      itemsContainer &&
       node.additionalProperties &&
       node.defaultValue &&
       typeof node.defaultValue === "object"
@@ -268,19 +280,18 @@ const routesRenderer = {
         );
 
         const routePath = `${elementId}.__ap_${apIndex}`;
-        const routeElementId = `${routePath}.${key.replace(/[^a-zA-Z0-9]/g, "_")}`;
         const routeDataPath = [...dataPath, key];
 
-        // Directly call our desired renderer for the Route object's content.
-        const valueHtml = routeObjectRenderer.render(
+        // Use renderNode to correctly render the content and populate all internal registries.
+        // The system will automatically find and use the custom 'Route' renderer.
+        const valueHtml = renderNode(
+          context,
           valueNode,
           routePath,
-          routeElementId,
+          true,
           routeDataPath,
-          context,
         );
-
-        const keyInputId = `${routeElementId}_key`;
+        const keyInputId = `${routePath}_key`;
 
         // Then, wrap this custom content in the standard row structure.
         const rowNode = routesRenderer.renderAdditionalPropertyRow(
@@ -291,24 +302,13 @@ const routesRenderer = {
           context,
         );
 
-        apItemsContainer.appendChild(rowNode);
+        itemsContainer.appendChild(rowNode);
         apIndex++;
       });
     }
 
-    // 3. Get the "Add Route" button from the default renderer
-    const addBtnContainer = domRenderer.renderAdditionalProperties(
-      node,
-      elementId,
-      { title: null },
-    );
-
     // 4. Assemble the final content and wrap in the standard object fieldset
-    const content = domRenderer.renderFragment([
-      apItemsContainer,
-      addBtnContainer,
-    ]);
-    return domRenderer.renderObject(node, elementId, content);
+    return domRenderer.renderObject(node, elementId, wrapper);
   },
   getDefaultKey: (index) => `Route ${index + 1}`,
   renderAdditionalPropertyRow: (
@@ -323,6 +323,7 @@ const routesRenderer = {
       className: "form-control form-control-sm fw-bold ap-key js-ap-key",
       placeholder: "Route name",
       value: defaultKey,
+      "data-original-key": defaultKey,
     };
     if (uniqueId) keyInputAttrs.id = uniqueId;
 
@@ -351,8 +352,7 @@ const routesRenderer = {
           "button",
           {
             type: "button",
-            className:
-              "btn btn-sm btn-outline-danger btn-remove-ap js-btn-remove-ap",
+            className: `btn btn-sm btn-outline-danger btn-remove-ap ${rendererConfig.triggers.removeAdditionalProperty}`,
           },
           "Remove Route",
         ),

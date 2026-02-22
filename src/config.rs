@@ -16,20 +16,22 @@ pub struct AppConfig {
     pub log_level: String,
     #[serde(default)]
     pub logger: String,
-    /// Optional url of the ui endpoint. For example "0.0.0.0:8080".
+    /// Optional url of the ui endpoint. For example "0.0.0.0:9090".
     #[serde(default)]
     pub ui_addr: String,
-    /// Optional url of the metrics endpoint. For example "0.0.0.0:9090".
+    /// Optional url of the metrics endpoint. For example "0.0.0.0:9091".
     #[serde(default)]
     pub metrics_addr: String,
     #[serde(default)]
     pub routes: HashMap<String, Route>,
 }
 
-pub fn load_config() -> Result<AppConfig, ConfigError> {
+pub fn load_config(config_path: Option<String>) -> Result<AppConfig, ConfigError> {
     // Attempt to load .env file
     dotenvy::dotenv().ok();
-    let config_file = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string());
+    let config_file = config_path
+        .or_else(|| std::env::var("CONFIG_FILE").ok())
+        .unwrap_or_else(|| "config.yml".to_string());
 
     let settings = Config::builder()
         // Start with default values
@@ -118,7 +120,7 @@ routes:
 
         std::env::set_var("CONFIG_FILE", "_"); // ignore existing config.yaml
                                                // Load config
-        let config = load_config().unwrap();
+        let config = load_config(None).unwrap();
 
         // Assertions
         dbg!(&config.routes);

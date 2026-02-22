@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use anyhow::Result;
 use async_trait::async_trait;
+use metrics_exporter_prometheus::PrometheusHandle;
 use mq_bridge::models::{Endpoint, EndpointType, HttpConfig, Route};
 use mq_bridge::traits::Handler;
 use mq_bridge::{msg, CanonicalMessage, Handled, HandlerError};
@@ -28,6 +29,7 @@ impl CanonicalMessageExt for CanonicalMessage {
 
 struct WebUiHandler {
     config: Arc<RwLock<AppConfig>>,
+    metrics_handle: Option<PrometheusHandle>,
 }
 
 #[async_trait]
@@ -48,9 +50,8 @@ impl Handler for WebUiHandler {
 
         let response = match (method.as_str(), path.as_str()) {
             ("GET", "/health") => msg!("OK"),
-            ("GET", "/favicon.ico") => {
-                msg!(include_bytes!("../static/favicon.ico").to_vec()).with_content_type("image/x-icon")
-            }
+            ("GET", "/favicon.ico") => msg!(include_bytes!("../static/favicon.ico").to_vec())
+                .with_content_type("image/x-icon"),
             ("GET", "/favicon.svg") => {
                 msg!(include_str!("../static/favicon.svg")).with_content_type("image/svg+xml")
             }
@@ -86,6 +87,13 @@ impl Handler for WebUiHandler {
                     .with_content_type("application/json")
             }
             ("POST", "/config") => return self.handle_update_config(msg).await,
+            ("GET", "/metrics") => {
+                if let Some(handle) = &self.metrics_handle {
+                    msg!(handle.render()).with_content_type("text/plain; version=0.0.4")
+                } else {
+                    msg!("Not Found").with_status_code("404")
+                }
+            }
             _ => msg!("Not Found").with_status_code("404"),
         };
 
@@ -184,10 +192,12 @@ impl WebUiHandler {
 pub async fn start_web_server(
     bind_addr: String,
     initial_config: AppConfig,
+    metrics_handle: Option<PrometheusHandle>,
 ) -> Result<(), anyhow::Error> {
     let bind_addr = bind_addr.to_string();
     let handler = WebUiHandler {
         config: Arc::new(RwLock::new(initial_config)),
+        metrics_handle,
     };
 
     let input = Endpoint {

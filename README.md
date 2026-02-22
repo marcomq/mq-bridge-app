@@ -23,7 +23,25 @@ This project is under active development. While many features are functional, AP
 - Access to the message brokers you want to connect (e.g., Kafka, NATS, RabbitMQ)
 
 
-## Build
+## Installation
+
+### Docker (Recommended)
+
+The easiest way to run the application is using the pre-built Docker image, which includes all necessary dependencies (like the IBM MQ client).
+
+```bash
+docker run -p 9090:9090 -v $(pwd)/config.yaml:/app/config.yml ghcr.io/marcomq/mq-bridge-app:latest
+```
+
+### Cargo
+
+If you have Rust installed, you can install the application directly from source. Note that you may need to install development libraries for the brokers you intend to use (e.g., `librdkafka-dev` for Kafka, or the IBM MQ client).
+
+```bash
+cargo install --git https://github.com/marcomq/mq-bridge-app
+```
+
+## Build from Source
 
 1.  **Clone the repository:**
     ```bash
@@ -31,7 +49,11 @@ This project is under active development. While many features are functional, AP
     cd mq-bridge-app
     ```
 
-2.  **Configure the application:**
+2.  **Build and run:**
+    ```bash
+    cargo run --release -- --config config/kafka-to-nats.yml
+    ```
+3.  **Configure the application:**
     Create a `config.yaml` file in the project root or set environment variables. See the Configuration section for details.
     
 ### Build Docker Image (doesn't require local Rust)
@@ -46,14 +68,6 @@ This project is under active development. While many features are functional, AP
     
 
     This will start Kafka, NATS, and the bridge application.
-
-### Building and Running Locally
-
-
-**Build and run the application:**
-    ```bash
-    cargo run --release
-    ```
 
 ## Configuration
 
@@ -99,7 +113,7 @@ routes:
   webhook_to_kafka:
     input:
       http:
-        url: "0.0.0.0:8080"
+        url: "0.0.0.0:9090"
     output:
       kafka:
         brokers: "kafka-eu.example.com:9092"
@@ -155,6 +169,23 @@ export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__MIDDLEWARES__0__DLQ__KAFKA__BROKERS
 export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__MIDDLEWARES__0__DLQ__KAFKA__GROUP_ID="bridge-dlq-group"
 export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__MIDDLEWARES__0__DLQ__KAFKA__TOPIC="dlq-kafka-us-to-nats"
 ```
+
+### Example Configurations 
+
+This repository includes a set of example configurations in the /examples directory to help you get started quickly. These examples are also included in the Docker image under /app/examples. 
+
+You can use them with Docker by mounting them from your host or by referencing them from within the image using the --config flag: 
+
+```bash 
+# Using an example from the host 
+docker run -p 9090:9090 -v $(pwd)/configClo/kafka-to-nats.yml:/app/config.yml ghcr.io/marcomq/mq-bridge-app:latest 
+# Using an example from within the image 
+docker run -p 9090:9090 ghcr.io/marcomq/mq-bridge-app:latest --config /app/config/kafka-to-nats.yml
+```
+Available Examples: 
+* http-to-kafka.yml: Exposes an HTTP endpoint and forwards incoming requests to a Kafka topic. 
+* kafka-to-nats.yml: A simple route from a Kafka topic to a NATS subject. 
+* rabbitmq-to-file.yml: Reads messages from a RabbitMQ queue and appends them to a log file (requires mounting a volume for /data).
 
 ### Using a `.env` file
 

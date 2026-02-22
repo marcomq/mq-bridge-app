@@ -3,6 +3,8 @@
 //  Licensed under MIT License, see License file for more details
 //  git clone https://github.com/marcomq/mq-bridge-app
 
+use clap::Parser;
+use metrics_exporter_prometheus::PrometheusHandle;
 use mq_bridge_app::config::{load_config, AppConfig};
 use mq_bridge_app::web_ui;
 use std::net::SocketAddr;
@@ -12,61 +14,91 @@ use tracing_subscriber::EnvFilter;
 
 use anyhow::Context;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Path to configuration file
+    #[arg(short, long)]
+    config: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut config: AppConfig = load_config().context("Failed to load configuration")?;
+    let args = Args::parse();
+    let mut config: AppConfig = load_config(args.config).context("Failed to load configuration")?;
     init_logging(&config);
 
+    // --- Logic for default addresses ---
+    // If there is no config (routes are empty), enable both on port 9090.
+    // If there is a config, use the addr of the config (empty means deactivated).
+    if config.routes.is_empty() {
+        if config.ui_addr.is_empty() {
+            config.ui_addr = "0.0.0.0:9090".to_string();
+        }
+        if config.metrics_addr.is_empty() {
+            config.metrics_addr = "0.0.0.0:9090".to_string();
+        }
+    }
+
     // --- 2. Initialize Prometheus Metrics Exporter ---
-    // We manually spawn the metrics server to be able to control its lifecycle.
-    // The `install()` method spawns a task that we can't shut down.
+    let mut prometheus_handle: Option<PrometheusHandle> = None;
     let metrics_task = if !config.metrics_addr.is_empty() {
         let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
-        let addr: SocketAddr = config.metrics_addr.parse().context(format!(
-            "Failed to parse metrics listen address: {}",
-            config.metrics_addr
-        ))?;
-        let (recorder, server_future) = builder.with_http_listener(addr).build()?;
-        metrics::set_global_recorder(recorder).context("Failed to install Prometheus recorder")?;
-        info!("Prometheus exporter listening on http://{}", addr);
-        Some(tokio::spawn(server_future))
+
+        // If metrics_addr and ui_addr are the same, we want metrics on /metrics via the Web UI.
+        if config.metrics_addr == config.ui_addr {
+            let recorder = builder
+                .build_recorder();
+            prometheus_handle = Some(recorder.handle());
+            metrics::set_global_recorder(recorder)
+                .context("Failed to install Prometheus recorder")?;
+            info!(
+                "Prometheus metrics enabled on Web UI (http://{}/metrics)",
+                config.ui_addr
+            );
+            None
+        } else {
+            let addr: SocketAddr = config.metrics_addr.parse().context(format!(
+                "Failed to parse metrics listen address: {}",
+                config.metrics_addr
+            ))?;
+            let (recorder, server_future) = builder.with_http_listener(addr).build()?;
+            metrics::set_global_recorder(recorder)
+                .context("Failed to install Prometheus recorder")?;
+            info!("Prometheus exporter listening on http://{}", addr);
+            Some(tokio::spawn(server_future))
+        }
     } else {
         None
     };
 
     // Start Web UI
-    let web_ui_handle = (|| -> anyhow::Result<_> {
-        if config.routes.is_empty() || !config.ui_addr.is_empty() {
-            let addr = if config.ui_addr.is_empty() {
-                "0.0.0.0:8080"
-            } else {
-                &config.ui_addr
-            };
-
-            let socket_addr: SocketAddr = addr
-                .parse()
-                .with_context(|| format!("Failed to parse UI listen address: {}", addr))?;
-            let port = socket_addr.port();
-            let host = if socket_addr.ip().is_unspecified() {
-                "localhost".to_string()
-            } else {
-                socket_addr.ip().to_string()
-            };
-            println!(
-                r#"
+    let web_ui_handle = if !config.ui_addr.is_empty() {
+        let addr = &config.ui_addr;
+        let socket_addr: SocketAddr = addr
+            .parse()
+            .with_context(|| format!("Failed to parse UI listen address: {}", addr))?;
+        let port = socket_addr.port();
+        let host = if socket_addr.ip().is_unspecified() {
+            "localhost".to_string()
+        } else {
+            socket_addr.ip().to_string()
+        };
+        println!(
+            r#"
       ┌────── mq-bridge-app ──────┐
 ──────┴───────────────────────────┴──────
       Web UI: http://{}:{}
 "#,
-                host, port
-            );
+            host, port
+        );
 
-            let web_ui_server = web_ui::start_web_server(addr.into(), config.clone());
-            Ok(Some(tokio::spawn(web_ui_server)))
-        } else {
-            Ok(None)
-        }
-    })()?;
+        let web_ui_server =
+            web_ui::start_web_server(addr.into(), config.clone(), prometheus_handle);
+        Some(tokio::spawn(web_ui_server))
+    } else {
+        None
+    };
 
     if config.routes.is_empty() {
         warn!("No routes configured. Waiting for configuration via Web UI.");

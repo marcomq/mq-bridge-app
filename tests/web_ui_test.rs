@@ -15,7 +15,7 @@ async fn test_web_ui_health_check() {
 
     // Start server in background
     let server = tokio::spawn(async move {
-        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default())
+        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default(), None)
             .await
             .unwrap();
     });
@@ -47,7 +47,7 @@ async fn test_web_ui_schema_and_index() {
 
     // Start server in background
     let server = tokio::spawn(async move {
-        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default())
+        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default(), None)
             .await
             .unwrap();
     });
@@ -102,7 +102,7 @@ async fn test_web_ui_post_config() {
     let port = get_free_port();
 
     let server = tokio::spawn(async move {
-        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default())
+        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default(), None)
             .await
             .unwrap();
     });

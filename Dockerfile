@@ -27,12 +27,25 @@ ENV RUSTFLAGS="-L native=/opt/mqm/lib64"
 # Copy only the necessary files to cache dependencies
 WORKDIR /usr/src/mq-bridge-app
 COPY Cargo.toml Cargo.lock ./
+
+# Create a dummy main.rs to build dependencies
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+
+# Build dependencies (this layer will be cached if Cargo.toml/lock don't change)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --features=ibm-mq --jobs 2; \
+    else \
+        CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --jobs 2; \
+    fi
+
+# Copy the actual source code
 COPY src ./src
 COPY static ./static
 
 # Build the application in release mode
-RUN --mount=type=cache,target=/usr/src/mq-bridge-app/target \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    touch src/main.rs && \
     if [ "$TARGETARCH" = "amd64" ]; then \
         CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --features=ibm-mq --jobs 2; \
     else \
@@ -57,5 +70,12 @@ COPY --from=builder /opt/mqm/licenses /opt/mqm/licenses
 
 # Configure runtime library path
 ENV LD_LIBRARY_PATH="/opt/mqm/lib64"
+
+# Copy example configurations
+COPY config /app/config
+
+WORKDIR /app
+
+EXPOSE 9090
 
 CMD ["mq-bridge-app"]
