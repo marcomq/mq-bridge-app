@@ -191,9 +191,31 @@ Available Examples:
 
 For local development, you can place a `.env` file in the root of the project. The application will automatically load the variables from this file.
 
+## Architecture & Web UI
+
+This application demonstrates a unique usage of the `mq-bridge` library itself to serve its own management UI.
+
+### Backend: `mq-bridge` as a Web Server
+
+Instead of using a traditional web framework like Actix or Axum directly for the management API, the application uses [mq-bridge](https://github.com/marcomq/mq-bridge/)'s internal routing mechanism:
+
+1.  **HTTP Input**: An `http` input endpoint listens on the configured UI port. It converts incoming HTTP requests into `CanonicalMessage`s.
+2.  **WebUiHandler**: A custom `Handler` processes these messages. It acts as a router, serving static files (HTML, JS) or handling API requests (e.g., `/config`, `/schema.json`).
+3.  **Response Output**: The handler returns a response message, which is sent to a `response` output endpoint, completing the HTTP request-response cycle.
+
+This approach showcases the library's ability to handle request-reply patterns and serve as a lightweight web server.
+
+### Frontend: `vanilla-schema-forms`
+
+The Web UI is dynamically generated from the Rust configuration structures:
+
+1.  **Schema Generation**: The backend uses `schemars` to generate a JSON Schema for the `AppConfig` struct at runtime. This is exposed via `/schema.json`.
+2.  **Dynamic Form**: The frontend uses [vanilla-schema-forms](https://github.com/marcomq/vanilla-schema-forms) to render a complete configuration form based solely on this schema.
+3.  **No UI Code Changes**: When new features or configuration options are added to the Rust code (e.g., a new middleware), the schema updates automatically, and the UI reflects these changes without requiring any frontend code modifications.
+
 ## Using as a Library
 
-Beyond running as a standalone application, the core logic is available as a library crate (`mq_bridge`) to interact with various message brokers using a unified API. This is useful for building custom applications that need to produce or consume messages without being tied to a specific broker's SDK.
+Beyond running as a standalone application, the core logic is available as a library crate [mq-bridge](https://github.com/marcomq/_bridge) to interact with various message brokers using a unified API. This is useful for building custom applications that need to produce or consume messages without being tied to a specific broker's SDK.
 
 The core of the library are the `MessageConsumer` and `MessagePublisher` traits, found in `mq_bridge::traits`.
 
