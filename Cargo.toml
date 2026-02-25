@@ -50,7 +50,6 @@ metrics-exporter-prometheus = "0.18.1"
 actix-web = { version = "4.12", features = ["rustls-0_23"] }
 schemars = "1"
 serde_json = "1.0"
-async-trait = "0.1.89"
 
 [features]
 default = ["full"]
@@ -64,3 +63,8 @@ kafka = ["mq-bridge/kafka"]
 aws = ["mq-bridge/aws"]
 nats = ["mq-bridge/nats"]
 mqtt = ["mq-bridge/mqtt"]
+zeromq = ["mq-bridge/zeromq"]
+sled = ["mq-bridge/sled"]
+grpc = ["mq-bridge/grpc"]
+amqp = ["mq-bridge/amqp"]
+

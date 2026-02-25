@@ -8,6 +8,7 @@ routes:
       middlewares: []
       file:
         path: input.txt
+        mode: "consume"
         delete: true
     output:
       middlewares: []

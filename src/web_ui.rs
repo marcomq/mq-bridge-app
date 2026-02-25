@@ -1,9 +1,7 @@
 use crate::config::AppConfig;
 use anyhow::Result;
-use async_trait::async_trait;
 use metrics_exporter_prometheus::PrometheusHandle;
 use mq_bridge::models::{Endpoint, EndpointType, HttpConfig, Route};
-use mq_bridge::traits::Handler;
 use mq_bridge::{msg, CanonicalMessage, Handled, HandlerError};
 use schemars::schema_for;
 use std::sync::{Arc, RwLock};
@@ -27,13 +25,13 @@ impl CanonicalMessageExt for CanonicalMessage {
     }
 }
 
+#[derive(Clone)]
 struct WebUiHandler {
     config: Arc<RwLock<AppConfig>>,
-    metrics_handle: Option<PrometheusHandle>,
+    metrics_handle: PrometheusHandle,
 }
 
-#[async_trait]
-impl Handler for WebUiHandler {
+impl WebUiHandler {
     async fn handle(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
         let method = msg
             .metadata
@@ -48,54 +46,49 @@ impl Handler for WebUiHandler {
             .unwrap_or("/")
             .to_lowercase();
 
-        let response = match (method.as_str(), path.as_str()) {
-            ("GET", "/health") => msg!("OK"),
-            ("GET", "/favicon.ico") => msg!(include_bytes!("../static/favicon.ico").to_vec())
-                .with_content_type("image/x-icon"),
-            ("GET", "/favicon.svg") => {
-                msg!(include_str!("../static/favicon.svg")).with_content_type("image/svg+xml")
-            }
-            ("GET", "/schema.json") => {
-                let schema = schema_for!(AppConfig);
-                CanonicalMessage::from_type(&schema)
-                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                    .with_content_type("application/json")
-            }
-            ("GET", "/vanilla-schema-forms.js") => {
-                msg!(include_str!("../static/vanilla-schema-forms.js"))
-                    .with_content_type("text/javascript")
-            }
-            ("GET", "/custom-form.js") => {
-                msg!(include_str!("../static/custom-form.js")).with_content_type("text/javascript")
-            }
-            ("GET", "/bootstrap.min.css") => {
-                msg!(include_str!("../static/bootstrap.min.css")).with_content_type("text/css")
-            }
-            ("GET", "/") | ("GET", "/index.html") => {
-                msg!(include_str!("../static/index.html")).with_content_type("text/html")
-            }
-            ("GET", "/config") => {
-                let config_guard = self.config.read().unwrap();
-                let mut current_config = config_guard.clone();
-                // Populate active routes status
-                current_config.routes = mq_bridge::list_routes()
-                    .into_iter()
-                    .filter_map(|name| mq_bridge::get_route(&name).map(|route| (name, route)))
-                    .collect();
-                CanonicalMessage::from_type(&current_config)
-                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                    .with_content_type("application/json")
-            }
-            ("POST", "/config") => return self.handle_update_config(msg).await,
-            ("GET", "/metrics") => {
-                if let Some(handle) = &self.metrics_handle {
-                    msg!(handle.render()).with_content_type("text/plain; version=0.0.4")
-                } else {
-                    msg!("Not Found").with_status_code("404")
+        let response =
+            match (method.as_str(), path.as_str()) {
+                ("GET", "/health") => msg!("OK"),
+                ("GET", "/favicon.ico") => msg!(include_bytes!("../static/favicon.ico").to_vec())
+                    .with_content_type("image/x-icon"),
+                ("GET", "/favicon.svg") => {
+                    msg!(include_str!("../static/favicon.svg")).with_content_type("image/svg+xml")
                 }
-            }
-            _ => msg!("Not Found").with_status_code("404"),
-        };
+                ("GET", "/schema.json") => {
+                    let schema = schema_for!(AppConfig);
+                    CanonicalMessage::from_type(&schema)
+                        .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                        .with_content_type("application/json")
+                }
+                ("GET", "/vanilla-schema-forms.js") => {
+                    msg!(include_str!("../static/vanilla-schema-forms.js"))
+                        .with_content_type("text/javascript")
+                }
+                ("GET", "/custom-form.js") => msg!(include_str!("../static/custom-form.js"))
+                    .with_content_type("text/javascript"),
+                ("GET", "/bootstrap.min.css") => {
+                    msg!(include_str!("../static/bootstrap.min.css")).with_content_type("text/css")
+                }
+                ("GET", "/") | ("GET", "/index.html") => {
+                    msg!(include_str!("../static/index.html")).with_content_type("text/html")
+                }
+                ("GET", "/config") => {
+                    let config_guard = self.config.read().unwrap();
+                    let mut current_config = config_guard.clone();
+                    // Populate active routes status
+                    current_config.routes = mq_bridge::list_routes()
+                        .into_iter()
+                        .filter_map(|name| mq_bridge::get_route(&name).map(|route| (name, route)))
+                        .collect();
+                    CanonicalMessage::from_type(&current_config)
+                        .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                        .with_content_type("application/json")
+                }
+                ("POST", "/config") => return self.handle_update_config(msg).await,
+                ("GET", "/metrics") => msg!(self.metrics_handle.render())
+                    .with_content_type("text/plain; version=0.0.4"),
+                _ => msg!("Not Found").with_status_code("404"),
+            };
 
         let response = if !response.metadata.contains_key("http_status_code") {
             response.with_status_code("200")
@@ -105,9 +98,7 @@ impl Handler for WebUiHandler {
 
         Ok(Handled::Publish(response))
     }
-}
 
-impl WebUiHandler {
     async fn handle_update_config(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
         let body = msg.payload;
         let mut new_config: AppConfig = match serde_json::from_slice(&body) {
@@ -172,7 +163,11 @@ impl WebUiHandler {
 
             *config_guard = new_config;
         }
-
+        for (_, route) in &routes {
+            if route.is_ref() {
+                route.register_output_endpoint(None)?;
+            }
+        }
         for (name, route) in &routes {
             if let Err(e) = route.deploy(name).await {
                 let err_msg = format!("Failed to deploy route {}: {}", name, e);
@@ -192,10 +187,10 @@ impl WebUiHandler {
 pub async fn start_web_server(
     bind_addr: String,
     initial_config: AppConfig,
-    metrics_handle: Option<PrometheusHandle>,
+    metrics_handle: PrometheusHandle,
 ) -> Result<(), anyhow::Error> {
     let bind_addr = bind_addr.to_string();
-    let handler = WebUiHandler {
+    let web_handler = WebUiHandler {
         config: Arc::new(RwLock::new(initial_config)),
         metrics_handle,
     };
@@ -213,9 +208,12 @@ pub async fn start_web_server(
         ..Default::default()
     };
 
-    let route = Route::new(input, output).with_handler(handler);
+    let web_route = Route::new(input, output).with_handler(move |msg| {
+        let handler = web_handler.clone();
+        async move { handler.handle(msg).await }
+    });
 
-    let handle = route.run("web_ui").await;
+    let handle = web_route.run("web_ui").await;
     let handle = handle.expect("Failed to start Web UI");
     // Keep the task alive
     std::future::pending::<()>().await;

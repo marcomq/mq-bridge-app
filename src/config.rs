@@ -19,7 +19,9 @@ pub struct AppConfig {
     /// Optional url of the ui endpoint. For example "0.0.0.0:9090".
     #[serde(default)]
     pub ui_addr: String,
-    /// Optional url of the metrics endpoint. For example "0.0.0.0:9091".
+    /// Optional url of a standalone metrics endpoint. For example "0.0.0.0:9091".
+    /// If set, a standalone metrics server will be started on this address.
+    /// If it matches `ui_addr`, the standalone server is skipped as the UI handles it.
     #[serde(default)]
     pub metrics_addr: String,
     #[serde(default)]

@@ -4,7 +4,6 @@
 //  git clone https://github.com/marcomq/mq-bridge-app
 
 use clap::Parser;
-use metrics_exporter_prometheus::PrometheusHandle;
 use mq_bridge_app::config::{load_config, AppConfig};
 use mq_bridge_app::web_ui;
 use std::net::SocketAddr;
@@ -41,36 +40,34 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- 2. Initialize Prometheus Metrics Exporter ---
-    let mut prometheus_handle: Option<PrometheusHandle> = None;
-    let metrics_task = if !config.metrics_addr.is_empty() {
-        let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
-
-        // If metrics_addr and ui_addr are the same, we want metrics on /metrics via the Web UI.
-        if config.metrics_addr == config.ui_addr {
-            let recorder = builder
-                .build_recorder();
-            prometheus_handle = Some(recorder.handle());
-            metrics::set_global_recorder(recorder)
-                .context("Failed to install Prometheus recorder")?;
-            info!(
-                "Prometheus metrics enabled on Web UI (http://{}/metrics)",
-                config.ui_addr
-            );
-            None
-        } else {
+    let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
+    let (recorder, metrics_task) =
+        if !config.metrics_addr.is_empty() && config.metrics_addr != config.ui_addr {
             let addr: SocketAddr = config.metrics_addr.parse().context(format!(
                 "Failed to parse metrics listen address: {}",
                 config.metrics_addr
             ))?;
             let (recorder, server_future) = builder.with_http_listener(addr).build()?;
-            metrics::set_global_recorder(recorder)
-                .context("Failed to install Prometheus recorder")?;
             info!("Prometheus exporter listening on http://{}", addr);
-            Some(tokio::spawn(server_future))
-        }
-    } else {
-        None
-    };
+            (recorder, Some(tokio::spawn(server_future)))
+        } else {
+            (builder.build_recorder(), None)
+        };
+    let prometheus_handle = recorder.handle();
+    metrics::set_global_recorder(recorder).context("Failed to install Prometheus recorder")?;
+
+    if !config.ui_addr.is_empty() {
+        info!(
+            "Prometheus metrics enabled on Web UI (http://{}/metrics)",
+            config.ui_addr
+        );
+    }
+
+    print!(
+        r#"
+      ┌────── mq-bridge-app ──────┐
+──────┴───────────────────────────┴──────"#
+    );
 
     // Start Web UI
     let web_ui_handle = if !config.ui_addr.is_empty() {
@@ -86,8 +83,6 @@ async fn main() -> anyhow::Result<()> {
         };
         println!(
             r#"
-      ┌────── mq-bridge-app ──────┐
-──────┴───────────────────────────┴──────
       Web UI: http://{}:{}
 "#,
             host, port
@@ -104,6 +99,11 @@ async fn main() -> anyhow::Result<()> {
         warn!("No routes configured. Waiting for configuration via Web UI.");
     } else {
         let routes = std::mem::take(&mut config.routes);
+        for (_, route) in &routes {
+            if route.is_ref() {
+                route.register_output_endpoint(None)?;
+            }
+        }
         for (name, route) in routes {
             route.deploy(&name).await?;
         }
