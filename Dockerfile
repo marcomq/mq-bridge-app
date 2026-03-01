@@ -54,12 +54,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cp target/release-with-lto/mq-bridge-app mq-bridge-app
 # Strip the binary to reduce its size
 RUN strip mq-bridge-app
+# Create an empty log file for file input examples
+RUN touch input.log
 
 # --- Final Stage ---
 FROM gcr.io/distroless/cc-debian12 AS final
 
 # Copy the built binary from the builder stage
 COPY --from=builder /usr/src/mq-bridge-app/mq-bridge-app /usr/local/bin/mq-bridge-app
+COPY --from=builder /usr/src/mq-bridge-app/input.log /app/input.log
 # Copy the required shared library from the builder stage.
 # The wildcard '*' handles different architecture paths (e.g., x86_64-linux-gnu, aarch64-linux-gnu).
 COPY --from=builder /usr/lib/*-linux-gnu/libz.so.* /lib/
@@ -73,7 +76,6 @@ ENV LD_LIBRARY_PATH="/opt/mqm/lib64"
 
 # Copy example configurations
 COPY config /app/config
-RUN touch /app/input.log
 ENV CONFIG_FILE=/app/config/file-to-http.yml
 
 WORKDIR /app
