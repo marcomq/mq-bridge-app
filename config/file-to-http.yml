@@ -9,7 +9,7 @@ routes:
   file_to_http:
     input:
       file:
-        path: queue.txt
+        path: input.log
         mode: consume
         delete: true
     output:
@@ -21,7 +21,7 @@ routes:
         - dlq:
             endpoint:
               file:
-                path: error.out
+                path: error.log
       http:
         url: 127.0.0.1:3030
         tls:

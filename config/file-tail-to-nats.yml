@@ -7,7 +7,7 @@ routes:
   file_to_nats:
     input:
       file:
-        path: "app.log"
+        path: "input.log"
     output:
       nats:
         url: "nats:4222"

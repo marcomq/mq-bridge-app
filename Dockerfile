@@ -73,6 +73,8 @@ ENV LD_LIBRARY_PATH="/opt/mqm/lib64"
 
 # Copy example configurations
 COPY config /app/config
+RUN touch /app/input.log
+ENV CONFIG_FILE=/app/config/file-to-http.yml
 
 WORKDIR /app
 

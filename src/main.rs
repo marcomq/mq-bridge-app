@@ -25,7 +25,8 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let mut config: AppConfig = load_config(args.config).context("Failed to load configuration")?;
+    let (mut config, config_file_path): (AppConfig, String) =
+        load_config(args.config).context("Failed to load configuration")?;
     init_logging(&config);
 
     // --- Logic for default addresses ---
@@ -64,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     // Standard Prometheus pattern: use a fixed value of 1.0 for info metrics,
     // encoding the actual data (version, etc.) in the labels.
     metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
-    
+
     if !config.ui_addr.is_empty() {
         info!(
             "Prometheus metrics enabled on Web UI (http://{}/metrics)",
@@ -96,13 +97,18 @@ async fn main() -> anyhow::Result<()> {
             host, port
         );
 
-        let web_ui_server =
-            web_ui::start_web_server(addr.into(), config.clone(), prometheus_handle);
+        let web_ui_server = web_ui::start_web_server(
+            addr.into(),
+            config.clone(),
+            prometheus_handle,
+            config_file_path,
+        );
         Some(tokio::spawn(web_ui_server))
     } else {
         println!(
             r#"        Starting without UI server
-"#);
+"#
+        );
         None
     };
 

@@ -29,6 +29,7 @@ impl CanonicalMessageExt for CanonicalMessage {
 struct WebUiHandler {
     config: Arc<RwLock<AppConfig>>,
     metrics_handle: PrometheusHandle,
+    config_file_path: Arc<String>,
 }
 
 impl WebUiHandler {
@@ -148,11 +149,9 @@ impl WebUiHandler {
             let mut config_guard = self.config.write().unwrap();
             new_config.routes = routes.clone();
 
-            let config_file =
-                std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string());
-
-            if let Err(e) = new_config.save(&config_file) {
-                tracing::error!("Failed to save config to {}: {}", config_file, e);
+            let config_file = &*self.config_file_path;
+            if let Err(e) = new_config.save(config_file) {
+                tracing::error!("Failed to save config to '{}': {}", config_file, e);
             } else {
                 tracing::info!("Configuration saved to {}", config_file);
             }
@@ -184,11 +183,13 @@ pub async fn start_web_server(
     bind_addr: String,
     initial_config: AppConfig,
     metrics_handle: PrometheusHandle,
+    config_file_path: String,
 ) -> Result<(), anyhow::Error> {
     let bind_addr = bind_addr.to_string();
     let web_handler = WebUiHandler {
         config: Arc::new(RwLock::new(initial_config)),
         metrics_handle,
+        config_file_path: Arc::new(config_file_path),
     };
 
     let input = Endpoint {

@@ -31,23 +31,28 @@ pub struct AppConfig {
     pub extract_secrets: bool,
 }
 
-pub fn load_config(config_path: Option<String>) -> Result<AppConfig, ConfigError> {
+pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), ConfigError> {
     // Attempt to load .env file
     dotenvy::dotenv().ok();
-    let config_file = config_path
-        .or_else(|| std::env::var("CONFIG_FILE").ok())
-        .unwrap_or_else(|| "config.yml".to_string());
 
-    let source_file = if Path::new(&config_file).exists() {
-        config_file
+    // Determine configuration file path with precedence:
+    // 1. --config argument
+    // 2. `config.yml` in the current directory if it exists
+    // 3. `CONFIG_FILE` environment variable (used for Docker default)
+    // 4. Default to `config.yml`
+    let source_file = if let Some(path) = config_path.clone() {
+        path
+    } else if Path::new("config.yml").exists() {
+        "config.yml".to_string()
     } else {
-        let fallback = "config/file-to-http.yml";
-        if Path::new(fallback).exists() {
-            fallback.to_string()
-        } else {
-            config_file
-        }
+        std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string())
     };
+
+    if !Path::new(&source_file).exists() {
+        eprintln!("INFO: Configuration file '{}' not found. Starting with default settings and environment variables. No routes will be active unless defined in environment variables.", source_file);
+    } else if config_path.is_none() && source_file != "config.yml" {
+        eprintln!("INFO: Using configuration from '{}'", source_file);
+    }
 
     let settings = Config::builder()
         // Start with default values
@@ -63,7 +68,8 @@ pub fn load_config(config_path: Option<String>) -> Result<AppConfig, ConfigError
                 .try_parsing(true),
         )
         .build()?;
-    settings.try_deserialize()
+    let config: AppConfig = settings.try_deserialize()?;
+    Ok((config, source_file))
 }
 
 impl AppConfig {
@@ -174,7 +180,7 @@ routes:
 
         std::env::set_var("CONFIG_FILE", "_"); // ignore existing config.yaml
                                                // Load config
-        let config = load_config(None).unwrap();
+        let (config, _) = load_config(None).unwrap();
 
         // Assertions
         dbg!(&config.routes);
