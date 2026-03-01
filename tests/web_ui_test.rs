@@ -20,9 +20,14 @@ async fn test_web_ui_health_check() {
 
     // Start server in background
     let server = tokio::spawn(async move {
-        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default(), handle)
-            .await
-            .unwrap();
+        web_ui::start_web_server(
+            format!("127.0.0.1:{}", port),
+            AppConfig::default(),
+            handle,
+            "config.yml".to_string(),
+        )
+        .await
+        .unwrap();
     });
 
     // Give it a moment to start
@@ -55,9 +60,14 @@ async fn test_web_ui_schema_and_index() {
 
     // Start server in background
     let server = tokio::spawn(async move {
-        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default(), handle)
-            .await
-            .unwrap();
+        web_ui::start_web_server(
+            format!("127.0.0.1:{}", port),
+            AppConfig::default(),
+            handle,
+            "config.yml".to_string(),
+        )
+        .await
+        .unwrap();
     });
 
     // Give it a moment to start
@@ -116,11 +126,17 @@ async fn test_web_ui_post_config() {
     let temp_dir = std::env::temp_dir();
     let config_file = temp_dir.join(format!("config_test_{}.yml", port));
     std::env::set_var("CONFIG_FILE", config_file.to_str().unwrap());
+    let config_file_path = config_file.to_str().unwrap().to_string();
 
     let server = tokio::spawn(async move {
-        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default(), handle)
-            .await
-            .unwrap();
+        web_ui::start_web_server(
+            format!("127.0.0.1:{}", port),
+            AppConfig::default(),
+            handle,
+            config_file_path,
+        )
+        .await
+        .unwrap();
     });
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -169,9 +185,14 @@ async fn test_web_ui_metrics_endpoint() {
 
     // Start server in background
     let server = tokio::spawn(async move {
-        web_ui::start_web_server(format!("127.0.0.1:{}", port), AppConfig::default(), handle)
-            .await
-            .unwrap();
+        web_ui::start_web_server(
+            format!("127.0.0.1:{}", port),
+            AppConfig::default(),
+            handle,
+            "config.yml".to_string(),
+        )
+        .await
+        .unwrap();
     });
 
     // Give it a moment to start
