@@ -2,6 +2,7 @@
 name = "mq-bridge-app"
 version = "0.1.1"
 edition = "2021"
+authors = ["Marco Mengelkochs"]
 repository = "https://github.com/marcomq/mq-bridge-app"
 license = "MIT"
 description = "A message queue bridge application written in Rust, designed to connect different messaging systems like RabbitMQ, Kafka, and NATS."
