@@ -7,6 +7,7 @@ use clap::Parser;
 use mq_bridge_app::config::{load_config, AppConfig};
 use mq_bridge_app::web_ui;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tracing::{info, warn};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
@@ -56,6 +57,14 @@ async fn main() -> anyhow::Result<()> {
     let prometheus_handle = recorder.handle();
     metrics::set_global_recorder(recorder).context("Failed to install Prometheus recorder")?;
 
+    metrics::describe_gauge!(
+        "mq_bridge_app_info",
+        "Information about the mq-bridge-app application"
+    );
+    // Standard Prometheus pattern: use a fixed value of 1.0 for info metrics,
+    // encoding the actual data (version, etc.) in the labels.
+    metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
+    
     if !config.ui_addr.is_empty() {
         info!(
             "Prometheus metrics enabled on Web UI (http://{}/metrics)",
@@ -63,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    print!(
+    println!(
         r#"
       ┌────── mq-bridge-app ──────┐
 ──────┴───────────────────────────┴──────"#
@@ -82,8 +91,7 @@ async fn main() -> anyhow::Result<()> {
             socket_addr.ip().to_string()
         };
         println!(
-            r#"
-      Web UI: http://{}:{}
+            r#"      Web UI: http://{}:{}
 "#,
             host, port
         );
@@ -92,6 +100,9 @@ async fn main() -> anyhow::Result<()> {
             web_ui::start_web_server(addr.into(), config.clone(), prometheus_handle);
         Some(tokio::spawn(web_ui_server))
     } else {
+        println!(
+            r#"        Starting without UI server
+"#);
         None
     };
 
@@ -122,8 +133,23 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Shutdown signal received. Broadcasting to all tasks...");
 
-    for name in mq_bridge::list_routes() {
-        mq_bridge::stop_route(&name).await;
+    let shutdown_task = async {
+        let routes = mq_bridge::list_routes();
+        if !routes.is_empty() {
+            info!("Attempting to gracefully stop {} routes...", routes.len());
+            for name in routes {
+                mq_bridge::stop_route(&name).await;
+            }
+        }
+    };
+
+    if tokio::time::timeout(Duration::from_secs(10), shutdown_task)
+        .await
+        .is_err()
+    {
+        warn!("Graceful shutdown timed out after 10 seconds. Forcing shutdown.");
+    } else {
+        info!("All routes stopped gracefully.");
     }
 
     // Abort the metrics task if it's running. It doesn't support graceful shutdown.
@@ -134,6 +160,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(handle) = web_ui_handle {
         handle.abort();
     }
+
+    info!("Shutdown complete.");
 
     Ok(())
 }

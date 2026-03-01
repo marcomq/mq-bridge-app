@@ -26,6 +26,9 @@ pub struct AppConfig {
     pub metrics_addr: String,
     #[serde(default)]
     pub routes: HashMap<String, Route>,
+    /// If true, secrets will be extracted to .env file upon saving.
+    #[serde(default, skip_serializing)]
+    pub extract_secrets: bool,
 }
 
 pub fn load_config(config_path: Option<String>) -> Result<AppConfig, ConfigError> {
@@ -35,11 +38,22 @@ pub fn load_config(config_path: Option<String>) -> Result<AppConfig, ConfigError
         .or_else(|| std::env::var("CONFIG_FILE").ok())
         .unwrap_or_else(|| "config.yml".to_string());
 
+    let source_file = if Path::new(&config_file).exists() {
+        config_file
+    } else {
+        let fallback = "config/file-to-http.yml";
+        if Path::new(fallback).exists() {
+            fallback.to_string()
+        } else {
+            config_file
+        }
+    };
+
     let settings = Config::builder()
         // Start with default values
         .set_default("log_level", "info")?
         // Load from a configuration file, if it exists.
-        .add_source(config::File::from(Path::new(&config_file)).required(false))
+        .add_source(config::File::from(Path::new(&source_file)).required(false))
         // Load from environment variables, which will override file and defaults.
         .add_source(
             config::Environment::default()
@@ -50,6 +64,44 @@ pub fn load_config(config_path: Option<String>) -> Result<AppConfig, ConfigError
         )
         .build()?;
     settings.try_deserialize()
+}
+
+impl AppConfig {
+    pub fn save(&mut self, path: &str) -> Result<()> {
+        if self.extract_secrets {
+            self.extract_secrets_to_env()?;
+        }
+
+        let mut config_value = serde_json::to_value(&*self)?;
+        strip_nulls(&mut config_value);
+
+        let yaml = serde_yaml_ng::to_string(&config_value)?;
+        std::fs::write(path, yaml)?;
+        Ok(())
+    }
+
+    fn extract_secrets_to_env(&mut self) -> Result<()> {
+        // TODO: Implement the logic to iterate over routes, identify secrets,
+        // move them to .env file, and replace them with env vars in self.
+        Ok(())
+    }
+}
+
+fn strip_nulls(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            map.retain(|_, v| !v.is_null());
+            for v in map.values_mut() {
+                strip_nulls(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                strip_nulls(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[allow(unused_imports)]

@@ -68,6 +68,7 @@ setConfig({
       "key",
       "value",
       "required",
+      "routes",
     ],
   },
 });
@@ -375,6 +376,7 @@ const ADVANCED_KEYS = [
   "routes",
   "input",
   "output",
+  "extract_secrets",
 ];
 
 // Advanced Options Renderer (Collapse)
@@ -443,6 +445,8 @@ const endpointTypes = [
   "mongodb",
   "mqtt",
   "http",
+  "sled",
+  "ref",
   "ibmmq",
   "zeromq",
   "switch",

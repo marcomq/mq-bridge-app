@@ -150,15 +150,11 @@ impl WebUiHandler {
 
             let config_file =
                 std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string());
-            match serde_yaml_ng::to_string(&new_config) {
-                Ok(yaml) => {
-                    if let Err(e) = std::fs::write(&config_file, yaml) {
-                        tracing::error!("Failed to write config to {}: {}", config_file, e);
-                    } else {
-                        tracing::info!("Configuration saved to {}", config_file);
-                    }
-                }
-                Err(e) => tracing::error!("Failed to serialize config: {}", e),
+
+            if let Err(e) = new_config.save(&config_file) {
+                tracing::error!("Failed to save config to {}: {}", config_file, e);
+            } else {
+                tracing::info!("Configuration saved to {}", config_file);
             }
 
             *config_guard = new_config;
