@@ -32,17 +32,24 @@ It serves as the primary reference implementation and testbed for the [mq-bridge
 The easiest way to run the application is using the pre-built Docker image, which includes all necessary dependencies (like the IBM MQ client).
 
 ```bash
+docker run --rm --name mq-bridge -p 9091:9091 ghcr.io/marcomq/
+```
+
+Or if you want to already read+tail from input.log and send the content to http://localhost:3030/
+
+```bash
 touch input.log
-docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)/input.log":/app/input.log ghcr.io/marcomq/mq-bridge-app:latest
+docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)/input.log":/app/input.log ghcr.io/marcomq/mq-bridge-app:latest --config=/app/config/file-to-http.yml
 ```
 
 
 ### Cargo
 
-If you have Rust installed, you can install the application directly from source. Note that you may need to install development libraries for the brokers you intend to use (e.g., `librdkafka-dev` for Kafka, or the IBM MQ client).
+If you have Rust installed, you can install the application directly from source. This may take a some time, as it will compile all supported endpoint client libraries, except ibm-mq. For IBM MQ, you would need to install the client library first and install it with `--features=ibm-mq`.
 
 ```bash
-cargo install --git https://github.com/marcomq/mq-bridge-app
+cargo install mq-bridge-app
+./mq-bridge-app
 ```
 
 ## Build from Source
@@ -63,7 +70,7 @@ cargo install --git https://github.com/marcomq/mq-bridge-app
     cargo run --release -- --config config/file-to-http.yml
     ```
 3.  **Configure the application:**
-    Create a `config.yaml` file in the project root or set environment variables. See the Configuration section for details.
+    Create a `config.yml` file in the project root or set environment variables. See the Configuration section for details. Or you start right away without and use the UI to define the `config.yml`
     
 ### Build Docker Image (doesn't require local Rust)
 
@@ -83,14 +90,14 @@ cargo install --git https://github.com/marcomq/mq-bridge-app
 The application can be configured in three ways, with the following order of precedence (lower numbers are overridden by higher numbers):
 
 1.  **Default Values**: The application has built-in default values for most settings.
-2.  **Configuration File**: A file named `config.[yaml|json|toml]` can be placed in the application's working directory.
+2.  **Configuration File**: A file named `config.[yml|json]` can be placed in the application's working directory.
 3.  **Environment Variables**: Any setting can be overridden using environment variables.
 
 ### Configuration File
 
-You can create a configuration file (e.g., `config.yaml`) to specify your settings. This is the recommended approach for managing complex route configurations.
+You can create a configuration file (e.g., `config.yml`) to specify your settings. This is the recommended approach for managing complex route configurations.
 
-**Example `config.yaml`:**
+**Example `config.yml`:**
 
 ```yaml
 # General settings

@@ -56,6 +56,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 RUN strip mq-bridge-app
 # Create an empty log file for file input examples
 RUN touch input.log
+RUN touch error.log
 
 # --- Final Stage ---
 FROM gcr.io/distroless/cc-debian12 AS final
@@ -63,6 +64,7 @@ FROM gcr.io/distroless/cc-debian12 AS final
 # Copy the built binary from the builder stage
 COPY --from=builder /usr/src/mq-bridge-app/mq-bridge-app /usr/local/bin/mq-bridge-app
 COPY --from=builder /usr/src/mq-bridge-app/input.log /app/input.log
+COPY --from=builder /usr/src/mq-bridge-app/error.log /app/error.log
 # Copy the required shared library from the builder stage.
 # The wildcard '*' handles different architecture paths (e.g., x86_64-linux-gnu, aarch64-linux-gnu).
 COPY --from=builder /usr/lib/*-linux-gnu/libz.so.* /lib/
@@ -76,10 +78,10 @@ ENV LD_LIBRARY_PATH="/opt/mqm/lib64"
 
 # Copy example configurations
 COPY config /app/config
-ENV CONFIG_FILE=/app/config/file-to-http.yml
 
 WORKDIR /app
 
 EXPOSE 9090
+EXPOSE 9091
 
-CMD ["mq-bridge-app"]
+ENTRYPOINT ["/app/mq-bridge-app"]

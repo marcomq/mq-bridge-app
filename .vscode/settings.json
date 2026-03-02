@@ -1,8 +1,7 @@
 {
-    "rust-analyzer.cargo.features": [
-        "integration-test"
-    ],
-    "rust-analyzer.cargo.testArgs": [
-        "--release"
-    ]
+  "rust-analyzer.cargo.features": ["integration-test"],
+  "rust-analyzer.cargo.testArgs": ["--release"],
+  "yaml.schemas": {
+    "./config/schema.json": ["/config.yml", "/config.*.yml", "/config/**/*.yml"]
+  }
 }

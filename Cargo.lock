@@ -2687,9 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "mq-bridge"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb70a8a9bb74603132771384eef604bae38281c62b4a9b82d8543814c1e57775"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "async-channel",
