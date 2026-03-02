@@ -3,25 +3,27 @@
 A message queue bridge application written in Rust, designed to connect different messaging systems like RabbitMQ, Kafka, and NATS.
 
 # Status
-This project is under active development. While many features are functional, APIs may change. Use with caution in production environments. It is used as example and intended to test the bridge library https://github.com/marcomq/mq-bridge
+
+> **Note**: This project is currently in **Active Development**.
+
+It serves as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. While the core bridging functionality is stable and performant, APIs and configuration structures may evolve. It is recommended for testing, development, and production use cases where version pinning is applied.
 
 ## Features
 
-- **Multiple Broker Support**: Connect Kafka, NATS, AMQP (e.g., RabbitMQ), MQTT, and HTTP in any direction.
-- **HTTP Integration**: Expose HTTP endpoints as message sources (e.g., for webhooks) or sinks (to call external APIs), with support for request-response patterns.
-- **File I/O**: Use local files as a source (reading line-by-line) or a sink (appending messages).
-- **Performant**: Built with [Tokio](https://tokio.rs/) for asynchronous, non-blocking I/O.
-- **Deduplication**: Optional message deduplication to prevent processing duplicates (requires a persistent on-disk database).
-- **Observable**: Structured (JSON) logging and Prometheus metrics for observability.
-- **Configurable**: Easily configured via a file or environment variables.
+### Connectivity
+- **Multi-Protocol Support**: Bridge messages between **Kafka**, **IBM MQ**, **NATS**, **AMQP** (RabbitMQ), **MQTT**, **gRPC**, **ZeroMQ**, and **HTTP**.
+- **File System Integration**: Stream data from files (tail/read) or write messages to disk (append).
+- **HTTP Webhooks**: Act as both an HTTP server (receiving webhooks) and client (calling external APIs), with full support for Request-Response patterns.
 
-## Getting Started
+### Core Processing
+- **Middleware Chains**: Define processing pipelines for routes, including **Dead Letter Queues (DLQ)** for robust error handling.
+- **Deduplication**: Optional, persistent message deduplication to prevent processing redundant data.
+- **High Performance**: Written in **Rust** using **Tokio**, ensuring low latency, high concurrency, and a small memory footprint.
 
-### Prerequisites
-
-- Rust toolchain (latest stable version recommended)
-- Access to the message brokers you want to connect (e.g., Kafka, NATS, RabbitMQ)
-
+### Operations & Management
+- **Built-in Web UI**: A dynamic management interface served directly by the application to view configurations and schemas.
+- **Observability**: Production-ready with structured **JSON logging** and a **Prometheus** metrics endpoint.
+- **Flexible Configuration**: Hierarchical configuration via files (YAML, JSON, TOML) and Environment Variables, perfect for Container/Kubernetes environments.
 
 ## Installation
 
@@ -30,8 +32,10 @@ This project is under active development. While many features are functional, AP
 The easiest way to run the application is using the pre-built Docker image, which includes all necessary dependencies (like the IBM MQ client).
 
 ```bash
-docker run -p 9090:9090 -v $(pwd)/config.yaml:/app/config.yml ghcr.io/marcomq/mq-bridge-app:latest
+touch input.log
+docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)/input.log":/app/input.log ghcr.io/marcomq/mq-bridge-app:latest
 ```
+
 
 ### Cargo
 
@@ -43,6 +47,11 @@ cargo install --git https://github.com/marcomq/mq-bridge-app
 
 ## Build from Source
 
+### Prerequisites
+
+- Rust toolchain (latest stable version recommended)
+- Access to the message brokers you want to connect (e.g., Kafka, NATS, RabbitMQ)
+
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/marcomq/mq-bridge-app
@@ -51,7 +60,7 @@ cargo install --git https://github.com/marcomq/mq-bridge-app
 
 2.  **Build and run:**
     ```bash
-    cargo run --release -- --config config/kafka-to-nats.yml
+    cargo run --release -- --config config/file-to-http.yml
     ```
 3.  **Configure the application:**
     Create a `config.yaml` file in the project root or set environment variables. See the Configuration section for details.
