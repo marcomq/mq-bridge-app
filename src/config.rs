@@ -4,7 +4,7 @@ use anyhow::Result;
 use config::{Config, ConfigError};
 use schemars::JsonSchema;
 
-use mq_bridge::Route;
+use mq_bridge::{Route, models::SecretExtractor};
 
 fn default_log_level() -> String {
     "info".to_string()
@@ -27,13 +27,23 @@ pub struct AppConfig {
     #[serde(default)]
     pub routes: HashMap<String, Route>,
     /// If true, secrets will be extracted to .env file upon saving.
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub extract_secrets: bool,
 }
 
 pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), ConfigError> {
     // Attempt to load .env file
-    dotenvy::dotenv().ok();
+    match dotenvy::dotenv() {
+        Ok(path) => println!("INFO: Loaded .env file from {:?}", path),
+        Err(e) => println!("INFO: No .env file loaded: {}", e),
+    }
+
+    // Debug: Print environment variables to verify they are loaded
+    for (key, value) in std::env::vars() {
+        if key.starts_with("MQB") {
+            println!("DEBUG ENV: {}={}", key, value);
+        }
+    }
 
     // Determine configuration file path with precedence:
     // 1. --config argument
@@ -68,12 +78,24 @@ pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), C
                 .try_parsing(true),
         )
         .build()?;
+
+    // Debug: Print the constructed configuration to see how env vars were mapped
+    if let Ok(debug_view) = settings.clone().try_deserialize::<serde_json::Value>() {
+        println!("DEBUG CONFIG STRUCTURE: {:#?}", debug_view);
+    }
+    
     let config: AppConfig = settings.try_deserialize()?;
     Ok((config, source_file))
 }
 
 impl AppConfig {
     pub fn save(&mut self, path: &str) -> Result<()> {
+        // Sanitize route names to ensure compatibility with environment variables
+        let sanitized_routes: HashMap<String, Route> = self.routes.drain().map(|(k, v)| {
+            (k.trim().replace(' ', "_").to_lowercase(), v)
+        }).collect();
+        self.routes = sanitized_routes;
+
         if self.extract_secrets {
             self.extract_secrets_to_env()?;
         }
@@ -87,8 +109,56 @@ impl AppConfig {
     }
 
     fn extract_secrets_to_env(&mut self) -> Result<()> {
-        // TODO: Implement the logic to iterate over routes, identify secrets,
-        // move them to .env file, and replace them with env vars in self.
+        let mut all_secrets = HashMap::new();
+        for (name, route) in &mut self.routes {
+            let name = name.to_uppercase(); // Names are already sanitized in save()
+            let prefix = format!("MQB__ROUTES__{}__", name);
+            route.extract_secrets(&prefix, &mut all_secrets);
+        }
+
+        if !all_secrets.is_empty() {
+            let env_path = Path::new(".env");
+            let existing_content = if env_path.exists() {
+                std::fs::read_to_string(env_path)?
+            } else {
+                String::new()
+            };
+
+            let mut new_lines = Vec::new();
+            let mut processed_keys = std::collections::HashSet::new();
+
+            for line in existing_content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    new_lines.push(line.to_string());
+                    continue;
+                }
+
+                if let Some((key, _)) = line.split_once('=') {
+                    let key = key.trim();
+                    if let Some(new_value) = all_secrets.get(key) {
+                        new_lines.push(format!("{}={}", key, new_value));
+                        processed_keys.insert(key.to_string());
+                    } else {
+                        new_lines.push(line.to_string());
+                    }
+                } else {
+                    new_lines.push(line.to_string());
+                }
+            }
+
+            for (key, value) in all_secrets {
+                if !processed_keys.contains(&key) {
+                    new_lines.push(format!("{}={}", key, value));
+                }
+            }
+
+            let mut final_content = new_lines.join("\n");
+            if !final_content.ends_with('\n') {
+                final_content.push('\n');
+            }
+            std::fs::write(env_path, final_content)?;
+        }
         Ok(())
     }
 }
