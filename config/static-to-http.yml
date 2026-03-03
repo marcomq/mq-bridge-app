@@ -19,7 +19,7 @@ routes:
               file:
                 path: error.out
       http:
-        url: "0.0.0.0:8080" # Listen for webhooks on port 8080
+        url: "host.docker.internal:8080" # Listen for webhooks on port 8080
     concurrency: 32
     batch_size: 128
     commit_concurrency_limit: 4096

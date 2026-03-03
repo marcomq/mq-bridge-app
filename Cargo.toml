@@ -32,6 +32,7 @@ mq-bridge = { version="0.2.6", features = ["schema"] }
 config = { version = "0.15", features = ["yaml"] }
 dotenvy = "0.15"
 serde = { version = "1.0", features = ["derive"] }
+envsubst = "0.2"
 serde_yaml_ng = "0.10.0"
 
 # Async runtime

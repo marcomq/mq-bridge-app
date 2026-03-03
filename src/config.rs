@@ -1,7 +1,8 @@
 use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
-use config::{Config, ConfigError};
+use config::Config;
+use envsubst::substitute;
 use schemars::JsonSchema;
 
 use mq_bridge::{models::SecretExtractor, Route};
@@ -31,8 +32,12 @@ pub struct AppConfig {
     pub extract_secrets: bool,
 }
 
-pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), ConfigError> {
-    // Attempt to load .env file
+fn expand_variables(content: &str) -> Result<String, anyhow::Error> {
+    let vars: HashMap<String, String> = std::env::vars().collect();
+    Ok(substitute(content, &vars)?)
+}
+
+pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), anyhow::Error> {
     match dotenvy::dotenv() {
         Ok(path) => println!("INFO: Loaded .env file from {:?}", path),
         Err(e) => println!("INFO: No .env file loaded: {}", e),
@@ -48,7 +53,7 @@ pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), C
     // Determine configuration file path with precedence:
     // 1. --config argument
     // 2. `config.yml` in the current directory if it exists
-    // 3. `CONFIG_FILE` environment variable (used for Docker default)
+    // 3. `CONFIG_$ILE` environment variable (used for Docker default)
     // 4. Default to `config.yml`
     let source_file = if let Some(path) = config_path.clone() {
         path
@@ -64,11 +69,25 @@ pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), C
         eprintln!("INFO: Using configuration from '{}'", source_file);
     }
 
-    let settings = Config::builder()
+    let mut builder = Config::builder()
         // Start with default values
-        .set_default("log_level", "info")?
+        .set_default("log_level", "info")?;
+
+    if Path::new(&source_file).exists() {
+        let content = std::fs::read_to_string(&source_file)?;
+        let expanded = expand_variables(&content)?;
+        let format = if source_file.ends_with(".json") {
+            config::FileFormat::Json
+        } else {
+            config::FileFormat::Yaml
+        };
+        builder = builder.add_source(config::File::from_str(&expanded, format));
+    } else {
         // Load from a configuration file, if it exists.
-        .add_source(config::File::from(Path::new(&source_file)).required(false))
+        builder = builder.add_source(config::File::from(Path::new(&source_file)).required(false));
+    }
+
+    let settings = builder
         // Load from environment variables, which will override file and defaults.
         .add_source(
             config::Environment::default()

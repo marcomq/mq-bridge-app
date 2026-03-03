@@ -22,8 +22,8 @@ routes:
             endpoint:
               file:
                 path: error.log
-      http:
-        url: 127.0.0.1:3030
+      http: # Use environment variable substitution with a default value
+        url: ${TARGET_HOST:-host.docker.internal}:3030
         tls:
           required: false
     concurrency: 1

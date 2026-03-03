@@ -55,9 +55,9 @@ func main() {
 	// Wrap the final handler with the middleware.
 	finalHandler := metricsMiddleware(helloHandler)
 
-	fmt.Println("fasthttp server starting on http://localhost:8080")
+	fmt.Println("fasthttp server starting on http://0.0.0.0:3030")
 	// Fatal if the server cannot be started.
-	if err := fasthttp.ListenAndServe(":8080", finalHandler); err != nil {
+	if err := fasthttp.ListenAndServe(":3030", finalHandler); err != nil {
 		log.Fatalf("Error in ListenAndServe: %s", err)
 	}
 }
