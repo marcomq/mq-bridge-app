@@ -20,8 +20,8 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 
 # Set environment variables for the Rust crate to find the MQ libraries
 ENV MQ_HOME="/opt/mqm"
-ENV LIBRARY_PATH="/opt/mqm/lib64:${LIBRARY_PATH:-}"
-ENV LD_LIBRARY_PATH="/opt/mqm/lib64:${LD_LIBRARY_PATH:-}"
+ENV LIBRARY_PATH="/opt/mqm/lib64:\${LIBRARY_PATH:-}"
+ENV LD_LIBRARY_PATH="/opt/mqm/lib64:\${LD_LIBRARY_PATH:-}"
 ENV RUSTFLAGS="-L native=/opt/mqm/lib64"
 
 # Copy only the necessary files to cache dependencies
@@ -32,25 +32,21 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 
 # Build dependencies (this layer will be cached if Cargo.toml/lock don't change)
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    if [ "$TARGETARCH" = "amd64" ]; then \
-        CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --features=ibm-mq --jobs 2; \
-    else \
-        CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --jobs 2; \
-    fi
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=target,sharing=locked \
+    CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
+    CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto $CARGO_FEATURES --jobs 2
 
 # Copy the actual source code
 COPY src ./src
 COPY static ./static
 
 # Build the application in release mode
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=target,sharing=locked \
     touch src/main.rs && \
-    if [ "$TARGETARCH" = "amd64" ]; then \
-        CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --features=ibm-mq --jobs 2; \
-    else \
-        CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto --jobs 2; \
-    fi && \
+    CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
+    CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --profile release-with-lto $CARGO_FEATURES --jobs 2 && \
     cp target/release-with-lto/mq-bridge-app mq-bridge-app
 # Strip the binary to reduce its size
 RUN strip mq-bridge-app
@@ -84,4 +80,4 @@ WORKDIR /app
 EXPOSE 9090
 EXPOSE 9091
 
-ENTRYPOINT ["/app/mq-bridge-app"]
+ENTRYPOINT ["/usr/local/bin/mq-bridge-app"]
