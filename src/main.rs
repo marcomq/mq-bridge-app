@@ -32,7 +32,8 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(schema_path) = args.schema {
         let schema = schemars::schema_for!(AppConfig);
-        let schema_json = serde_json::to_string_pretty(&schema).context("Failed to serialize schema")?;
+        let schema_json =
+            serde_json::to_string_pretty(&schema).context("Failed to serialize schema")?;
 
         if schema_path == "-" {
             println!("{}", schema_json);
@@ -40,7 +41,8 @@ async fn main() -> anyhow::Result<()> {
             let path = std::path::Path::new(&schema_path);
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() && !parent.exists() {
-                    std::fs::create_dir_all(parent).context("Failed to create parent directory for schema")?;
+                    std::fs::create_dir_all(parent)
+                        .context("Failed to create parent directory for schema")?;
                 }
             }
             std::fs::write(path, schema_json).context("Failed to write schema file")?;

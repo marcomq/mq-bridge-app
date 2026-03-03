@@ -4,7 +4,7 @@ use anyhow::Result;
 use config::{Config, ConfigError};
 use schemars::JsonSchema;
 
-use mq_bridge::{Route, models::SecretExtractor};
+use mq_bridge::{models::SecretExtractor, Route};
 
 fn default_log_level() -> String {
     "info".to_string()
@@ -79,11 +79,8 @@ pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), C
         )
         .build()?;
 
-    // Debug: Print the constructed configuration to see how env vars were mapped
-    if let Ok(debug_view) = settings.clone().try_deserialize::<serde_json::Value>() {
-        println!("DEBUG CONFIG STRUCTURE: {:#?}", debug_view);
-    }
-    
+    settings.clone().try_deserialize::<serde_json::Value>()?;
+
     let config: AppConfig = settings.try_deserialize()?;
     Ok((config, source_file))
 }
@@ -91,9 +88,11 @@ pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), C
 impl AppConfig {
     pub fn save(&mut self, path: &str) -> Result<()> {
         // Sanitize route names to ensure compatibility with environment variables
-        let sanitized_routes: HashMap<String, Route> = self.routes.drain().map(|(k, v)| {
-            (k.trim().replace(' ', "_").to_lowercase(), v)
-        }).collect();
+        let sanitized_routes: HashMap<String, Route> = self
+            .routes
+            .drain()
+            .map(|(k, v)| (k.trim().replace(' ', "_").to_lowercase(), v))
+            .collect();
         self.routes = sanitized_routes;
 
         if self.extract_secrets {
