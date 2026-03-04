@@ -50,12 +50,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cp target/release-with-lto/mq-bridge-app mq-bridge-app
 # Strip the binary to reduce its size
 RUN strip mq-bridge-app
+
+# Identify and copy only the necessary MQ libraries for the final stage
+RUN mkdir /mq-libs && \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        ldd mq-bridge-app | grep '/opt/mqm/lib64/' | awk '{print $3}' | xargs -I {} cp -L {} /mq-libs/; \
+    fi
 # Create an empty log file for file input examples
 RUN touch input.log
 RUN touch error.log
 
 # --- Final Stage ---
-FROM gcr.io/distroless/cc-debian12 AS final
+FROM gcr.io/distroless/cc-debian12:nonroot AS final
 
 # Copy the built binary from the builder stage
 COPY --from=builder /usr/src/mq-bridge-app/mq-bridge-app /usr/local/bin/mq-bridge-app
@@ -65,8 +71,8 @@ COPY --from=builder /usr/src/mq-bridge-app/error.log /app/error.log
 # The wildcard '*' handles different architecture paths (e.g., x86_64-linux-gnu, aarch64-linux-gnu).
 COPY --from=builder /usr/lib/*-linux-gnu/libz.so.* /lib/
 
-# Copy IBM MQ libraries and licenses
-COPY --from=builder /opt/mqm/lib64 /opt/mqm/lib64
+# Copy only the required IBM MQ libraries and all licenses
+COPY --from=builder /mq-libs /opt/mqm/lib64
 COPY --from=builder /opt/mqm/licenses /opt/mqm/licenses
 
 # Configure runtime library path
