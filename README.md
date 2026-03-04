@@ -32,14 +32,14 @@ It serves as the primary reference implementation and testbed for the [mq-bridge
 The easiest way to run the application is using the pre-built Docker image, which includes all necessary dependencies (like the IBM MQ client).
 
 ```bash
-docker run --rm --name mq-bridge -p 9091:9091 ghcr.io/marcomq/
+docker run --rm --name mq-bridge -p 9091:9091 ghcr.io/marcomq/mq-bridge-app:latest
 ```
 
 Or if you want to already read+tail from input.log and send the content to http://localhost:3030/
 
 ```bash
 touch input.log
-docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)/input.log":/app/input.log ghcr.io/marcomq/mq-bridge-app:latest --config=/app/config/file-to-http.yml
+docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)/input.log":/app/input.log ghcr.io/marcomq/mq-bridge-app:latest --init-config=/config/file-to-http.yml
 ```
 
 
@@ -194,9 +194,9 @@ You can use them with Docker by mounting them from your host or by referencing t
 
 ```bash 
 # Using an example from the host 
-docker run -p 9090:9090 -v $(pwd)/configClo/kafka-to-nats.yml:/app/config.yml ghcr.io/marcomq/mq-bridge-app:latest 
+docker run -p 9090:9090 -v $(pwd)/config/kafka-to-nats.yml:/app/config.yml ghcr.io/marcomq/mq-bridge-app:latest 
 # Using an example from within the image 
-docker run -p 9090:9090 ghcr.io/marcomq/mq-bridge-app:latest --config /app/config/kafka-to-nats.yml
+docker run -p 9090:9090 ghcr.io/marcomq/mq-bridge-app:latest --config /config/kafka-to-nats.yml
 ```
 Available Examples: 
 * http-to-kafka.yml: Exposes an HTTP endpoint and forwards incoming requests to a Kafka topic. 

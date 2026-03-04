@@ -17,9 +17,13 @@ use anyhow::Context;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Path to configuration file
+    /// Path to configuration file for loading and saving.
     #[arg(short, long)]
     config: Option<String>,
+
+    /// Path to a template configuration file to initialize from on first run if the main config file doesn't exist.
+    #[arg(long)]
+    init_config: Option<String>,
 
     /// Generate JSON schema to the specified path
     #[arg(long)]
@@ -51,18 +55,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (mut config, config_file_path): (AppConfig, String) =
-        load_config(args.config).context("Failed to load configuration")?;
+        load_config(args.config, args.init_config).context("Failed to load configuration")?;
     init_logging(&config);
 
     // --- Logic for default addresses ---
-    // If there is no config (routes are empty), enable both on port 9090.
+    // If there is no config (routes are empty), enable ui on 9091 and metrics on 9090.
     // If there is a config, use the addr of the config (empty means deactivated).
     if config.routes.is_empty() {
-        if config.ui_addr.is_empty() {
-            config.ui_addr = "0.0.0.0:9090".to_string();
-        }
         if config.metrics_addr.is_empty() {
             config.metrics_addr = "0.0.0.0:9090".to_string();
+        }
+        if config.ui_addr.is_empty() {
+            config.ui_addr = "0.0.0.0:9091".to_string();
         }
     }
 

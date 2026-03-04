@@ -73,7 +73,7 @@ COPY --from=builder /opt/mqm/licenses /opt/mqm/licenses
 ENV LD_LIBRARY_PATH="/opt/mqm/lib64"
 
 # Copy example configurations
-COPY config /app/config
+COPY config /config
 
 WORKDIR /app
 

@@ -2,7 +2,6 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 use config::Config;
-use envsubst::substitute;
 use schemars::JsonSchema;
 
 use mq_bridge::{models::SecretExtractor, Route};
@@ -33,11 +32,13 @@ pub struct AppConfig {
 }
 
 fn expand_variables(content: &str) -> Result<String, anyhow::Error> {
-    let vars: HashMap<String, String> = std::env::vars().collect();
-    Ok(substitute(content, &vars)?)
+    Ok(shellexpand::env(content)?.to_string())
 }
 
-pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), anyhow::Error> {
+pub fn load_config(
+    config_path: Option<String>,
+    init_config_path: Option<String>,
+) -> Result<(AppConfig, String), anyhow::Error> {
     match dotenvy::dotenv() {
         Ok(path) => println!("INFO: Loaded .env file from {:?}", path),
         Err(e) => println!("INFO: No .env file loaded: {}", e),
@@ -50,41 +51,52 @@ pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), a
         }
     }
 
-    // Determine configuration file path with precedence:
+    // Determine the primary configuration file path for saving and loading.
+    // Precedence:
     // 1. --config argument
-    // 2. `config.yml` in the current directory if it exists
-    // 3. `CONFIG_$ILE` environment variable (used for Docker default)
-    // 4. Default to `config.yml`
-    let source_file = if let Some(path) = config_path.clone() {
-        path
-    } else if Path::new("config.yml").exists() {
-        "config.yml".to_string()
-    } else {
+    // 2. `CONFIG_FILE` environment variable
+    // 3. Default to `config.yml`
+    let persistent_file = config_path.unwrap_or_else(|| {
         std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string())
-    };
-
-    if !Path::new(&source_file).exists() {
-        eprintln!("INFO: Configuration file '{}' not found. Starting with default settings and environment variables. No routes will be active unless defined in environment variables.", source_file);
-    } else if config_path.is_none() && source_file != "config.yml" {
-        eprintln!("INFO: Using configuration from '{}'", source_file);
-    }
+    });
 
     let mut builder = Config::builder()
         // Start with default values
         .set_default("log_level", "info")?;
 
-    if Path::new(&source_file).exists() {
-        let content = std::fs::read_to_string(&source_file)?;
+    // Determine which file to actually load from.
+    let mut load_file: Option<String> = Some(persistent_file.clone());
+
+    if !Path::new(&persistent_file).exists() {
+        if let Some(template_path) = init_config_path {
+            if Path::new(&template_path).exists() {
+                eprintln!(
+                    "INFO: Configuration file '{}' not found. Initializing from template '{}'.",
+                    persistent_file, template_path
+                );
+                load_file = Some(template_path);
+            } else {
+                eprintln!(
+                    "WARN: Template configuration file '{}' not found. Starting with default settings.",
+                    template_path
+                );
+                load_file = None;
+            }
+        } else {
+            eprintln!("INFO: Configuration file '{}' not found. Starting with default settings. No routes will be active unless defined by environment variables.", persistent_file);
+            load_file = None;
+        }
+    }
+
+    if let Some(file_to_load) = load_file {
+        let content = std::fs::read_to_string(&file_to_load)?;
         let expanded = expand_variables(&content)?;
-        let format = if source_file.ends_with(".json") {
+        let format = if file_to_load.ends_with(".json") {
             config::FileFormat::Json
         } else {
             config::FileFormat::Yaml
         };
         builder = builder.add_source(config::File::from_str(&expanded, format));
-    } else {
-        // Load from a configuration file, if it exists.
-        builder = builder.add_source(config::File::from(Path::new(&source_file)).required(false));
     }
 
     let settings = builder
@@ -101,7 +113,7 @@ pub fn load_config(config_path: Option<String>) -> Result<(AppConfig, String), a
     settings.clone().try_deserialize::<serde_json::Value>()?;
 
     let config: AppConfig = settings.try_deserialize()?;
-    Ok((config, source_file))
+    Ok((config, persistent_file))
 }
 
 impl AppConfig {
