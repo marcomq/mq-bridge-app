@@ -280,7 +280,7 @@ routes:
 
         std::env::set_var("CONFIG_FILE", "_"); // ignore existing config.yaml
                                                // Load config
-        let (config, _) = load_config(None).unwrap();
+        let (config, _) = load_config(None, None).unwrap();
 
         // Assertions
         dbg!(&config.routes);
