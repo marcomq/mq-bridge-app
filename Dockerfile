@@ -54,6 +54,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         RUST_TARGET="x86_64-unknown-linux-gnu"; \
     else \
         RUST_TARGET="aarch64-unknown-linux-gnu"; \
+        # Force the cross-compiler for C dependencies with non-standard build scripts (like rdkafka-sys).
+        # This ensures that even if a build script ignores Cargo's environment, it still picks up the correct compiler.
+        export CC=aarch64-linux-gnu-gcc; \
+        export CXX=aarch64-linux-gnu-g++; \
+        export AR=aarch64-linux-gnu-ar; \
     fi && \
     CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
     CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 2 && \
