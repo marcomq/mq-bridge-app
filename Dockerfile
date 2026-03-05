@@ -50,7 +50,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 
 # Build dependencies (this layer will be cached if Cargo.toml/lock don't change)
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=target,sharing=locked \
+    --mount=type=cache,target=/usr/src/mq-bridge-app/target,id=target-${TARGETARCH},sharing=locked \
     if [ "$TARGETARCH" = "amd64" ]; then \
         RUST_TARGET="x86_64-unknown-linux-gnu"; \
     else \
@@ -65,7 +65,7 @@ COPY static ./static
 
 # Build the application in release mode
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=target,sharing=locked \
+    --mount=type=cache,target=/usr/src/mq-bridge-app/target,id=target-${TARGETARCH},sharing=locked \
     if [ "$TARGETARCH" = "amd64" ]; then \
         RUST_TARGET="x86_64-unknown-linux-gnu"; \
     else \
