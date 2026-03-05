@@ -5,73 +5,69 @@ ARG BUILDPLATFORM
 
 WORKDIR /usr/src/mq-bridge-app
 
-# Install build dependencies.
-# For ARM64 cross-compilation, we need:
-#   1. The aarch64 GCC toolchain (compiler + linker)
-#   2. ARM64 sysroot libraries (:arm64 packages) for rdkafka's C deps
-#   3. cmake, which rdkafka-sys uses to build librdkafka from source
-#   4. A cmake toolchain file so cmake targets aarch64, not the host
 RUN dpkg --add-architecture arm64 && \
     apt-get update && \
     apt-get install -y \
         pkg-config \
         curl \
         cmake \
-        # ARM64 cross-compiler toolchain (used even on amd64 builds
-        # for the cross-compile path, harmless to install always)
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
-        # Native (host) build tools for amd64 path
         gcc \
-        # ARM64 sysroot libraries — rdkafka's cmake build links these
         libssl-dev:arm64 \
         zlib1g-dev:arm64 \
         libsasl2-dev:arm64 \
-        # Native equivalents for amd64 path
         libssl-dev \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Add ARM64 Rust target
 RUN rustup target add aarch64-unknown-linux-gnu
 
-# Write a cmake toolchain file for aarch64.
-# rdkafka-sys passes CMAKE_TOOLCHAIN_FILE to cmake when building librdkafka,
-# so cmake will use the cross-compiler instead of the host gcc.
+# Write the cmake toolchain file for aarch64 cross-compilation.
 RUN cat > /aarch64-toolchain.cmake <<'EOF'
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
-
 set(CMAKE_C_COMPILER   aarch64-linux-gnu-gcc)
 set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
 set(CMAKE_AR           aarch64-linux-gnu-ar)
-
-# Tell cmake to look for libraries/headers in the ARM64 sysroot
 set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
 
-# --- Cross-compilation environment variables ---
-# Cargo linker for the aarch64 target
-ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+# Write a cargo config that passes the cmake toolchain file to rdkafka-sys.
+#
+# THE KEY FIX: rdkafka-sys's build script reads the cmake toolchain path from
+# the target-prefixed env var:
+#   AARCH64_UNKNOWN_LINUX_GNU_CMAKE_TOOLCHAIN_FILE
+# NOT from CMAKE_TOOLCHAIN_FILE directly. Setting it via cargo config [env]
+# ensures it survives into cache-mounted RUN steps where Docker env vars
+# can sometimes be dropped.
+RUN mkdir -p /usr/local/cargo && cat > /usr/local/cargo/config.toml <<'EOF'
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+ar     = "aarch64-linux-gnu-ar"
+
+[env]
+# What rdkafka-sys actually reads to find the cmake toolchain file
+AARCH64_UNKNOWN_LINUX_GNU_CMAKE_TOOLCHAIN_FILE = "/aarch64-toolchain.cmake"
+
+# pkg-config sysroot for ARM64 — prevents rdkafka-sys from finding x86_64 headers
+PKG_CONFIG_SYSROOT_DIR = "/usr/aarch64-linux-gnu"
+PKG_CONFIG_PATH        = "/usr/lib/aarch64-linux-gnu/pkgconfig"
+PKG_CONFIG_ALLOW_CROSS = "1"
+
+# Explicit OpenSSL location so openssl-sys doesn't fall back to the host libs
+OPENSSL_INCLUDE_DIR = "/usr/include/aarch64-linux-gnu"
+OPENSSL_LIB_DIR     = "/usr/lib/aarch64-linux-gnu"
+EOF
+
+# CC_*/CXX_* are read by the `cc` crate directly, not by cargo config
+ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
     AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
-    # Tell pkg-config it's allowed to cross-compile
-    PKG_CONFIG_ALLOW_CROSS=1 \
-    # Point pkg-config to the ARM64 sysroot packages
-    PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig \
-    PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
-    # Pass the cmake toolchain file to rdkafka-sys's build script.
-    # This is the key fix: without this, cmake builds librdkafka for x86_64.
-    CMAKE_TOOLCHAIN_FILE=/aarch64-toolchain.cmake \
-    # Also set OPENSSL vars explicitly so rdkafka-sys and openssl-sys
-    # find the ARM64 headers/libs rather than the host ones.
-    OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu \
-    OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu \
-    OPENSSL_DIR=/usr/aarch64-linux-gnu
+    PKG_CONFIG_ALLOW_CROSS=1
 
 # IBM MQ — only available for AMD64
 WORKDIR /opt/mqm
@@ -84,10 +80,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
         && mkdir -p /opt/mqm/lib64 /opt/mqm/licenses; \
     fi
 
-# Set MQ env vars (lib64 will be empty on arm64, which is fine)
 ENV MQ_HOME="/opt/mqm"
-ENV LIBRARY_PATH="/opt/mqm/lib64:${LIBRARY_PATH:-}"
-ENV LD_LIBRARY_PATH="/opt/mqm/lib64:${LD_LIBRARY_PATH:-}"
 ENV RUSTFLAGS="-L native=/opt/mqm/lib64"
 
 # Copy project files
