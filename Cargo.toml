@@ -23,6 +23,7 @@ panic = "abort"
 [profile.release-with-lto]
 inherits = "release"
 lto = true
+strip = true        
 
 
 [dependencies]

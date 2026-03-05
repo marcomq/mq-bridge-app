@@ -41,7 +41,7 @@ pub fn load_config(
 ) -> Result<(AppConfig, String), anyhow::Error> {
     match dotenvy::dotenv() {
         Ok(path) => println!("INFO: Loaded .env file from {:?}", path),
-        Err(e) => println!("INFO: No .env file loaded: {}", e),
+        Err(e) => println!("DEBUG: No .env file loaded: {}", e),
     }
 
     // Debug: Print environment variables to verify they are loaded
@@ -86,6 +86,11 @@ pub fn load_config(
             eprintln!("INFO: Configuration file '{}' not found. Starting with default settings. No routes will be active unless defined by environment variables.", persistent_file);
             load_file = None;
         }
+    } else if let Some(template_path) = init_config_path {
+        eprintln!(
+            "INFO: Configuration file '{}' found. Ignoring --init-config '{}'.",
+            persistent_file, template_path
+        );
     }
 
     if let Some(file_to_load) = load_file {
