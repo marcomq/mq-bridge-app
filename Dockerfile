@@ -41,25 +41,9 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     PKG_CONFIG_PATH_aarch64-unknown-linux-gnu=/usr/lib/aarch64-linux-gnu/pkgconfig
 
 
-# Copy only the necessary files to cache dependencies
+# Copy project files
 WORKDIR /usr/src/mq-bridge-app
 COPY Cargo.toml Cargo.lock ./
-
-# Create a dummy main.rs to build dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-
-# Build dependencies (this layer will be cached if Cargo.toml/lock don't change)
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/src/mq-bridge-app/target,id=target-${TARGETARCH},sharing=locked \
-    if [ "$TARGETARCH" = "amd64" ]; then \
-        RUST_TARGET="x86_64-unknown-linux-gnu"; \
-    else \
-        RUST_TARGET="aarch64-unknown-linux-gnu"; \
-    fi && \
-    CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
-    CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 2
-
-# Copy the actual source code
 COPY src ./src
 COPY static ./static
 
@@ -71,7 +55,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     else \
         RUST_TARGET="aarch64-unknown-linux-gnu"; \
     fi && \
-    touch src/main.rs && \
     CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
     CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 2 && \
     cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app
