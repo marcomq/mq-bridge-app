@@ -50,7 +50,14 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 # Build dependencies (this layer will be cached if Cargo.toml/lock don't change)
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=target,sharing=locked \
-    if [ "$TARGETARCH" = "amd64" ]; then RUST_TARGET="x86_64-unknown-linux-gnu"; else RUST_TARGET="aarch64-unknown-linux-gnu"; fi && \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        RUST_TARGET="x86_64-unknown-linux-gnu"; \
+    else \
+        RUST_TARGET="aarch64-unknown-linux-gnu"; \
+        export CC=aarch64-linux-gnu-gcc; \
+        export CXX=aarch64-linux-gnu-g++; \
+        export AR=aarch64-linux-gnu-ar; \
+    fi && \
     CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
     CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 2
 
@@ -61,7 +68,14 @@ COPY static ./static
 # Build the application in release mode
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=target,sharing=locked \
-    if [ "$TARGETARCH" = "amd64" ]; then RUST_TARGET="x86_64-unknown-linux-gnu"; else RUST_TARGET="aarch64-unknown-linux-gnu"; fi && \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        RUST_TARGET="x86_64-unknown-linux-gnu"; \
+    else \
+        RUST_TARGET="aarch64-unknown-linux-gnu"; \
+        export CC=aarch64-linux-gnu-gcc; \
+        export CXX=aarch64-linux-gnu-g++; \
+        export AR=aarch64-linux-gnu-ar; \
+    fi && \
     touch src/main.rs && \
     CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
     CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 2 && \
