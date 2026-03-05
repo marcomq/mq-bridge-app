@@ -35,9 +35,10 @@ ENV LD_LIBRARY_PATH="/opt/mqm/lib64:\${LD_LIBRARY_PATH:-}"
 ENV RUSTFLAGS="-L native=/opt/mqm/lib64"
 # Cross-compilation environment variables
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
-    CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
-    PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig
+    CC_aarch64-unknown-linux-gnu=aarch64-linux-gnu-gcc \
+    CXX_aarch64-unknown-linux-gnu=aarch64-linux-gnu-g++ \
+    AR_aarch64-unknown-linux-gnu=aarch64-linux-gnu-ar \
+    PKG_CONFIG_PATH_aarch64-unknown-linux-gnu=/usr/lib/aarch64-linux-gnu/pkgconfig
 
 
 # Copy only the necessary files to cache dependencies
@@ -54,9 +55,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         RUST_TARGET="x86_64-unknown-linux-gnu"; \
     else \
         RUST_TARGET="aarch64-unknown-linux-gnu"; \
-        export CC=aarch64-linux-gnu-gcc; \
-        export CXX=aarch64-linux-gnu-g++; \
-        export AR=aarch64-linux-gnu-ar; \
     fi && \
     CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
     CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 2
@@ -72,9 +70,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         RUST_TARGET="x86_64-unknown-linux-gnu"; \
     else \
         RUST_TARGET="aarch64-unknown-linux-gnu"; \
-        export CC=aarch64-linux-gnu-gcc; \
-        export CXX=aarch64-linux-gnu-g++; \
-        export AR=aarch64-linux-gnu-ar; \
     fi && \
     touch src/main.rs && \
     CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
