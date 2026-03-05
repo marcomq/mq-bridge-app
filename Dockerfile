@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y pkg-config curl && \
     if [ "$TARGETARCH" = "arm64" ] && [ "$BUILDARCH" != "arm64" ]; then \
         dpkg --add-architecture arm64 && \
         apt-get update && \
-        apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64 zlib1g-dev:arm64 && \
+        apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64 zlib1g-dev:arm64 libsasl2-dev:arm64 cmake && \
         rustup target add aarch64-unknown-linux-gnu; \
     else \
         apt-get install -y gcc libssl-dev zlib1g-dev; \
@@ -38,6 +38,7 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64-unknown-linux-gnu=aarch64-linux-gnu-gcc \
     CXX_aarch64-unknown-linux-gnu=aarch64-linux-gnu-g++ \
     AR_aarch64-unknown-linux-gnu=aarch64-linux-gnu-ar \
+    PKG_CONFIG_ALLOW_CROSS=1 \
     PKG_CONFIG_PATH_aarch64-unknown-linux-gnu=/usr/lib/aarch64-linux-gnu/pkgconfig
 
 
@@ -54,11 +55,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         RUST_TARGET="x86_64-unknown-linux-gnu"; \
     else \
         RUST_TARGET="aarch64-unknown-linux-gnu"; \
-        # Force the cross-compiler for C dependencies with non-standard build scripts (like rdkafka-sys).
-        # This ensures that even if a build script ignores Cargo's environment, it still picks up the correct compiler.
-        export CC=aarch64-linux-gnu-gcc; \
-        export CXX=aarch64-linux-gnu-g++; \
-        export AR=aarch64-linux-gnu-ar; \
+        # Force rdkafka to use the cmake build system, which handles cross-compilation 
+        # much better than the default mklove script.
+        cargo add rdkafka --features cmake-build; \
     fi && \
     CARGO_FEATURES=$(if [ "$TARGETARCH" = "amd64" ]; then echo "--features=ibm-mq"; fi) && \
     CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin cargo build --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 2 && \
