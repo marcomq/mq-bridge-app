@@ -1,5 +1,10 @@
 # mq-bridge-app
 
+![Linux](https://img.shields.io/badge/Linux-supported-green?logo=linux)
+![Windows](https://img.shields.io/badge/Windows-supported-green?logo=windows)
+![macOS](https://img.shields.io/badge/macOS-supported-green?logo=apple)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 ```text
       ┌────── mq-bridge-app ──────┐
 ──────┴───────────────────────────┴──────
