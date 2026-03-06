@@ -56,8 +56,11 @@ RUN mkdir -p /usr/local/cargo && cat > /usr/local/cargo/config.toml <<'EOF'
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 ar     = "aarch64-linux-gnu-ar"
+# All env vars below are scoped to aarch64 only — they are NOT applied
+# when building for x86_64, so the native amd64 build is unaffected.
+rustflags = []
 
-[env]
+[target.aarch64-unknown-linux-gnu.env]
 # Picked up by rdkafka-sys build.rs to cross-compile librdkafka via cmake
 TARGET_CMAKE_TOOLCHAIN_FILE = "/aarch64-toolchain.cmake"
 
