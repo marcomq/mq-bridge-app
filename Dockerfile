@@ -32,7 +32,15 @@ set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(CMAKE_C_COMPILER   aarch64-linux-gnu-gcc)
 set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
 set(CMAKE_AR           aarch64-linux-gnu-ar)
-set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
+# Debian multiarch installs cross-libraries to /usr/lib/aarch64-linux-gnu
+# and headers to /usr/include/aarch64-linux-gnu — not under /usr/aarch64-linux-gnu.
+# All three paths must be listed so cmake's FindZLIB, FindOpenSSL etc. can
+# locate the :arm64 sysroot packages we installed in the apt step.
+set(CMAKE_FIND_ROOT_PATH
+    /usr/aarch64-linux-gnu
+    /usr/lib/aarch64-linux-gnu
+    /usr/include/aarch64-linux-gnu
+)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
