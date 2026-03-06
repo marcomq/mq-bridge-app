@@ -43,7 +43,15 @@ set(CMAKE_FIND_ROOT_PATH
 )
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+# BOTH instead of ONLY so cmake can also search /usr/include for headers
+# that Debian multiarch installs outside the sysroot prefix (e.g. zlib.h)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
+
+# Explicitly pin ZLIB so FindZLIB doesn't search and picks the right arch.
+# On Debian multiarch, zlib1g-dev:arm64 puts the library in
+# /usr/lib/aarch64-linux-gnu but the header stays in /usr/include.
+set(ZLIB_LIBRARY     /usr/lib/aarch64-linux-gnu/libz.so)
+set(ZLIB_INCLUDE_DIR /usr/include)
 EOF
 
 # Generate cargo config.toml conditionally per target platform.
