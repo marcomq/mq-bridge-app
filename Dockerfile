@@ -122,7 +122,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         CARGO_FEATURES="--features=ibm-mq"; \
     else \
         RUST_TARGET="aarch64-unknown-linux-gnu"; \
-        CARGO_FEATURES=""; \
+        CARGO_FEATURES="--features=arm64-cross-compile"; \
     fi && \
     CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin \
     CMAKE_BUILD_PARALLEL_LEVEL=1 \
