@@ -19,6 +19,7 @@ RUN dpkg --add-architecture arm64 && \
         libssl-dev:arm64 \
         zlib1g-dev:arm64 \
         libsasl2-dev:arm64 \
+        libcurl4-openssl-dev:arm64 \
         libssl-dev \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -124,7 +125,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         CARGO_FEATURES=""; \
     fi && \
     CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin \
-    cargo build --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 2 && \
+    CMAKE_BUILD_PARALLEL_LEVEL=1 \
+    cargo build -vv --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 1 && \
     cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app
 
 # Identify and copy only the necessary MQ libraries for the final stage
