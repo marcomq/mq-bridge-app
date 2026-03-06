@@ -3,7 +3,7 @@
 ```text
       ┌────── mq-bridge-app ──────┐
 ──────┴───────────────────────────┴──────
-             Crossing streams
+            Crossing streams
 ```
 
 A message queue bridge application written in Rust, designed to connect different messaging systems like RabbitMQ, Kafka, IBM MQ, MQTT and NATS. With additional HTTP, gRPC, ZeroMQ, sled, file and MongoDB support.
