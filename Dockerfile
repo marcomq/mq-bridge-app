@@ -36,34 +36,40 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
 
-# Write a cargo config that passes the cmake toolchain file to rdkafka-sys.
+# Write cargo config to $CARGO_HOME/config.toml.
 #
-# THE KEY FIX: rdkafka-sys's build script reads the cmake toolchain path from
-# the target-prefixed env var:
-#   AARCH64_UNKNOWN_LINUX_GNU_CMAKE_TOOLCHAIN_FILE
-# NOT from CMAKE_TOOLCHAIN_FILE directly. Setting it via cargo config [env]
-# ensures it survives into cache-mounted RUN steps where Docker env vars
-# can sometimes be dropped.
+# IMPORTANT: The cache mount in the build step targets
+# /usr/local/cargo/registry — NOT /usr/local/cargo itself — so this file
+# is safe from being shadowed by the cache mount.
+#
+# rdkafka-sys build.rs checks these env var names in order:
+#   1. CMAKE_TOOLCHAIN_FILE_aarch64-unknown-linux-gnu  (hyphenated)
+#   2. CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_gnu  (underscored)
+#   3. TARGET_CMAKE_TOOLCHAIN_FILE                     ← this is what we set
+#   4. CMAKE_TOOLCHAIN_FILE                            (host-scoped, wrong)
+#
+# We set TARGET_CMAKE_TOOLCHAIN_FILE via cargo [env] so it's injected into
+# every build script that cargo invokes for the target platform.
 RUN mkdir -p /usr/local/cargo && cat > /usr/local/cargo/config.toml <<'EOF'
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 ar     = "aarch64-linux-gnu-ar"
 
 [env]
-# What rdkafka-sys actually reads to find the cmake toolchain file
-AARCH64_UNKNOWN_LINUX_GNU_CMAKE_TOOLCHAIN_FILE = "/aarch64-toolchain.cmake"
+# Picked up by rdkafka-sys build.rs to cross-compile librdkafka via cmake
+TARGET_CMAKE_TOOLCHAIN_FILE = "/aarch64-toolchain.cmake"
 
-# pkg-config sysroot for ARM64 — prevents rdkafka-sys from finding x86_64 headers
+# pkg-config must look in the ARM64 sysroot, not the host x86_64 paths
 PKG_CONFIG_SYSROOT_DIR = "/usr/aarch64-linux-gnu"
 PKG_CONFIG_PATH        = "/usr/lib/aarch64-linux-gnu/pkgconfig"
 PKG_CONFIG_ALLOW_CROSS = "1"
 
-# Explicit OpenSSL location so openssl-sys doesn't fall back to the host libs
+# openssl-sys: point explicitly at ARM64 headers/libs
 OPENSSL_INCLUDE_DIR = "/usr/include/aarch64-linux-gnu"
 OPENSSL_LIB_DIR     = "/usr/lib/aarch64-linux-gnu"
 EOF
 
-# CC_*/CXX_* are read by the `cc` crate directly, not by cargo config
+# CC_*/CXX_* are consumed by the `cc` crate, not cargo, so must be env vars
 ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
     AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
@@ -89,7 +95,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY static ./static
 
-# Build the application
+# Build the application.
+# NOTE: cache mounts are scoped to /registry and /target subdirectories —
+# NOT to /usr/local/cargo itself — so config.toml written above is not
+# shadowed or lost during this step.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/src/mq-bridge-app/target,id=target-${TARGETARCH},sharing=locked \
     if [ "$TARGETARCH" = "amd64" ]; then \
