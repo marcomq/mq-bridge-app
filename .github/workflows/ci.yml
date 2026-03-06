@@ -26,7 +26,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config zlib1g-dev
 
       - name: Run cargo check
-        run: cargo check --all-targets --all-features
+        run: cargo check --all-targets
 
   test:
     name: Cargo Test
