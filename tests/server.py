@@ -22,7 +22,9 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 if __name__ == "__main__":
-    port = 3030
+    port = 8080
+    if len(sys.argv) > 1:
+        port = int(sys.argv[1])
     print(f"Listening on port {port}...")
     server = ThreadedHTTPServer(('0.0.0.0', port), RequestHandler)
     try:

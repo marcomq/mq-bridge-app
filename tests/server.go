@@ -5,6 +5,7 @@ package main
 
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -49,15 +50,21 @@ func reportThroughput(interval time.Duration) {
 }
 
 func main() {
+	// Define a command-line flag for the port.
+	port := flag.String("port", "8080", "Port for the server to listen on")
+	flag.Parse()
+
+	listenAddr := ":" + *port
+
 	// Start a separate goroutine that measures and prints the throughput.
 	go reportThroughput(5 * time.Second)
 
 	// Wrap the final handler with the middleware.
 	finalHandler := metricsMiddleware(helloHandler)
 
-	fmt.Println("fasthttp server starting on http://0.0.0.0:3030")
-	// Fatal if the server cannot be started.
-	if err := fasthttp.ListenAndServe(":3030", finalHandler); err != nil {
+	fmt.Printf("fasthttp server starting on http://0.0.0.0:%s\n", *port)
+
+	if err := fasthttp.ListenAndServe(listenAddr, finalHandler); err != nil {
 		log.Fatalf("Error in ListenAndServe: %s", err)
 	}
 }

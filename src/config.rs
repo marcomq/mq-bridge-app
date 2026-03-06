@@ -35,77 +35,106 @@ fn expand_variables(content: &str) -> Result<String, anyhow::Error> {
     Ok(shellexpand::env(content)?.to_string())
 }
 
+// New helper function to create a config source from a string.
+// It expands environment variables and assumes a given format.
+fn source_from_str(
+    content: &str,
+    format: config::FileFormat,
+) -> Result<config::File<config::FileSourceString, config::FileFormat>, anyhow::Error> {
+    let expanded = expand_variables(content)?;
+    // Using `required(false)` means an empty or whitespace-only string won't cause an error.
+    Ok(config::File::from_str(&expanded, format).required(false))
+}
+
 pub fn load_config(
     config_path: Option<String>,
     init_config_path: Option<String>,
+    init_config_str: Option<String>,
+    config_str: Option<String>,
 ) -> Result<(AppConfig, String), anyhow::Error> {
     match dotenvy::dotenv() {
         Ok(path) => println!("INFO: Loaded .env file from {:?}", path),
         Err(e) => println!("DEBUG: No .env file loaded: {}", e),
     }
 
-    // Debug: Print environment variables to verify they are loaded
-    for (key, value) in std::env::vars() {
-        if key.starts_with("MQB") {
-            println!("DEBUG ENV: {}={}", key, value);
-        }
-    }
-
-    // Determine the primary configuration file path for saving and loading.
-    // Precedence:
-    // 1. --config argument
-    // 2. `CONFIG_FILE` environment variable
-    // 3. Default to `config.yml`
     let persistent_file = config_path.unwrap_or_else(|| {
         std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string())
     });
 
-    let mut builder = Config::builder()
-        // Start with default values
-        .set_default("log_level", "info")?;
+    let init_config_path = init_config_path.or_else(|| std::env::var("INIT_CONFIG_FILE").ok());
+    let init_config_str = init_config_str.or_else(|| std::env::var("INIT_CONFIG_STRING").ok());
+    let config_str = config_str.or_else(|| std::env::var("CONFIG_STRING").ok());
 
-    // Determine which file to actually load from.
-    let mut load_file: Option<String> = Some(persistent_file.clone());
+    let mut builder = Config::builder().set_default("log_level", "info")?;
 
-    if !Path::new(&persistent_file).exists() {
-        if let Some(template_path) = init_config_path {
-            if Path::new(&template_path).exists() {
+    // --- Configuration Loading Hierarchy ---
+    // The `config` crate merges sources, with later sources overriding earlier ones.
+    // 1. Initialization sources (if main config file doesn't exist)
+    // 2. Main config file
+    // 3. Override config string
+    // 4. Environment variables
+
+    let persistent_file_exists = Path::new(&persistent_file).exists();
+
+    if !persistent_file_exists {
+        // Try to initialize. Precedence: init_config_path > init_config_str
+        if let Some(template_path) = &init_config_path {
+            if Path::new(template_path).exists() {
                 eprintln!(
-                    "INFO: Configuration file '{}' not found. Initializing from template '{}'.",
+                    "INFO: Main config '{}' not found. Initializing from template file '{}'.",
                     persistent_file, template_path
                 );
-                load_file = Some(template_path);
+                let content = std::fs::read_to_string(template_path)?;
+                let format = if template_path.ends_with(".json") {
+                    config::FileFormat::Json
+                } else {
+                    config::FileFormat::Yaml
+                };
+                builder = builder.add_source(source_from_str(&content, format)?);
             } else {
                 eprintln!(
-                    "WARN: Template configuration file '{}' not found. Starting with default settings.",
+                    "WARN: Template file '{}' not found. It will be ignored.",
                     template_path
                 );
-                load_file = None;
             }
+        } else if let Some(init_str) = &init_config_str {
+            eprintln!(
+                "INFO: Main config '{}' not found. Initializing from string (assuming YAML format).",
+                persistent_file
+            );
+            builder = builder.add_source(source_from_str(init_str, config::FileFormat::Yaml)?);
         } else {
-            eprintln!("INFO: Configuration file '{}' not found. Starting with default settings. No routes will be active unless defined by environment variables.", persistent_file);
-            load_file = None;
+            eprintln!(
+                "INFO: Main config '{}' not found. Starting with default settings.",
+                persistent_file
+            );
         }
-    } else if let Some(template_path) = init_config_path {
-        eprintln!(
-            "INFO: Configuration file '{}' found. Ignoring --init-config '{}'.",
-            persistent_file, template_path
-        );
-    }
-
-    if let Some(file_to_load) = load_file {
-        let content = std::fs::read_to_string(&file_to_load)?;
-        let expanded = expand_variables(&content)?;
-        let format = if file_to_load.ends_with(".json") {
+    } else {
+        // Main config file exists, load it.
+        eprintln!("INFO: Loading configuration from '{}'.", persistent_file);
+        let content = std::fs::read_to_string(&persistent_file)?;
+        let format = if persistent_file.ends_with(".json") {
             config::FileFormat::Json
         } else {
             config::FileFormat::Yaml
         };
-        builder = builder.add_source(config::File::from_str(&expanded, format));
+        builder = builder.add_source(source_from_str(&content, format)?);
+
+        if init_config_path.is_some() || init_config_str.is_some() {
+            eprintln!(
+                "INFO: Main config '{}' found. Ignoring initialization options.",
+                persistent_file
+            );
+        }
+    }
+
+    // Add override string if present. This will override file/init sources.
+    if let Some(override_str) = &config_str {
+        eprintln!("INFO: Applying configuration override from string (assuming YAML format).");
+        builder = builder.add_source(source_from_str(override_str, config::FileFormat::Yaml)?);
     }
 
     let settings = builder
-        // Load from environment variables, which will override file and defaults.
         .add_source(
             config::Environment::default()
                 .prefix("MQB")
@@ -285,7 +314,7 @@ routes:
 
         std::env::set_var("CONFIG_FILE", "_"); // ignore existing config.yaml
                                                // Load config
-        let (config, _) = load_config(None, None).unwrap();
+        let (config, _) = load_config(None, None, None, None).unwrap();
 
         // Assertions
         dbg!(&config.routes);

@@ -24,7 +24,7 @@ routes:
               file:
                 path: error.log
       http: # Use environment variable substitution with a default value
-        url: ${HOST_ADDR:-host.docker.internal:3030}
+        url: ${HOST_ADDR:-host.docker.internal:8080}
         tls:
           required: false
     concurrency: 1

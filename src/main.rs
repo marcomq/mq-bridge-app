@@ -22,8 +22,16 @@ struct Args {
     config: Option<String>,
 
     /// Path to a template configuration file to initialize from on first run if the main config file doesn't exist.
-    #[arg(long)]
+    #[arg(short, long)]
     init_config: Option<String>,
+
+    /// A string containing configuration (e.g., YAML or JSON) to initialize from if the main config file doesn't exist.
+    #[arg(long)]
+    init_config_str: Option<String>,
+
+    /// A string containing configuration (e.g., YAML or JSON) to override the config file.
+    #[arg(long)]
+    config_str: Option<String>,
 
     /// Generate JSON schema to the specified path
     #[arg(long)]
@@ -54,8 +62,13 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (mut config, config_file_path): (AppConfig, String) =
-        load_config(args.config, args.init_config).context("Failed to load configuration")?;
+    let (mut config, config_file_path): (AppConfig, String) = load_config(
+        args.config,
+        args.init_config,
+        args.init_config_str,
+        args.config_str,
+    )
+    .context("Failed to load configuration")?;
     init_logging(&config);
 
     // --- Logic for default addresses ---
