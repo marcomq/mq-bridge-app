@@ -31,7 +31,7 @@
     "extract_secrets": {
       "description": "If true, secrets will be extracted to .env file upon saving.",
       "type": "boolean",
-      "writeOnly": true
+      "default": false
     }
   },
   "$defs": {
@@ -932,6 +932,11 @@
             "string",
             "null"
           ]
+        },
+        "format": {
+          "description": "The format for writing messages to the file (Publisher) or interpreting them (Consumer). Defaults to `normal`.",
+          "$ref": "#/$defs/FileFormat",
+          "default": "normal"
         }
       },
       "required": [
@@ -1000,6 +1005,31 @@
           ]
         },
         {}
+      ]
+    },
+    "FileFormat": {
+      "description": "Format for messages written to or read from a file.",
+      "oneOf": [
+        {
+          "description": "The full `CanonicalMessage` is serialized to JSON. Payload is a byte array.",
+          "type": "string",
+          "const": "normal"
+        },
+        {
+          "description": "The full `CanonicalMessage` is serialized to JSON. Payload is rendered as a JSON value if possible.",
+          "type": "string",
+          "const": "json"
+        },
+        {
+          "description": "The full `CanonicalMessage` is serialized to JSON. Payload is rendered as a string if possible.",
+          "type": "string",
+          "const": "text"
+        },
+        {
+          "description": "The raw payload of the message is written. For consumers, the line is read as raw bytes.",
+          "type": "string",
+          "const": "raw"
+        }
       ]
     },
     "MemoryConfig": {
@@ -1282,6 +1312,7 @@
       "enum": [
         "normal",
         "json",
+        "text",
         "raw"
       ]
     },
