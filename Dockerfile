@@ -2,6 +2,8 @@
 FROM --platform=$BUILDPLATFORM rust:1.92-bookworm AS builder
 ARG TARGETARCH
 ARG BUILDPLATFORM
+# Bump DOCKER_CACHE_VERSION in release.yml to invalidate this cache
+ARG CACHE_BUST=1
 
 WORKDIR /usr/src/mq-bridge-app
 
@@ -100,7 +102,7 @@ COPY static ./static
 # NOT to /usr/local/cargo itself — so config.toml written above is not
 # shadowed or lost during this step.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/src/mq-bridge-app/target,id=target-${TARGETARCH},sharing=locked \
+    --mount=type=cache,target=/usr/src/mq-bridge-app/target,id=target-${TARGETARCH}-${CACHE_BUST},sharing=locked \
     if [ "$TARGETARCH" = "amd64" ]; then \
         RUST_TARGET="x86_64-unknown-linux-gnu"; \
         CARGO_FEATURES="--features=ibm-mq"; \
