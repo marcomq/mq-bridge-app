@@ -1,12 +1,18 @@
-# MQ Multi Bridge
+# MQ Bridge App
 
-A message queue bridge application written in Rust, designed to connect different messaging systems like RabbitMQ, Kafka, and NATS.
+```text
+      ┌────── mq-bridge-app ──────┐
+──────┴───────────────────────────┴──────
+             Crossing streams
+```
+
+A message queue bridge application written in Rust, designed to connect different messaging systems like RabbitMQ, Kafka, IBM MQ, MQTT and NATS. With additional HTTP, gRPC, ZeroMQ, sled, file and MongoDB support.
 
 # Status
 
 > **Note**: This project is currently in **Active Development**.
 
-It serves as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. While the core bridging functionality is stable and performant, APIs and configuration structures may evolve. It is recommended for testing, development, and production use cases where version pinning is applied.
+It serves as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. It may already work perfect and reliable for some use cases. But some disconnect patterns and some subscriber endpoints haven't been tested yet. Always test by yourself before production usage.
 
 ## Features
 
@@ -65,9 +71,13 @@ cargo install mq-bridge-app
     cd mq-bridge-app
     ```
 
-2.  **Build and run:**
+2.  **Build and run empty:**
     ```bash
-    cargo run --release -- --config config/file-to-http.yml
+    cargo run --release 
+    ```
+2.  **Build and run with configuration:**
+    ```bash
+    HOST_ADDR=localhost:8080 cargo run --release -- --config config/file-to-http.yml
     ```
 3.  **Configure the application:**
     Create a `config.yml` file in the project root or set environment variables. See the Configuration section for details. Or you start right away without and use the UI to define the `config.yml`
@@ -83,7 +93,7 @@ cargo install mq-bridge-app
     ```
     
 
-    This will start Kafka, NATS, and the bridge application.
+    This will start the bridge application.
 
 ## Configuration
 
@@ -155,6 +165,24 @@ routes:
         brokers: "kafka-eu.example.com:9092"
         group_id: "bridge-group-eu"
         topic: "from_file"
+
+  # Example with Retry and Dead Letter Queue
+  orders_with_reliability:
+    input:
+      kafka:
+        brokers: "kafka.example.com:9092"
+        group_id: "orders-group"
+        topic: "orders"
+    output:
+      http:
+        url: "https://api.example.com/orders"
+      middlewares:
+        - retry:
+            max_attempts: 3
+            delay_ms: 1000
+        - dlq:
+            file:
+              path: "error.log"
 ```
 
 ### Environment Variables
