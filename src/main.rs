@@ -158,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
         warn!("No routes configured. Waiting for configuration via Web UI.");
     } else {
         let routes = std::mem::take(&mut config.routes);
-        for (_, route) in &routes {
+        for route in routes.values() {
             if route.is_ref() {
                 route.register_output_endpoint(None)?;
             }

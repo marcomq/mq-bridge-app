@@ -9,7 +9,6 @@ use std::sync::{Arc, RwLock};
 /// We are using mq-bridge here, instead of standard actix web server.
 /// This is mostly for demonstration purpose, there is no real need
 /// or benefit to use mq-bridge here.
-
 trait CanonicalMessageExt {
     fn with_content_type(self, content_type: impl Into<String>) -> Self;
     fn with_status_code(self, status_code: impl Into<String>) -> Self;
@@ -158,7 +157,7 @@ impl WebUiHandler {
 
             *config_guard = new_config;
         }
-        for (_, route) in &routes {
+        for route in routes.values() {
             if route.is_ref() {
                 route.register_output_endpoint(None)?;
             }
