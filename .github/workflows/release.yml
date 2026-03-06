@@ -9,9 +9,8 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository }}
-  # Bump this number whenever you change the compiler toolchain, cmake config,
-  # or rdkafka features. This invalidates the GHA Docker layer cache so stale
-  # x86_64 rdkafka build artifacts don't bleed into the arm64 build.
+  # Bump this when you change the compiler toolchain, cmake config, or rdkafka
+  # features to invalidate the GHA Docker layer cache for that platform.
   DOCKER_CACHE_VERSION: 2
 
 jobs:
@@ -33,8 +32,10 @@ jobs:
       - name: Run cargo test
         run: cargo test --all-targets
 
-  publish:
-    name: Build and Publish Docker Image
+  # Build each platform in its own job so failures are clearly attributed
+  # in the GitHub Actions UI — no more guessing which platform broke.
+  publish-amd64:
+    name: Build linux/amd64
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -44,11 +45,41 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract version from Cargo.toml
-        id: get_version
-        run: |
-          echo "VERSION=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)" >> $GITHUB_OUTPUT
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          # Temporary per-platform tag, merged into the final manifest below
+          tags: ghcr.io/${{ env.IMAGE_NAME }}:amd64-tmp
+          build-args: |
+            CACHE_BUST=${{ env.DOCKER_CACHE_VERSION }}
+          cache-from: type=gha,scope=build-amd64-v${{ env.DOCKER_CACHE_VERSION }}
+          cache-to: type=gha,mode=max,scope=build-amd64-v${{ env.DOCKER_CACHE_VERSION }}
+
+  publish-arm64:
+    name: Build linux/arm64
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # QEMU is only needed for the arm64 job (emulation for non-native steps)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -62,16 +93,46 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and push arm64 image
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: true
-          tags: |
-            ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.get_version.outputs.VERSION }}
-            ghcr.io/${{ env.IMAGE_NAME }}:latest
+          tags: ghcr.io/${{ env.IMAGE_NAME }}:arm64-tmp
           build-args: |
             CACHE_BUST=${{ env.DOCKER_CACHE_VERSION }}
-          cache-from: type=gha,scope=build-v${{ env.DOCKER_CACHE_VERSION }}
-          cache-to: type=gha,mode=max,scope=build-v${{ env.DOCKER_CACHE_VERSION }}
+          cache-from: type=gha,scope=build-arm64-v${{ env.DOCKER_CACHE_VERSION }}
+          cache-to: type=gha,mode=max,scope=build-arm64-v${{ env.DOCKER_CACHE_VERSION }}
+
+  # Merge both platform images into a single multi-arch manifest
+  publish-manifest:
+    name: Push multi-arch manifest
+    needs: [publish-amd64, publish-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract version from Cargo.toml
+        id: get_version
+        run: |
+          echo "VERSION=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.get_version.outputs.VERSION }} \
+            --tag ghcr.io/${{ env.IMAGE_NAME }}:latest \
+            ghcr.io/${{ env.IMAGE_NAME }}:amd64-tmp \
+            ghcr.io/${{ env.IMAGE_NAME }}:arm64-tmp
