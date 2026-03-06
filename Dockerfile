@@ -50,26 +50,18 @@ EOF
 #
 # The cache mount targets /usr/local/cargo/registry, not /usr/local/cargo,
 # so this file is never shadowed during the cargo build step.
+#
+# Heredocs cannot be used inside if/else in a RUN command — the EOF terminator
+# ends the RUN instruction, making the Dockerfile parser see `else` as an
+# unknown instruction. Instead we use printf to write both files, then select
+# the right one with cp.
 RUN mkdir -p /usr/local/cargo && \
+    printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\nar = "aarch64-linux-gnu-ar"\n\n[env]\nTARGET_CMAKE_TOOLCHAIN_FILE = "/aarch64-toolchain.cmake"\nPKG_CONFIG_SYSROOT_DIR = "/usr/aarch64-linux-gnu"\nPKG_CONFIG_PATH = "/usr/lib/aarch64-linux-gnu/pkgconfig"\nPKG_CONFIG_ALLOW_CROSS = "1"\nOPENSSL_INCLUDE_DIR = "/usr/include/aarch64-linux-gnu"\nOPENSSL_LIB_DIR = "/usr/lib/aarch64-linux-gnu"\n' > /cargo-config-arm64.toml && \
+    printf '[target.x86_64-unknown-linux-gnu]\nlinker = "gcc"\n' > /cargo-config-amd64.toml && \
     if [ "$TARGETARCH" = "arm64" ]; then \
-        cat > /usr/local/cargo/config.toml <<'EOF'
-[target.aarch64-unknown-linux-gnu]
-linker = "aarch64-linux-gnu-gcc"
-ar     = "aarch64-linux-gnu-ar"
-
-[env]
-TARGET_CMAKE_TOOLCHAIN_FILE = "/aarch64-toolchain.cmake"
-PKG_CONFIG_SYSROOT_DIR      = "/usr/aarch64-linux-gnu"
-PKG_CONFIG_PATH             = "/usr/lib/aarch64-linux-gnu/pkgconfig"
-PKG_CONFIG_ALLOW_CROSS      = "1"
-OPENSSL_INCLUDE_DIR         = "/usr/include/aarch64-linux-gnu"
-OPENSSL_LIB_DIR             = "/usr/lib/aarch64-linux-gnu"
-EOF
+        cp /cargo-config-arm64.toml /usr/local/cargo/config.toml; \
     else \
-        cat > /usr/local/cargo/config.toml <<'EOF'
-[target.x86_64-unknown-linux-gnu]
-linker = "gcc"
-EOF
+        cp /cargo-config-amd64.toml /usr/local/cargo/config.toml; \
     fi
 
 # CC_*/CXX_* are consumed by the `cc` crate, not cargo, so must be env vars
