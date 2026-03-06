@@ -1,12 +1,14 @@
-# MQ Bridge App
+# mq-bridge-app
 
 ```text
       ┌────── mq-bridge-app ──────┐
 ──────┴───────────────────────────┴──────
-            Crossing streams
+            crossing streams
 ```
 
-A message queue bridge application written in Rust, designed to connect different messaging systems like RabbitMQ, Kafka, IBM MQ, MQTT and NATS. With additional HTTP, gRPC, ZeroMQ, sled, file and MongoDB support.
+`mq-bridge-app` is a flexible message routing application written in Rust, designed to connect different messaging systems and data sources. It acts as a universal translator for your data streams, seamlessly bridging technologies like **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **AWS SQS** ,**MQTT**, and **IBM MQ**. The application also integrates with modern web protocols like **HTTP** and **gRPC**, and can interact with **ZeroMQ**, **MongoDB**, and the local **filesystem**.
+
+Built for performance and ease of use, it's a powerful tool for building integration workflows, creating data pipelines, or simply getting information from point A to point B, no matter the protocol.
 
 # Status
 
@@ -17,7 +19,7 @@ It serves as the primary reference implementation and testbed for the [mq-bridge
 ## Features
 
 ### Connectivity
-- **Multi-Protocol Support**: Bridge messages between **Kafka**, **IBM MQ**, **NATS**, **AMQP** (RabbitMQ), **MQTT**, **gRPC**, **ZeroMQ**, and **HTTP**.
+- **Multi-Protocol Support**: Bridge messages between **Kafka**, **IBM MQ**, **NATS**, **AMQP** (RabbitMQ), **MQTT**, **AWS SQS**, **gRPC**, **ZeroMQ**, and **HTTP**.
 - **File System Integration**: Stream data from files (tail/read) or write messages to disk (append).
 - **HTTP Webhooks**: Act as both an HTTP server (receiving webhooks) and client (calling external APIs), with full support for Request-Response patterns.
 
@@ -48,6 +50,8 @@ touch input.log
 docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)/input.log":/app/input.log ghcr.io/marcomq/mq-bridge-app:latest --init-config=/config/file-to-http.yml
 ```
 
+Notice: <br/>
+Only the amd64 docker container includes IBM MQ support, as there is no redistributable IBM MQ client library for arm64 yet.
 
 ### Cargo
 
@@ -115,16 +119,6 @@ log_level: "info"
 
 # Define bridge routes from a source to a sink
 routes:
-  my_kafka_to_nats:
-    input:
-      kafka:
-        brokers: "kafka-us.example.com:9092"
-        group_id: "bridge-group-us" # topic is optional, defaults to route name
-    output:
-      nats:
-        url: "nats://nats.example.com:4222"
-        stream: "events" # subject is optional, defaults to route name
-
   amqp_to_kafka_orders:
     input:
       amqp:
@@ -166,7 +160,7 @@ routes:
         group_id: "bridge-group-eu"
         topic: "from_file"
 
-  # Example with Retry and Dead Letter Queue
+  # Example with Metrics, Retry and Dead Letter Queue
   orders_with_reliability:
     input:
       kafka:
@@ -177,6 +171,7 @@ routes:
       http:
         url: "https://api.example.com/orders"
       middlewares:
+        - metrics: {}
         - retry:
             max_attempts: 3
             delay_ms: 1000
@@ -216,7 +211,7 @@ export MQB__ROUTES__MY_KAFKA_TO_NATS__INPUT__MIDDLEWARES__0__DLQ__KAFKA__TOPIC="
 
 ### Example Configurations 
 
-This repository includes a set of example configurations in the /examples directory to help you get started quickly. These examples are also included in the Docker image under /app/examples. 
+This repository includes a set of example configurations in the config directory to help you get started quickly. These examples are also included in the Docker image under /config. 
 
 You can use them with Docker by mounting them from your host or by referencing them from within the image using the --config flag: 
 
