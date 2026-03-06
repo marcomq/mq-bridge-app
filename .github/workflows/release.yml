@@ -9,6 +9,10 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository }}
+  # Bump this number whenever you change the compiler toolchain, cmake config,
+  # or rdkafka features. This invalidates the GHA Docker layer cache so stale
+  # x86_64 rdkafka build artifacts don't bleed into the arm64 build.
+  DOCKER_CACHE_VERSION: 2
 
 jobs:
   test:
@@ -31,12 +35,11 @@ jobs:
 
   publish:
     name: Build and Publish Docker Image
-    # This job only runs on tags and needs the test job to succeed.
     needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # Required to push to GitHub Container Registry
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -68,5 +71,7 @@ jobs:
           tags: |
             ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.get_version.outputs.VERSION }}
             ghcr.io/${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: |
+            CACHE_BUST=${{ env.DOCKER_CACHE_VERSION }}
+          cache-from: type=gha,scope=build-v${{ env.DOCKER_CACHE_VERSION }}
+          cache-to: type=gha,mode=max,scope=build-v${{ env.DOCKER_CACHE_VERSION }}
