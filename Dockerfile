@@ -50,8 +50,11 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
 # Explicitly pin ZLIB so FindZLIB doesn't search and picks the right arch.
 # On Debian multiarch, zlib1g-dev:arm64 puts the library in
 # /usr/lib/aarch64-linux-gnu but the header stays in /usr/include.
-set(ZLIB_LIBRARY     /usr/lib/aarch64-linux-gnu/libz.so)
-set(ZLIB_INCLUDE_DIR /usr/include)
+# CACHE FORCE is required — plain set() in a toolchain file gets ignored
+# by FindZLIB which does its own cache population. Without FORCE, cmake
+# finds the .so but still reports ZLIB_INCLUDE_DIR as missing.
+set(ZLIB_LIBRARY     /usr/lib/aarch64-linux-gnu/libz.so CACHE FILEPATH "" FORCE)
+set(ZLIB_INCLUDE_DIR /usr/include                       CACHE PATH     "" FORCE)
 EOF
 
 # Generate cargo config.toml conditionally per target platform.
@@ -105,6 +108,10 @@ WORKDIR /usr/src/mq-bridge-app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY static ./static
+
+# DEBUG: run cmake standalone so the full error is visible in GHA logs
+# even when cargo's output is truncated. Remove once build is stable.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked     if [ "$TARGETARCH" = "arm64" ]; then         RDKAFKA_SRC=$(find /usr/local/cargo/registry -path "*/rdkafka-sys-*/librdkafka" -type d 2>/dev/null | head -1) &&         echo "rdkafka src: $RDKAFKA_SRC" &&         if [ -n "$RDKAFKA_SRC" ]; then             mkdir -p /tmp/rdkafka-cmake-test && cd /tmp/rdkafka-cmake-test &&             cmake "$RDKAFKA_SRC"                 -DCMAKE_TOOLCHAIN_FILE=/aarch64-toolchain.cmake                 -DRDKAFKA_BUILD_STATIC=1 -DRDKAFKA_BUILD_TESTS=0                 -DRDKAFKA_BUILD_EXAMPLES=0 -DWITH_ZLIB=1                 -DWITH_CURL=0 -DWITH_SSL=0 -DWITH_SASL=0                 -DWITH_ZSTD=0 -DENABLE_LZ4_EXT=0 &&             echo "=== cmake configure OK ===" ||             (echo "=== CMakeError.log ===" &&              cat /tmp/rdkafka-cmake-test/CMakeFiles/CMakeError.log 2>/dev/null &&              exit 1);         else             echo "rdkafka-sys not yet in cargo registry cache, skipping cmake test";         fi;     fi
 
 # Build the application.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
