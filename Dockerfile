@@ -38,41 +38,39 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
 
-# Write cargo config to $CARGO_HOME/config.toml.
+# Generate cargo config.toml conditionally per target platform.
 #
-# IMPORTANT: The cache mount in the build step targets
-# /usr/local/cargo/registry — NOT /usr/local/cargo itself — so this file
-# is safe from being shadowed by the cache mount.
+# IMPORTANT: [target.X.env] is NOT valid cargo config syntax — cargo only
+# supports [env] at the top level. So we write two different config files:
 #
-# rdkafka-sys build.rs checks these env var names in order:
-#   1. CMAKE_TOOLCHAIN_FILE_aarch64-unknown-linux-gnu  (hyphenated)
-#   2. CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_gnu  (underscored)
-#   3. TARGET_CMAKE_TOOLCHAIN_FILE                     ← this is what we set
-#   4. CMAKE_TOOLCHAIN_FILE                            (host-scoped, wrong)
+# arm64: includes TARGET_CMAKE_TOOLCHAIN_FILE (read by rdkafka-sys build.rs
+#        to pass the cmake toolchain to librdkafka) plus ARM64 sysroot paths.
 #
-# We set TARGET_CMAKE_TOOLCHAIN_FILE via cargo [env] so it's injected into
-# every build script that cargo invokes for the target platform.
-RUN mkdir -p /usr/local/cargo && cat > /usr/local/cargo/config.toml <<'EOF'
+# amd64: minimal config, no sysroot overrides, native build works as-is.
+#
+# The cache mount targets /usr/local/cargo/registry, not /usr/local/cargo,
+# so this file is never shadowed during the cargo build step.
+RUN mkdir -p /usr/local/cargo && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        cat > /usr/local/cargo/config.toml <<'EOF'
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 ar     = "aarch64-linux-gnu-ar"
-# All env vars below are scoped to aarch64 only — they are NOT applied
-# when building for x86_64, so the native amd64 build is unaffected.
-rustflags = []
 
-[target.aarch64-unknown-linux-gnu.env]
-# Picked up by rdkafka-sys build.rs to cross-compile librdkafka via cmake
+[env]
 TARGET_CMAKE_TOOLCHAIN_FILE = "/aarch64-toolchain.cmake"
-
-# pkg-config must look in the ARM64 sysroot, not the host x86_64 paths
-PKG_CONFIG_SYSROOT_DIR = "/usr/aarch64-linux-gnu"
-PKG_CONFIG_PATH        = "/usr/lib/aarch64-linux-gnu/pkgconfig"
-PKG_CONFIG_ALLOW_CROSS = "1"
-
-# openssl-sys: point explicitly at ARM64 headers/libs
-OPENSSL_INCLUDE_DIR = "/usr/include/aarch64-linux-gnu"
-OPENSSL_LIB_DIR     = "/usr/lib/aarch64-linux-gnu"
+PKG_CONFIG_SYSROOT_DIR      = "/usr/aarch64-linux-gnu"
+PKG_CONFIG_PATH             = "/usr/lib/aarch64-linux-gnu/pkgconfig"
+PKG_CONFIG_ALLOW_CROSS      = "1"
+OPENSSL_INCLUDE_DIR         = "/usr/include/aarch64-linux-gnu"
+OPENSSL_LIB_DIR             = "/usr/lib/aarch64-linux-gnu"
 EOF
+    else \
+        cat > /usr/local/cargo/config.toml <<'EOF'
+[target.x86_64-unknown-linux-gnu]
+linker = "gcc"
+EOF
+    fi
 
 # CC_*/CXX_* are consumed by the `cc` crate, not cargo, so must be env vars
 ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
@@ -101,9 +99,6 @@ COPY src ./src
 COPY static ./static
 
 # Build the application.
-# NOTE: cache mounts are scoped to /registry and /target subdirectories —
-# NOT to /usr/local/cargo itself — so config.toml written above is not
-# shadowed or lost during this step.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/src/mq-bridge-app/target,id=target-${TARGETARCH}-${CACHE_BUST},sharing=locked \
     if [ "$TARGETARCH" = "amd64" ]; then \
