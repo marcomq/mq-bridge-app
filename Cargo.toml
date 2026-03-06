@@ -47,6 +47,8 @@ anyhow = "1.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
+rdkafka = { version = "0.38", features = ["tokio", "cmake-build"] }
+
 # Metrics
 metrics = { version = "0.24" }
 metrics-exporter-prometheus = "0.18.1"
@@ -69,3 +71,4 @@ zeromq = ["mq-bridge/zeromq"]
 sled = ["mq-bridge/sled"]
 grpc = ["mq-bridge/grpc"]
 amqp = ["mq-bridge/amqp"]
+
