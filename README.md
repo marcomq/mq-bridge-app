@@ -52,11 +52,11 @@ Or if you want to already read+tail from input.log and send the content to http:
 
 ```bash
 touch input.log
-docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)/input.log":/app/input.log ghcr.io/marcomq/mq-bridge-app:latest --init-config=/config/file-to-http.yml
+docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app ghcr.io/marcomq/mq-bridge-app:latest --init-config=/config/file-to-http.yml
 ```
 
-Notice: <br/>
-Only the amd64 docker container includes IBM MQ support, as there is no redistributable IBM MQ client library for arm64 yet.
+[!NOTE]
+Only the amd64 docker container includes IBM MQ support, as there is no redistributable IBM MQ client library for arm64 yet. You may still start in emulation mode with `--platform=linux/amd64` or you would need to build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
 
 ### Cargo
 
@@ -187,7 +187,7 @@ routes:
 
 ### Environment Variables
 
-All configuration parameters can be set via environment variables. This is particularly useful for containerized deployments (e.g., Docker, Kubernetes). The variables must be prefixed with `MQB_`, and nested keys are separated by a double underscore `__`. For map-like structures such as `routes`, the key becomes part of the variable name.
+All configuration parameters can be set via environment variables. This is particularly useful for containerized deployments (e.g., Docker, Kubernetes). The variables must be prefixed with `MQB_`, and nested keys are separated by a double underscore `__`. For map-like structures such as `routes`, the key becomes part of the variable name. You can alternatively use environment variables directly in json/yaml by using `${ENV_VARIABLE_NAME:-default_if_not_found}`.
 
 **Example using environment variables:**
 
