@@ -55,8 +55,8 @@ touch input.log
 docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app ghcr.io/marcomq/mq-bridge-app:latest --init-config=/config/file-to-http.yml
 ```
 
-[!NOTE]
-Only the amd64 docker container includes IBM MQ support, as there is no redistributable IBM MQ client library for arm64 yet. You may still start in emulation mode with `--platform=linux/amd64` or you would need to build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
+> [!NOTE]
+> Only the amd64 docker container includes IBM MQ support, as there is no redistributable IBM MQ client library for arm64 yet. You may still start in emulation mode with `--platform=linux/amd64` or you would need to build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
 
 ### Cargo
 
