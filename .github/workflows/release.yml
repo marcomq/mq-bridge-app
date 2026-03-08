@@ -36,6 +36,8 @@ jobs:
     name: Create GitHub Release
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
@@ -58,6 +60,8 @@ jobs:
     name: Build release assets for ${{ matrix.target }}
     needs: create-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
