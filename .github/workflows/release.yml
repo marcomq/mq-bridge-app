@@ -32,6 +32,104 @@ jobs:
       - name: Run cargo test
         run: cargo test --all-targets
 
+  create-release:
+    name: Create GitHub Release
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: See the project README for details on this release.
+          draft: false
+          prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+
+  build-release-assets:
+    name: Build release assets for ${{ matrix.target }}
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: mq-bridge-app
+            use_cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: mq-bridge-app
+            use_cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: mq-bridge-app
+            use_cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: mq-bridge-app.exe
+            use_cross: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      - name: Install Cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config openssl@3
+
+      - name: Build binary
+        run: |
+          if [ "${{ matrix.use_cross }}" == "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          ASSET_NAME="mq-bridge-app-${{ matrix.target }}"
+          mkdir staging
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" staging/
+          cp LICENSE README.md staging/
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            7z a "${ASSET_NAME}.zip" ./staging/*
+            echo "ASSET_PATH=${ASSET_NAME}.zip" >> $GITHUB_ENV
+          else
+            tar -czf "${ASSET_NAME}.tar.gz" -C staging .
+            echo "ASSET_PATH=${ASSET_NAME}.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ env.ASSET_PATH }}
+          asset_name: ${{ env.ASSET_PATH }}
+          asset_content_type: application/octet-stream
+
   # Build each platform in its own job so failures are clearly attributed
   # in the GitHub Actions UI — no more guessing which platform broke.
   publish-amd64:
