@@ -6,6 +6,10 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name (e.g. v1.0.0)'
+        required: true
 
 env:
   IMAGE_NAME: ${{ github.repository }}
@@ -50,8 +54,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          release_name: Release ${{ inputs.tag_name || github.ref_name }}
           body: See the project README for details on this release.
           draft: false
           prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
