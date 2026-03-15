@@ -10,8 +10,8 @@ use axum::serve;
 use mq_bridge::Route;
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResult, ListToolsResult,
-        PaginatedRequestParams, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams,
+        ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -243,9 +243,7 @@ impl<B: ConnectorBus> MqBridgeMcpServer<B> {
     pub async fn start(self, config: &McpConfig) -> anyhow::Result<()> {
         let bind = &config.bind;
         match config.transport {
-            crate::config::McpTransport::StreamableHttp => {
-                self.start_streamable_http(bind).await
-            }
+            crate::config::McpTransport::StreamableHttp => self.start_streamable_http(bind).await,
             crate::config::McpTransport::Stdio => self.start_stdio().await,
         }
     }
@@ -253,8 +251,7 @@ impl<B: ConnectorBus> MqBridgeMcpServer<B> {
     async fn start_streamable_http(self, bind: &str) -> anyhow::Result<()> {
         use axum::Router;
         use rmcp::transport::streamable_http_server::{
-            session::local::LocalSessionManager, StreamableHttpServerConfig,
-            StreamableHttpService,
+            session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
         };
 
         let addr: std::net::SocketAddr = bind.parse()?;

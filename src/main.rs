@@ -3,14 +3,14 @@
 //  Licensed under MIT License, see License file for more details
 //  git clone https://github.com/marcomq/mq-bridge-app
 
-pub mod web_ui;
 pub mod config;
 pub mod mcp;
-use tracing::error;
+pub mod web_ui;
 use clap::Parser;
 use config::{load_config, AppConfig};
 use std::net::SocketAddr;
 use std::time::Duration;
+use tracing::error;
 use tracing::{info, warn};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
@@ -159,7 +159,10 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Start MCP Server ---
     if config.mcp.enabled {
-        info!("MCP server enabled, transport: {:?}, bind: {}", config.mcp.transport, config.mcp.bind);
+        info!(
+            "MCP server enabled, transport: {:?}, bind: {}",
+            config.mcp.transport, config.mcp.bind
+        );
         let mcp_config_clone = config.mcp.clone();
         let routes_for_mcp = config.routes.clone();
         tokio::spawn(async move {
