@@ -3,9 +3,12 @@
 //  Licensed under MIT License, see License file for more details
 //  git clone https://github.com/marcomq/mq-bridge-app
 
+pub mod web_ui;
+pub mod config;
+pub mod mcp;
+use tracing::error;
 use clap::Parser;
-use mq_bridge_app::config::{load_config, AppConfig};
-use mq_bridge_app::web_ui;
+use config::{load_config, AppConfig};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -70,6 +73,11 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("Failed to load configuration")?;
     init_logging(&config);
+    println!(
+        r#"
+      ┌────── mq-bridge-app ──────┐
+──────┴───────────────────────────┴──────"#
+    );
 
     // --- Logic for default addresses ---
     // If there is no config (routes are empty), enable ui on 9091 and metrics on 9090.
@@ -83,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let mut prom_addr = None;
     // --- 2. Initialize Prometheus Metrics Exporter ---
     let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
     let (recorder, metrics_task) =
@@ -92,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
                 config.metrics_addr
             ))?;
             let (recorder, server_future) = builder.with_http_listener(addr).build()?;
-            info!("Prometheus exporter listening on http://{}", addr);
+            prom_addr = Some(addr);
             (recorder, Some(tokio::spawn(server_future)))
         } else {
             (builder.build_recorder(), None)
@@ -107,19 +116,6 @@ async fn main() -> anyhow::Result<()> {
     // Standard Prometheus pattern: use a fixed value of 1.0 for info metrics,
     // encoding the actual data (version, etc.) in the labels.
     metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
-
-    if !config.ui_addr.is_empty() {
-        info!(
-            "Prometheus metrics enabled on Web UI (http://{}/metrics)",
-            config.ui_addr
-        );
-    }
-
-    println!(
-        r#"
-      ┌────── mq-bridge-app ──────┐
-──────┴───────────────────────────┴──────"#
-    );
 
     // Start Web UI
     let web_ui_handle = if !config.ui_addr.is_empty() {
@@ -138,6 +134,10 @@ async fn main() -> anyhow::Result<()> {
 "#,
             host, port
         );
+        info!(
+            "Prometheus metrics enabled on Web UI (http://{}/metrics)",
+            config.ui_addr
+        );
 
         let web_ui_server = web_ui::start_web_server(
             addr.into(),
@@ -153,6 +153,21 @@ async fn main() -> anyhow::Result<()> {
         );
         None
     };
+    if let Some(addr) = prom_addr {
+        info!("Prometheus exporter listening on http://{}", addr);
+    }
+
+    // --- Start MCP Server ---
+    if config.mcp.enabled {
+        info!("MCP server enabled, transport: {:?}, bind: {}", config.mcp.transport, config.mcp.bind);
+        let mcp_config_clone = config.mcp.clone();
+        let routes_for_mcp = config.routes.clone();
+        tokio::spawn(async move {
+            if let Err(e) = mcp::start_server(mcp_config_clone, routes_for_mcp).await {
+                error!("Failed to start MCP server: {}", e);
+            }
+        });
+    }
 
     if config.routes.is_empty() {
         warn!("No routes configured. Waiting for configuration via Web UI.");

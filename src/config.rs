@@ -10,6 +10,56 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+/// API Key authentication details.
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default, PartialEq)]
+pub struct ApiKeyAuth {
+    /// The HTTP header to check for the API key. Defaults to "Authorization".
+    #[serde(default)]
+    pub header: String,
+    /// The secret API key or token.
+    #[serde(default)]
+    pub key: String,
+}
+
+/// Authentication methods for the MCP server.
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuth {
+    #[default]
+    None,
+    /// API Key authentication.
+    ApiKey(ApiKeyAuth),
+}
+
+/// Transport protocol for the MCP server.
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    /// Use a streamable HTTP transport, which supports Server-Sent Events (SSE).
+    StreamableHttp,
+    /// Use standard input/output for communication.
+    #[default]
+    Stdio,
+}
+
+/// Configuration for the Marco's Control Plane (MCP) server.
+/// MCP provides a remote API for interacting with and managing the bridge.
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
+pub struct McpConfig {
+    /// If true, the MCP server is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// The transport protocol to use for the server.
+    #[serde(default)]
+    pub transport: McpTransport,
+    /// The address to bind the server to (e.g., "0.0.0.0:9092").
+    #[serde(default)]
+    pub bind: String,
+    /// Authentication settings for the server. If not present, no auth is used.
+    #[serde(default)]
+    pub auth: McpAuth,
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
 pub struct AppConfig {
     #[serde(default = "default_log_level")]
@@ -24,6 +74,9 @@ pub struct AppConfig {
     /// If it matches `ui_addr`, the standalone server is skipped as the UI handles it.
     #[serde(default)]
     pub metrics_addr: String,
+    /// Optional configuration for the Marco's Control Plane (MCP) server.
+    #[serde(default)]
+    pub mcp: McpConfig,
     #[serde(default)]
     pub routes: HashMap<String, Route>,
     /// If true, secrets will be extracted to .env file upon saving.
@@ -180,6 +233,13 @@ impl AppConfig {
             route.extract_secrets(&prefix, &mut all_secrets);
         }
 
+        if self.mcp.enabled {
+            if let McpAuth::ApiKey(key) = &mut self.mcp.auth {
+                let prefix = "MQB__MCP__AUTH__";
+                key.extract_secrets(prefix, &mut all_secrets);
+            }
+        }
+
         if !all_secrets.is_empty() {
             let env_path = Path::new(".env");
             let existing_content = if env_path.exists() {
@@ -224,6 +284,27 @@ impl AppConfig {
             std::fs::write(env_path, final_content)?;
         }
         Ok(())
+    }
+}
+
+impl SecretExtractor for ApiKeyAuth {
+    fn extract_secrets(&mut self, prefix: &str, secrets: &mut HashMap<String, String>) {
+        if !self.key.is_empty() && !self.key.starts_with("${") {
+            let key_name = format!("{}KEY", prefix);
+            secrets.insert(key_name.clone(), self.key.clone());
+            self.key = format!("${{{}}}", key_name);
+        }
+    }
+}
+
+impl SecretExtractor for McpAuth {
+    fn extract_secrets(&mut self, prefix: &str, secrets: &mut HashMap<String, String>) {
+        match self {
+            McpAuth::ApiKey(api_key_auth) => {
+                api_key_auth.extract_secrets(&format!("{}API_KEY__", prefix), secrets);
+            }
+            McpAuth::None => {}
+        }
     }
 }
 

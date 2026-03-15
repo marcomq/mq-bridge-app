@@ -1,6 +1,6 @@
 [package]
 name = "mq-bridge-app"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Marco Mengelkochs"]
 repository = "https://github.com/marcomq/mq-bridge-app"
@@ -27,8 +27,8 @@ strip = true
 
 
 [dependencies]
-# mq-bridge = { path = "../mq-bridge", features = ["schema"] }
-mq-bridge = { version="0.2.7", features = ["schema"] }
+mq-bridge = { path = "../mq-bridge", features = ["schema"] }
+# mq-bridge = { version="0.2.8", features = ["schema"] }
 
 config = { version = "0.15", features = ["yaml"] }
 dotenvy = "0.15"
@@ -55,12 +55,17 @@ metrics-exporter-prometheus = "0.18.1"
 schemars = "1"
 serde_json = "1.0"
 
+# MCP
+rmcp = { version = "1.2", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session", "transport-io", "server-side-http"], optional = true }
+axum = { version = "0.8", optional = true }
+
 [features]
 default = ["full"]
 integration-test = []
+mcp = ["rmcp", "axum"]
 ibm-mq = ["mq-bridge/ibm-mq"]
 arm64-cross-compile = ["rdkafka", "rdkafka/cmake-build"]
-full = ["mq-bridge/full"]
+full = ["mq-bridge/full", "mcp"]
 middleware = ["mq-bridge/middleware"]
 mongodb = ["mq-bridge/mongodb"]
 http = ["mq-bridge/http"]

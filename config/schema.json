@@ -21,6 +21,16 @@
       "type": "string",
       "default": ""
     },
+    "mcp": {
+      "description": "Optional configuration for the Marco's Control Plane (MCP) server.",
+      "$ref": "#/$defs/McpConfig",
+      "default": {
+        "enabled": false,
+        "transport": "stdio",
+        "bind": "",
+        "auth": "none"
+      }
+    },
     "routes": {
       "type": "object",
       "additionalProperties": {
@@ -35,6 +45,87 @@
     }
   },
   "$defs": {
+    "McpConfig": {
+      "description": "Configuration for the Marco's Control Plane (MCP) server.\nMCP provides a remote API for interacting with and managing the bridge.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "If true, the MCP server is enabled.",
+          "type": "boolean",
+          "default": false
+        },
+        "transport": {
+          "description": "The transport protocol to use for the server.",
+          "$ref": "#/$defs/McpTransport",
+          "default": "stdio"
+        },
+        "bind": {
+          "description": "The address to bind the server to (e.g., \"0.0.0.0:9092\").",
+          "type": "string",
+          "default": ""
+        },
+        "auth": {
+          "description": "Authentication settings for the server. If not present, no auth is used.",
+          "$ref": "#/$defs/McpAuth",
+          "default": "none"
+        }
+      }
+    },
+    "McpTransport": {
+      "description": "Transport protocol for the MCP server.",
+      "oneOf": [
+        {
+          "description": "Use a streamable HTTP transport, which supports Server-Sent Events (SSE).",
+          "type": "string",
+          "const": "streamable_http"
+        },
+        {
+          "description": "Use standard input/output for communication.",
+          "type": "string",
+          "const": "stdio"
+        }
+      ]
+    },
+    "McpAuth": {
+      "description": "Authentication methods for the MCP server.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        },
+        {
+          "description": "API Key authentication.",
+          "type": "object",
+          "properties": {
+            "api_key": {
+              "$ref": "#/$defs/ApiKeyAuth"
+            }
+          },
+          "required": [
+            "api_key"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ApiKeyAuth": {
+      "description": "API Key authentication details.",
+      "type": "object",
+      "properties": {
+        "header": {
+          "description": "The HTTP header to check for the API key. Defaults to \"Authorization\".",
+          "type": "string",
+          "default": ""
+        },
+        "key": {
+          "description": "The secret API key or token.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
     "Route": {
       "description": "Defines a single message processing route from an input to an output.",
       "type": "object",
@@ -50,6 +141,10 @@
             "middlewares": [],
             "null": null
           }
+        },
+        "description": {
+          "description": "A human-readable description of the route's purpose. Defaults to an empty string.",
+          "type": "string"
         },
         "concurrency": {
           "description": "(Optional) Number of concurrent processing tasks for this route. Defaults to 1.",
@@ -256,6 +351,17 @@
           },
           "required": [
             "grpc"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sqlx": {
+              "$ref": "#/$defs/SqlxConfig"
+            }
+          },
+          "required": [
+            "sqlx"
           ]
         },
         {
@@ -525,18 +631,60 @@
       "additionalProperties": false
     },
     "RandomPanicMiddleware": {
-      "description": "Random Panic middleware configuration.\n\nSimulates random failures for chaos testing and resilience validation.\nCauses the middleware to panic with the specified probability, useful for testing\nerror handling and recovery mechanisms.",
+      "description": "Middleware for fault injection testing.\n\nAllows testing error handling and recovery mechanisms by injecting faults\nat specific points in the message processing pipeline.\n\n# Examples\n\n```yaml\nrandom_panic:\n  mode: panic\n  trigger_on_message: 3  # Trigger on the 3rd message\n```",
       "type": "object",
       "properties": {
-        "probability": {
-          "description": "Probability of panic (0.0 to 1.0).",
-          "type": "number",
-          "format": "double"
+        "mode": {
+          "description": "The type of fault to inject.",
+          "$ref": "#/$defs/FaultMode",
+          "default": "panic"
+        },
+        "trigger_on_message": {
+          "description": "Trigger the fault on the Nth message (1-indexed). None = trigger on every message.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 1,
+          "default": null
+        },
+        "enabled": {
+          "description": "Enable/disable the fault injection without removing the configuration.",
+          "type": "boolean",
+          "default": true
         }
       },
-      "additionalProperties": false,
-      "required": [
-        "probability"
+      "additionalProperties": false
+    },
+    "FaultMode": {
+      "description": "Fault injection modes for testing error handling and recovery mechanisms.",
+      "oneOf": [
+        {
+          "description": "Trigger a thread panic.",
+          "type": "string",
+          "const": "panic"
+        },
+        {
+          "description": "Simulate a connection/network error (retryable).",
+          "type": "string",
+          "const": "disconnect"
+        },
+        {
+          "description": "Simulate a timeout error (retryable).",
+          "type": "string",
+          "const": "timeout"
+        },
+        {
+          "description": "Simulate a JSON format error (non-retryable).",
+          "type": "string",
+          "const": "json_format_error"
+        },
+        {
+          "description": "Return a negative acknowledgement (for handlers).",
+          "type": "string",
+          "const": "nack"
+        }
       ]
     },
     "DelayMiddleware": {
@@ -1177,6 +1325,11 @@
           "type": "boolean",
           "default": false
         },
+        "no_declare_queue": {
+          "description": "(Publisher only) If true, do not attempt to declare the queue. Assumes the queue already exists. Defaults to false.",
+          "type": "boolean",
+          "default": false
+        },
         "delayed_ack": {
           "description": "(Publisher only) If true, do not wait for an acknowledgement when sending to broker. Defaults to false.",
           "type": "boolean",
@@ -1422,7 +1575,7 @@
           "minimum": 0
         },
         "delayed_ack": {
-          "description": "(Publisher only) If true, messages are acknowledged immediately upon receipt (auto-ack).\nIf false (default), messages are acknowledged after processing (manual-ack).",
+          "description": "(Consumer only) If true, messages are acknowledged immediately upon receipt (auto-ack).\nIf false (default), messages are acknowledged after processing (manual-ack).\nNote: This setting does not currently enable synchronous publishing (waiting for PubAck) for the MQTT publisher.",
           "type": "boolean",
           "default": false
         }
@@ -1763,6 +1916,131 @@
       "additionalProperties": false,
       "required": [
         "url"
+      ]
+    },
+    "SqlxConfig": {
+      "description": "General SQLx connection configuration.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "Database connection URL.",
+          "type": "string"
+        },
+        "username": {
+          "description": "Optional username. Takes precedence over any credentials embedded in the `url`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "password": {
+          "description": "Optional password. Takes precedence over any credentials embedded in the `url`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "table": {
+          "description": "The table to interact with.",
+          "type": "string"
+        },
+        "insert_query": {
+          "description": "(Publisher only) Optional. A custom SQL INSERT query. Use `?` as a placeholder for the payload.\nIf not provided, a default `INSERT INTO {table} (payload) VALUES (?)` is used.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "select_query": {
+          "description": "(Consumer only) Optional. A custom SQL SELECT query to fetch messages. This is only supported for PostgreSQL and Microsoft SQL Server.\nThe query must include a placeholder for the batch size (`$1` for PostgreSQL, `@p1` for SQL Server).\nThe bridge will bind the route's `batch_size` to this placeholder.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delete_after_read": {
+          "description": "(Consumer only) If true, delete messages after processing.",
+          "type": "boolean",
+          "default": false
+        },
+        "auto_create_table": {
+          "description": "(Publisher only) If true, automatically create the table and indexes if they don't exist. Defaults to false.",
+          "type": "boolean",
+          "default": false
+        },
+        "polling_interval_ms": {
+          "description": "(Consumer only) Polling interval in milliseconds. Defaults to 100ms.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tls": {
+          "description": "TLS configuration for the database connection.",
+          "$ref": "#/$defs/TlsConfig",
+          "default": {
+            "required": false,
+            "ca_file": null,
+            "cert_file": null,
+            "key_file": null,
+            "cert_password": null,
+            "accept_invalid_certs": false
+          }
+        },
+        "max_connections": {
+          "description": "Maximum number of connections in the pool. Defaults to 10.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_connections": {
+          "description": "Minimum number of connections to keep in the pool. Defaults to 0.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "acquire_timeout_ms": {
+          "description": "Timeout for acquiring a connection from the pool in milliseconds. Defaults to 30000ms.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "idle_timeout_ms": {
+          "description": "Maximum idle time for a connection in milliseconds. Defaults to 600000ms (10 minutes).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_lifetime_ms": {
+          "description": "Maximum lifetime of a connection in milliseconds. Defaults to 1800000ms (30 minutes).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "table"
       ]
     },
     "SwitchConfig": {
