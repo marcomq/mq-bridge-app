@@ -27,8 +27,8 @@ strip = true
 
 
 [dependencies]
-mq-bridge = { path = "../mq-bridge", features = ["schema"] }
-# mq-bridge = { version="0.2.8", features = ["schema"] }
+# mq-bridge = { path = "../mq-bridge", features = ["schema"] }
+mq-bridge = { version="0.2.9", features = ["schema"] }
 
 config = { version = "0.15", features = ["yaml"] }
 dotenvy = "0.15"
