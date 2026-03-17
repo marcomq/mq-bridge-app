@@ -135,10 +135,24 @@ mod tools {
                     "messages": {
                         "type": "array",
                         "items": { "$ref": "#/$defs/message" }
-                    }
+                    },
+                    "message": { "$ref": "#/$defs/message" }
                 },
-                "required": ["messages"],
-                "$defs": { "message": { "type": "object", "properties": { "payload": { "type": "string" } }, "required": ["payload"] } }
+                "oneOf": [
+                    { "required": ["messages"] },
+                    { "required": ["message"] }
+                ],
+                "$defs": {
+                    "message": {
+                        "type": "object",
+                        "properties": {
+                            "payload": { "description": "The message content (string, JSON object, or any JSON value)" },
+                            "metadata": { "type": "object", "additionalProperties": { "type": "string" } },
+                            "message_id": { "description": "The message ID (string, integer, or MongoDB OID object)" }
+                        },
+                        "required": ["payload"]
+                    }
+                }
             }),
             McpToolAction::Introspect => serde_json::json!({
                 "type": "object",
@@ -386,17 +400,52 @@ impl MqBridgeMcpServer {
 
         match &tool.action {
             McpToolAction::Publish => {
-                let messages_val = args
-                    .get("messages")
-                    .ok_or_else(|| mcp_invalid("Missing 'messages' argument".into()))?;
-                let messages_arr = messages_val
-                    .as_array()
-                    .ok_or_else(|| mcp_invalid("'messages' must be an array".into()))?;
+                let messages_arr = if let Some(msgs) = args.get("messages") {
+                    msgs.as_array()
+                        .ok_or_else(|| mcp_invalid("'messages' must be an array".into()))?
+                        .clone()
+                } else if let Some(msg) = args.get("message") {
+                    vec![msg.clone()]
+                } else {
+                    return Err(mcp_invalid("Missing 'messages' or 'message' argument".into()));
+                };
 
                 let mut canonical_messages = Vec::new();
                 for m_val in messages_arr {
-                    let msg = CanonicalMessage::from_json(m_val.clone())
-                        .map_err(|e| mcp_invalid(e.to_string()))?;
+                    // If the input matches our schema { payload: ..., metadata: ... }, use it.
+                    // Otherwise, treat the whole object as payload (legacy behavior).
+                    let msg = if let Some(obj) = m_val.as_object() {
+                        if let Some(payload_val) = obj.get("payload") {
+                            let mut m = if let Some(s) = payload_val.as_str() {
+                                CanonicalMessage::from(s)
+                            } else {
+                                let bytes = serde_json::to_vec(payload_val)
+                                    .map_err(|e| mcp_internal(e.to_string()))?;
+                                CanonicalMessage::new(bytes, None)
+                            };
+
+                            if let Some(id_val) = obj.get("message_id") {
+                                // Use CanonicalMessage's own parser logic for ID
+                                if let Ok(tm) = CanonicalMessage::from_json(serde_json::json!({ "message_id": id_val })) {
+                                    m.message_id = tm.message_id;
+                                }
+                            }
+                            if let Some(meta) = obj.get("metadata").and_then(|v| v.as_object()) {
+                                for (k, v) in meta {
+                                    if let Some(s) = v.as_str() {
+                                        m.metadata.insert(k.clone(), s.to_string());
+                                    }
+                                }
+                            }
+                            m
+                        } else {
+                            CanonicalMessage::from_json(m_val.clone())
+                                .map_err(|e| mcp_invalid(e.to_string()))?
+                        }
+                    } else {
+                        CanonicalMessage::from_json(m_val.clone())
+                            .map_err(|e| mcp_invalid(e.to_string()))?
+                    };
                     canonical_messages.push(msg);
                 }
 
