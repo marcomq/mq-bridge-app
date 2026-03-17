@@ -2,9 +2,9 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 use config::Config;
-use schemars::JsonSchema;
-
+use mq_bridge::models::TlsConfig;
 use mq_bridge::{models::SecretExtractor, Route};
+use schemars::JsonSchema;
 
 fn default_log_level() -> String {
     "info".to_string()
@@ -58,6 +58,12 @@ pub struct McpConfig {
     /// Authentication settings for the server. If not present, no auth is used.
     #[serde(default)]
     pub auth: McpAuth,
+    /// Optional timeout for consuming messages (in milliseconds).
+    #[serde(default)]
+    pub consume_timeout_ms: u64,
+    /// Optional TLS configuration for the server.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]

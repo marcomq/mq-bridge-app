@@ -2,12 +2,12 @@
 //  © Copyright 2025, by Marco Mengelkoch
 //  Licensed under MIT License, see License file for more details
 //  git clone https://github.com/marcomq/mq-bridge-app
+use crate::publisher_registry;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::serve;
-use mq_bridge::Route;
+use mq_bridge::{models::TlsConfig, CanonicalMessage};
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams,
@@ -18,20 +18,15 @@ use rmcp::{
 };
 use tracing::info;
 
-use crate::config::McpConfig;
+use crate::config::{AppConfig, McpConfig};
 
-mod error {
-    use rmcp::ErrorData as McpError;
-
-    pub fn mcp_internal(msg: String) -> McpError {
-        McpError::internal_error(msg, None)
-    }
-
-    pub fn mcp_invalid(msg: String) -> McpError {
-        McpError::invalid_params(msg, None)
-    }
+fn mcp_internal(msg: String) -> McpError {
+    McpError::internal_error(msg, None)
 }
-use self::error::{mcp_internal, mcp_invalid};
+
+fn mcp_invalid(msg: String) -> McpError {
+    McpError::invalid_params(msg, None)
+}
 
 mod tools {
     use rmcp::model::Tool;
@@ -40,9 +35,7 @@ mod tools {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ConnectorRef {
         pub connector_type: String,
-        pub topic: Option<String>,
-        pub subject: Option<String>,
-        pub group_id: Option<String>,
+        pub route_name: Option<String>,
     }
 
     #[derive(Clone, Debug)]
@@ -53,10 +46,9 @@ mod tools {
         pub connector: ConnectorRef,
     }
 
-    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[derive(Clone, Debug)]
     pub enum McpToolAction {
         Publish,
-        Consume { timeout_ms: u64 },
         Introspect,
         Status,
     }
@@ -89,16 +81,10 @@ mod tools {
                 "type": "object",
                 "properties": {
                     "payload": { "type": "string" },
-                    "headers": { "type": "object" },
-                    "correlation_id": { "type": "string" }
+                    "metadata": { "type": "object" },
+                    "id": { "type": "string" }
                 },
                 "required": ["payload"]
-            }),
-            McpToolAction::Consume { .. } => serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "correlation_id": { "type": "string" }
-                }
             }),
             McpToolAction::Introspect => serde_json::json!({
                 "type": "object",
@@ -119,137 +105,74 @@ mod tools {
         rmcp_tool
     }
 }
-use self::tools::{
-    ConnectorRef, ConsumeInput, EndpointInput, McpTool, McpToolAction, PublishInput,
-};
+use self::tools::{ConnectorRef, EndpointInput, McpTool, McpToolAction};
 
-pub trait ConnectorBus: Send + Sync + 'static {
-    fn publish(
-        &self,
-        connector: &ConnectorRef,
-        payload: &str,
-        headers: Option<std::collections::HashMap<String, String>>,
-        correlation_id: Option<String>,
-    ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send;
-
-    fn consume_next(
-        &self,
-        connector: &ConnectorRef,
-        timeout_ms: u64,
-        correlation_id: Option<String>,
-    ) -> impl std::future::Future<Output = anyhow::Result<Option<String>>> + Send;
-
-    fn endpoint_status(
-        &self,
-        name: Option<&str>,
-    ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send;
-}
-
-struct AppBus {
-    routes: Arc<HashMap<String, Route>>,
-}
-
-impl ConnectorBus for AppBus {
-    async fn publish(
-        &self,
-        _connector: &ConnectorRef,
-        _payload: &str,
-        _headers: Option<std::collections::HashMap<String, String>>,
-        _correlation_id: Option<String>,
-    ) -> anyhow::Result<String> {
-        Ok("msg_id_placeholder".to_string())
-    }
-
-    async fn consume_next(
-        &self,
-        _connector: &ConnectorRef,
-        _timeout_ms: u64,
-        _correlation_id: Option<String>,
-    ) -> anyhow::Result<Option<String>> {
-        Ok(None)
-    }
-
-    async fn endpoint_status(&self, name: Option<&str>) -> anyhow::Result<String> {
-        if let Some(n) = name {
-            if self.routes.contains_key(n) {
-                Ok("Running".to_string())
-            } else {
-                Ok("Unknown".to_string())
-            }
-        } else {
-            Ok(format!("{} routes active", self.routes.len()))
-        }
-    }
-}
-
-pub struct MqBridgeMcpServer<B: ConnectorBus> {
+pub struct MqBridgeMcpServer {
     tools: Arc<Vec<McpTool>>,
-    bus: Arc<B>,
     server_name: Arc<str>,
 }
 
-impl<B: ConnectorBus> Clone for MqBridgeMcpServer<B> {
+impl Clone for MqBridgeMcpServer {
     fn clone(&self) -> Self {
         Self {
             tools: self.tools.clone(),
-            bus: self.bus.clone(),
             server_name: self.server_name.clone(),
         }
     }
 }
 
-impl<B: ConnectorBus> MqBridgeMcpServer<B> {
-    pub fn new(_config: &McpConfig, bus: B, server_name: impl Into<String>) -> Self {
-        let tool_list = vec![
+impl MqBridgeMcpServer {
+    pub fn new(config: &AppConfig, server_name: impl Into<String>) -> Self {
+        let mut tool_list = vec![
             McpTool {
-                name: "list_endpoints".into(),
-                description: "Lists all configured and available endpoints with \
-                    their type (Kafka/NATS/etc.), name, and description. \
-                    Use this first if you are unsure which endpoint to use."
+                name: "list_publishers".into(),
+                description: "Lists all available publishers that can be used to send messages. \
+                    These are derived from route definitions where `input` is null."
                     .into(),
                 action: McpToolAction::Introspect,
                 connector: ConnectorRef {
+                    route_name: None,
                     connector_type: "internal".into(),
-                    topic: None,
-                    subject: None,
-                    group_id: None,
                 },
             },
             McpTool {
-                name: "endpoint_status".into(),
-                description: "Returns the current connection status and basic \
-                    metrics for a specific endpoint. Useful to verify an endpoint \
-                    is healthy before publishing."
+                name: "get_status".into(),
+                description: "Returns the current status of running routes. \
+                    In MCP mode, this will be empty unless routes are deployed dynamically."
                     .into(),
                 action: McpToolAction::Status,
                 connector: ConnectorRef {
+                    route_name: None,
                     connector_type: "internal".into(),
-                    topic: None,
-                    subject: None,
-                    group_id: None,
                 },
             },
         ];
 
-        // TODO: Iterate over routes/config to add tools dynamically
+        // Sort tools by name for consistent output
+        tool_list.sort_by(|a, b| a.name.cmp(&b.name));
 
         Self {
             tools: Arc::new(tool_list),
-            bus: Arc::new(bus),
             server_name: server_name.into().into(),
         }
     }
 
-    pub async fn start(self, config: &McpConfig) -> anyhow::Result<()> {
-        let bind = &config.bind;
-        match config.transport {
-            crate::config::McpTransport::StreamableHttp => self.start_streamable_http(bind).await,
+    pub async fn start(self, mcp_config: &McpConfig) -> anyhow::Result<()> {
+        let bind = &mcp_config.bind;
+        match mcp_config.transport {
+            crate::config::McpTransport::StreamableHttp => {
+                self.start_streamable_http(bind, &mcp_config.tls).await
+            }
             crate::config::McpTransport::Stdio => self.start_stdio().await,
         }
     }
 
-    async fn start_streamable_http(self, bind: &str) -> anyhow::Result<()> {
-        use axum::Router;
+    async fn start_streamable_http(
+        self,
+        bind: &str,
+        tls_config: &Option<TlsConfig>,
+    ) -> anyhow::Result<()> {
+        use axum::{routing::get, Router};
         use rmcp::transport::streamable_http_server::{
             session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
         };
@@ -257,8 +180,8 @@ impl<B: ConnectorBus> MqBridgeMcpServer<B> {
         let addr: std::net::SocketAddr = bind.parse()?;
         info!("MCP StreamableHTTP server starting on {}", addr);
 
-        // Factory-Closure wird pro Client-Session aufgerufen.
-        // self.clone() ist günstig da alle Felder Arc-wrapped sind.
+        // The factory closure is called once per client session.
+        // clone() is cheap since all fields are Arc-wrapped.
         let me = self.clone();
         let service = StreamableHttpService::new(
             move || Ok(me.clone()),
@@ -266,9 +189,32 @@ impl<B: ConnectorBus> MqBridgeMcpServer<B> {
             StreamableHttpServerConfig::default(),
         );
 
-        let router = Router::new().nest_service("/mcp", service);
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        serve(listener, router).await?;
+        let router = Router::new()
+            .route(
+                "/",
+                get(|| async { "MCP endpoint is running. Please use a compatible client." }),
+            )
+            .nest_service("/mcp", service);
+
+        if let Some(tls) = tls_config {
+            info!("TLS enabled for MCP server");
+            let tls_cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                tls.cert_file
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("TLS cert_file required"))?,
+                tls.key_file
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("TLS key_file required"))?,
+            )
+            .await?;
+
+            axum_server::bind_rustls(addr, tls_cfg)
+                .serve(router.into_make_service())
+                .await?;
+        } else {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            serve(listener, router).await?;
+        }
 
         Ok(())
     }
@@ -284,66 +230,65 @@ impl<B: ConnectorBus> MqBridgeMcpServer<B> {
 
     async fn handle_tool_call(
         &self,
-        name: &str,
+        tool: &McpTool,
         args: Option<serde_json::Value>,
     ) -> Result<CallToolResult, McpError> {
-        let tool = self
-            .tools
-            .iter()
-            .find(|t| t.name == name)
-            .ok_or_else(|| mcp_invalid(format!("Unknown tool: {name}")))?;
-
         let args = args.unwrap_or(serde_json::Value::Object(Default::default()));
 
         match &tool.action {
             McpToolAction::Publish => {
-                let input: PublishInput =
-                    serde_json::from_value(args).map_err(|e| mcp_invalid(e.to_string()))?;
+                let msg =
+                    CanonicalMessage::from_json(args).map_err(|e| mcp_invalid(e.to_string()))?;
+                let route_name = tool.connector.route_name.as_deref().unwrap_or_default();
 
-                let msg_id = self
-                    .bus
-                    .publish(
-                        &tool.connector,
-                        &input.payload,
-                        input.headers,
-                        input.correlation_id,
-                    )
+                let Some(route) = publisher_registry::get_publisher_definition(route_name) else {
+                    return Err(mcp_invalid(format!(
+                        "Route definition '{}' not found for publisher tool",
+                        route_name
+                    )));
+                };
+
+                // Create a temporary, one-shot publisher from the route definition.
+                let publisher = mq_bridge::Publisher::new(route.output.clone())
+                    .await
+                    .map_err(|e| {
+                        mcp_internal(format!(
+                            "Failed to create publisher for '{}': {}",
+                            route_name, e
+                        ))
+                    })?;
+
+                publisher
+                    .send(msg.clone())
                     .await
                     .map_err(|e| mcp_internal(e.to_string()))?;
-
                 Ok(tools::success(format!(
-                    "Message published successfully. ID: {msg_id}"
+                    "Message published successfully. ID: {:032x}",
+                    msg.message_id
                 )))
             }
 
-            McpToolAction::Consume { timeout_ms } => {
-                let input: ConsumeInput = serde_json::from_value(args).unwrap_or_default();
-
-                match self
-                    .bus
-                    .consume_next(&tool.connector, *timeout_ms, input.correlation_id)
-                    .await
-                    .map_err(|e| mcp_internal(e.to_string()))?
-                {
-                    Some(msg) => Ok(tools::success(msg)),
-                    None => Ok(tools::success("No messages available (timeout)")),
-                }
-            }
-
             McpToolAction::Introspect => {
-                let endpoint_list: Vec<serde_json::Value> = self
-                    .tools
-                    .iter()
-                    .filter(|t| t.connector.connector_type != "internal")
-                    .map(|t| {
+                let mut publisher_list: Vec<serde_json::Value> = Vec::new();
+                for name in publisher_registry::list_publisher_definitions() {
+                    if let Some(route) = publisher_registry::get_publisher_definition(&name) {
+                        let connector = endpoint_to_connector_ref(&route.output, &name);
                         serde_json::json!({
-                            "name": t.name,
-                            "description": t.description,
-                            "type": t.connector.connector_type,
-                            "topic": t.connector.topic,
-                        })
-                    })
-                    .collect();
+                            "name": format!("publish_to_{}", name.replace('-', "_")),
+                            "description": route.options.description,
+                            "type": connector.connector_type,
+                        });
+                    }
+                }
+                // Sort for consistent output
+                publisher_list.sort_by(|a, b| {
+                    a["name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .cmp(b["name"].as_str().unwrap_or(""))
+                });
+
+                let endpoint_list = publisher_list;
 
                 Ok(tools::success(
                     serde_json::to_string_pretty(&endpoint_list).unwrap_or_default(),
@@ -354,11 +299,17 @@ impl<B: ConnectorBus> MqBridgeMcpServer<B> {
                 let input: EndpointInput =
                     serde_json::from_value(args).unwrap_or(EndpointInput { name: None });
 
-                let status = self
-                    .bus
-                    .endpoint_status(input.name.as_deref())
-                    .await
-                    .map_err(|e| mcp_internal(e.to_string()))?;
+                let routes = mq_bridge::list_routes();
+                let status: serde_json::Value = match input.name.as_deref() {
+                    Some(name) => {
+                        let is_running = routes.contains(&name.to_string());
+                        serde_json::json!({ name: if is_running { "running" } else { "stopped" } })
+                    }
+                    None => serde_json::json!({
+                        "running_routes": routes,
+                        "available_publishers": publisher_registry::list_publisher_definitions(),
+                    }),
+                };
 
                 Ok(tools::success(status))
             }
@@ -366,11 +317,11 @@ impl<B: ConnectorBus> MqBridgeMcpServer<B> {
     }
 }
 
-impl<B: ConnectorBus> ServerHandler for MqBridgeMcpServer<B> {
+impl ServerHandler for MqBridgeMcpServer {
     fn get_info(&self) -> ServerInfo {
-        // ServerInfo = type alias für InitializeResult (#[non_exhaustive])
-        // Implementation ist ebenfalls #[non_exhaustive]
-        // → kein struct literal möglich, Default + Feldzuweisung verwenden
+        // ServerInfo is a type alias for InitializeResult (#[non_exhaustive]).
+        // The implementation is also #[non_exhaustive], so struct literal syntax
+        // is not possible — use Default + field assignment instead.
         let mut info = ServerInfo::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.instructions = Some(
@@ -388,10 +339,24 @@ impl<B: ConnectorBus> ServerHandler for MqBridgeMcpServer<B> {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let tools = self.tools.iter().map(tools::to_rmcp_tool).collect();
+        // Dynamically build the tool list from the base tools and the registered publishers.
+        let mut dynamic_tools = self.tools.clone().to_vec();
+
+        for name in publisher_registry::list_publisher_definitions() {
+            if let Some(route) = publisher_registry::get_publisher_definition(&name) {
+                let connector = endpoint_to_connector_ref(&route.output, &name);
+                dynamic_tools.push(McpTool {
+                    name: format!("publish_to_{}", name.replace('-', "_")),
+                    description: route.options.description.clone(),
+                    action: McpToolAction::Publish,
+                    connector,
+                });
+            }
+        }
+        dynamic_tools.sort_by(|a, b| a.name.cmp(&b.name));
 
         Ok(ListToolsResult {
-            tools,
+            tools: dynamic_tools.iter().map(tools::to_rmcp_tool).collect(),
             next_cursor: None,
             meta: None,
         })
@@ -403,15 +368,48 @@ impl<B: ConnectorBus> ServerHandler for MqBridgeMcpServer<B> {
         _ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         info!("MCP tool call: {}", request.name);
+
+        // Find the tool dynamically.
+        let tool = self.tools.iter().find(|t| t.name == request.name).cloned();
+
         let arguments = request.arguments.map(serde_json::Value::Object);
-        self.handle_tool_call(&request.name, arguments).await
+
+        if let Some(tool) = tool {
+            // It's a static tool like 'list_publishers' or 'get_status'
+            return self.handle_tool_call(&tool, arguments).await;
+        }
+
+        // If not a static tool, check if it's a dynamic publisher tool.
+        if let Some(route_name) = request.name.strip_prefix("publish_to_") {
+            let route_name = route_name.replace('_', "-");
+            if let Some(route) = publisher_registry::get_publisher_definition(&route_name) {
+                // Construct a temporary McpTool to pass to handle_tool_call
+                let connector = endpoint_to_connector_ref(&route.output, &route_name);
+                let temp_tool = McpTool {
+                    name: request.name.to_string(),
+                    description: route.options.description,
+                    action: McpToolAction::Publish,
+                    connector,
+                };
+                return self.handle_tool_call(&temp_tool, arguments).await;
+            }
+        }
+
+        Err(mcp_invalid(format!("Unknown tool: {}", request.name)))
     }
 }
 
-pub async fn start_server(config: McpConfig, routes: HashMap<String, Route>) -> anyhow::Result<()> {
-    let bus = AppBus {
-        routes: Arc::new(routes),
-    };
-    let server = MqBridgeMcpServer::new(&config, bus, "mq-bridge-mcp");
-    server.start(&config).await
+pub async fn start_server(config: AppConfig) -> anyhow::Result<()> {
+    let server = MqBridgeMcpServer::new(&config, "mq-bridge-mcp");
+    server.start(&config.mcp).await
+}
+
+fn endpoint_to_connector_ref(
+    endpoint: &mq_bridge::models::Endpoint,
+    route_name: &str,
+) -> ConnectorRef {
+    ConnectorRef {
+        connector_type: endpoint.endpoint_type.name().to_string(),
+        route_name: Some(route_name.to_string()),
+    }
 }

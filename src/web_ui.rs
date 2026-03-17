@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::publisher_registry;
 use anyhow::Result;
 use metrics_exporter_prometheus::PrometheusHandle;
 use mq_bridge::models::{Endpoint, EndpointType, HttpConfig, Route};
@@ -123,9 +124,71 @@ impl WebUiHandler {
 
         tracing::info!("Received new configuration via Web UI. Reloading...");
 
+        // If MCP is enabled, we don't hot-reload routes. We just save the config
+        // and the user must restart the application for changes to take effect.
+        if new_config.mcp.enabled {
+            // MCP mode is active
+            tracing::info!("MCP mode is enabled. Hot-reloading publisher definitions only.");
+            let new_publishers: std::collections::HashSet<_> = new_config
+                .routes
+                .iter()
+                .filter(|(_, r)| matches!(r.input.endpoint_type, EndpointType::Null))
+                .map(|(k, _)| k.clone())
+                .collect();
+
+            // Unregister publishers that are no longer in the config
+            for old_pub_name in publisher_registry::list_publisher_definitions() {
+                if !new_publishers.contains(&old_pub_name) {
+                    publisher_registry::unregister_publisher_definition(&old_pub_name);
+                    tracing::info!("Unregistered publisher definition '{}'", old_pub_name);
+                }
+            }
+
+            // Register new/updated publisher definitions
+            for (name, route) in &new_config.routes {
+                if matches!(route.input.endpoint_type, EndpointType::Null) {
+                    publisher_registry::register_publisher_definition(name, route.clone());
+                    tracing::info!("Registered/updated publisher definition '{}'", name);
+                }
+            }
+
+            let mut config_guard = self.config.write().unwrap();
+            let config_file = &*self.config_file_path;
+            if let Err(e) = new_config.save(config_file) {
+                let err_msg = format!("Failed to save config to '{}': {}", config_file, e);
+                tracing::error!("{}", err_msg);
+                return Ok(Handled::Publish(
+                    CanonicalMessage::from(err_msg).with_status_code("500"),
+                ));
+            }
+            *config_guard = new_config;
+            return Ok(Handled::Publish(
+                CanonicalMessage::from("Publisher definitions updated successfully.")
+                    .with_status_code("200"),
+            ));
+        }
+
         let routes = std::mem::take(&mut new_config.routes);
         for (name, route) in &routes {
-            if let Err(e) = route.check(name, None) {
+            if matches!(route.input.endpoint_type, EndpointType::Null) {
+                // This is a "publisher-only" route definition.
+                // It's not a running route, but a named publisher.
+                tracing::info!("Registering route '{}' as a publisher", name);
+                // Create a publisher from the output endpoint.
+                let publisher = match mq_bridge::Publisher::new(route.output.clone()).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let err_msg =
+                            format!("Failed to create publisher for route '{}': {}", name, e);
+                        tracing::error!("{}", err_msg);
+                        return Ok(Handled::Publish(
+                            CanonicalMessage::from(err_msg).with_status_code("500"),
+                        ));
+                    }
+                };
+                // Register it globally so it can be referenced by other routes.
+                mq_bridge::register_publisher(name, publisher);
+            } else if let Err(e) = route.check(name, None) {
                 let err_msg = format!("Route {}: validation failed: {}", name, e);
                 tracing::error!("{}", err_msg);
                 return Ok(Handled::Publish(
@@ -163,6 +226,10 @@ impl WebUiHandler {
             }
         }
         for (name, route) in &routes {
+            if matches!(route.input.endpoint_type, EndpointType::Null) {
+                continue;
+            }
+
             if let Err(e) = route.deploy(name).await {
                 let err_msg = format!("Failed to deploy route {}: {}", name, e);
                 return Ok(Handled::Publish(
