@@ -3,6 +3,7 @@
 //  Licensed under MIT License, see License file for more details
 //  git clone https://github.com/marcomq/mq-bridge-app
 
+use anyhow::Context;
 use clap::Parser;
 use config::Config;
 use mq_bridge::CanonicalMessage;
@@ -39,6 +40,10 @@ struct Cli {
     /// Port for the Http transport (overrides config if set)
     #[clap(long)]
     port: Option<u16>,
+
+    /// Generate JSON schema to the specified path
+    #[clap(long)]
+    schema: Option<String>,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -79,7 +84,8 @@ mod tools {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ConnectorRef {
         pub connector_type: String,
-        pub route_name: Option<String>,
+        /// The original endpoint name as defined in config (not the tool name).
+        pub endpoint_name: Option<String>,
     }
 
     #[derive(Clone, Debug)]
@@ -109,9 +115,16 @@ mod tools {
         pub max_messages: Option<usize>,
     }
 
-    pub fn success<T: Serialize>(data: T) -> rmcp::model::CallToolResult {
-        let content_str = serde_json::to_string(&data).unwrap_or_default();
+    /// Serialize `data` as pretty JSON and return a successful CallToolResult.
+    /// Accepts a `serde_json::Value` directly to avoid double-serialization.
+    pub fn success_value(data: serde_json::Value) -> rmcp::model::CallToolResult {
+        let content_str = serde_json::to_string_pretty(&data).unwrap_or_default();
         rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text(content_str)])
+    }
+
+    /// Convenience wrapper for plain string results.
+    pub fn success_str(msg: impl Into<String>) -> rmcp::model::CallToolResult {
+        rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text(msg.into())])
     }
 
     pub fn to_rmcp_tool(tool: &McpTool) -> Tool {
@@ -167,16 +180,18 @@ fn mcp_internal(msg: String) -> McpError {
     McpError::internal_error(msg, None)
 }
 
-fn msg_to_string(msg: &CanonicalMessage) -> String {
-    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&msg.payload) {
-        json.to_string()
-    } else {
-        msg.get_payload_str().to_string()
-    }
+/// Convert an endpoint config name to a tool name suffix (replaces `-` with `_`).
+fn to_tool_suffix(name: &str) -> String {
+    name.replace('-', "_")
 }
 
 pub struct MqBridgeMcpServer {
+    /// Static tools (list_publishers, list_consumers, get_status) plus all
+    /// dynamic publish_to_* and consume_from_* tools, built once at startup.
     tools: Arc<Vec<McpTool>>,
+    /// Lookup map: tool_name → original endpoint name in config.
+    /// Avoids the lossy `_` ↔ `-` round-trip for dispatch.
+    tool_to_endpoint: Arc<HashMap<String, String>>,
     server_name: Arc<str>,
     consumers: Arc<HashMap<String, ConsumerConfig>>,
 }
@@ -199,6 +214,7 @@ impl Clone for MqBridgeMcpServer {
     fn clone(&self) -> Self {
         Self {
             tools: self.tools.clone(),
+            tool_to_endpoint: self.tool_to_endpoint.clone(),
             server_name: self.server_name.clone(),
             consumers: self.consumers.clone(),
         }
@@ -219,12 +235,11 @@ impl MqBridgeMcpServer {
         let mut tool_list = vec![
             McpTool {
                 name: "list_publishers".into(),
-                description: "Lists all available publishers that can be used to send messages. \
-                    These are derived from route definitions where `input` is null."
+                description: "Lists all available publishers that can be used to send messages."
                     .into(),
                 action: McpToolAction::Introspect,
                 connector: ConnectorRef {
-                    route_name: None,
+                    endpoint_name: None,
                     connector_type: "internal".into(),
                 },
             },
@@ -234,28 +249,59 @@ impl MqBridgeMcpServer {
                     .into(),
                 action: McpToolAction::Introspect,
                 connector: ConnectorRef {
-                    route_name: None,
+                    endpoint_name: None,
                     connector_type: "internal_consumer".into(),
                 },
             },
             McpTool {
                 name: "get_status".into(),
-                description: "Returns the current status of running routes. \
-                    In MCP mode, this will be empty unless routes are deployed dynamically."
-                    .into(),
+                description: "Returns the status of registered publishers and consumers.".into(),
                 action: McpToolAction::Status,
                 connector: ConnectorRef {
-                    route_name: None,
+                    endpoint_name: None,
                     connector_type: "internal".into(),
                 },
             },
         ];
 
-        // Sort tools by name for consistent output
+        // Build lookup map and dynamic tools in one pass over publishers.
+        let mut tool_to_endpoint: HashMap<String, String> = HashMap::new();
+
+        for name in publisher_registry::list_publishers() {
+            if let Some(pub_def) = publisher_registry::get_publisher(&name) {
+                let tool_name = format!("publish_to_{}", to_tool_suffix(&name));
+                tool_to_endpoint.insert(tool_name.clone(), name.clone());
+                tool_list.push(McpTool {
+                    name: tool_name,
+                    description: pub_def.description,
+                    action: McpToolAction::Publish,
+                    connector: ConnectorRef {
+                        connector_type: pub_def.endpoint_type.clone(),
+                        endpoint_name: Some(name),
+                    },
+                });
+            }
+        }
+
+        for (name, def) in config.consumers.iter() {
+            let tool_name = format!("consume_from_{}", to_tool_suffix(name));
+            tool_to_endpoint.insert(tool_name.clone(), name.clone());
+            tool_list.push(McpTool {
+                name: tool_name,
+                description: def.description.clone(),
+                action: McpToolAction::Consume,
+                connector: ConnectorRef {
+                    connector_type: def.endpoint.endpoint_type.name().to_string(),
+                    endpoint_name: Some(name.clone()),
+                },
+            });
+        }
+
         tool_list.sort_by(|a, b| a.name.cmp(&b.name));
 
         Self {
             tools: Arc::new(tool_list),
+            tool_to_endpoint: Arc::new(tool_to_endpoint),
             server_name: server_name.into().into(),
             consumers: Arc::new(config.consumers.clone()),
         }
@@ -285,8 +331,6 @@ impl MqBridgeMcpServer {
         let addr: std::net::SocketAddr = bind.parse()?;
         info!("MCP StreamableHTTP server starting on {}", addr);
 
-        // The factory closure is called once per client session.
-        // clone() is cheap since all fields are Arc-wrapped.
         let me = self.clone();
         let service = StreamableHttpService::new(
             move || Ok(me.clone()),
@@ -342,8 +386,7 @@ impl MqBridgeMcpServer {
 
         match &tool.action {
             McpToolAction::Publish => {
-                let input: serde_json::Value = args;
-                let messages_val = input
+                let messages_val = args
                     .get("messages")
                     .ok_or_else(|| mcp_invalid("Missing 'messages' argument".into()))?;
                 let messages_arr = messages_val
@@ -357,17 +400,17 @@ impl MqBridgeMcpServer {
                     canonical_messages.push(msg);
                 }
 
-                let route_name = tool.connector.route_name.as_deref().unwrap_or_default();
-                let Some(pub_def) = publisher_registry::get_publisher(route_name) else {
+                let endpoint_name = tool.connector.endpoint_name.as_deref().unwrap_or_default();
+                let Some(pub_def) = publisher_registry::get_publisher(endpoint_name) else {
                     return Err(mcp_invalid(format!(
-                        "Route definition '{}' not found for publisher tool",
-                        route_name
+                        "Publisher '{}' not found",
+                        endpoint_name
                     )));
                 };
 
                 let publisher = pub_def.publisher.clone();
                 match publisher.send_batch(canonical_messages).await {
-                    Ok(_) => Ok(tools::success("Batch published successfully".to_string())),
+                    Ok(_) => Ok(tools::success_str("Batch published successfully")),
                     Err(e) => Err(mcp_internal(e.to_string())),
                 }
             }
@@ -379,7 +422,7 @@ impl MqBridgeMcpServer {
                         .iter()
                         .map(|(name, def)| {
                             serde_json::json!({
-                                "name": format!("consume_from_{}", name.replace('-', "_")),
+                                "name": format!("consume_from_{}", to_tool_suffix(name)),
                                 "description": def.description,
                                 "type": def.endpoint.endpoint_type.name(),
                             })
@@ -391,17 +434,18 @@ impl MqBridgeMcpServer {
                             .unwrap_or("")
                             .cmp(b["name"].as_str().unwrap_or(""))
                     });
-                    return Ok(tools::success(
-                        serde_json::to_string_pretty(&consumer_list).unwrap_or_default(),
-                    ));
+                    // Pass Value directly — no double-serialization.
+                    return Ok(tools::success_value(serde_json::Value::Array(
+                        consumer_list,
+                    )));
                 }
 
-                // Default introspect is list_publishers
+                // Default: list_publishers
                 let mut endpoint_list: Vec<serde_json::Value> = Vec::new();
                 for name in publisher_registry::list_publishers() {
                     if let Some(pub_def) = publisher_registry::get_publisher(&name) {
                         endpoint_list.push(serde_json::json!({
-                            "name": format!("publish_to_{}", name.replace('-', "_")),
+                            "name": format!("publish_to_{}", to_tool_suffix(&name)),
                             "description": pub_def.description,
                             "type": pub_def.endpoint_type,
                         }));
@@ -414,17 +458,17 @@ impl MqBridgeMcpServer {
                         .cmp(b["name"].as_str().unwrap_or(""))
                 });
 
-                Ok(tools::success(
-                    serde_json::to_string_pretty(&endpoint_list).unwrap_or_default(),
-                ))
+                Ok(tools::success_value(serde_json::Value::Array(
+                    endpoint_list,
+                )))
             }
 
             McpToolAction::Consume => {
-                let consumer_name = tool.connector.route_name.as_deref().unwrap_or_default();
-                let Some(consumer_def) = self.consumers.get(consumer_name) else {
+                let endpoint_name = tool.connector.endpoint_name.as_deref().unwrap_or_default();
+                let Some(consumer_def) = self.consumers.get(endpoint_name) else {
                     return Err(mcp_invalid(format!(
-                        "Consumer definition '{}' not found for consumer tool",
-                        consumer_name
+                        "Consumer '{}' not found",
+                        endpoint_name
                     )));
                 };
 
@@ -432,32 +476,47 @@ impl MqBridgeMcpServer {
                 let timeout = Duration::from_millis(consume_args.timeout_ms.unwrap_or(5000));
                 let max_messages = consume_args.max_messages.unwrap_or(10);
 
-                let mut consumer = consumer_def
-                    .endpoint
-                    .create_consumer(consumer_name)
-                    .await
-                    .map_err(|e| {
-                        mcp_internal(format!(
-                            "Failed to create consumer for '{}': {}",
-                            consumer_name, e
-                        ))
-                    })?;
+                // Reuse pooled consumer if available; fall back to creating one.
+                let consumer_arc = match consumer_registry::get_consumer(endpoint_name) {
+                    Some(c) => c,
+                    None => {
+                        let c = consumer_def
+                            .endpoint
+                            .create_consumer(endpoint_name)
+                            .await
+                            .map_err(|e| {
+                                mcp_internal(format!(
+                                    "Failed to create consumer for '{}': {}",
+                                    endpoint_name, e
+                                ))
+                            })?;
+                        consumer_registry::register_consumer(endpoint_name, c)
+                    }
+                };
 
+                let mut consumer = consumer_arc.lock().await;
                 match tokio::time::timeout(timeout, consumer.receive_batch(max_messages)).await {
                     Ok(Ok(batch)) => {
-                        let msgs_str: Vec<String> =
-                            batch.messages.iter().map(msg_to_string).collect();
-                        let result_json = serde_json::to_string(&msgs_str).unwrap_or_default();
+                        let msgs: Vec<serde_json::Value> = batch
+                            .messages
+                            .iter()
+                            .map(|m| {
+                                // Prefer parsed JSON; fall back to plain string.
+                                serde_json::from_slice(&m.payload).unwrap_or_else(|_| {
+                                    serde_json::Value::String(m.get_payload_str().to_string())
+                                })
+                            })
+                            .collect();
 
                         let dispositions =
                             vec![mq_bridge::traits::MessageDisposition::Ack; batch.messages.len()];
                         (batch.commit)(dispositions).await.ok();
 
-                        Ok(tools::success(result_json))
+                        Ok(tools::success_value(serde_json::Value::Array(msgs)))
                     }
                     Ok(Err(e)) => Err(mcp_internal(format!("Error consuming batch: {}", e))),
-                    Err(_) => Ok(tools::success(format!(
-                        "Timed out after {}ms",
+                    Err(_) => Ok(tools::success_str(format!(
+                        "Timed out after {}ms with no messages",
                         timeout.as_millis()
                     ))),
                 }
@@ -467,19 +526,26 @@ impl MqBridgeMcpServer {
                 let input: EndpointInput =
                     serde_json::from_value(args).unwrap_or(EndpointInput { name: None });
 
-                let routes = mq_bridge::list_routes();
-                let status: serde_json::Value = match input.name.as_deref() {
+                let publishers = publisher_registry::list_publishers();
+                let consumers: Vec<String> = self.consumers.keys().cloned().collect();
+
+                let status = match input.name.as_deref() {
                     Some(name) => {
-                        let is_running = routes.contains(&name.to_string());
-                        serde_json::json!({ name: if is_running { "running" } else { "stopped" } })
+                        let is_publisher = publishers.contains(&name.to_string());
+                        let is_consumer = self.consumers.contains_key(name);
+                        serde_json::json!({
+                            "name": name,
+                            "publisher": is_publisher,
+                            "consumer": is_consumer,
+                        })
                     }
                     None => serde_json::json!({
-                        "running_routes": routes,
-                        "available_publishers": publisher_registry::list_publishers(),
+                        "publishers": publishers,
+                        "consumers": consumers,
                     }),
                 };
 
-                Ok(tools::success(status))
+                Ok(tools::success_value(status))
             }
         }
     }
@@ -493,8 +559,8 @@ impl ServerHandler for MqBridgeMcpServer {
             .enable_resources()
             .build();
         info.instructions = Some(
-            "mq-bridge MCP server. Use list_endpoints to discover available \
-             message queue endpoints, then publish or consume messages."
+            "mq-bridge MCP server. Use list_publishers / list_consumers to discover available \
+             endpoints, then use publish_to_<name> or consume_from_<name> tools."
                 .into(),
         );
         info.server_info.name = self.server_name.as_ref().into();
@@ -507,41 +573,9 @@ impl ServerHandler for MqBridgeMcpServer {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        // Dynamically build the tool list from the base tools and the registered publishers.
-        let mut dynamic_tools = self.tools.clone().to_vec();
-
-        for name in publisher_registry::list_publishers() {
-            if let Some(pub_def) = publisher_registry::get_publisher(&name) {
-                let connector = ConnectorRef {
-                    connector_type: pub_def.endpoint_type.clone(),
-                    route_name: Some(name.clone()),
-                };
-                dynamic_tools.push(McpTool {
-                    name: format!("publish_to_{}", name.replace('-', "_")),
-                    description: pub_def.description,
-                    action: McpToolAction::Publish,
-                    connector,
-                });
-            }
-        }
-
-        // Add dynamic consumer tools
-        for (name, def) in self.consumers.iter() {
-            let connector = ConnectorRef {
-                connector_type: def.endpoint.endpoint_type.name().to_string(),
-                route_name: Some(name.clone()),
-            };
-            dynamic_tools.push(McpTool {
-                name: format!("consume_from_{}", name.replace('-', "_")),
-                description: format!("Consume messages from {}", def.description),
-                action: McpToolAction::Consume,
-                connector,
-            });
-        }
-        dynamic_tools.sort_by(|a, b| a.name.cmp(&b.name));
-
+        // Tool list is fully built at startup — just convert and return.
         Ok(ListToolsResult {
-            tools: dynamic_tools.iter().map(tools::to_rmcp_tool).collect(),
+            tools: self.tools.iter().map(tools::to_rmcp_tool).collect(),
             next_cursor: None,
             meta: None,
         })
@@ -554,52 +588,13 @@ impl ServerHandler for MqBridgeMcpServer {
     ) -> Result<CallToolResult, McpError> {
         info!("MCP tool call: {}", request.name);
 
-        // Find the tool dynamically.
-        let tool = self.tools.iter().find(|t| t.name == request.name).cloned();
-
         let arguments = request.arguments.map(serde_json::Value::Object);
 
-        if let Some(tool) = tool {
-            // It's a static tool like 'list_publishers' or 'get_status'
+        // Look up the tool by name directly from the pre-built list.
+        if let Some(tool) = self.tools.iter().find(|t| t.name == request.name).cloned() {
             return self.handle_tool_call(&tool, arguments).await;
         }
 
-        // If not a static tool, check if it's a dynamic publisher tool.
-        if let Some(route_name) = request.name.strip_prefix("publish_to_") {
-            let route_name = route_name.replace('_', "-");
-            if let Some(pub_def) = publisher_registry::get_publisher(&route_name) {
-                // Construct a temporary McpTool to pass to handle_tool_call
-                let connector = ConnectorRef {
-                    connector_type: pub_def.endpoint_type.clone(),
-                    route_name: Some(route_name.clone()),
-                };
-                let temp_tool = McpTool {
-                    name: request.name.to_string(),
-                    description: pub_def.description,
-                    action: McpToolAction::Publish,
-                    connector,
-                };
-                return self.handle_tool_call(&temp_tool, arguments).await;
-            }
-        }
-
-        // Check for dynamic consumer tool.
-        if let Some(consumer_name) = request.name.strip_prefix("consume_from_") {
-            let consumer_name = consumer_name.replace('_', "-");
-            if let Some(def) = self.consumers.get(&consumer_name) {
-                let connector = ConnectorRef {
-                    connector_type: def.endpoint.endpoint_type.name().to_string(),
-                    route_name: Some(consumer_name.to_string()),
-                };
-                let temp_tool = McpTool {
-                    name: request.name.to_string(),
-                    description: def.description.clone(),
-                    action: McpToolAction::Consume,
-                    connector,
-                };
-                return self.handle_tool_call(&temp_tool, arguments).await;
-            }
-        }
         Err(mcp_invalid(format!("Unknown tool: {}", request.name)))
     }
 
@@ -624,17 +619,17 @@ impl ServerHandler for MqBridgeMcpServer {
         })
     }
 
+    /// Returns non-destructive metadata about the endpoint.
+    /// Does NOT consume or ack any messages — use `consume_from_<name>` for that.
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         _ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         let uri_str = request.uri.as_str();
-        let consumer_name = if let Some(name) = uri_str.strip_prefix("mq://") {
-            name
-        } else {
-            return Err(mcp_invalid(format!("Invalid resource URI: {}", uri_str)));
-        };
+        let consumer_name = uri_str
+            .strip_prefix("mq://")
+            .ok_or_else(|| mcp_invalid(format!("Invalid resource URI: {}", uri_str)))?;
 
         let Some(consumer_def) = self.consumers.get(consumer_name) else {
             return Err(mcp_invalid(format!(
@@ -643,41 +638,19 @@ impl ServerHandler for MqBridgeMcpServer {
             )));
         };
 
-        let mut consumer = consumer_def
-            .endpoint
-            .create_consumer(consumer_name)
-            .await
-            .map_err(|e| {
-                mcp_internal(format!(
-                    "Failed to create consumer for '{}': {}",
-                    consumer_name, e
-                ))
-            })?;
-
-        // For resource reading, we do a quick batch consume (e.g. up to 10 messages)
-        // effectively peeking or draining depending on the consumer implementation.
-        let batch = consumer
-            .receive_batch(10)
-            .await
-            .map_err(|e| mcp_internal(e.to_string()))?;
-
-        let mut content = String::new();
-        for msg in &batch.messages {
-            content.push_str(&msg_to_string(msg));
-            content.push('\n');
-        }
-
-        // Commit to acknowledge receipt (assuming read_resource consumes)
-        if !batch.messages.is_empty() {
-            let dispositions =
-                vec![mq_bridge::traits::MessageDisposition::Ack; batch.messages.len()];
-            (batch.commit)(dispositions)
-                .await
-                .map_err(|e| mcp_internal(format!("Failed to commit offset: {}", e)))?;
-        }
+        let metadata = serde_json::json!({
+            "name": consumer_name,
+            "description": consumer_def.description,
+            "broker_type": consumer_def.endpoint.endpoint_type.name(),
+            "uri": uri_str,
+            "hint": format!(
+                "Use the 'consume_from_{}' tool to receive messages from this endpoint.",
+                to_tool_suffix(consumer_name)
+            ),
+        });
 
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
-            content,
+            serde_json::to_string_pretty(&metadata).unwrap_or_default(),
             request.uri,
         )]))
     }
@@ -689,6 +662,26 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Cli::parse();
 
+    if let Some(schema_path) = args.schema {
+        let schema = schemars::schema_for!(McpAppConfig);
+        let schema_json =
+            serde_json::to_string_pretty(&schema).context("Failed to serialize schema")?;
+
+        if schema_path == "-" {
+            println!("{}", schema_json);
+        } else {
+            let path = std::path::Path::new(&schema_path);
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    std::fs::create_dir_all(parent)
+                        .context("Failed to create parent directory for schema")?;
+                }
+            }
+            std::fs::write(path, schema_json).context("Failed to write schema file")?;
+        }
+        return Ok(());
+    }
+
     let mut config = load_mcp_config(&args.config)?;
 
     // Apply CLI overrides
@@ -696,7 +689,6 @@ async fn main() -> anyhow::Result<()> {
         config.mcp.transport = transport.into();
     }
     if let Some(port) = args.port {
-        // Assuming bind address is 0.0.0.0 if not specified or just updating port
         let current_bind = if config.mcp.bind.is_empty() {
             "0.0.0.0:3000"
         } else {
@@ -733,17 +725,17 @@ async fn main() -> anyhow::Result<()> {
                 endpoint_type: route.output.endpoint_type.name().to_string(),
             },
         );
-        info!("Registered publisher definition '{}'", name);
+        info!("Registered publisher '{}'", name);
     }
 
-    // Register consumers from config
+    // Register consumer definitions from config
     for (name, consumer_conf) in &config.consumers {
         let def = consumer_registry::ConsumerDefinition {
             endpoint: consumer_conf.endpoint.clone(),
             description: consumer_conf.description.clone(),
         };
         consumer_registry::register_consumer_definition(name, def);
-        info!("Registered consumer definition '{}'", name);
+        info!("Registered consumer '{}'", name);
     }
 
     let server = MqBridgeMcpServer::new(&config, "mq-bridge-mcp");

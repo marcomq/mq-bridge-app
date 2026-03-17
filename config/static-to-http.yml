@@ -19,7 +19,7 @@ routes:
               file:
                 path: error.out
       http:
-        url: "${HOST_ADDR:-host.docker.internal:8080}" # Listen for webhooks on port 8080
+        url: "${HOST_ADDR:-localhost:3000}" # Listen for webhooks on port 3000
     concurrency: 32
     batch_size: 128
     commit_concurrency_limit: 4096

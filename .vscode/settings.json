@@ -2,6 +2,7 @@
   "rust-analyzer.cargo.features": ["integration-test"],
   "rust-analyzer.cargo.testArgs": ["--release"],
   "yaml.schemas": {
-    "./config/schema.json": ["/config.yml", "/config.*.yml", "/config/**/*.yml"]
+    "./config/schema.json": ["/config.yml", "/config.*.yml", "/config/*.yml"],
+    "./config/mcp/schema.json": ["/mcp.yml", "/config/mcp.*.yml", "/config/mcp/.yml"]
   }
 }

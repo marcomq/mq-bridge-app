@@ -1,7 +1,7 @@
 package main
 // # go get github.com/valyala/fasthttp
 // # go run server.go
-// # wrk -t8 -c200 -d30s http://localhost:8080
+// # wrk -t8 -c200 -d30s http://localhost:3000
 
 
 import (
@@ -51,7 +51,7 @@ func reportThroughput(interval time.Duration) {
 
 func main() {
 	// Define a command-line flag for the port.
-	port := flag.String("port", "8080", "Port for the server to listen on")
+	port := flag.String("port", "3000", "Port for the server to listen on")
 	flag.Parse()
 
 	listenAddr := ":" + *port

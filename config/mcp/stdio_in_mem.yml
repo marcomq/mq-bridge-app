@@ -1,0 +1,24 @@
+# Sample MCP server configuration using Stdio transport.
+# This is the default mode, useful when the server is spawned directly by an LLM host process.
+
+log_level: info
+logger: plain
+
+mcp:
+  enabled: true
+  transport: stdio
+
+publishers:
+  # Creates a tool named `publish_to_internal_echo`
+  internal_echo:
+    description: "Publishes messages to an internal in-memory echo topic."
+    memory:
+      topic: "echo_topic"
+
+consumers:
+  # Creates a tool named `consume_from_internal_echo`
+  internal_echo:
+    description: "Consumes messages from the internal in-memory echo topic."
+    memory:
+      topic: "echo_topic"
+      subscribe_mode: true

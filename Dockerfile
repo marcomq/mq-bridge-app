@@ -159,6 +159,7 @@ COPY --from=builder /mq-libs /opt/mqm/lib64
 COPY --from=builder /opt/mqm/licenses /opt/mqm/licenses
 
 ENV LD_LIBRARY_PATH="/opt/mqm/lib64"
+ENV HOST_ADDR=host.docker.internal:3000
 
 COPY config /config
 
@@ -180,6 +181,7 @@ COPY --from=builder /mq-libs /opt/mqm/lib64
 COPY --from=builder /opt/mqm/licenses /opt/mqm/licenses
 
 ENV LD_LIBRARY_PATH="/opt/mqm/lib64"
+ENV HOST_ADDR=host.docker.internal:3000
 
 COPY config /config
 

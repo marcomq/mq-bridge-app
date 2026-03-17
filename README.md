@@ -48,7 +48,7 @@ The easiest way to run the application is using the pre-built Docker image, whic
 docker run --rm --name mq-bridge -p 9091:9091 ghcr.io/marcomq/mq-bridge-app:latest
 ```
 
-Or if you want to already read+tail from input.log and send the content to http://localhost:3030/
+Or if you want to already read+tail from input.log and send the content to http://localhost:3000/
 
 ```bash
 touch input.log
@@ -86,7 +86,7 @@ cargo install mq-bridge-app
     ```
 2.  **Build and run with configuration:**
     ```bash
-    HOST_ADDR=localhost:8080 cargo run --release -- --config config/file-to-http.yml
+    cargo run --release -- --config config/file-to-http.yml
     ```
 3.  **Configure the application:**
     Create a `config.yml` file in the project root or set environment variables. See the Configuration section for details. Or you start right away without and use the UI to define the `config.yml`
