@@ -222,27 +222,6 @@ const tlsRenderer = {
   },
 };
 
-/**
- * Custom renderer for MCP configuration.
- * It renders a checkbox for the 'enabled' property and toggles the visibility of other properties.
- */
-const mcpRendererBase = createFixedOptionalRenderer("enabled");
-
-const mcpRenderer = {
-  render: (node, path, elementId, dataPath, context) => {
-    fixNullBooleans(node, dataPath, context);
-    const element = mcpRendererBase.render(
-      node,
-      path,
-      elementId,
-      dataPath,
-      context,
-    );
-    if (element && element.classList) element.classList.add("ui_mcp");
-    return element;
-  },
-};
-
 const createCustomCollapsibleRenderer = (visibleKeys) => ({
   render: (node, path, elementId, dataPath, context) => {
     fixNullBooleans(node, dataPath, context);
@@ -521,7 +500,6 @@ const descriptionRenderer = {
 const CUSTOM_RENDERERS = {
   Route: routeObjectRenderer,
   tls: tlsRenderer,
-  mcp: mcpRenderer,
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,

@@ -5,13 +5,12 @@
 
 use mq_bridge_app::{
     config::{load_config, AppConfig},
-    mcp, publisher_registry, web_ui,
+    web_ui,
 };
 
 use clap::Parser;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tracing::error;
 use tracing::{info, warn};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
@@ -158,75 +157,51 @@ async fn main() -> anyhow::Result<()> {
         info!("Prometheus exporter listening on http://{}", addr);
     }
 
-    // --- Start MCP Server OR Deploy Routes ---
-    if config.mcp.enabled {
-        info!(
-            "MCP server enabled, transport: {:?}, bind: {}",
-            config.mcp.transport, config.mcp.bind
-        );
-        // In MCP mode, register publisher-only routes for dynamic use.
-        for (name, route) in &config.routes {
-            if matches!(
-                route.input.endpoint_type,
-                mq_bridge::models::EndpointType::Null
-            ) {
-                publisher_registry::register_publisher_definition(name, route.clone());
-                info!("Registered initial publisher definition '{}'", name);
-            }
-        }
-        // The MCP server will now own the main loop.
-        // The web UI might still be running in the background if configured.
-        if let Err(e) = mcp::start_server(config).await {
-            error!("MCP server failed: {}", e);
-        }
-        info!("MCP server shut down.");
+    // --- Deploy Routes if MCP is disabled ---
+    if config.routes.is_empty() {
+        warn!("No routes configured. Waiting for configuration via Web UI.");
     } else {
-        // --- Deploy Routes if MCP is disabled ---
-        if config.routes.is_empty() {
-            warn!("No routes configured. Waiting for configuration via Web UI.");
-        } else {
-            let routes = std::mem::take(&mut config.routes);
-            for route in routes.values() {
-                if route.is_ref() {
-                    route.register_output_endpoint(None)?;
-                }
-            }
-            for (name, route) in routes {
-                route.deploy(&name).await?;
+        let routes = std::mem::take(&mut config.routes);
+        for route in routes.values() {
+            if route.is_ref() {
+                route.register_output_endpoint(None)?;
             }
         }
-
-        info!("Bridge running. Waiting for signal.");
-
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("Ctrl+C (SIGINT) received.");
-            },
-            _ = platform_specific_shutdown() => {
-                    info!("Shutdown signal received.");
-            },
+        for (name, route) in routes {
+            route.deploy(&name).await?;
         }
+    }
 
-        info!("Shutdown signal received. Broadcasting to all tasks...");
+    info!("Bridge running. Waiting for signal.");
 
-        let shutdown_task = async {
-            let routes = mq_bridge::list_routes();
-            if !routes.is_empty() {
-                info!("Attempting to gracefully stop {} routes...", routes.len());
-                for name in routes {
-                    mq_bridge::stop_route(&name).await;
-                }
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Ctrl+C (SIGINT) received.");
+        },
+        _ = platform_specific_shutdown() => {
+                info!("Shutdown signal received.");
+        },
+    }
+
+    info!("Shutdown signal received. Broadcasting to all tasks...");
+
+    let shutdown_task = async {
+        let routes = mq_bridge::list_routes();
+        if !routes.is_empty() {
+            info!("Attempting to gracefully stop {} routes...", routes.len());
+            for name in routes {
+                mq_bridge::stop_route(&name).await;
             }
-        };
-
-        if tokio::time::timeout(Duration::from_secs(10), shutdown_task)
-            .await
-            .is_err()
-        {
-            warn!("Graceful shutdown timed out after 10 seconds. Forcing shutdown.");
-        } else {
-            info!("All routes stopped gracefully.");
         }
+    };
+
+    if tokio::time::timeout(Duration::from_secs(10), shutdown_task)
+        .await
+        .is_err()
+    {
+        warn!("Graceful shutdown timed out after 10 seconds. Forcing shutdown.");
+    } else {
+        info!("All routes stopped gracefully.");
     }
 
     // Abort the metrics task if it's running. It doesn't support graceful shutdown.

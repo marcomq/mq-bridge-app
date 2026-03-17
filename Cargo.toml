@@ -14,6 +14,11 @@ categories = ["asynchronous", "network-programming"]
 name = "mq-bridge-app"
 path = "src/main.rs"
 
+[[bin]]
+name = "mq-bridge-mcp"
+path = "src/bin/mcp_server.rs"
+required-features = ["mcp"]
+
 [profile.release]
 # Link-Time Optimization.
 # lto = true
@@ -37,7 +42,7 @@ shellexpand = "3.1.2"
 serde_yaml_ng = "0.10.0"
 
 # Async runtime
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "signal", "tracing"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync"] }
 clap = { version = "4.6.0", features = ["derive"] }
 
 # Error handling
@@ -54,6 +59,9 @@ metrics = { version = "0.24.3" }
 metrics-exporter-prometheus = "0.18.1"
 schemars = "1.2.1"
 serde_json = "1.0.149"
+hex = "0.4"
+futures = "0.3.32"
+uuid = { version = "1.22", features = ["v4"] }
 
 # MCP
 rmcp = { version = "1.2.0", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session", "transport-io", "server-side-http"], optional = true }

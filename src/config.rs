@@ -80,9 +80,6 @@ pub struct AppConfig {
     /// If it matches `ui_addr`, the standalone server is skipped as the UI handles it.
     #[serde(default)]
     pub metrics_addr: String,
-    /// Optional configuration for the Marco's Control Plane (MCP) server.
-    #[serde(default)]
-    pub mcp: McpConfig,
     #[serde(default)]
     pub routes: HashMap<String, Route>,
     /// If true, secrets will be extracted to .env file upon saving.
@@ -237,13 +234,6 @@ impl AppConfig {
             let name = name.to_uppercase(); // Names are already sanitized in save()
             let prefix = format!("MQB__ROUTES__{}__", name);
             route.extract_secrets(&prefix, &mut all_secrets);
-        }
-
-        if self.mcp.enabled {
-            if let McpAuth::ApiKey(key) = &mut self.mcp.auth {
-                let prefix = "MQB__MCP__AUTH__";
-                key.extract_secrets(prefix, &mut all_secrets);
-            }
         }
 
         if !all_secrets.is_empty() {

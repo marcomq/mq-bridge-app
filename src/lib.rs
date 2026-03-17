@@ -1,5 +1,5 @@
 pub mod config;
-pub mod mcp;
+pub mod consumer_registry;
 pub mod publisher_registry;
 pub mod web_ui;
 
