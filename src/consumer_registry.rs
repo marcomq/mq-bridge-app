@@ -19,7 +19,8 @@ pub struct ConsumerDefinition {
 static CONSUMER_DEFINITION_REGISTRY: OnceLock<RwLock<HashMap<String, ConsumerDefinition>>> =
     OnceLock::new();
 
-static ACTIVE_CONSUMERS: OnceLock<RwLock<HashMap<String, Arc<Mutex<Box<dyn MessageConsumer>>>>>> =
+type ConsumerArc = Arc<Mutex<Box<dyn MessageConsumer>>>;
+static ACTIVE_CONSUMERS: OnceLock<RwLock<HashMap<String, ConsumerArc>>> =
     OnceLock::new();
 
 /// Registers a named consumer definition.
