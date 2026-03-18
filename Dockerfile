@@ -128,7 +128,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     CMAKE_BUILD_PARALLEL_LEVEL=1 \
     cargo build -vv --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 1 && \
     cargo build --bin mq-bridge-mcp -vv --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 1 && \
-    cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app
+    cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app && \
     cp target/$RUST_TARGET/release-with-lto/mq-bridge-mcp mq-bridge-mcp
 
 # Identify and copy only the necessary MQ libraries for the final stage
