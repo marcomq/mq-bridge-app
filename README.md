@@ -235,6 +235,10 @@ Available Examples:
 
 For local development, you can place a `.env` file in the root of the project. The application will automatically load the variables from this file.
 
+## Model Context Protocol (MCP)
+
+The project includes a separate binary, [mq-bridge-mcp](MCP.md), which acts as an MCP server. It exposes your configured publishers and consumers as Tools and Resources to AI assistants. This allows LLMs to directly interact with your message brokers.
+
 ## Architecture & Web UI
 
 This application demonstrates a unique usage of the `mq-bridge` library itself to serve its own management UI.

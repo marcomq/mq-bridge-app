@@ -20,8 +20,7 @@ static CONSUMER_DEFINITION_REGISTRY: OnceLock<RwLock<HashMap<String, ConsumerDef
     OnceLock::new();
 
 type ConsumerArc = Arc<Mutex<Box<dyn MessageConsumer>>>;
-static ACTIVE_CONSUMERS: OnceLock<RwLock<HashMap<String, ConsumerArc>>> =
-    OnceLock::new();
+static ACTIVE_CONSUMERS: OnceLock<RwLock<HashMap<String, ConsumerArc>>> = OnceLock::new();
 
 /// Registers a named consumer definition.
 pub fn register_consumer_definition(name: &str, def: ConsumerDefinition) {

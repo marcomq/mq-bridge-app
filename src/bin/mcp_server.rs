@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -203,9 +203,6 @@ pub struct MqBridgeMcpServer {
     /// Static tools (list_publishers, list_consumers, get_status) plus all
     /// dynamic publish_to_* and consume_from_* tools, built once at startup.
     tools: Arc<Vec<McpTool>>,
-    /// Lookup map: tool_name → original endpoint name in config.
-    /// Avoids the lossy `_` ↔ `-` round-trip for dispatch.
-    tool_to_endpoint: Arc<HashMap<String, String>>,
     server_name: Arc<str>,
     consumers: Arc<HashMap<String, ConsumerConfig>>,
 }
@@ -228,7 +225,6 @@ impl Clone for MqBridgeMcpServer {
     fn clone(&self) -> Self {
         Self {
             tools: self.tools.clone(),
-            tool_to_endpoint: self.tool_to_endpoint.clone(),
             server_name: self.server_name.clone(),
             consumers: self.consumers.clone(),
         }
@@ -278,13 +274,11 @@ impl MqBridgeMcpServer {
             },
         ];
 
-        // Build lookup map and dynamic tools in one pass over publishers.
-        let mut tool_to_endpoint: HashMap<String, String> = HashMap::new();
+        // Build dynamic tools in one pass over publishers.
 
         for name in publisher_registry::list_publishers() {
             if let Some(pub_def) = publisher_registry::get_publisher(&name) {
                 let tool_name = format!("publish_to_{}", to_tool_suffix(&name));
-                tool_to_endpoint.insert(tool_name.clone(), name.clone());
                 tool_list.push(McpTool {
                     name: tool_name,
                     description: pub_def.description,
@@ -299,7 +293,6 @@ impl MqBridgeMcpServer {
 
         for (name, def) in config.consumers.iter() {
             let tool_name = format!("consume_from_{}", to_tool_suffix(name));
-            tool_to_endpoint.insert(tool_name.clone(), name.clone());
             tool_list.push(McpTool {
                 name: tool_name,
                 description: def.description.clone(),
@@ -315,7 +308,6 @@ impl MqBridgeMcpServer {
 
         Self {
             tools: Arc::new(tool_list),
-            tool_to_endpoint: Arc::new(tool_to_endpoint),
             server_name: server_name.into().into(),
             consumers: Arc::new(config.consumers.clone()),
         }
@@ -407,7 +399,9 @@ impl MqBridgeMcpServer {
                 } else if let Some(msg) = args.get("message") {
                     vec![msg.clone()]
                 } else {
-                    return Err(mcp_invalid("Missing 'messages' or 'message' argument".into()));
+                    return Err(mcp_invalid(
+                        "Missing 'messages' or 'message' argument".into(),
+                    ));
                 };
 
                 let mut canonical_messages = Vec::new();
@@ -426,7 +420,9 @@ impl MqBridgeMcpServer {
 
                             if let Some(id_val) = obj.get("message_id") {
                                 // Use CanonicalMessage's own parser logic for ID
-                                if let Ok(tm) = CanonicalMessage::from_json(serde_json::json!({ "message_id": id_val })) {
+                                if let Ok(tm) = CanonicalMessage::from_json(
+                                    serde_json::json!({ "message_id": id_val }),
+                                ) {
                                     m.message_id = tm.message_id;
                                 }
                             }
@@ -640,8 +636,8 @@ impl ServerHandler for MqBridgeMcpServer {
         let arguments = request.arguments.map(serde_json::Value::Object);
 
         // Look up the tool by name directly from the pre-built list.
-        if let Some(tool) = self.tools.iter().find(|t| t.name == request.name).cloned() {
-            return self.handle_tool_call(&tool, arguments).await;
+        if let Some(tool) = self.tools.iter().find(|t| t.name == request.name) {
+            return self.handle_tool_call(tool, arguments).await;
         }
 
         Err(mcp_invalid(format!("Unknown tool: {}", request.name)))
@@ -766,15 +762,41 @@ async fn main() -> anyhow::Result<()> {
             publisher_conf.endpoint.clone(),
         );
         route.options.description = publisher_conf.description.clone();
-        publisher_registry::register_publisher(
-            name,
-            mq_bridge_app::publisher_registry::PublisherDefinition {
-                publisher: route.create_publisher().await?,
-                description: route.options.description.clone(),
-                endpoint_type: route.output.endpoint_type.name().to_string(),
-            },
-        );
-        info!("Registered publisher '{}'", name);
+
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 3;
+
+        while attempts < MAX_ATTEMPTS {
+            attempts += 1;
+            match route.create_publisher().await {
+                Ok(publisher) => {
+                    publisher_registry::register_publisher(
+                        name,
+                        mq_bridge_app::publisher_registry::PublisherDefinition {
+                            publisher,
+                            description: route.options.description.clone(),
+                            endpoint_type: route.output.endpoint_type.name().to_string(),
+                        },
+                    );
+                    info!("Registered publisher '{}'", name);
+                    break;
+                }
+                Err(e) => {
+                    if attempts == MAX_ATTEMPTS {
+                        warn!(
+                            "Failed to register publisher '{}' after {} attempts: {}. It will be unavailable.",
+                            name, attempts, e
+                        );
+                    } else {
+                        warn!(
+                            "Failed to register publisher '{}': {}. Retrying (attempt {}/{})...",
+                            name, e, attempts, MAX_ATTEMPTS
+                        );
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        }
     }
 
     // Register consumer definitions from config

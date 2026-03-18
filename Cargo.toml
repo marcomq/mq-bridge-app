@@ -71,12 +71,12 @@ rustls = { version = "0.23.37", optional = true }
 rustls-pemfile = { version = "2.2.0", optional = true }
 
 [features]
-default = ["full"]
+default = ["full", "mcp"]
 integration-test = []
 mcp = ["rmcp", "axum", "axum-server", "rustls", "rustls-pemfile"]
 ibm-mq = ["mq-bridge/ibm-mq"]
 arm64-cross-compile = ["rdkafka", "rdkafka/cmake-build"]
-full = ["mq-bridge/full", "mcp"]
+full = ["mq-bridge/full"]
 middleware = ["mq-bridge/middleware"]
 mongodb = ["mq-bridge/mongodb"]
 http = ["mq-bridge/http"]
