@@ -13,6 +13,9 @@ pub struct PublisherDefinition {
     pub publisher: Publisher,
     pub description: String,
     pub endpoint_type: String,
+    pub destructive: bool,
+    pub open_world: bool,
+    pub idempotent: bool,
 }
 
 static PUBLISHER_DEFINITION_REGISTRY: OnceLock<RwLock<HashMap<String, PublisherDefinition>>> =

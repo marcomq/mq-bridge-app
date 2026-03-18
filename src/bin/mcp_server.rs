@@ -12,19 +12,22 @@ use mq_bridge_app::config::{McpConfig, McpTransport};
 use mq_bridge_app::{consumer_registry, publisher_registry};
 use rmcp::{
     model::{
-        Annotated, CallToolRequestParams, CallToolResult, ListResourcesResult, ListToolsResult,
-        PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult,
-        ResourceContents, ServerCapabilities, ServerInfo,
+        Annotated, CallToolRequestParams, CallToolResult, ClientRequest, EmptyResult,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResource,
+        ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+        ResourceUpdatedNotification, ResourceUpdatedNotificationParam, ServerCapabilities,
+        ServerInfo, ServerResult,
     },
-    service::{RequestContext, ServiceExt},
-    ErrorData as McpError, ServerHandler,
+    service::{NotificationContext, RequestContext, ServiceExt},
+    ErrorData as McpError, RoleServer, ServerHandler, Service,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
+use tokio::sync::RwLock;
+use tracing::{error, info, warn};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -67,6 +70,25 @@ pub struct PublisherConfig {
     pub endpoint: Endpoint,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub destructive: bool,
+    #[serde(default)]
+    pub open_world: bool,
+    #[serde(default)]
+    pub idempotent: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WatcherMode {
+    /// Consumes and Acks messages. This is destructive for Queues but correct for Topics/Subscribers.
+    #[default]
+    Consume,
+    /// Consumes and Nacks messages (requeue). Attempts to peek.
+    /// Note: This may cause busy loops if peek_delay_ms is low.
+    Peek,
+    /// No automatic watching. Notifications will not be generated.
+    None,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -75,6 +97,16 @@ pub struct ConsumerConfig {
     pub endpoint: Endpoint,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub open_world: bool,
+    #[serde(default)]
+    pub idempotent: bool,
+    #[serde(default)]
+    pub watcher_mode: WatcherMode,
+    #[serde(default = "default_peek_delay")]
+    pub peek_delay_ms: u64,
 }
 
 mod tools {
@@ -186,6 +218,10 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_peek_delay() -> u64 {
+    1000
+}
+
 fn mcp_invalid(msg: String) -> McpError {
     McpError::invalid_params(msg, None)
 }
@@ -205,6 +241,7 @@ pub struct MqBridgeMcpServer {
     tools: Arc<Vec<McpTool>>,
     server_name: Arc<str>,
     consumers: Arc<HashMap<String, ConsumerConfig>>,
+    subscription_manager: Arc<SubscriptionManager>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, Default)]
@@ -227,7 +264,166 @@ impl Clone for MqBridgeMcpServer {
             tools: self.tools.clone(),
             server_name: self.server_name.clone(),
             consumers: self.consumers.clone(),
+            subscription_manager: self.subscription_manager.clone(),
         }
+    }
+}
+
+struct SubscriptionManager {
+    subscribers: RwLock<HashMap<String, Vec<rmcp::service::Peer<RoleServer>>>>,
+    active_watchers: RwLock<HashSet<String>>,
+    consumers: Arc<HashMap<String, ConsumerConfig>>,
+}
+
+impl SubscriptionManager {
+    fn new(consumers: Arc<HashMap<String, ConsumerConfig>>) -> Self {
+        Self {
+            subscribers: RwLock::new(HashMap::new()),
+            active_watchers: RwLock::new(HashSet::new()),
+            consumers,
+        }
+    }
+
+    async fn notify(&self, uri: &str) {
+        let mut subs = self.subscribers.write().await;
+        if let Some(peers) = subs.get_mut(uri) {
+            let notification = ResourceUpdatedNotification::new(ResourceUpdatedNotificationParam {
+                uri: uri.to_string(),
+            });
+
+            let mut active_peers = Vec::new();
+            for peer in peers.drain(..) {
+                if !peer.is_transport_closed() {
+                    let p = peer.clone();
+                    let n = notification.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = p.send_notification(n.into()).await {
+                            warn!("Failed to notify peer: {}", e);
+                        }
+                    });
+                    active_peers.push(peer);
+                }
+            }
+            *peers = active_peers;
+        }
+    }
+
+    async fn ensure_watcher(self: &Arc<Self>, uri: String) {
+        let mut watchers = self.active_watchers.write().await;
+        if watchers.contains(&uri) {
+            return;
+        }
+
+        if let Some(consumer_name) = uri.strip_prefix("mq://") {
+            if let Some(def) = self.consumers.get(consumer_name) {
+                if matches!(def.watcher_mode, WatcherMode::None) {
+                    return;
+                }
+
+                watchers.insert(uri.clone());
+                let manager = self.clone();
+                let uri_clone = uri.clone();
+                let consumer_name = consumer_name.to_string();
+                let endpoint = def.endpoint.clone();
+                let mode = def.watcher_mode.clone();
+                let peek_delay = def.peek_delay_ms;
+
+                tokio::spawn(async move {
+                    info!("Starting watcher for {}", uri_clone);
+                    let mut consumer = match endpoint.create_consumer(&consumer_name).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Failed to create watcher consumer for {}: {}", uri_clone, e);
+                            manager.active_watchers.write().await.remove(&uri_clone);
+                            return;
+                        }
+                    };
+
+                    loop {
+                        match consumer.receive().await {
+                            Ok(received) => {
+                                manager.notify(&uri_clone).await;
+                                let disposition = match mode {
+                                    WatcherMode::Consume => {
+                                        mq_bridge::traits::MessageDisposition::Ack
+                                    }
+                                    WatcherMode::Peek => {
+                                        tokio::time::sleep(Duration::from_millis(peek_delay)).await;
+                                        mq_bridge::traits::MessageDisposition::Nack
+                                    }
+                                    WatcherMode::None => {
+                                        mq_bridge::traits::MessageDisposition::Nack
+                                    }
+                                };
+                                let _ = (received.commit)(disposition).await;
+                            }
+                            Err(e) => {
+                                error!("Watcher for {} failed: {}", uri_clone, e);
+                                break;
+                            }
+                        }
+                        let subs = manager.subscribers.read().await;
+                        if let Some(list) = subs.get(&uri_clone) {
+                            if list.is_empty() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    info!("Stopping watcher for {}", uri_clone);
+                    manager.active_watchers.write().await.remove(&uri_clone);
+                });
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SubscriptionMiddleware<S> {
+    inner: S,
+    manager: Arc<SubscriptionManager>,
+}
+
+impl<S> Service<RoleServer> for SubscriptionMiddleware<S>
+where
+    S: Service<RoleServer> + Send + Sync + 'static,
+{
+    async fn handle_request(
+        &self,
+        request: ClientRequest,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<ServerResult, McpError> {
+        match request {
+            ClientRequest::SubscribeRequest(req) => {
+                info!("Subscribing to resource: {}", req.params.uri);
+                {
+                    let mut subs = self.manager.subscribers.write().await;
+                    subs.entry(req.params.uri.clone())
+                        .or_default()
+                        .push(ctx.peer.clone());
+                }
+                self.manager.ensure_watcher(req.params.uri.clone()).await;
+                Ok(ServerResult::EmptyResult(EmptyResult {}))
+            }
+            ClientRequest::UnsubscribeRequest(req) => {
+                info!("Unsubscribing from resource: {}", req.params.uri);
+                Ok(ServerResult::EmptyResult(EmptyResult {}))
+            }
+            _ => self.inner.handle_request(request, ctx).await,
+        }
+    }
+
+    async fn handle_notification(
+        &self,
+        notification: <RoleServer as rmcp::service::ServiceRole>::PeerNot,
+        ctx: NotificationContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        self.inner.handle_notification(notification, ctx).await
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        self.inner.get_info()
     }
 }
 
@@ -242,6 +438,16 @@ pub fn load_mcp_config(config_path: &str) -> anyhow::Result<McpAppConfig> {
 
 impl MqBridgeMcpServer {
     pub fn new(config: &McpAppConfig, server_name: impl Into<String>) -> Self {
+        let consumers = Arc::new(config.consumers.clone());
+        Self {
+            tools: Arc::new(Self::build_tools(config)),
+            server_name: server_name.into().into(),
+            consumers: consumers.clone(),
+            subscription_manager: Arc::new(SubscriptionManager::new(consumers)),
+        }
+    }
+
+    fn build_tools(config: &McpAppConfig) -> Vec<McpTool> {
         let mut tool_list = vec![
             McpTool {
                 name: "list_publishers".into(),
@@ -274,14 +480,23 @@ impl MqBridgeMcpServer {
             },
         ];
 
-        // Build dynamic tools in one pass over publishers.
-
         for name in publisher_registry::list_publishers() {
             if let Some(pub_def) = publisher_registry::get_publisher(&name) {
                 let tool_name = format!("publish_to_{}", to_tool_suffix(&name));
+                let mut description = pub_def.description.clone();
+                if pub_def.destructive {
+                    description.push_str(" (Destructive)");
+                }
+                if pub_def.open_world {
+                    description.push_str(" (Open World)");
+                }
+                if pub_def.idempotent {
+                    description.push_str(" (Idempotent)");
+                }
+
                 tool_list.push(McpTool {
                     name: tool_name,
-                    description: pub_def.description,
+                    description,
                     action: McpToolAction::Publish,
                     connector: ConnectorRef {
                         connector_type: pub_def.endpoint_type.clone(),
@@ -305,12 +520,7 @@ impl MqBridgeMcpServer {
         }
 
         tool_list.sort_by(|a, b| a.name.cmp(&b.name));
-
-        Self {
-            tools: Arc::new(tool_list),
-            server_name: server_name.into().into(),
-            consumers: Arc::new(config.consumers.clone()),
-        }
+        tool_list
     }
 
     pub async fn start(self, mcp_config: &McpConfig) -> anyhow::Result<()> {
@@ -339,7 +549,12 @@ impl MqBridgeMcpServer {
 
         let me = self.clone();
         let service = StreamableHttpService::new(
-            move || Ok(me.clone()),
+            move || {
+                Ok(SubscriptionMiddleware {
+                    inner: me.clone(),
+                    manager: me.subscription_manager.clone(),
+                })
+            },
             Arc::new(LocalSessionManager::default()),
             StreamableHttpServerConfig::default(),
         );
@@ -378,7 +593,12 @@ impl MqBridgeMcpServer {
         use rmcp::transport::stdio;
 
         info!("MCP stdio server starting");
-        let service = self.serve(stdio()).await?;
+        let service = SubscriptionMiddleware {
+            manager: self.subscription_manager.clone(),
+            inner: self,
+        }
+        .serve(stdio())
+        .await?;
         service.waiting().await?;
         Ok(())
     }
@@ -470,6 +690,9 @@ impl MqBridgeMcpServer {
                                 "name": format!("consume_from_{}", to_tool_suffix(name)),
                                 "description": def.description,
                                 "type": def.endpoint.endpoint_type.name(),
+                                "read_only": def.read_only,
+                                "open_world": def.open_world,
+                                "idempotent": def.idempotent,
                             })
                         })
                         .collect();
@@ -489,10 +712,23 @@ impl MqBridgeMcpServer {
                 let mut endpoint_list: Vec<serde_json::Value> = Vec::new();
                 for name in publisher_registry::list_publishers() {
                     if let Some(pub_def) = publisher_registry::get_publisher(&name) {
+                        let mut description = pub_def.description.clone();
+                        if pub_def.destructive {
+                            description.push_str(" (Destructive)");
+                        }
+                        if pub_def.open_world {
+                            description.push_str(" (Open World)");
+                        }
+                        if pub_def.idempotent {
+                            description.push_str(" (Idempotent)");
+                        }
                         endpoint_list.push(serde_json::json!({
                             "name": format!("publish_to_{}", to_tool_suffix(&name)),
-                            "description": pub_def.description,
+                            "description": description,
                             "type": pub_def.endpoint_type,
+                            "destructive": pub_def.destructive,
+                            "open_world": pub_def.open_world,
+                            "idempotent": pub_def.idempotent,
                         }));
                     }
                 }
@@ -603,6 +839,11 @@ impl ServerHandler for MqBridgeMcpServer {
             .enable_tools()
             .enable_resources()
             .build();
+
+        if let Some(resources) = &mut info.capabilities.resources {
+            resources.subscribe = Some(true);
+        }
+
         info.instructions = Some(
             "mq-bridge MCP server. Use list_publishers / list_consumers to discover available \
              endpoints, then use publish_to_<name> or consume_from_<name> tools."
@@ -688,6 +929,11 @@ impl ServerHandler for MqBridgeMcpServer {
             "description": consumer_def.description,
             "broker_type": consumer_def.endpoint.endpoint_type.name(),
             "uri": uri_str,
+            "read_only": consumer_def.read_only,
+            "open_world": consumer_def.open_world,
+            "idempotent": consumer_def.idempotent,
+            "watcher_mode": consumer_def.watcher_mode,
+            "peek_delay_ms": consumer_def.peek_delay_ms,
             "hint": format!(
                 "Use the 'consume_from_{}' tool to receive messages from this endpoint.",
                 to_tool_suffix(consumer_name)
@@ -776,6 +1022,9 @@ async fn main() -> anyhow::Result<()> {
                             publisher,
                             description: route.options.description.clone(),
                             endpoint_type: route.output.endpoint_type.name().to_string(),
+                            destructive: publisher_conf.destructive,
+                            open_world: publisher_conf.open_world,
+                            idempotent: publisher_conf.idempotent,
                         },
                     );
                     info!("Registered publisher '{}'", name);
