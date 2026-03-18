@@ -128,14 +128,10 @@ jobs:
           fi
 
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ env.ASSET_PATH }}
-          asset_name: ${{ env.ASSET_PATH }}
-          asset_content_type: application/octet-stream
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          files: ${{ env.ASSET_PATH }}
 
   # Build each platform in its own job so failures are clearly attributed
   # in the GitHub Actions UI — no more guessing which platform broke.
