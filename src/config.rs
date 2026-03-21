@@ -2,68 +2,11 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 use config::Config;
-use mq_bridge::models::TlsConfig;
-use mq_bridge::{models::SecretExtractor, Route};
+use mq_bridge::{Route, models::SecretExtractor};
 use schemars::JsonSchema;
 
 fn default_log_level() -> String {
     "info".to_string()
-}
-
-/// API Key authentication details.
-#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default, PartialEq)]
-pub struct ApiKeyAuth {
-    /// The HTTP header to check for the API key. Defaults to "Authorization".
-    #[serde(default)]
-    pub header: String,
-    /// The secret API key or token.
-    #[serde(default)]
-    pub key: String,
-}
-
-/// Authentication methods for the MCP server.
-#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum McpAuth {
-    #[default]
-    None,
-    /// API Key authentication.
-    ApiKey(ApiKeyAuth),
-}
-
-/// Transport protocol for the MCP server.
-#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum McpTransport {
-    /// Use a streamable HTTP transport, which supports Server-Sent Events (SSE).
-    StreamableHttp,
-    /// Use standard input/output for communication.
-    #[default]
-    Stdio,
-}
-
-/// Configuration for the Marco's Control Plane (MCP) server.
-/// MCP provides a remote API for interacting with and managing the bridge.
-#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
-pub struct McpConfig {
-    /// If true, the MCP server is enabled.
-    #[serde(default)]
-    pub enabled: bool,
-    /// The transport protocol to use for the server.
-    #[serde(default)]
-    pub transport: McpTransport,
-    /// The address to bind the server to (e.g., "0.0.0.0:9092").
-    #[serde(default)]
-    pub bind: String,
-    /// Authentication settings for the server. If not present, no auth is used.
-    #[serde(default)]
-    pub auth: McpAuth,
-    /// Optional timeout for consuming messages (in milliseconds).
-    #[serde(default)]
-    pub consume_timeout_ms: u64,
-    /// Optional TLS configuration for the server.
-    #[serde(default)]
-    pub tls: Option<TlsConfig>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
@@ -280,27 +223,6 @@ impl AppConfig {
             std::fs::write(env_path, final_content)?;
         }
         Ok(())
-    }
-}
-
-impl SecretExtractor for ApiKeyAuth {
-    fn extract_secrets(&mut self, prefix: &str, secrets: &mut HashMap<String, String>) {
-        if !self.key.is_empty() && !self.key.starts_with("${") {
-            let key_name = format!("{}KEY", prefix);
-            secrets.insert(key_name.clone(), self.key.clone());
-            self.key = format!("${{{}}}", key_name);
-        }
-    }
-}
-
-impl SecretExtractor for McpAuth {
-    fn extract_secrets(&mut self, prefix: &str, secrets: &mut HashMap<String, String>) {
-        match self {
-            McpAuth::ApiKey(api_key_auth) => {
-                api_key_auth.extract_secrets(&format!("{}API_KEY__", prefix), secrets);
-            }
-            McpAuth::None => {}
-        }
     }
 }
 

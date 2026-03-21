@@ -124,12 +124,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         RUST_TARGET="aarch64-unknown-linux-gnu"; \
         CARGO_FEATURES="--features=arm64-cross-compile"; \
     fi && \
-    CARGO_PROFILE_RELEASE_WITH_LTO_LTO=thin \
+    CARGO_PROFILE_RELEASE_LTO=thin \
     CMAKE_BUILD_PARALLEL_LEVEL=1 \
     cargo build -vv --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 1 && \
-    cargo build --bin mq-bridge-mcp -vv --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 1 && \
-    cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app && \
-    cp target/$RUST_TARGET/release-with-lto/mq-bridge-mcp mq-bridge-mcp
+    cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app
 
 # Identify and copy only the necessary MQ libraries for the final stage
 RUN mkdir /mq-libs && \
@@ -170,23 +168,3 @@ EXPOSE 9091
 
 ENTRYPOINT ["/usr/local/bin/mq-bridge-app"]
 
-# --- Final Stage MQ-BRIDGE-MCP ---
-FROM gcr.io/distroless/cc-debian12:nonroot AS mcp-final
-
-COPY --from=builder /usr/src/mq-bridge-app/mq-bridge-mcp /usr/local/bin/mq-bridge-mcp
-COPY --from=builder --chown=nonroot:nonroot /app_placeholder /app
-COPY --from=builder /dist_libs/libz.so.* /lib/
-
-COPY --from=builder /mq-libs /opt/mqm/lib64
-COPY --from=builder /opt/mqm/licenses /opt/mqm/licenses
-
-ENV LD_LIBRARY_PATH="/opt/mqm/lib64"
-ENV HOST_ADDR=host.docker.internal:3000
-
-COPY config /config
-
-WORKDIR /app
-
-EXPOSE 3000
-
-ENTRYPOINT ["/usr/local/bin/mq-bridge-mcp"]

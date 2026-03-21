@@ -70,17 +70,14 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary_name: mq-bridge-app
-            mcp_binary_name: mq-bridge-mcp
             use_cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
             binary_name: mq-bridge-app
-            mcp_binary_name: mq-bridge-mcp
             use_cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary_name: mq-bridge-app.exe
-            mcp_binary_name: mq-bridge-mcp.exe
             use_cross: false
     steps:
       - name: Checkout repository
@@ -117,7 +114,6 @@ jobs:
           ASSET_NAME="mq-bridge-app-${{ matrix.target }}"
           mkdir staging
           cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" staging/
-          cp "target/${{ matrix.target }}/release/${{ matrix.mcp_binary_name }}" staging/
           cp LICENSE README.md staging/
           if [ "$RUNNER_OS" == "Windows" ]; then
             7z a "${ASSET_NAME}.zip" ./staging/*
@@ -135,7 +131,6 @@ jobs:
 
   # Build each platform in its own job so failures are clearly attributed
   # in the GitHub Actions UI — no more guessing which platform broke.
-  # We combine the App and MCP builds per architecture to reuse the builder stage cache.
   build-linux-amd64:
     name: Build linux/amd64
     needs: test
@@ -166,19 +161,6 @@ jobs:
           push: true
           # Temporary per-platform tag, merged into the final manifest below
           tags: ghcr.io/${{ env.IMAGE_NAME }}:amd64-tmp
-          build-args: |
-            CACHE_BUST=${{ env.DOCKER_CACHE_VERSION }}
-          cache-from: type=gha,scope=build-amd64-v${{ env.DOCKER_CACHE_VERSION }}
-          cache-to: type=gha,mode=max,scope=build-amd64-v${{ env.DOCKER_CACHE_VERSION }}
-
-      - name: Build and push mq-bridge-mcp (amd64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          target: mcp-final
-          push: true
-          tags: ghcr.io/${{ env.IMAGE_NAME }}-mcp:amd64-tmp
           build-args: |
             CACHE_BUST=${{ env.DOCKER_CACHE_VERSION }}
           cache-from: type=gha,scope=build-amd64-v${{ env.DOCKER_CACHE_VERSION }}
@@ -222,19 +204,6 @@ jobs:
           cache-from: type=gha,scope=build-arm64-v${{ env.DOCKER_CACHE_VERSION }}
           cache-to: type=gha,mode=max,scope=build-arm64-v${{ env.DOCKER_CACHE_VERSION }}
 
-      - name: Build and push mq-bridge-mcp (arm64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/arm64
-          target: mcp-final
-          push: true
-          tags: ghcr.io/${{ env.IMAGE_NAME }}-mcp:arm64-tmp
-          build-args: |
-            CACHE_BUST=${{ env.DOCKER_CACHE_VERSION }}
-          cache-from: type=gha,scope=build-arm64-v${{ env.DOCKER_CACHE_VERSION }}
-          cache-to: type=gha,mode=max,scope=build-arm64-v${{ env.DOCKER_CACHE_VERSION }}
-
   # Merge both platform images into a single multi-arch manifest
   publish-manifest:
     name: Push multi-arch manifest
@@ -266,34 +235,3 @@ jobs:
             --tag ghcr.io/${{ env.IMAGE_NAME }}:latest \
             ghcr.io/${{ env.IMAGE_NAME }}:amd64-tmp \
             ghcr.io/${{ env.IMAGE_NAME }}:arm64-tmp
-
-  publish-mcp-manifest:
-    name: Push mcp multi-arch manifest
-    needs: [build-linux-amd64, build-linux-arm64]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Extract version from Cargo.toml
-        id: get_version
-        run: |
-          echo "VERSION=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)" >> $GITHUB_OUTPUT
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create and push multi-arch manifest for mcp
-        run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/${{ env.IMAGE_NAME }}-mcp:${{ steps.get_version.outputs.VERSION }} \
-            --tag ghcr.io/${{ env.IMAGE_NAME }}-mcp:latest \
-            ghcr.io/${{ env.IMAGE_NAME }}-mcp:amd64-tmp \
-            ghcr.io/${{ env.IMAGE_NAME }}-mcp:arm64-tmp
