@@ -2,7 +2,7 @@
   "name": "mq-bridge-app",
   "dependencies": {
     "bootstrap": "^5.3",
-    "vanilla-schema-forms": "^0.1.5"
+    "vanilla-schema-forms": "^0.1.6"
   },
   "scripts": {
     "vendor:js": "cp node_modules/vanilla-schema-forms/dist/vanilla-schema-forms.umd.js static/vanilla-schema-forms.js",

@@ -12,6 +12,7 @@ const {
   getName,
   createTypeSelectArrayRenderer,
   createAdvancedOptionsRenderer,
+  createOptionalRenderer,
   renderCompactFieldWrapper,
   hydrateNodeWithData,
   rendererConfig,
@@ -107,68 +108,10 @@ domRenderer.renderFieldWrapper = (
 };
 
 /**
- * A fixed version of the library's createOptionalRenderer.
- * This version correctly registers the data path for the toggle checkbox,
- * ensuring that changes to it are saved to the data store.
- *
- * @param {string} toggleKey - The boolean property key that toggles the content.
- * @returns A renderer object.
- */
-const createFixedOptionalRenderer = (toggleKey) => ({
-  render: (node, path, elementId, dataPath, context) => {
-    const togglePropertySchema = node.properties?.[toggleKey];
-    if (!togglePropertySchema) {
-      // Fallback to default object renderer if the toggle key is not found
-      return renderObject(context, node, elementId, false, dataPath);
-    }
-
-    // Separate other properties
-    const otherProperties = { ...node.properties };
-    delete otherProperties[toggleKey];
-
-    // Prepare paths and IDs for the toggle checkbox
-    const toggleElementId = `${elementId}.${toggleKey}`;
-    const toggleDataPath = [...dataPath, toggleKey];
-    const toggleName = getName(toggleDataPath);
-    const contentId = `${elementId}-optional-content`;
-
-    // Manually register the path for the checkbox so events work
-    context.elementIdToDataPath.set(toggleElementId, toggleDataPath);
-
-    // Get current value for the checkbox to set initial state
-    const currentValue = context.store.getPath(toggleDataPath);
-    const checkboxNode = hydrateNodeWithData(togglePropertySchema, currentValue);
-
-    // Create the checkbox, passing the toggle target attribute
-    const checkbox = domRenderer.renderBoolean(
-      checkboxNode,
-      toggleElementId,
-      toggleName,
-      `data-toggle-target="${contentId}"`,
-    );
-
-    // Render the collapsible content
-    const content = renderProperties(context, otherProperties, elementId, dataPath);
-    const contentWrapper = h("div", {
-      id: contentId,
-      style: `display: ${currentValue ? "block" : "none"};`,
-      className: "mt-3",
-    }, content);
-
-    // Assemble and wrap in a fieldset
-    return domRenderer.renderFieldsetWrapper(
-      node,
-      elementId,
-      domRenderer.renderFragment([checkbox, contentWrapper]),
-    );
-  },
-});
-
-/**
  * Custom renderer for TLS configuration.
  * It renders a checkbox for the 'required' property and toggles the visibility of other properties.
  */
-const tlsBaseRenderer = createFixedOptionalRenderer("required");
+const tlsBaseRenderer = createOptionalRenderer("required");
 
 // Helper to fix null booleans
 const fixNullBooleans = (node, dataPath, context) => {
