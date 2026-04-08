@@ -58,7 +58,7 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
 
-  build-release-assets:
+  release:
     name: Build release assets for ${{ matrix.target }}
     needs: create-release
     runs-on: ${{ matrix.os }}
@@ -235,3 +235,19 @@ jobs:
             --tag ghcr.io/${{ env.IMAGE_NAME }}:latest \
             ghcr.io/${{ env.IMAGE_NAME }}:amd64-tmp \
             ghcr.io/${{ env.IMAGE_NAME }}:arm64-tmp
+
+  publish-crates-io:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: release
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
