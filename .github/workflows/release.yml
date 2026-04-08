@@ -13,9 +13,7 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository }}
-  # Bump this when you change the compiler toolchain, cmake config, or rdkafka
-  # features to invalidate the GHA Docker layer cache for that platform.
-  DOCKER_CACHE_VERSION: 2
+  # Cache invalidation derived from Cargo.toml `version` to avoid manual bumps.
 
 jobs:
   test:
@@ -24,6 +22,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Extract Cargo.toml version
+        id: get_version
+        run: |
+          echo "VERSION=$(sed -n 's/^version = "\([^\"]*\)".*/\1/p' Cargo.toml | head -n1)" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -36,7 +39,7 @@ jobs:
       - name: Run cargo test
         run: cargo test --all-targets
 
-  create-release:
+  release:
     name: Create GitHub Release
     needs: test
     runs-on: ubuntu-latest
@@ -58,9 +61,9 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
 
-  release:
+  build-release:
     name: Build release assets for ${{ matrix.target }}
-    needs: create-release
+    needs: release
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -162,9 +165,9 @@ jobs:
           # Temporary per-platform tag, merged into the final manifest below
           tags: ghcr.io/${{ env.IMAGE_NAME }}:amd64-tmp
           build-args: |
-            CACHE_BUST=${{ env.DOCKER_CACHE_VERSION }}
-          cache-from: type=gha,scope=build-amd64-v${{ env.DOCKER_CACHE_VERSION }}
-          cache-to: type=gha,mode=max,scope=build-amd64-v${{ env.DOCKER_CACHE_VERSION }}
+            CACHE_BUST=${{ steps.get_version.outputs.VERSION }}
+          cache-from: type=gha,scope=build-amd64-v${{ steps.get_version.outputs.VERSION }}
+          cache-to: type=gha,mode=max,scope=build-amd64-v${{ steps.get_version.outputs.VERSION }}
 
   build-linux-arm64:
     name: Build linux/arm64
@@ -200,9 +203,9 @@ jobs:
           push: true
           tags: ghcr.io/${{ env.IMAGE_NAME }}:arm64-tmp
           build-args: |
-            CACHE_BUST=${{ env.DOCKER_CACHE_VERSION }}
-          cache-from: type=gha,scope=build-arm64-v${{ env.DOCKER_CACHE_VERSION }}
-          cache-to: type=gha,mode=max,scope=build-arm64-v${{ env.DOCKER_CACHE_VERSION }}
+            CACHE_BUST=${{ steps.get_version.outputs.VERSION }}
+          cache-from: type=gha,scope=build-arm64-v${{ steps.get_version.outputs.VERSION }}
+          cache-to: type=gha,mode=max,scope=build-arm64-v${{ steps.get_version.outputs.VERSION }}
 
   # Merge both platform images into a single multi-arch manifest
   publish-manifest:
