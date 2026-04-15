@@ -1,6 +1,6 @@
 [package]
 name = "mq-bridge-app"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 authors = ["Marco Mengelkochs"]
 repository = "https://github.com/marcomq/mq-bridge-app"
@@ -28,7 +28,7 @@ strip = true
 
 [dependencies]
 # mq-bridge = { path = "../mq-bridge", features = ["schema"] }
-mq-bridge = { version="0.2.11", features = ["schema"] }
+mq-bridge = { version="0.2.12", features = ["schema"] }
 
 config = { version = "0.15.22", features = ["yaml"] }
 dotenvy = "0.15.7"
