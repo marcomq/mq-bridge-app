@@ -28,7 +28,7 @@ setI18n({
 // Configure global visibility rules
 setConfig({
   visibility: {
-    // Custom visibility logic based on node description and path
+    hiddenPaths: ["publishers", "consumers", "routes"],
     customVisibility: (node, path) => {
       const description = node.description || "";
       const lowerPath = path.toLowerCase();

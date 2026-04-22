@@ -2,7 +2,10 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 use config::Config;
-use mq_bridge::{Route, models::SecretExtractor};
+use mq_bridge::{
+    models::{Endpoint, SecretExtractor},
+    Route,
+};
 use schemars::JsonSchema;
 
 fn default_log_level() -> String {
@@ -25,9 +28,38 @@ pub struct AppConfig {
     pub metrics_addr: String,
     #[serde(default)]
     pub routes: HashMap<String, Route>,
+    #[serde(default)]
+    pub consumers: Vec<ConsumerConfig>,
+    #[serde(default)]
+    pub publishers: Vec<PublisherClient>,
     /// If true, secrets will be extracted to .env file upon saving.
     #[serde(default)]
     pub extract_secrets: bool,
+    /// The default tab to show in the UI upon loading.
+    #[serde(default)]
+    pub default_tab: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
+pub struct ConsumerConfig {
+    pub name: String,
+    pub endpoint: Endpoint,
+    #[serde(default)]
+    pub comment: String,
+    /// Configuration for the UI view/display
+    #[serde(default)]
+    pub view: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
+pub struct PublisherClient {
+    pub name: String,
+    pub endpoint: Endpoint,
+    #[serde(default)]
+    pub comment: String,
+    /// Configuration for the UI view/display
+    #[serde(default)]
+    pub view: HashMap<String, serde_json::Value>,
 }
 
 fn expand_variables(content: &str) -> Result<String, anyhow::Error> {
@@ -159,6 +191,14 @@ impl AppConfig {
             .collect();
         self.routes = sanitized_routes;
 
+        for consumer in &mut self.consumers {
+            consumer.name = consumer.name.trim().to_string();
+        }
+
+        for pub_client in &mut self.publishers {
+            pub_client.name = pub_client.name.trim().to_string();
+        }
+
         if self.extract_secrets {
             self.extract_secrets_to_env()?;
         }
@@ -177,6 +217,18 @@ impl AppConfig {
             let name = name.to_uppercase(); // Names are already sanitized in save()
             let prefix = format!("MQB__ROUTES__{}__", name);
             route.extract_secrets(&prefix, &mut all_secrets);
+        }
+        for consumer in &mut self.consumers {
+            let name = consumer.name.trim().replace(' ', "_").to_uppercase();
+            let prefix = format!("MQB__CONSUMERS__{}__", name);
+            consumer.endpoint.extract_secrets(&prefix, &mut all_secrets);
+        }
+        for publisher in &mut self.publishers {
+            let name = publisher.name.trim().replace(' ', "_").to_uppercase();
+            let prefix = format!("MQB__PUBLISHERS__{}__", name);
+            publisher
+                .endpoint
+                .extract_secrets(&prefix, &mut all_secrets);
         }
 
         if !all_secrets.is_empty() {

@@ -16,7 +16,6 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
 
 use anyhow::Context;
-
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -43,6 +42,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize the default crypto provider for rustls (required for rustls 0.23.0+)
+    // This allows mq-bridge to create TLS configurations for secure endpoints.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let args = Args::parse();
 
     if let Some(schema_path) = args.schema {
@@ -82,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     // --- Logic for default addresses ---
     // If there is no config (routes are empty), enable ui on 9091 and metrics on 9090.
     // If there is a config, use the addr of the config (empty means deactivated).
-    if config.routes.is_empty() {
+    if config.routes.is_empty() && config.consumers.is_empty() {
         if config.metrics_addr.is_empty() {
             config.metrics_addr = "0.0.0.0:9090".to_string();
         }
@@ -158,15 +161,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- Deploy Routes if MCP is disabled ---
-    if config.routes.is_empty() {
-        warn!("No routes configured. Waiting for configuration via Web UI.");
+    if config.routes.is_empty() && config.consumers.is_empty() {
+        warn!("No routes or consumers configured. Waiting for configuration via Web UI.");
     } else {
         let routes = std::mem::take(&mut config.routes);
+
         for route in routes.values() {
             if route.is_ref() {
                 route.register_output_endpoint(None)?;
             }
         }
+
         for (name, route) in routes {
             route.deploy(&name).await?;
         }

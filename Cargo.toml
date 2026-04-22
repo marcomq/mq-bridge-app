@@ -27,8 +27,8 @@ strip = true
 
 
 [dependencies]
-# mq-bridge = { path = "../mq-bridge", features = ["schema"] }
-mq-bridge = { version="0.2.12", features = ["schema"] }
+mq-bridge = { path = "../mq-bridge", features = ["schema"] }
+# mq-bridge = { version="0.2.12", features = ["schema"] }
 
 config = { version = "0.15.22", features = ["yaml"] }
 dotenvy = "0.15.7"
@@ -57,6 +57,8 @@ serde_json = "1.0.149"
 hex = "0.4"
 futures = "0.3.32"
 uuid = { version = "1.23", features = ["v4"] }
+rustls = "0.23.38"
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 
 [features]
 default = ["full"]
