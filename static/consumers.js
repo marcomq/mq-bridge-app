@@ -52,6 +52,36 @@ async function initConsumers(config, schema) {
     let consumerMessages = JSON.parse(localStorage.getItem(MSG_STORAGE_KEY) || '{}');
     const saveMessages = () => localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
 
+    let consumerStatus = {}; 
+
+    const fetchConsumerStatus = async (name) => {
+        try {
+            const res = await fetch(`/consumer-status?consumer=${encodeURIComponent(name)}`);
+            if (res.ok) {
+                const data = await res.json();
+                consumerStatus[name] = data;
+                renderLiveLog();
+                updateConsumerList();
+            }
+        } catch (e) { console.error("Error fetching status:", e); }
+    };
+
+    const toggleConsumer = async (name) => {
+        const isRunning = consumerStatus[name]?.running;
+        const action = isRunning ? 'stop' : 'start';
+        try {
+            const btn = document.getElementById('cons-toggle');
+            if (btn) { btn.disabled = true; btn.textContent = '...'; }
+            const res = await fetch(`/consumer-${action}?consumer=${encodeURIComponent(name)}`, { method: 'POST' });
+            if (res.ok) {
+                await fetchConsumerStatus(name);
+            }
+        } catch (e) { 
+            console.error(`Error during ${action}:`, e);
+            alert(`Failed to ${action} consumer`);
+        }
+    };
+
     const extractUuidV7Timestamp = (idStr) => {
         try {
             // UUIDv7 hex: 018f3a3a-3a3a-... (First 48 bits / 12 hex chars are timestamp in ms)
@@ -75,7 +105,7 @@ async function initConsumers(config, schema) {
                     <div class="list-group list-group-flush overflow-auto" id="cons-list" style="max-height: 400px;">
                         ${consumers.map((c, i) => `
                             <button class="list-group-item list-group-item-action py-2 px-3 d-flex justify-content-between align-items-center cons-item" data-idx="${i}">
-                                <span>${c.name}</span>
+                                <div class="d-flex align-items-center"><small class="me-2 cons-indicator" style="font-size: 8px">○</small><span>${c.name}</span></div>
                                 <span class="badge rounded-pill bg-light text-dark border">${consumerMessages[c.name]?.length || 0}</span>
                             </button>
                         `).join('')}
@@ -120,6 +150,20 @@ async function initConsumers(config, schema) {
     const liveContent = document.getElementById('cons-live-content');
     let currentIdx = 0;
 
+    const updateConsumerList = () => {
+        document.querySelectorAll('.cons-item').forEach(btn => {
+            const name = btn.querySelector('span').textContent;
+            const status = consumerStatus[name];
+            const indicator = btn.querySelector('.cons-indicator');
+            if (indicator && status) {
+                indicator.textContent = status.running ? '●' : '○';
+                indicator.className = 'me-2 cons-indicator ' + (status.running 
+                    ? (status.status?.healthy ? 'text-success' : 'text-danger') 
+                    : 'text-muted');
+            }
+        });
+    };
+
     const setActiveItem = (idx) => {
         currentIdx = idx;
         document.querySelectorAll('.cons-item').forEach((btn, i) => {
@@ -140,7 +184,7 @@ async function initConsumers(config, schema) {
                     <div class="small fw-bold text-muted text-uppercase mb-1" style="font-size: 10px">Metadata</div>
                     <table class="table table-sm table-bordered mb-0 small font-monospace">
                         <tbody>
-                            ${Object.entries(msg.metadata).map(([k, v]) => `
+                            ${Object.entries(msg.metadata).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => `
                                 <tr><td class="bg-light fw-bold" style="width: 30%">${k}</td><td>${v}</td></tr>
                             `).join('')}
                         </tbody>
@@ -187,6 +231,7 @@ async function initConsumers(config, schema) {
             ...schema.properties.consumers.items, 
             $defs: schema.$defs 
         }));
+        if (consumers[idx]) fetchConsumerStatus(consumers[idx].name);
         await window.VanillaSchemaForms.init(configFormContainer, itemSchema, config.consumers[idx], (updated) => {
             config.consumers[idx] = updated;
             const label = document.querySelector(`.cons-item[data-idx="${idx}"] span`);
@@ -198,6 +243,14 @@ async function initConsumers(config, schema) {
     const renderLiveLog = () => {
         const name = consumers[currentIdx].name;
         const messages = consumerMessages[name] || [];
+        const status = consumerStatus[name] || { running: false, status: { healthy: false } };
+
+        const statusHtml = status.running 
+            ? (status.status.healthy ? '<span class="text-success small fw-bold">● Connected</span>' : `<span class="text-danger small fw-bold" title="${status.status.error || ''}">● Connection Error</span>`)
+            : '<span class="text-muted small fw-bold">○ Log Collector Stopped</span>';
+        
+        const btnText = status.running ? 'Stop' : 'Start';
+        const btnClass = status.running ? 'btn-outline-danger' : 'btn-outline-success';
 
         liveContent.innerHTML = `
             <div class="card shadow-sm">
@@ -206,7 +259,10 @@ async function initConsumers(config, schema) {
                         <span class="fw-bold me-2">Incoming Messages: <span class="text-primary">${name}</span></span>
                         <button class="btn btn-sm btn-link text-danger p-0" id="cons-clear-history">clear</button>
                     </div>
-                    <span class="badge bg-success rounded-pill">Live Polling</span>
+                    <div class="d-flex align-items-center gap-3">
+                        ${statusHtml}
+                        <button class="btn btn-sm ${btnClass} px-3 fw-bold" id="cons-toggle">${btnText}</button>
+                    </div>
                 </div>
                 <div class="table-responsive" style="max-height: 400px;">
                     <table class="table table-hover table-sm mb-0">
@@ -237,6 +293,7 @@ async function initConsumers(config, schema) {
             saveMessages();
             renderLiveLog();
         };
+        document.getElementById('cons-toggle').onclick = () => toggleConsumer(name);
     };
 
     consList.onclick = (e) => {
@@ -298,6 +355,11 @@ async function initConsumers(config, schema) {
                 const currentConsumers = config.consumers || [];
                 const name = currentConsumers[currentIdx]?.name;
                 if (!name) return setTimeout(poll, 1000);
+
+                if (!consumerStatus[name]?.running) {
+                    await fetchConsumerStatus(name);
+                    return setTimeout(poll, 2000);
+                }
 
                 const res = await fetch(`/messages?consumer=${encodeURIComponent(name)}`);
                 if (res.ok) {

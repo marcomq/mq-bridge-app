@@ -84,6 +84,9 @@ impl WebUiHandler {
                 msg!(include_str!("../static/index.html")).with_content_type("text/html"),
             )),
             ("GET", "/config") => self.handle_get_config().await.map(Handled::Publish),
+            ("GET", "/consumer-status") => self.handle_consumer_status(&msg).await,
+            ("POST", "/consumer-start") => self.handle_consumer_start(&msg).await,
+            ("POST", "/consumer-stop") => self.handle_consumer_stop(&msg).await,
             ("GET", "/messages") => self.handle_get_messages(&msg).await,
             ("POST", "/config") => self.handle_update_config(msg).await,
             ("POST", "/publish") => self.handle_publish(msg).await,
@@ -116,30 +119,94 @@ impl WebUiHandler {
 
     async fn handle_get_config(&self) -> Result<CanonicalMessage, HandlerError> {
         let config_guard = self.config.read().await;
-        let mut current_config = config_guard.clone();
+        let current_config = config_guard.clone();
 
-        let running_routes = mq_bridge::list_routes();
-        let mut running_map: std::collections::HashMap<_, _> = running_routes
-            .into_iter()
-            .filter_map(|name| mq_bridge::get_route(&name).map(|route| (name, route)))
-            .collect();
-
-        for (name, r) in current_config.routes.iter_mut() {
-            if let Some(route) = running_map.remove(name) {
-                *r = route;
-            }
-        }
-        for c in current_config.consumers.iter_mut() {
-            if let Some(route) = running_map.remove(&c.name) {
-                c.endpoint = route.input;
-            }
-        }
-        running_map.remove("web_ui");
-        current_config.routes.extend(running_map);
+        // We no longer merge with the runtime 'running_map' here. 
+        // This ensures the UI only sees and sends back the 'clean' configuration,
+        // preventing surgical reload from thinking routes have changed due to
+        // bridge-internal default values or resolved references.
 
         CanonicalMessage::from_type(&current_config)
             .map_err(|e| HandlerError::NonRetryable(e.into()))
             .map(|m| m.with_content_type("application/json"))
+    }
+
+    async fn handle_consumer_status(&self, msg: &CanonicalMessage) -> Result<Handled, HandlerError> {
+        let name = msg.metadata.get("http_query")
+            .and_then(|q| q.split('&').find(|p| p.starts_with("consumer=")))
+            .map(|p| p.trim_start_matches("consumer=").to_string())
+            .unwrap_or_default();
+
+        let is_running = self.ui_handles.read().await.contains_key(&name);
+        let config = self.config.read().await;
+        let consumer_config = config.consumers.iter().find(|c| c.name == name);
+
+        if let Some(c) = consumer_config {
+            let status = if is_running {
+                // If the consumer is already running, assume it's healthy.
+                // The UI will show "● Connected" if running.
+                mq_bridge::traits::EndpointStatus {
+                    healthy: true,
+                    target: name.clone(),
+                    ..Default::default()
+                }
+            } else {
+                // If not running, probe connectivity to show if config is valid and broker reachable.
+                match c.endpoint.create_consumer(&name).await {
+                    Ok(consumer) => {
+                        consumer.status().await
+                    }
+                    Err(e) => {
+                        mq_bridge::traits::EndpointStatus {
+                            healthy: false,
+                            target: name.clone(),
+                            error: Some(e.to_string()),
+                            ..Default::default()
+                        }
+                    }
+                }
+            };
+            let resp = serde_json::json!({
+                "running": is_running,
+                "status": status
+            });
+            Ok(Handled::Publish(CanonicalMessage::from_type(&resp).unwrap().with_content_type("application/json")))
+        } else {
+            Ok(Handled::Publish(msg!("Consumer not found").with_status_code("404")))
+        }
+    }
+
+    async fn handle_consumer_start(&self, msg: &CanonicalMessage) -> Result<Handled, HandlerError> {
+        let name = msg.metadata.get("http_query")
+            .and_then(|q| q.split('&').find(|p| p.starts_with("consumer=")))
+            .map(|p| p.trim_start_matches("consumer=").to_string())
+            .unwrap_or_default();
+
+        let consumer_config = {
+            let config = self.config.read().await;
+            config.consumers.iter().find(|c| c.name == name).cloned()
+        };
+
+        if let Some(c) = consumer_config {
+            self.start_ui_collector_routes(&[c]).await
+                .map_err(|e| HandlerError::NonRetryable(e.into()))?;
+            Ok(Handled::Publish(msg!("Started")))
+        } else {
+            Ok(Handled::Publish(msg!("Consumer not found").with_status_code("404")))
+        }
+    }
+
+    async fn handle_consumer_stop(&self, msg: &CanonicalMessage) -> Result<Handled, HandlerError> {
+        let name = msg.metadata.get("http_query")
+            .and_then(|q| q.split('&').find(|p| p.starts_with("consumer=")))
+            .map(|p| p.trim_start_matches("consumer=").to_string())
+            .unwrap_or_default();
+
+        let mut handles = self.ui_handles.write().await;
+        if let Some(handle) = handles.remove(&name) {
+            handle.stop().await;
+        }
+        Ok(Handled::Publish(msg!("Stopped")))
     }
 
     async fn handle_get_messages(&self, msg: &CanonicalMessage) -> Result<Handled, HandlerError> {
@@ -247,8 +314,13 @@ impl WebUiHandler {
 
         tracing::info!("Received new configuration via Web UI. Reloading...");
 
-        let routes = std::mem::take(&mut new_config.routes);
-        let consumers = std::mem::take(&mut new_config.consumers);
+        // Normalize names early to ensure consistent comparison with old_config
+        let routes: HashMap<String, Route> = new_config.routes.drain()
+            .map(|(k, v)| (k.trim().replace(' ', "_").to_lowercase(), v))
+            .collect();
+        let consumers: Vec<crate::config::ConsumerConfig> = new_config.consumers.drain(..)
+            .map(|mut c| { c.name = c.name.trim().to_string(); c })
+            .collect();
 
         for (name, route) in &routes {
             if let Err(e) = route.check(name, None) {
@@ -270,23 +342,46 @@ impl WebUiHandler {
             }
         }
 
-        let old_routes = mq_bridge::list_routes();
-        for name in old_routes {
-            if name == "web_ui" {
-                continue;
-            }
-            let exists_in_routes = routes.contains_key(&name);
-            let exists_in_consumers = consumers.iter().any(|c| c.name == name);
-            if !exists_in_routes && !exists_in_consumers {
-                mq_bridge::stop_route(&name).await;
+        let old_config = self.config.read().await.clone();
+
+        // 1. Identify which persistent routes need to be stopped (removed or changed)
+        let mut routes_to_stop = Vec::new();
+        for name in old_config.routes.keys() {
+            if !routes.contains_key(name) || 
+               serde_json::to_value(&old_config.routes[name]).unwrap() != serde_json::to_value(&routes[name]).unwrap() {
+                routes_to_stop.push(name.clone());
             }
         }
+        
+        // Stop only the necessary routes
+        for name in routes_to_stop {
+            mq_bridge::stop_route(&name).await;
+        }
 
-        // Stop internal UI routes before reloading config
+        // 2. Surgical stop of internal UI collector routes
         {
+            let old_consumers_map: HashMap<_, _> = old_config.consumers.iter().map(|c| (&c.name, &c.endpoint)).collect();
+            let new_consumers_map: HashMap<_, _> = consumers.iter().map(|c| (&c.name, &c.endpoint)).collect();
+            
             let mut handles = self.ui_handles.write().await;
-            for (_, handle) in handles.drain() {
-                handle.stop().await;
+            let mut collectors_to_remove = Vec::new();
+            
+            for name in handles.keys() {
+                let should_stop = if let (Some(old_ep), Some(new_ep)) = (old_consumers_map.get(name), new_consumers_map.get(name)) {
+                    serde_json::to_value(old_ep).unwrap() != serde_json::to_value(new_ep).unwrap()
+                } else {
+                    true // removed
+                };
+                
+                if should_stop {
+                    collectors_to_remove.push(name.clone());
+                }
+            }
+            
+            for name in collectors_to_remove {
+                if let Some(handle) = handles.remove(&name) {
+                    handle.stop().await;
+                }
             }
         }
 
@@ -316,19 +411,25 @@ impl WebUiHandler {
             }
         }
 
-        // Re-start internal UI routes
-        self.start_ui_collector_routes(&consumers).await?;
-
+        // 4. Deploy new or changed persistent routes
         for (name, route) in &routes {
             if matches!(route.input.endpoint_type, EndpointType::Null) {
                 continue;
             }
 
-            if let Err(e) = route.deploy(name).await {
-                let err_msg = format!("Failed to deploy route {}: {}", name, e);
-                return Ok(Handled::Publish(
-                    CanonicalMessage::from(err_msg).with_status_code("500"),
-                ));
+            let should_deploy = if let Some(old_r) = old_config.routes.get(name) {
+                serde_json::to_value(old_r).unwrap() != serde_json::to_value(route).unwrap()
+            } else {
+                true
+            };
+
+            if should_deploy {
+                if let Err(e) = route.deploy(name).await {
+                    let err_msg = format!("Failed to deploy route {}: {}", name, e);
+                    return Ok(Handled::Publish(
+                        CanonicalMessage::from(err_msg).with_status_code("500"),
+                    ));
+                }
             }
         }
 
@@ -387,9 +488,6 @@ pub async fn start_web_server(
         config_file_path: Arc::new(config_file_path),
         ui_handles,
     };
-
-    // Start initial collector routes
-    web_handler.start_ui_collector_routes(&initial_config.consumers).await?;
 
     let input = Endpoint {
         endpoint_type: EndpointType::Http(HttpConfig {
