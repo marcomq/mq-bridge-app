@@ -11,9 +11,7 @@ const {
   resolvePath,
   getName,
   createTypeSelectArrayRenderer,
-  createAdvancedOptionsRenderer,
   createOptionalRenderer,
-  renderCompactFieldWrapper,
   hydrateNodeWithData,
   rendererConfig,
 } = window.VanillaSchemaForms;
@@ -74,36 +72,88 @@ setConfig({
   },
 });
 
-// Override renderFieldWrapper for compact layout
-const originalRenderFieldWrapper = domRenderer.renderFieldWrapper;
-domRenderer.renderFieldWrapper = (
-  node,
-  elementId,
-  inputElement,
-  wrapperClass,
-) => {
-  if (node.oneOf) {
-    const select = inputElement.querySelector("select");
-    const content = inputElement.querySelector(".oneof-container");
-    if (select && content) {
-      const compactSection = renderCompactFieldWrapper(node, elementId, select);
-      const container = h("div", { className: wrapperClass || "" });
-      container.appendChild(compactSection);
-      container.appendChild(content);
-      return container;
+/**
+ * Core form-row renderer override.
+ * Transforms each scalar field into:
+ * <div class="wa-form-row">
+ *   <label class="wa-form-label">...</label>
+ *   <div class="wa-form-col">
+ *     <input class="field-input">
+ *     <div class="form-description">...</div>
+ *   </div>
+ * </div>
+ */
+domRenderer.renderFieldWrapper = (node, elementId, inputElement, wrapperClass) => {
+  const input = inputElement.querySelector?.("input, select, textarea") || inputElement;
+  const isCheckbox = input?.tagName === "INPUT" && input.type === "checkbox";
+  if (input?.classList) {
+    if (isCheckbox) {
+      input.classList.add("wa-checkbox");
+    } else {
+      input.classList.add("field-input");
+    }
+    const isTechnical = ["url", "brokers", "topic", "group", "key"].some((k) =>
+      elementId.toLowerCase().includes(k),
+    );
+    if (!isCheckbox && isTechnical) {
+      input.style.fontFamily = "var(--font)";
     }
   }
-  if (
-    ["string", "number", "integer", "boolean"].includes(node.type) ||
-    node.enum
-  ) {
-    return renderCompactFieldWrapper(node, elementId, inputElement);
+
+  if (node.type === "object" || node.type === "array" || node.oneOf) {
+    return h(
+      "div",
+      { className: wrapperClass || "" },
+      inputElement,
+    );
   }
-  return originalRenderFieldWrapper(
-    node,
-    elementId,
-    inputElement,
-    wrapperClass,
+
+  const formatLabelText = () => {
+    if (node.title) {
+      return node.title;
+    }
+
+    const segments = String(elementId || "").split(".");
+    const fieldKey = segments[segments.length - 1] || "";
+    const parentKey = segments[segments.length - 2] || "";
+    const indexedFieldLabels = {
+      basic_auth: ["Username", "Password"],
+    };
+
+    if (/^\d+$/.test(fieldKey)) {
+      const index = Number(fieldKey);
+      const explicitLabel = indexedFieldLabels[parentKey]?.[index];
+      if (explicitLabel) {
+        return explicitLabel;
+      }
+      return `Item ${Number(fieldKey) + 1}`;
+    }
+
+    return fieldKey
+      .replace(/^__var_/, "")
+      .replace(/_/g, " ")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/\b\w/g, (char) => char.toUpperCase()) || "Value";
+  };
+
+  const labelText = formatLabelText();
+  const labelAttrs = { className: "wa-form-label" };
+  if (input?.id) {
+    labelAttrs.for = input.id;
+  }
+  const label = h("label", labelAttrs, labelText);
+
+  const controlChildren = [inputElement];
+  if (node.description) {
+    controlChildren.push(h("div", { className: "form-description" }, node.description));
+  }
+  const control = h("div", { className: "wa-form-col" }, ...controlChildren);
+
+  return h(
+    "div",
+    { className: ["wa-form-row", wrapperClass].filter(Boolean).join(" ") },
+    label,
+    control,
   );
 };
 
@@ -112,6 +162,15 @@ domRenderer.renderFieldWrapper = (
  * It renders a checkbox for the 'required' property and toggles the visibility of other properties.
  */
 const tlsBaseRenderer = createOptionalRenderer("required");
+
+const toggleDisclosure = (e, targetId) => {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+
+  const isHidden = target.style.display === "none";
+  target.style.display = isHidden ? "block" : "none";
+  e.currentTarget.textContent = isHidden ? "Hide" : "Show more...";
+};
 
 // Helper to fix null booleans
 const fixNullBooleans = (node, dataPath, context) => {
@@ -199,7 +258,7 @@ const createCustomCollapsibleRenderer = (visibleKeys) => ({
       const hiddenId = `${elementId}-advanced`;
       hiddenContent = h(
         "div",
-        { id: hiddenId, style: "display: none;", className: "mt-3" },
+        { id: hiddenId, style: "display: none;", className: "form-advanced-block" },
         renderProperties(context, hiddenProps, elementId, dataPath)
       );
 
@@ -207,21 +266,19 @@ const createCustomCollapsibleRenderer = (visibleKeys) => ({
         "button",
         {
           type: "button",
-          className: "btn btn-sm btn-link p-0 text-decoration-none mt-2",
-          onclick: (e) => {
-            const el = document.getElementById(hiddenId);
-            if (el) {
-              const isHidden = el.style.display === "none";
-              el.style.display = isHidden ? "block" : "none";
-              e.currentTarget.textContent = isHidden ? "Hide" : "Show more...";
-            }
-          },
+          className: "btn-linkish",
+          onclick: (e) => toggleDisclosure(e, hiddenId),
         },
         "Show more..."
       );
     }
 
+    const descriptionBlock = node.description
+      ? h("div", { className: "form-description form-description-block" }, node.description)
+      : document.createTextNode("");
+
     return domRenderer.renderFragment([
+      descriptionBlock,
       visibleContent,
       toggleBtn || document.createTextNode(""),
       hiddenContent || document.createTextNode(""),
@@ -322,44 +379,38 @@ const routesRenderer = {
   ) => {
     const keyInputAttrs = {
       type: "text",
-      className: "form-control form-control-sm fw-bold ap-key js-ap-key",
+      className: "ap-key js-ap-key",
       placeholder: "Route name",
       value: defaultKey,
       "data-original-key": defaultKey,
     };
     if (uniqueId) keyInputAttrs.id = uniqueId;
 
-    const labelAttrs = { className: "form-label fw-bold mb-0 text-nowrap" };
+    const labelAttrs = { className: "form-label" };
     if (uniqueId) labelAttrs.for = uniqueId;
 
     return h(
       "div",
-      { className: "mb-4 border rounded shadow-sm ap-row js-ap-row" },
+      { className: "ap-row js-ap-row", style: "grid-column: span 2" },
       h(
         "div",
-        {
-          className:
-            "d-flex align-items-center justify-content-between p-3 bg-light border-bottom rounded-top",
-        },
+        { className: "ap-row-header" },
         h(
           "div",
-          {
-            className: "d-flex align-items-center gap-2 flex-grow-1",
-            style: "max-width: 70%;",
-          },
-          h("label", labelAttrs, "Route Name:"),
+          { className: "ap-row-key" },
+          h("label", labelAttrs, "Route Name"),
           h("input", keyInputAttrs),
         ),
         h(
           "button",
           {
             type: "button",
-            className: `btn btn-sm btn-outline-danger btn-remove-ap ${rendererConfig.triggers.removeAdditionalProperty}`,
+            className: `btn-danger btn-remove-ap ${rendererConfig.triggers.removeAdditionalProperty}`,
           },
           "Remove Route",
         ),
       ),
-      h("div", { className: "p-3 flex-grow-1" }, valueHtml),
+      h("div", { className: "ap-row-body" }, valueHtml),
     );
   },
 };
@@ -381,13 +432,28 @@ const ADVANCED_KEYS = [
   "extract_secrets",
 ];
 
-// Advanced Options Renderer (Collapse)
-const advancedOptionsRendererBase = createAdvancedOptionsRenderer(ADVANCED_KEYS);
+const ENDPOINT_PRIMARY_KEYS = [
+  "url",
+  "brokers",
+  "queue",
+  "topic",
+  "stream",
+  "subject",
+  "group_id",
+  "queue_url",
+  "endpoint_url",
+  "collection",
+  "database",
+  "path",
+  "routes",
+  "tls",
+  "basic_auth",
+];
 
 const advancedOptionsRenderer = {
   render: (node, path, elementId, dataPath, context) => {
     fixNullBooleans(node, dataPath, context);
-    return advancedOptionsRendererBase.render(
+    return createCustomCollapsibleRenderer(ENDPOINT_PRIMARY_KEYS).render(
       node,
       path,
       elementId,

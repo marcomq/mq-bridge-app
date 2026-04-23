@@ -1,62 +1,308 @@
 <!DOCTYPE html>
-<html>
+<html class="wa-theme-default wa-palette-default wa-brand-blue">
 <head>
     <title>MQ Bridge Configuration</title>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/x-icon" href="/favicon.svg">
-    <link rel="stylesheet" href="/bootstrap.min.css">
-    <style> .nav-tabs { cursor: pointer; } </style>
+    
+    <!-- Web Awesome -->
+    <link rel="stylesheet" href="/vendor/webawesome/webawesome.bundle.css" />
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="/vendor/webawesome/webawesome.bundle.js"></script>
+    <script>
+        (() => {
+            const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+            const applyColorScheme = (event = systemDark) => {
+                const isDark = event.matches;
+                document.documentElement.classList.toggle('wa-dark', isDark);
+                document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+            };
+
+            applyColorScheme();
+            systemDark.addEventListener('change', applyColorScheme);
+            window.applyColorScheme = applyColorScheme;
+        })();
+    </script>
+
+    <!-- Split.js -->
+    <script src="/vendor/split/split.min.js"></script>
+
     <script src="/vanilla-schema-forms.js"></script>
+    <script src="/custom-form.js"></script>
     <script src="/routes.js"></script>
     <script src="/consumers.js"></script>
     <script src="/publishers.js"></script>
 </head>
 <body>
-    <div class="container mt-4 pb-5">
-        <pre style="line-height: 1.4; font-size: 20px;">
+    <!-- TOP BAR -->
+    <div class="topbar">
+        <div class="topbar-logo"><pre>
       ┌────── mq-bridge-configuration ──────┐
-──────┴─────────────────────────────────────┴──────</pre>
+──────┴─────────────────────────────────────┴──────
+</pre>
 
-        <ul class="nav nav-tabs mb-4" id="mainTabs" role="tablist">
-            <li class="nav-item"><a class="nav-link" id="tab-routes" data-bs-toggle="tab" href="#content-routes">Routes</a></li>
-            <li class="nav-item"><a class="nav-link" id="tab-consumers" data-bs-toggle="tab" href="#content-consumers">Consumers</a></li>
-            <li class="nav-item"><a class="nav-link" id="tab-publishers" data-bs-toggle="tab" href="#content-publishers">Publishers</a></li>
-            <li class="nav-item"><a class="nav-link" id="tab-config" data-bs-toggle="tab" href="#content-config">App Config</a></li>
-        </ul>
+        </div>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-status">
+            <div class="status-dot"></div>
+            mq-bridge connected
+        </div>
+    </div>
 
-        <div class="tab-content">
-            <div class="tab-pane fade" id="content-routes"><div id="routes-container"></div></div>
-            <div class="tab-pane fade" id="content-consumers"><div id="consumers-container"></div></div>
-            <div class="tab-pane fade" id="content-publishers"><div id="publishers-container"></div></div>
-            <div class="tab-pane fade" id="content-config">
-                <div id="form-container"></div>
-                <div id="form-actions" class="d-flex gap-2 mt-3" style="display: none;">
-                    <button id="js-submit" class="btn btn-primary">Save Configuration</button>
-                    <button id="js-show-json" class="btn btn-outline-secondary" type="button" title="Show current configuration as JSON" data-bs-toggle="modal" data-bs-target="#jsonPreviewModal">
-                        {?}
+    <!-- MAIN TABS -->
+    <div class="main-tabs" id="mainTabs">
+        <div class="main-tab" onclick="switchMain('routes')" id="mtab-routes">
+            <span class="tab-icon">⇄</span> Routes
+        </div>
+        <div class="main-tab" onclick="switchMain('consumers')" id="mtab-consumers">
+            <span class="tab-icon">↓</span> Consumers
+        </div>
+        <div class="main-tab" onclick="switchMain('publishers')" id="mtab-publishers">
+            <span class="tab-icon">↑</span> Publishers
+        </div>
+        <div class="main-tab" onclick="switchMain('config')" id="mtab-config">
+            <span class="tab-icon">⚙</span> App Config
+        </div>
+    </div>
+
+    <!-- APP BODY -->
+    <div class="app-body">
+        <!-- ROUTES TAB -->
+        <div class="tab-content-panel" id="tab-routes">
+            <div id="routes-container" style="display:contents">
+                <div class="sidebar">
+                    <div class="sidebar-header">
+                        <input class="sidebar-search" id="route-filter" type="text" placeholder="Filter routes…">
+                        <div class="btn-icon" id="route-add" title="Add route">+</div>
+                    </div>
+                    <div class="sidebar-list" id="route-list">
+                        <div class="sidebar-group-label">Routes</div>
+                        <!-- Dynamic content -->
+                    </div>
+                </div>
+                <div class="main-content">
+                    <div id="route-empty-alert" class="alert alert-info" style="padding:20px; display:none;">No routes configured. Click "+" to create one.</div>
+                        <div id="route-main-ui" class="pane-container">
+                            <div class="pane-top" style="padding:12px;">
+                                <div class="section-toolbar">
+                                    <div class="section-label">Definition</div>
+                                    <div class="form-actions-row section-actions">
+                                        <button class="btn-primary" id="route-save">Save</button>
+                                        <button class="btn-secondary" id="route-clone">Clone</button>
+                                        <button class="btn-danger" id="route-delete">Delete</button>
+                                    </div>
+                                </div>
+                                <div id="route-config-form" class="field-grid"></div>
+                            </div>
+                        </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- CONSUMERS TAB -->
+        <div class="tab-content-panel" id="tab-consumers" style="width: 100%">
+            <div id="consumers-container" style="display:contents">
+                <div class="sidebar">
+                    <div class="sidebar-header">
+                        <input class="sidebar-search" id="cons-filter" type="text" placeholder="Filter consumers…">
+                        <div class="btn-icon" id="cons-add" title="Add consumer">+</div>
+                    </div>
+                    <div class="sidebar-list" id="cons-list">
+                        <div class="sidebar-group-label">Saved</div>
+                        <!-- Dynamic content -->
+                    </div>
+                </div>
+                <div class="main-content">
+                    <div id="cons-empty-alert" class="alert alert-info" style="padding:20px; display:none;">No consumers configured. Click "+ New" to create one.</div>
+                    <div id="cons-main-ui" style="display:contents">
+                        <div class="content-tabs" id="cons-sub-tabs">
+                            <div class="content-tab" data-target="cons-def-panel" id="ctab-def">Definition</div>
+                            <div class="content-tab active" data-target="cons-msg-panel" id="ctab-msg">Messages</div>
+                        </div>
+                        <div class="pane-container" id="cons-def-panel" style="display:none;">
+                            <div class="pane-top" style="padding:12px;">
+                                <div class="section-toolbar">
+                                    <div class="section-label">Definition</div>
+                                    <div class="form-actions-row section-actions">
+                                        <button class="btn-primary" id="cons-save">Save</button>
+                                        <button class="btn-secondary" id="cons-clone">Clone</button>
+                                        <button class="btn-danger" id="cons-delete">Delete</button>
+                                    </div>
+                                </div>
+                                <div id="cons-config-form" class="field-grid"></div>
+                            </div>
+                        </div>
+                        <div class="pane-container" id="cons-msg-panel">
+                            <div class="pane-top" id="cons-list-pane">
+                                <div class="msg-table-header">
+                                    <span class="msg-table-title" id="cons-live-title">Incoming Messages:</span>
+                                    <button class="btn-clear" id="cons-clear-history">Clear</button>
+                                    <wa-button variant="success" id="cons-toggle" size="small">Start</wa-button>
+                                </div>
+                                <div style="overflow:auto;flex:1;" id="consumer-log-body-wrapper">
+                                    <table class="msg-table">
+                                        <thead><tr><th style="width: 120px;">Time</th><th>Payload Preview</th></tr></thead>
+                                        <tbody id="consumer-log-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="pane-divider" id="cons-pane-divider"></div>
+                            <div class="pane-bottom" id="cons-detail-pane">
+                                <div class="detail-header">
+                                    <span id="cons-msg-detail-info">Select a message to view details</span>
+                                    <span style="margin-left:auto;cursor:pointer;color:var(--text-dim)" id="cons-msg-copy-btn">⊕ copy</span>
+                                </div>
+                                <div class="detail-body" id="cons-msg-details-content"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- PUBLISHERS TAB -->
+        <div class="tab-content-panel" id="tab-publishers">
+            <div id="publishers-container" style="display:contents">
+                <div class="sidebar">
+                    <div class="sidebar-header">
+                        <input class="sidebar-search" id="pub-filter" type="text" placeholder="Filter publishers…">
+                        <div class="btn-icon" id="pub-add" title="Add publisher">+</div>
+                    </div>
+                    <div class="sidebar-list" id="pub-list">
+                        <div class="sidebar-group-label">Saved</div>
+                        <!-- Dynamic content -->
+                    </div>
+                </div>
+                <div class="main-content">
+                    <div id="pub-empty-alert" class="alert alert-info" style="display:none;">No publishers configured. Click "+ New" to create one.</div>
+                    <div id="pub-main-ui" style="display:contents">
+                        <div class="request-bar">
+                            <select class="proto-select" id="pub-proto">
+                                <option>HTTP</option><option>Kafka</option><option>MQTT</option>
+                                <option>gRPC</option><option>AMQP</option>
+                            </select>
+                            <select class="method-select" id="pub-method">
+                                <option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option>
+                            </select>
+                            <input class="url-input" id="pub-url" value="http://localhost:8080/api/orders">
+                            <button class="btn-send" id="pub-send">Send</button>
+                        </div>
+
+                        <div class="content-tabs" id="pub-sub-tabs">
+                            <div class="content-tab active" data-target="pub-payload-pane" id="ctab-payload">Body</div>
+                            <div class="content-tab" data-target="pub-meta-pane">Headers</div>
+                            <div class="content-tab" data-target="pub-history-pane">History</div>
+                            <div class="content-tab" data-target="pub-config-pane">Definition</div>
+                            <div style="flex:1"></div>
+                            <div class="content-tab" id="pub-response-tab" style="display:none">Response</div>
+                        </div>
+
+                        <div class="pane-container">
+                            <div id="pub-top-content-wrapper" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                                <div class="pane-top" id="pub-payload-pane">
+                                    <div class="section-toolbar">
+                                        <div class="section-label">Request Body</div>
+                                        <button class="btn-primary" id="pub-beautify">Beautify JSON</button>
+                                    </div>
+                                    <textarea class="body-editor" id="pub-payload" spellcheck="false"></textarea>
+                                </div>
+
+                                <div class="pane-top" id="pub-meta-pane" style="display:none;">
+                                    <div class="section-toolbar">
+                                        <div class="section-label">Headers</div>
+                                        <button class="btn-primary" id="add-meta">+ Add Header</button>
+                                    </div>
+                                    <table class="kv-table" id="metadata-container">
+                                        <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+                                        <tbody><!-- Dynamic rows --></tbody>
+                                    </table>
+                                </div>
+
+                                <div class="pane-top" id="pub-history-pane" style="display:none;"></div>
+
+                                <div class="pane-top" id="pub-config-pane" style="display:none;">
+                                    <div class="section-toolbar">
+                                        <div class="section-label">Definition</div>
+                                        <div class="form-actions-row section-actions">
+                                            <button class="btn-primary" id="pub-save">Save</button>
+                                            <button class="btn-secondary" id="pub-clone">Clone</button>
+                                            <button class="btn-danger" id="pub-delete">Delete</button>
+                                        </div>
+                                    </div>
+                                    <div id="pub-config-form" class="field-grid"></div>
+                                </div>
+                            </div>
+                            <div class="pane-divider" id="pub-pane-divider"></div>
+                            <div class="pane-bottom" id="pub-response-container">
+                                <div class="detail-header">
+                                    <span id="pub-response-status">Ready</span>
+                                    <span style="margin-left:auto; cursor:pointer; color:var(--text-dim)" id="pub-resp-copy">⊕ copy</span>
+                                </div>
+                                <div class="detail-body" id="pub-response"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- CONFIG TAB -->
+        <div class="tab-content-panel" id="tab-config">
+                <div id="form-container" class="field-grid"></div>
+                <div id="form-actions" class="form-actions-row" style="display: none;">
+                    <button class="btn-primary" id="js-submit">Save</button>
+                    <button class="btn-secondary" id="js-show-json" type="button" title="Show current configuration as JSON" onclick="showJsonModal()">
+                        {?} JSON
                     </button>
                 </div>
             </div>
-        </div>
-    </div>
+    </div><!-- app-body -->
 
     <!-- JSON Preview Modal -->
-    <div class="modal fade" id="jsonPreviewModal" tabindex="-1" aria-labelledby="jsonPreviewModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="jsonPreviewModalLabel">Current Configuration (JSON)</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <pre><code id="json-output"></code></pre>
-                </div>
-            </div>
-        </div>
-    </div>
+    <wa-dialog label="Current Configuration (JSON)" id="jsonPreviewModal">
+        <pre><code id="json-output"></code></pre>
+        <button slot="footer" class="btn-primary" onclick="document.getElementById('jsonPreviewModal').open = false">Close</button>
+    </wa-dialog>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // Global function to switch main tabs
+        function switchMain(name) {
+            document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content-panel').forEach(t => t.classList.remove('active'));
+            document.getElementById('mtab-' + name).classList.add('active');
+            document.getElementById('tab-' + name).classList.add('active');
+            window._mqb_active_tab = name; // Update global active tab state
+
+            // Initialize content for the newly active tab if not already done
+            if (name === 'routes' && window.initRoutes && !window._mqb_routes_initialized) {
+                window.initRoutes(window.appConfig, window.appSchema);
+                window._mqb_routes_initialized = true;
+            } else if (name === 'consumers' && window.initConsumers && !window._mqb_consumers_initialized) {
+                window.initConsumers(window.appConfig, window.appSchema);
+                window._mqb_consumers_initialized = true;
+            } else if (name === 'consumers' && window.restoreConsumerState) {
+                const match = window.location.hash.match(/^#consumers:(\d+)$/);
+                const idx = match ? parseInt(match[1], 10) : 0;
+                window.restoreConsumerState(idx);
+            } else if (name === 'publishers' && window.initPublishers && !window._mqb_publishers_initialized) {
+                window.initPublishers(window.appConfig, window.appSchema);
+                window._mqb_publishers_initialized = true;
+            } else if (name === 'config' && window.initSettings && !window._mqb_config_initialized) {
+                window.initSettings(window.appConfig, window.appSchema);
+                window._mqb_config_initialized = true;
+            }
+
+            // Update URL hash
+            history.replaceState(null, null, `#${name}`);
+        }
+
+        // Function to show JSON modal
+        function showJsonModal() {
+            document.getElementById('json-output').textContent = JSON.stringify(window.appConfig, null, 2);
+            document.getElementById('jsonPreviewModal').open = true;
+        }
+
         window.addEventListener('load', async () => {
             const config = await (await fetch('/config')).json();
             const schema = await (await fetch('/schema.json')).json();
@@ -83,68 +329,34 @@
 
             // Global state for saving
             window.appConfig = config;
+            window.appSchema = schema; // Store schema globally for tab initializations
             
-            // Settings Tab (Original global form)
-            if (window.initSettings) initSettings(config, schema);
-            
-            // Initialize dynamic tabs
-            document.getElementById('tab-routes').addEventListener('shown.bs.tab', () => {
-                window._mqb_active_tab = 'routes';
-                if (window.initRoutes) initRoutes(config, schema);
-            });
-            document.getElementById('tab-consumers').addEventListener('shown.bs.tab', () => {
-                window._mqb_active_tab = 'consumers';
-                if (window.initConsumers) initConsumers(config, schema);
-            });
-            document.getElementById('tab-publishers').addEventListener('shown.bs.tab', () => {
-                window._mqb_active_tab = 'publishers';
-                if (window.initPublishers) initPublishers(config, schema);
-            });
-
             // Hash-based navigation
             const tabMap = {
-                '#routes': 'tab-routes',
-                '#consumers': 'tab-consumers',
-                '#publishers': 'tab-publishers',
-                '#config': 'tab-config'
+                '#routes': 'routes',
+                '#consumers': 'consumers',
+                '#publishers': 'publishers',
+                '#config': 'config'
             };
-
-            // Function to update hash when tab is shown
-            const updateHash = (tabId) => {
-                const hash = Object.keys(tabMap).find(key => tabMap[key] === tabId);
-                if (hash) {
-                    history.replaceState(null, null, hash);
-                }
-            };
-
-            // Add hash update listeners to all main tabs
-            Object.values(tabMap).forEach(tabId => {
-                document.getElementById(tabId).addEventListener('shown.bs.tab', () => {
-                    updateHash(tabId);
-                });
-            });
 
             // Handle hash changes (back/forward navigation)
             window.addEventListener('hashchange', () => {
                 const hash = window.location.hash;
                 if (hash && tabMap[hash]) {
-                    const tabEl = document.getElementById(tabMap[hash]);
-                    if (tabEl) {
-                        bootstrap.Tab.getOrCreateInstance(tabEl).show();
-                    }
+                    switchMain(tabMap[hash]);
                 }
             });
 
             // Handle initial tab based on URL hash or default
             const hash = window.location.hash;
             let defaultTabId;
-            if (hash && tabMap[hash]) {
-                defaultTabId = tabMap[hash];
+            if (hash && tabMap[hash]) { // Check if hash exists and is a valid tab
+                defaultTabId = tabMap[hash]; // Use the tab name directly
             } else {
-                defaultTabId = `tab-${config.default_tab || 'routes'}`;
+                // Fallback to config.default_tab or 'routes'
+                defaultTabId = config.default_tab || 'routes';
             }
-            const triggerEl = document.getElementById(defaultTabId) || document.getElementById('tab-routes');
-            bootstrap.Tab.getOrCreateInstance(triggerEl).show();
+            switchMain(defaultTabId);
         });
     </script>
 </body>

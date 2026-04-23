@@ -1,58 +1,47 @@
 async function initConsumers(config, schema) {
-    const container = document.getElementById('consumers-container');
     const consumers = config.consumers || [];
     const MSG_STORAGE_KEY = 'mqb_consumer_messages';
 
-    const updateUrlHash = () => {
-        const activeTabBtn = document.querySelector('button[data-bs-toggle="tab"].active');
-        if (!activeTabBtn) return;
-        const tabName = activeTabBtn.getAttribute('data-bs-target').replace('#tab-', '').replace('#', '');
-        // Only update index if we are on the consumers tab
-        if (tabName !== 'consumers') return;
-        const idx = typeof currentIdx !== 'undefined' ? currentIdx : 0;
-        window.history.replaceState(null, null, `#${tabName}:${idx}`);
-    };
-
-    const getHashState = () => {
-        const hash = window.location.hash.substring(1);
-        const [tab, idx] = hash.split(':');
-        return { tab: tab || 'publishers', idx: parseInt(idx) || 0 };
-    };
-
-    // Save the active main tab (Publishers/Consumers/Routes)
-    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabEl => {
-        tabEl.addEventListener('shown.bs.tab', (e) => {
-            const target = e.target.getAttribute('data-bs-target') || '';
-            const tabName = target.replace('#tab-', '').replace('#', '');
-            // Only track top-level navigation tabs
-            if (['publishers', 'consumers', 'routes'].includes(tabName)) {
-                window._mqb_active_tab = tabName;
-            }
-            updateUrlHash();
-            if (window._mqb_active_tab === 'consumers') startPolling();
-        });
-    });
-
-    const restoreFromHash = () => {
-        const state = getHashState();
-        if (state.tab) {
-            const tabBtn = document.querySelector(`button[data-bs-target="#tab-${state.tab}"]`);
-            if (tabBtn && !tabBtn.classList.contains('active')) tabBtn.click();
-            
-            if (state.tab === 'consumers' && consumers[state.idx]) {
-                if (currentIdx !== state.idx) {
-                    setActiveItem(state.idx);
-                    if (window._mqb_active_tab === 'consumers') updateUI();
-                }
-            }
+    const applyEndpointSchemaDefaults = (itemSchema) => {
+        const fileConfigSchema = itemSchema.$defs?.FileConfig;
+        if (fileConfigSchema?.properties?.format) {
+            fileConfigSchema.properties.format.default = 'raw';
         }
+
+        const mongoDbConfigSchema = itemSchema.$defs?.MongoDbConfig;
+        if (mongoDbConfigSchema?.properties?.format) {
+            mongoDbConfigSchema.properties.format.default = 'raw';
+        }
+    };
+
+    if (window._mqb_consumer_poll_timer) {
+        clearTimeout(window._mqb_consumer_poll_timer);
+    }
+    window._mqb_consumer_poll_timer = null;
+    window._mqb_consumer_poll_nonce = (window._mqb_consumer_poll_nonce || 0) + 1;
+    const pollNonce = window._mqb_consumer_poll_nonce;
+
+    const consList = document.getElementById('cons-list');
+    const logBody = document.getElementById('consumer-log-body');
+    const consSubTabs = document.getElementById('cons-sub-tabs');
+    let currentIdx = 0;
+
+    const updateUrlHash = () => {
+        const idx = typeof currentIdx !== 'undefined' ? currentIdx : 0;
+        window.history.replaceState(null, null, `#consumers:${idx}`);
     };
 
     // Load existing messages from LocalStorage
     let consumerMessages = JSON.parse(localStorage.getItem(MSG_STORAGE_KEY) || '{}');
     const saveMessages = () => localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
 
-    let consumerStatus = {}; 
+    let consumerStatus = {};
+
+    const schedulePoll = (delayMs) => {
+        if (window._mqb_consumer_poll_nonce !== pollNonce) return;
+        if (window._mqb_consumer_poll_timer) clearTimeout(window._mqb_consumer_poll_timer);
+        window._mqb_consumer_poll_timer = setTimeout(pollLoop, delayMs);
+    };
 
     const fetchConsumerStatus = async (name) => {
         try {
@@ -60,25 +49,37 @@ async function initConsumers(config, schema) {
             if (res.ok) {
                 const data = await res.json();
                 consumerStatus[name] = data;
-                renderLiveLog();
-                updateConsumerList();
             }
         } catch (e) { console.error("Error fetching status:", e); }
+    };
+
+    const refreshConsumerStatuses = async () => {
+        const currentConsumers = config.consumers || [];
+        await Promise.all(currentConsumers.map((consumer) => fetchConsumerStatus(consumer.name)));
+        updateConsumerList();
+        renderLiveLog();
     };
 
     const toggleConsumer = async (name) => {
         const isRunning = consumerStatus[name]?.running;
         const action = isRunning ? 'stop' : 'start';
         try {
-            const btn = document.getElementById('cons-toggle');
-            if (btn) { btn.disabled = true; btn.textContent = '...'; }
+            const toggleBtn = document.getElementById('cons-toggle');
+            if (toggleBtn) {
+                toggleBtn.loading = true; // Shoelace loading state
+            }
             const res = await fetch(`/consumer-${action}?consumer=${encodeURIComponent(name)}`, { method: 'POST' });
             if (res.ok) {
-                await fetchConsumerStatus(name);
+                await fetchConsumerStatus(name); // Fetch status to update UI
             }
         } catch (e) { 
             console.error(`Error during ${action}:`, e);
             alert(`Failed to ${action} consumer`);
+        } finally {
+            const toggleBtn = document.getElementById('cons-toggle');
+            if (toggleBtn) {
+                toggleBtn.loading = false;
+            }
         }
     };
 
@@ -87,86 +88,69 @@ async function initConsumers(config, schema) {
             // UUIDv7 hex: 018f3a3a-3a3a-... (First 48 bits / 12 hex chars are timestamp in ms)
             const hex = idStr.replace(/-/g, '');
             const ms = parseInt(hex.substring(0, 12), 16);
-            return new Date(ms).toLocaleString();
+            return new Date(ms).toLocaleTimeString(); // Use toLocaleTimeString for brevity
         } catch (e) { return null; }
     };
 
-    container.innerHTML = `
-        <div class="row mb-4 align-items-start g-3">
-            <div class="col-md-4">
-                <div class="card shadow-sm">
-                    <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center">
-                        <span class="small fw-bold text-uppercase text-muted">Consumer List</span>
-                        <button class="btn btn-sm btn-link text-decoration-none" id="cons-add">+ New</button>
-                    </div>
-                    <div class="p-2 border-bottom">
-                        <input type="text" class="form-control form-control-sm" id="cons-filter" placeholder="Filter consumers...">
-                    </div>
-                    <div class="list-group list-group-flush overflow-auto" id="cons-list" style="max-height: 400px;">
-                        ${consumers.map((c, i) => `
-                            <button class="list-group-item list-group-item-action py-2 px-3 d-flex justify-content-between align-items-center cons-item" data-idx="${i}">
-                                <div class="d-flex align-items-center"><small class="me-2 cons-indicator" style="font-size: 8px">○</small><span>${c.name}</span></div>
-                                <span class="badge rounded-pill bg-light text-dark border">${consumerMessages[c.name]?.length || 0}</span>
-                            </button>
-                        `).join('')}
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-8">
-                ${consumers.length === 0 ? '<div class="alert alert-info">No consumers configured. Click "+ New" to create one.</div>' : `
-                <ul class="nav nav-tabs mb-3" id="cons-tabs" role="tablist">
-                    <li class="nav-item"><button class="nav-link active py-1 px-3" data-bs-toggle="tab" data-bs-target="#tab-cons-live" type="button">Live Messages</button></li>
-                    <li class="nav-item"><button class="nav-link py-1 px-3" data-bs-toggle="tab" data-bs-target="#tab-cons-config" type="button">Definition</button></li>
-                </ul>
-                <div class="tab-content">
-                    <div class="tab-pane fade show active" id="tab-cons-live">
-                        <div id="cons-live-content"></div>
-                        <div id="cons-msg-details" class="mt-3" style="display:none">
-                            <div class="card shadow-sm border-primary">
-                                <div class="card-header bg-primary text-white py-1 d-flex justify-content-between align-items-center">
-                                    <span class="small fw-bold text-uppercase">Message Details</span>
-                                    <button type="button" class="btn-close btn-close-white" style="font-size: 0.6rem" onclick="document.getElementById('cons-msg-details').style.display='none'"></button>
-                                </div>
-                                <div class="card-body p-0">
-                                    <pre class="mb-0 p-2 small font-monospace bg-light" id="cons-msg-details-content" style="max-height: 400px; overflow: auto; white-space: pre-wrap;"></pre>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-            <div class="tab-pane fade" id="tab-cons-config">
-                        <div class="d-flex gap-2 mb-3">
-                            <button class="btn btn-primary btn-sm" id="cons-save">Save Config</button>
-                            <button class="btn btn-outline-secondary btn-sm" id="cons-clone" title="Clone Current">&#10697; Clone</button>
-                            <button class="btn btn-outline-danger btn-sm" id="cons-delete" title="Delete">&times; Delete</button>
-                        </div>
-                <div id="cons-config-form" class="p-3 border rounded bg-light"></div>
-            </div>
-                </div>`}
-            </div>
-        </div>
-    `;
+    const getConsumerInputType = (consumer) => {
+        const input = consumer?.endpoint || {};
+        return Object.keys(input).filter((key) => key !== 'middlewares')[0] || 'N/A';
+    };
 
-    const consList = document.getElementById('cons-list');
-    const liveContent = document.getElementById('cons-live-content');
-    let currentIdx = 0;
+    const renderSidebar = () => {
+        const list = document.getElementById('cons-list');
+        if (!list) return;
+        list.innerHTML = '<div class="sidebar-group-label">Saved</div>' + 
+            consumers.map((c, i) => {
+                const proto = getConsumerInputType(c).toUpperCase();
+                const status = consumerStatus[c.name];
+                const statusClass = status
+                    ? (status.running ? (status.status?.healthy ? 'status-ok' : 'status-err') : 'status-off')
+                    : 'status-off';
+                return `
+                <div class="sidebar-item cons-item" data-idx="${i}">
+                    <span class="proto-badge proto-${proto.toLowerCase()}">${proto}</span>
+                    <span class="item-name">${c.name}</span>
+                    <span class="msg-count" style="margin-left:auto;">${consumerMessages[c.name]?.length || 0}</span>
+                    <span class="item-status ${statusClass}"></span>
+                </div>
+            `}).join('');
+        
+        const hasCons = consumers.length > 0;
+        document.getElementById('cons-empty-alert').style.display = hasCons ? 'none' : 'block';
+        document.getElementById('cons-main-ui').style.display = hasCons ? 'contents' : 'none';
+    };
 
     const updateConsumerList = () => {
-        document.querySelectorAll('.cons-item').forEach(btn => {
-            const name = btn.querySelector('span').textContent;
+        document.querySelectorAll('#cons-list .cons-item').forEach(btn => {
+            const name = btn.querySelector('.item-name').textContent;
             const status = consumerStatus[name];
-            const indicator = btn.querySelector('.cons-indicator');
+            const indicator = btn.querySelector('.item-status');
+            const protoBadge = btn.querySelector('.proto-badge');
+
+            // Update protocol badge
+            const consumerConfig = consumers.find(c => c.name === name);
+            if (consumerConfig && consumerConfig.input) {
+                const proto = getConsumerInputType(consumerConfig).toUpperCase();
+                protoBadge.textContent = proto;
+                protoBadge.className = `proto-badge proto-${proto.toLowerCase()}`;
+            }
+
+            // Update status indicator
             if (indicator && status) {
-                indicator.textContent = status.running ? '●' : '○';
-                indicator.className = 'me-2 cons-indicator ' + (status.running 
-                    ? (status.status?.healthy ? 'text-success' : 'text-danger') 
-                    : 'text-muted');
+                indicator.classList.remove('status-ok', 'status-err', 'status-off');
+                if (status.running) {
+                    indicator.classList.add(status.status?.healthy ? 'status-ok' : 'status-err');
+                } else {
+                    indicator.classList.add('status-off');
+                }
             }
         });
     };
 
     const setActiveItem = (idx) => {
         currentIdx = idx;
-        document.querySelectorAll('.cons-item').forEach((btn, i) => {
+        document.querySelectorAll('#cons-list .cons-item').forEach((btn, i) => {
             btn.classList.toggle('active', i === idx);
         });
     };
@@ -174,104 +158,135 @@ async function initConsumers(config, schema) {
     window.showMsgDetails = (name, msgIdx) => {
         const msg = (consumerMessages[name] || [])[msgIdx];
         if (!msg) return;
-        const container = document.getElementById("cons-msg-details");
-        const cardBody = container.querySelector(".card-body");
-        
-        let metaHtml = "";
-        if (msg.metadata && Object.keys(msg.metadata).length > 0) {
-            metaHtml = `
-                <div class="p-2 border-bottom">
-                    <div class="small fw-bold text-muted text-uppercase mb-1" style="font-size: 10px">Metadata</div>
-                    <table class="table table-sm table-bordered mb-0 small font-monospace">
-                        <tbody>
-                            ${Object.entries(msg.metadata).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => `
-                                <tr><td class="bg-light fw-bold" style="width: 30%">${k}</td><td>${v}</td></tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `;
-        }
 
-        cardBody.innerHTML = `
-            ${metaHtml}
-            <div class="p-2">
-                <div class="small fw-bold text-muted text-uppercase mb-1" style="font-size: 10px">Payload</div>
-                <pre class="mb-0 small font-monospace bg-light p-2 border rounded" id="cons-msg-details-content" style="max-height: 600px; overflow: auto; white-space: pre-wrap;"></pre>
-            </div>
-        `;
+        const detailInfo = document.getElementById('cons-msg-detail-info');
+        const detailContent = document.getElementById('cons-msg-details-content');
+        const msgCopyBtn = document.getElementById('cons-msg-copy-btn');
 
-        const content = document.getElementById("cons-msg-details-content");
         let payload = msg.payload;
         if (typeof payload !== 'string') {
             payload = JSON.stringify(payload, null, 2);
         }
-        content.textContent = payload;
 
-        container.style.display = "block";
-        container.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        const metadataEntries = Object.entries(msg.metadata || {}).sort(([a], [b]) => a.localeCompare(b));
+        const metadataHtml = metadataEntries.length > 0
+            ? `
+                <div class="response-meta-block">
+                    <div class="section-label">Headers</div>
+                    ${metadataEntries.map(([k, v]) => `
+                        <div class="response-meta-row">
+                            <span class="response-meta-key">${k}</span>
+                            <span class="response-meta-value">${String(v)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="section-label">Body</div>
+            `
+            : '';
+
+        detailContent.innerHTML = `${metadataHtml}<div id="cons-msg-payload"></div>`;
+        const payloadContainer = detailContent.querySelector('#cons-msg-payload');
+        payloadContainer.textContent = payload;
+        payloadContainer.style.whiteSpace = 'pre-wrap';
+        payloadContainer.style.fontFamily = 'var(--font)';
+        payloadContainer.style.color = '#a8d8a8';
+
+        // Update detail info (time, metadata if available)
+        const uuidTime = msg.metadata?.id ? extractUuidV7Timestamp(msg.metadata.id) : null;
+        const time = uuidTime || (msg.time ? new Date(msg.time).toLocaleTimeString() : 'N/A');
+        detailInfo.textContent = `Message from ${time}`;
+        if (msg.metadata && Object.keys(msg.metadata).length > 0) {
+            detailInfo.textContent += ` (Metadata: ${Object.keys(msg.metadata).join(', ')})`;
+        }
+
+        msgCopyBtn.onclick = () => navigator.clipboard.writeText(payload);
+
+        // Highlight selected row
+        document.querySelectorAll('#consumer-log-body tr').forEach((row, i) => {
+            row.classList.toggle('selected', i === msgIdx);
+        });
     };
-    
+
+    // This function is called by index.html when the consumers tab is activated
+    const restoreConsumerState = async (idx) => {
     if (consumers.length === 0) {
+            // If no consumers, ensure the "add new" button is functional
         document.getElementById('cons-add').onclick = () => {
             const name = prompt("Consumer Name:");
             if (!name) return;
-            config.consumers = [{ name, endpoint: { null: null }, comment: '', view: {} }];
-            initConsumers(config, schema);
+            config.consumers.push({ name, input: { null: null }, comment: '', view: {} });
+            // Re-initialize consumers tab to refresh the list
+            window.initConsumers(config, schema);
+            setActiveItem(config.consumers.length - 1);
+            updateUI();
         };
         return;
     }
-    
+
+        setActiveItem(idx);
+        await updateUI();
+        startPolling();
+
+        // Ensure the messages tab is active by default
+        const msgTab = document.getElementById('ctab-msg');
+        if (msgTab && !msgTab.classList.contains('active')) {
+            msgTab.click();
+        }
+    };
+
     const updateUI = async () => {
         const idx = currentIdx;
+        if (consumers.length === 0) return;
+
         updateUrlHash();
         const configFormContainer = document.getElementById('cons-config-form');
+        if (!configFormContainer) return; // Should not happen if consumers.length > 0
+
         configFormContainer.innerHTML = '';
         const itemSchema = JSON.parse(JSON.stringify({ 
             ...schema.properties.consumers.items, 
             $defs: schema.$defs 
         }));
-        if (consumers[idx]) fetchConsumerStatus(consumers[idx].name);
+        applyEndpointSchemaDefaults(itemSchema);
+        if (consumers[idx]) await refreshConsumerStatuses();
         await window.VanillaSchemaForms.init(configFormContainer, itemSchema, config.consumers[idx], (updated) => {
             config.consumers[idx] = updated;
-            const label = document.querySelector(`.cons-item[data-idx="${idx}"] span`);
+            // Update name in sidebar list
+            const label = document.querySelector(`#cons-list .cons-item[data-idx="${idx}"] .item-name`);
             if (label) label.textContent = updated.name;
+            updateConsumerList(); // Update protocol badge
         });
         renderLiveLog();
     };
 
     const renderLiveLog = () => {
+        if (consumers.length === 0) return;
         const name = consumers[currentIdx].name;
         const messages = consumerMessages[name] || [];
         const status = consumerStatus[name] || { running: false, status: { healthy: false } };
 
-        const statusHtml = status.running 
-            ? (status.status.healthy ? '<span class="text-success small fw-bold">● Connected</span>' : `<span class="text-danger small fw-bold" title="${status.status.error || ''}">● Connection Error</span>`)
-            : '<span class="text-muted small fw-bold">○ Log Collector Stopped</span>';
+        const statusText = status.running 
+            ? (status.status.healthy ? 'Connected' : `Connection Error: ${status.status.error || 'Unknown'}`)
+            : 'Log Collector Stopped';
+        const statusVariant = status.running
+            ? (status.status.healthy ? 'success' : 'danger')
+            : 'neutral';
         
-        const btnText = status.running ? 'Stop' : 'Start';
-        const btnClass = status.running ? 'btn-outline-danger' : 'btn-outline-success';
+        const toggleBtn = document.getElementById('cons-toggle');
+        if (toggleBtn) {
+            toggleBtn.textContent = status.running ? 'Stop' : 'Start';
+            toggleBtn.variant = status.running ? 'danger' : 'success';
+            toggleBtn.loading = false;
+        }
 
-        liveContent.innerHTML = `
-            <div class="card shadow-sm">
-                <div class="card-header d-flex justify-content-between align-items-center bg-white">
-                    <div>
-                        <span class="fw-bold me-2">Incoming Messages: <span class="text-primary">${name}</span></span>
-                        <button class="btn btn-sm btn-link text-danger p-0" id="cons-clear-history">clear</button>
-                    </div>
-                    <div class="d-flex align-items-center gap-3">
-                        ${statusHtml}
-                        <button class="btn btn-sm ${btnClass} px-3 fw-bold" id="cons-toggle">${btnText}</button>
-                    </div>
-                </div>
-                <div class="table-responsive" style="max-height: 400px;">
-                    <table class="table table-hover table-sm mb-0">
-                        <thead class="table-light sticky-top">
-                            <tr><th style="width: 120px;">Time</th><th>Payload Preview</th></tr>
-                        </thead>
-                        <tbody id="consumer-log-body">
+        const liveTitle = document.getElementById('cons-live-title');
+        if (liveTitle) {
+            liveTitle.innerHTML = `Incoming Messages: <wa-badge variant="${statusVariant}">${statusText}</wa-badge>`;
+        }
+
+        logBody.innerHTML = `
                             ${messages.length === 0 ? 
-                                '<tr><td colspan="2" class="text-center text-muted py-4 small">Waiting for incoming messages...</td></tr>' : 
+                                '<tr><td colspan="2" style="text-align:center; padding: 20px; color: var(--text-dim);">Waiting for messages...</td></tr>' : 
                                 messages.map((m, mIdx) => {
                                     const uuidTime = m.metadata?.id ? extractUuidV7Timestamp(m.metadata.id) : null;
                                     const time = uuidTime || (m.time ? new Date(m.time).toLocaleTimeString() : 'N/A');
@@ -282,18 +297,24 @@ async function initConsumers(config, schema) {
                                     </tr>`;
                                 }).join('')
                             }
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         `;
 
         document.getElementById('cons-clear-history').onclick = () => {
             consumerMessages[name] = [];
             saveMessages();
             renderLiveLog();
+            // Clear message details when history is cleared
+            document.getElementById('cons-msg-details-content').textContent = '';
+            document.getElementById('cons-msg-detail-info').textContent = 'Select a message to view details';
         };
         document.getElementById('cons-toggle').onclick = () => toggleConsumer(name);
+
+        // Update badge in the sidebar list
+        const currentConsItem = document.querySelector(`#cons-list .cons-item[data-idx="${currentIdx}"]`);
+        if (currentConsItem) {
+            const badge = currentConsItem.querySelector('.msg-count');
+            if (badge) badge.textContent = messages.length || 0;
+        }
     };
 
     consList.onclick = (e) => {
@@ -306,104 +327,160 @@ async function initConsumers(config, schema) {
 
     document.getElementById('cons-filter').oninput = (e) => {
         const val = e.target.value.toLowerCase();
-        document.querySelectorAll('.cons-item').forEach(btn => {
-            const name = btn.querySelector('span').textContent.toLowerCase();
+        document.querySelectorAll('#cons-list .cons-item').forEach(btn => {
+            const name = btn.querySelector('.item-name').textContent.toLowerCase();
             btn.style.display = name.includes(val) ? 'flex' : 'none';
         });
     };
 
-    document.getElementById('cons-add').onclick = () => {
-        const name = prompt("Consumer Name:");
-        if (!name) return;
-        if (config.consumers.some(c => c.name === name)) return alert("Consumer already exists");
-        config.consumers.push({ name, endpoint: { null: null }, comment: '', view: {} });
-        initConsumers(config, schema);
-        setActiveItem(config.consumers.length - 1);
-        updateUI();
-    };
+    // Only set up add button if no consumers exist initially
+    if (consumers.length === 0) {
+        document.getElementById('cons-add').onclick = () => {
+            const name = prompt("Consumer Name:");
+            if (!name) return;
+            config.consumers.push({ name, input: { null: null }, comment: '', view: {} });
+            window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
+            setActiveItem(config.consumers.length - 1);
+            updateUI();
+        };
+    } else {
+        // For existing consumers, these buttons are always present
+        document.getElementById('cons-add').onclick = () => {
+            const name = prompt("Consumer Name:");
+            if (!name) return;
+            if (config.consumers.some(c => c.name === name)) return alert("Consumer already exists");
+            config.consumers.push({ name, input: { null: null }, comment: '', view: {} });
+            window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
+            setActiveItem(config.consumers.length - 1);
+            updateUI();
+        };
 
-    document.getElementById('cons-clone').onclick = () => {
-        const current = config.consumers[currentIdx];
-        const cloned = JSON.parse(JSON.stringify(current));
-        cloned.name += '_copy';
-        config.consumers.push(cloned);
-        initConsumers(config, schema);
-    };
+        document.getElementById('cons-clone').onclick = () => {
+            const current = config.consumers[currentIdx];
+            const cloned = JSON.parse(JSON.stringify(current));
+            cloned.name += '_copy';
+            config.consumers.push(cloned);
+            window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
+            setActiveItem(config.consumers.length - 1);
+            updateUI();
+        };
 
-    document.getElementById('cons-delete').onclick = () => {
-        if (config.consumers.length <= 1) return alert("Cannot delete last consumer");
-        if (!confirm("Delete this consumer?")) return;
-        config.consumers.splice(currentIdx, 1);
-        initConsumers(config, schema);
-    };
+        document.getElementById('cons-delete').onclick = () => {
+            if (config.consumers.length <= 1) return alert("Cannot delete last consumer");
+            if (!confirm("Delete this consumer?")) return;
+            config.consumers.splice(currentIdx, 1);
+            window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
+            setActiveItem(0); // Select first item after deletion
+            updateUI();
+        };
 
-    document.getElementById('cons-save').onclick = () => window.saveConfig();
+        document.getElementById('cons-save').onclick = () => window.saveConfig();
+    }
 
-    const startPolling = () => {
-        if (window._mqb_polling_active) return;
-        window._mqb_polling_active = true;
 
-        const poll = async () => {
-            // Only poll if the Consumers tab is active to save resources
-            if (window._mqb_active_tab !== 'consumers') {
-                window._mqb_polling_active = false;
+    // Sub-tab switching logic
+    consSubTabs.querySelectorAll('.content-tab').forEach(tab => {
+        tab.onclick = () => {
+            consSubTabs.querySelectorAll('.content-tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('cons-def-panel').style.display = 'none';
+            document.getElementById('cons-msg-panel').style.display = 'none';
+
+            tab.classList.add('active');
+            const target = document.getElementById(tab.dataset.target);
+            if (target) {
+                target.style.display = 'flex';
+                if (tab.dataset.target === 'cons-msg-panel' && !window._consSplit && window.Split) {
+                    // Initialize Split.js only when the messages panel is shown for the first time
+                    window._consSplit = Split(['#cons-list-pane', '#cons-detail-pane'], {
+                        direction: 'vertical', sizes: [60, 40], minSize: 100, gutterSize: 4,
+                        elementStyle: (dimension, size, gutterSize) => ({
+                            'flex-basis': `calc(${size}% - ${gutterSize}px)`,
+                        }),
+                        gutterStyle: (dimension, gutterSize) => ({
+                            'flex-basis': `${gutterSize}px`,
+                        }),
+                    });
+                }
+            }
+        };
+    });
+
+    const pollLoop = async () => {
+        if (window._mqb_consumer_poll_nonce !== pollNonce) return;
+        if (window._mqb_active_tab !== 'consumers') return;
+
+        try {
+            const currentConsumers = config.consumers || [];
+            const activeConsumer = currentConsumers[currentIdx];
+            if (!activeConsumer) {
+                schedulePoll(1000);
                 return;
             }
 
-            try {
-                // Use the latest consumer list from the config object
-                const currentConsumers = config.consumers || [];
-                const name = currentConsumers[currentIdx]?.name;
-                if (!name) return setTimeout(poll, 1000);
+            await refreshConsumerStatuses();
 
-                if (!consumerStatus[name]?.running) {
-                    await fetchConsumerStatus(name);
-                    return setTimeout(poll, 2000);
-                }
-
-                const res = await fetch(`/messages?consumer=${encodeURIComponent(name)}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    let hasNew = false;
-                    for (const [name, msgs] of Object.entries(data)) {
-                        if (!consumerMessages[name]) consumerMessages[name] = [];
-                        // Prepend new messages and keep last 50
-                        consumerMessages[name] = [...msgs, ...consumerMessages[name]].slice(0, 1000);
-                        hasNew = true;
-                    }
-                    if (hasNew) {
-                        saveMessages();
-                        if (data[name]) renderLiveLog();
-                        // Update badges in the list
-                        document.querySelectorAll('.cons-item').forEach(btn => {
-                            const cName = btn.querySelector('span').textContent;
-                            const badge = btn.querySelector('.badge');
-                            if (badge) badge.textContent = consumerMessages[cName]?.length || 0;
-                        });
-                    }
-                }
-            } catch (e) {
-                console.error("Polling error:", e);
+            const name = activeConsumer.name;
+            if (!consumerStatus[name]?.running) {
+                schedulePoll(2000);
+                return;
             }
-            // Enforce a 1s cooldown between requests to avoid worker starvation
-            setTimeout(poll, 1000);
-        };
-        poll();
+
+            const res = await fetch(`/messages?consumer=${encodeURIComponent(name)}`);
+            if (res.ok) {
+                const data = await res.json();
+                let hasNew = false;
+                for (const [sourceName, msgs] of Object.entries(data)) {
+                    if (!consumerMessages[sourceName]) consumerMessages[sourceName] = [];
+                    consumerMessages[sourceName] = [...msgs, ...consumerMessages[sourceName]].slice(0, 1000);
+                    hasNew = hasNew || msgs.length > 0;
+                }
+                if (hasNew) {
+                    saveMessages();
+                }
+                renderLiveLog();
+                updateConsumerList();
+                document.querySelectorAll('#cons-list .cons-item').forEach(btn => {
+                    const cName = btn.querySelector('.item-name').textContent;
+                    const badge = btn.querySelector('.msg-count');
+                    if (badge) badge.textContent = consumerMessages[cName]?.length || 0;
+                });
+            }
+        } catch (e) {
+            console.error("Polling error:", e);
+        }
+
+        schedulePoll(1000);
     };
 
-    window.addEventListener('hashchange', restoreFromHash);
-    const initialTab = document.querySelector('button[data-bs-toggle="tab"].active');
-    if (initialTab) {
-        const target = initialTab.getAttribute('data-bs-target') || '';
-        const tabName = target.replace('#tab-', '').replace('#', '');
-        // Only initialize state for main navigation tabs
-        if (['publishers', 'consumers', 'routes'].includes(tabName)) {
-            window._mqb_active_tab = tabName;
-        }
+    const startPolling = () => {
+        schedulePoll(0);
+    };
+
+    // Mark as initialized and expose the restore function
+    window._mqb_consumers_initialized = true;
+    window.restoreConsumerState = restoreConsumerState;
+
+    // Initial render of the sidebar list
+    renderSidebar();
+
+    // Initial setup if consumers exist
+    if (consumers.length > 0) {
+        // Default to the first consumer and messages tab
+        setActiveItem(0);
+        updateUI();
+        startPolling();
+        // Manually click the messages tab to ensure it's active and Split.js is initialized
+        document.getElementById('ctab-msg').click();
+    } else {
+        // If no consumers, ensure the "add new" button is functional
+        document.getElementById('cons-add').onclick = () => {
+            const name = prompt("Consumer Name:");
+            if (!name) return;
+            config.consumers.push({ name, input: { null: null }, comment: '', view: {} });
+            window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
+            setActiveItem(config.consumers.length - 1);
+            updateUI();
+        };
     }
-    setActiveItem(0);
-    updateUI();
-    startPolling();
-    setTimeout(restoreFromHash, 100); // Small delay to ensure all scripts are ready
 }
 window.initConsumers = initConsumers;
