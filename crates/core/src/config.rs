@@ -1,10 +1,13 @@
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use config::Config;
 use mq_bridge::{
     Route,
-    models::{Endpoint, SecretExtractor},
+    models::{Endpoint, EndpointType, Middleware, SecretExtractor},
 };
 use schemars::JsonSchema;
 
@@ -44,6 +47,16 @@ pub struct AppConfig {
     pub default_tab: String,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema, Clone, Default)]
+pub struct SecretReferenceSummary {
+    #[serde(default)]
+    pub routes: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub consumers: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub publishers: HashMap<String, Vec<String>>,
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
 pub struct RouteConfig {
     #[serde(default = "default_route_enabled")]
@@ -76,6 +89,71 @@ pub struct PublisherClient {
     pub endpoint: Endpoint,
     #[serde(default)]
     pub comment: String,
+}
+
+pub trait SecretStore: Send + Sync {
+    fn store(&self, secrets: &HashMap<String, String>) -> Result<()>;
+}
+
+#[derive(Debug, Clone)]
+pub struct EnvFileSecretStore {
+    path: PathBuf,
+}
+
+impl EnvFileSecretStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl SecretStore for EnvFileSecretStore {
+    fn store(&self, secrets: &HashMap<String, String>) -> Result<()> {
+        if secrets.is_empty() {
+            return Ok(());
+        }
+
+        let existing_content = if self.path.exists() {
+            std::fs::read_to_string(&self.path)?
+        } else {
+            String::new()
+        };
+
+        let mut new_lines = Vec::new();
+        let mut processed_keys = HashSet::new();
+
+        for line in existing_content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                new_lines.push(line.to_string());
+                continue;
+            }
+
+            if let Some((key, _)) = line.split_once('=') {
+                let key = key.trim();
+                if let Some(new_value) = secrets.get(key) {
+                    new_lines.push(format!("{}={}", key, new_value));
+                    processed_keys.insert(key.to_string());
+                } else {
+                    new_lines.push(line.to_string());
+                }
+            } else {
+                new_lines.push(line.to_string());
+            }
+        }
+
+        for (key, value) in secrets {
+            if !processed_keys.contains(key) {
+                new_lines.push(format!("{}={}", key, value));
+            }
+        }
+
+        let mut final_content = new_lines.join("\n");
+        if !final_content.ends_with('\n') {
+            final_content.push('\n');
+        }
+        std::fs::write(&self.path, final_content)?;
+        Ok(())
+    }
 }
 
 fn expand_variables(content: &str) -> Result<String, anyhow::Error> {
@@ -244,28 +322,36 @@ pub fn load_config_at_path(
 }
 
 impl AppConfig {
-    pub fn save(&mut self, path: &str) -> Result<()> {
+    pub fn save(&self, path: &str) -> Result<()> {
+        let env_store = EnvFileSecretStore::new(".env");
+        self.save_with_secret_store(path, &env_store)
+    }
+
+    pub fn save_with_secret_store(&self, path: &str, secret_store: &dyn SecretStore) -> Result<()> {
+        let mut config_to_save = self.clone();
+
         // Sanitize route names to ensure compatibility with environment variables
-        let sanitized_routes: HashMap<String, RouteConfig> = self
+        let sanitized_routes: HashMap<String, RouteConfig> = config_to_save
             .routes
             .drain()
             .map(|(k, v)| (k.trim().replace(' ', "_").to_lowercase(), v))
             .collect();
-        self.routes = sanitized_routes;
+        config_to_save.routes = sanitized_routes;
 
-        for consumer in &mut self.consumers {
+        for consumer in &mut config_to_save.consumers {
             consumer.name = consumer.name.trim().to_string();
         }
 
-        for pub_client in &mut self.publishers {
+        for pub_client in &mut config_to_save.publishers {
             pub_client.name = pub_client.name.trim().to_string();
         }
 
-        if self.extract_secrets {
-            self.extract_secrets_to_env()?;
+        if config_to_save.extract_secrets {
+            let secrets = config_to_save.extract_secrets();
+            secret_store.store(&secrets)?;
         }
 
-        let mut config_value = serde_json::to_value(&*self)?;
+        let mut config_value = serde_json::to_value(&config_to_save)?;
         strip_nulls(&mut config_value);
 
         let yaml = serde_yaml_ng::to_string(&config_value)?;
@@ -278,17 +364,23 @@ impl AppConfig {
         Ok(())
     }
 
-    fn extract_secrets_to_env(&mut self) -> Result<()> {
+    fn extract_secrets(&mut self) -> HashMap<String, String> {
         let mut all_secrets = HashMap::new();
         for (name, route) in &mut self.routes {
             let name = name.to_uppercase(); // Names are already sanitized in save()
             let prefix = format!("MQB__ROUTES__{}__", name);
             route.route.extract_secrets(&prefix, &mut all_secrets);
+            extract_http_header_secrets_from_route(&mut route.route, &prefix, &mut all_secrets);
         }
         for consumer in &mut self.consumers {
             let name = consumer.name.trim().replace(' ', "_").to_uppercase();
             let prefix = format!("MQB__CONSUMERS__{}__", name);
             consumer.endpoint.extract_secrets(&prefix, &mut all_secrets);
+            extract_http_header_secrets_from_endpoint(
+                &mut consumer.endpoint,
+                &prefix,
+                &mut all_secrets,
+            );
         }
         for publisher in &mut self.publishers {
             let name = publisher.name.trim().replace(' ', "_").to_uppercase();
@@ -296,52 +388,160 @@ impl AppConfig {
             publisher
                 .endpoint
                 .extract_secrets(&prefix, &mut all_secrets);
+            extract_http_header_secrets_from_endpoint(
+                &mut publisher.endpoint,
+                &prefix,
+                &mut all_secrets,
+            );
+        }
+        all_secrets
+    }
+
+    pub fn referenced_secret_keys(&self) -> SecretReferenceSummary {
+        let mut routes = HashMap::new();
+        for (name, route_config) in &self.routes {
+            let sanitized_name = name.trim().replace(' ', "_").to_lowercase();
+            let prefix = format!("MQB__ROUTES__{}__", sanitized_name.to_uppercase());
+            let mut route = route_config.route.clone();
+            let mut secrets = HashMap::new();
+            route.extract_secrets(&prefix, &mut secrets);
+            extract_http_header_secrets_from_route(&mut route, &prefix, &mut secrets);
+            if !secrets.is_empty() {
+                let mut keys: Vec<String> = secrets.into_keys().collect();
+                keys.sort();
+                routes.insert(sanitized_name, keys);
+            }
         }
 
-        if !all_secrets.is_empty() {
-            let env_path = Path::new(".env");
-            let existing_content = if env_path.exists() {
-                std::fs::read_to_string(env_path)?
-            } else {
-                String::new()
-            };
+        let mut consumers = HashMap::new();
+        for consumer in &self.consumers {
+            let sanitized_name = consumer.name.trim().replace(' ', "_");
+            let prefix = format!("MQB__CONSUMERS__{}__", sanitized_name.to_uppercase());
+            let mut endpoint = consumer.endpoint.clone();
+            let mut secrets = HashMap::new();
+            endpoint.extract_secrets(&prefix, &mut secrets);
+            extract_http_header_secrets_from_endpoint(&mut endpoint, &prefix, &mut secrets);
+            if !secrets.is_empty() {
+                let mut keys: Vec<String> = secrets.into_keys().collect();
+                keys.sort();
+                consumers.insert(sanitized_name, keys);
+            }
+        }
 
-            let mut new_lines = Vec::new();
-            let mut processed_keys = std::collections::HashSet::new();
+        let mut publishers = HashMap::new();
+        for publisher in &self.publishers {
+            let sanitized_name = publisher.name.trim().replace(' ', "_");
+            let prefix = format!("MQB__PUBLISHERS__{}__", sanitized_name.to_uppercase());
+            let mut endpoint = publisher.endpoint.clone();
+            let mut secrets = HashMap::new();
+            endpoint.extract_secrets(&prefix, &mut secrets);
+            extract_http_header_secrets_from_endpoint(&mut endpoint, &prefix, &mut secrets);
+            if !secrets.is_empty() {
+                let mut keys: Vec<String> = secrets.into_keys().collect();
+                keys.sort();
+                publishers.insert(sanitized_name, keys);
+            }
+        }
 
-            for line in existing_content.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    new_lines.push(line.to_string());
+        SecretReferenceSummary {
+            routes,
+            consumers,
+            publishers,
+        }
+    }
+}
+
+fn is_sensitive_http_header(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_lowercase().as_str(),
+        "authorization" | "x-api-key" | "api-key" | "x-auth-token" | "proxy-authorization"
+    )
+}
+
+fn extract_http_header_secrets_from_route(
+    route: &mut Route,
+    prefix: &str,
+    secrets: &mut HashMap<String, String>,
+) {
+    extract_http_header_secrets_from_endpoint(
+        &mut route.input,
+        &format!("{}__INPUT", prefix),
+        secrets,
+    );
+    extract_http_header_secrets_from_endpoint(
+        &mut route.output,
+        &format!("{}__OUTPUT", prefix),
+        secrets,
+    );
+}
+
+fn extract_http_header_secrets_from_endpoint(
+    endpoint: &mut Endpoint,
+    prefix: &str,
+    secrets: &mut HashMap<String, String>,
+) {
+    for (index, middleware) in endpoint.middlewares.iter_mut().enumerate() {
+        if let Middleware::Dlq(cfg) = middleware {
+            extract_http_header_secrets_from_endpoint(
+                &mut cfg.endpoint,
+                &format!("{}__MIDDLEWARES__{}__DLQ__ENDPOINT", prefix, index),
+                secrets,
+            );
+        }
+    }
+
+    match &mut endpoint.endpoint_type {
+        EndpointType::Http(cfg) => {
+            let keys: Vec<String> = cfg.custom_headers.keys().cloned().collect();
+            for key in keys {
+                if !is_sensitive_http_header(&key) {
                     continue;
                 }
-
-                if let Some((key, _)) = line.split_once('=') {
-                    let key = key.trim();
-                    if let Some(new_value) = all_secrets.get(key) {
-                        new_lines.push(format!("{}={}", key, new_value));
-                        processed_keys.insert(key.to_string());
-                    } else {
-                        new_lines.push(line.to_string());
-                    }
-                } else {
-                    new_lines.push(line.to_string());
+                if let Some(value) = cfg.custom_headers.remove(&key) {
+                    secrets.insert(
+                        format!(
+                            "{}__HTTP__CUSTOM_HEADERS__{}",
+                            prefix,
+                            key.trim().replace('-', "_").to_uppercase()
+                        ),
+                        value,
+                    );
                 }
             }
-
-            for (key, value) in all_secrets {
-                if !processed_keys.contains(&key) {
-                    new_lines.push(format!("{}={}", key, value));
-                }
-            }
-
-            let mut final_content = new_lines.join("\n");
-            if !final_content.ends_with('\n') {
-                final_content.push('\n');
-            }
-            std::fs::write(env_path, final_content)?;
         }
-        Ok(())
+        EndpointType::Fanout(endpoints) => {
+            for (index, nested) in endpoints.iter_mut().enumerate() {
+                extract_http_header_secrets_from_endpoint(
+                    nested,
+                    &format!("{}__FANOUT__{}", prefix, index),
+                    secrets,
+                );
+            }
+        }
+        EndpointType::Switch(cfg) => {
+            for (case_name, nested) in &mut cfg.cases {
+                extract_http_header_secrets_from_endpoint(
+                    nested,
+                    &format!("{}__SWITCH__CASES__{}", prefix, case_name.to_uppercase()),
+                    secrets,
+                );
+            }
+            if let Some(default) = &mut cfg.default {
+                extract_http_header_secrets_from_endpoint(
+                    default,
+                    &format!("{}__SWITCH__DEFAULT", prefix),
+                    secrets,
+                );
+            }
+        }
+        EndpointType::Reader(nested) => {
+            extract_http_header_secrets_from_endpoint(
+                nested,
+                &format!("{}__READER", prefix),
+                secrets,
+            );
+        }
+        _ => {}
     }
 }
 

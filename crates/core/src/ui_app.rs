@@ -1,4 +1,6 @@
-use crate::config::{AppConfig, ConsumerConfig, ConsumerResponseConfig, RouteConfig};
+use crate::config::{
+    AppConfig, ConsumerConfig, ConsumerResponseConfig, EnvFileSecretStore, RouteConfig, SecretStore,
+};
 use crate::ui_api::{UiCommand, UiCommandError, UiResponse};
 use anyhow::{Result, anyhow};
 use chrono;
@@ -19,6 +21,7 @@ pub struct UiApp {
     config: Arc<RwLock<AppConfig>>,
     metrics_handle: PrometheusHandle,
     config_file_path: Arc<String>,
+    secret_store: Arc<dyn SecretStore>,
     ui_handles: Arc<RwLock<HashMap<String, RouteHandle>>>,
     throughput_samples: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
 }
@@ -259,10 +262,25 @@ impl UiApp {
         metrics_handle: PrometheusHandle,
         config_file_path: String,
     ) -> Self {
+        Self::new_with_secret_store(
+            initial_config,
+            metrics_handle,
+            config_file_path,
+            Arc::new(EnvFileSecretStore::new(".env")),
+        )
+    }
+
+    pub fn new_with_secret_store(
+        initial_config: AppConfig,
+        metrics_handle: PrometheusHandle,
+        config_file_path: String,
+        secret_store: Arc<dyn SecretStore>,
+    ) -> Self {
         Self {
             config: Arc::new(RwLock::new(initial_config)),
             metrics_handle,
             config_file_path: Arc::new(config_file_path),
+            secret_store,
             ui_handles: Arc::new(RwLock::new(HashMap::new())),
             throughput_samples: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -270,6 +288,10 @@ impl UiApp {
 
     pub async fn get_config(&self) -> AppConfig {
         self.config.read().await.clone()
+    }
+
+    pub fn config_file_path(&self) -> &str {
+        self.config_file_path.as_str()
     }
 
     pub async fn handle_ui_message(
@@ -664,11 +686,13 @@ impl UiApp {
             new_config.consumers = consumers.clone();
 
             let config_file = &*self.config_file_path;
-            if let Err(e) = new_config.save(config_file) {
-                tracing::error!("Failed to save config to '{}': {}", config_file, e);
-            } else {
-                tracing::info!("Configuration saved to {}", config_file);
-            }
+            new_config
+                .save_with_secret_store(config_file, self.secret_store.as_ref())
+                .map_err(|e| {
+                    tracing::error!("Failed to save config to '{}': {}", config_file, e);
+                    anyhow!("Failed to save configuration: {e}")
+                })?;
+            tracing::info!("Configuration saved to {}", config_file);
 
             *config_guard = new_config;
         }

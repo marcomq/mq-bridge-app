@@ -330,11 +330,7 @@ function initPublishers(config, schema) {
 
         if (endpointType === 'http') {
             methodSelect.replaceChildren(
-                ...HTTP_METHOD_OPTIONS.map((method) => {
-                    const option = document.createElement('option');
-                    option.textContent = method;
-                    return option;
-                }),
+                ...HTTP_METHOD_OPTIONS.map((method) => h('option', {}, method)),
             );
             methodSelect.value = 'POST';
             methodSelect.disabled = false;
@@ -342,9 +338,7 @@ function initPublishers(config, schema) {
             return;
         }
 
-        const targetOption = document.createElement('option');
-        targetOption.textContent = 'TARGET';
-        methodSelect.replaceChildren(targetOption);
+        methodSelect.replaceChildren(h('option', {}, 'TARGET'));
         methodSelect.value = 'TARGET';
         methodSelect.disabled = true;
         methodSelect.title = `Quick access fields for the ${endpointType.toUpperCase()} publisher configuration are shown next to the endpoint type.`;
@@ -634,30 +628,28 @@ function initPublishers(config, schema) {
     };
 
     const addMetadataRow = (k = '', v = '') => {
-        const row = document.createElement('tr');
-        const keyCell = document.createElement('td');
-        const keyInput = document.createElement('input');
-        keyInput.type = 'text';
-        keyInput.className = 'kv-input meta-key';
-        keyInput.placeholder = 'Key';
+        const keyInput = h('input', {
+            type: 'text',
+            className: 'kv-input meta-key',
+            placeholder: 'Key',
+        });
         keyInput.value = k;
-        keyCell.appendChild(keyInput);
 
-        const valueCell = document.createElement('td');
-        const valueInput = document.createElement('input');
-        valueInput.type = 'text';
-        valueInput.className = 'kv-input meta-val';
-        valueInput.placeholder = 'Value';
+        const valueInput = h('input', {
+            type: 'text',
+            className: 'kv-input meta-val',
+            placeholder: 'Value',
+        });
         valueInput.value = v;
-        valueCell.appendChild(valueInput);
 
-        const removeCell = document.createElement('td');
-        const removeButton = document.createElement('div');
-        removeButton.className = 'btn-icon remove-meta';
-        removeButton.textContent = '×';
-        removeCell.appendChild(removeButton);
-
-        row.append(keyCell, valueCell, removeCell);
+        const removeButton = h('div', { className: 'btn-icon remove-meta' }, '×');
+        const row = h(
+            'tr',
+            {},
+            h('td', {}, keyInput),
+            h('td', {}, valueInput),
+            h('td', {}, removeButton),
+        );
         metaContainer.appendChild(row);
         row.querySelector('.remove-meta').onclick = () => {
             row.remove();
@@ -797,59 +789,48 @@ function initPublishers(config, schema) {
             clearButton,
         );
 
-        const wrapper = document.createElement('div');
+        const wrapper = h('div', {});
         wrapper.style.overflow = 'auto';
         wrapper.style.flex = '1';
 
-        const table = document.createElement('table');
-        table.className = 'msg-table';
-        const thead = document.createElement('thead');
-        const headRow = document.createElement('tr');
+        const table = h('table', { className: 'msg-table' });
+        const thead = h('thead', {});
+        const headRow = h('tr', {});
         [
             ['Time', '100px'],
             ['Status', '80px'],
             ['Payload Preview', null],
         ].forEach(([label, width]) => {
-            const th = document.createElement('th');
+            const th = h('th', {}, label);
             if (width) th.style.width = width;
-            th.textContent = label;
             headRow.appendChild(th);
         });
         thead.appendChild(headRow);
 
-        const tbody = document.createElement('tbody');
+        const tbody = h('tbody', {});
         if (filteredHistory.length === 0) {
-            const row = document.createElement('tr');
-            const cell = document.createElement('td');
+            const cell = h('td', {}, 'No history for this publisher.');
             cell.colSpan = 3;
             cell.style.textAlign = 'center';
             cell.style.padding = '20px';
             cell.style.color = 'var(--text-dim)';
-            cell.textContent = 'No history for this publisher.';
-            row.appendChild(cell);
+            const row = h('tr', {}, cell);
             tbody.appendChild(row);
         } else {
             filteredHistory.forEach((item) => {
                 const isOk = typeof item.ok === 'boolean' ? item.ok : item.status < 300;
                 const statusClass = isOk ? 'status-ok' : 'status-err';
-                const row = document.createElement('tr');
-                row.className = 'history-row';
+                const row = h('tr', { className: 'history-row' });
                 row.dataset.hidx = String(history.indexOf(item));
                 row.style.cursor = 'zoom-in';
 
-                const timeCell = document.createElement('td');
-                timeCell.className = 'ts';
-                timeCell.textContent = new Date(item.time).toLocaleTimeString();
-
-                const statusCell = document.createElement('td');
-                const statusSpan = document.createElement('span');
-                statusSpan.className = `${statusClass} small fw-bold`;
-                statusSpan.textContent = String(item.displayStatus || item.status);
-                statusCell.appendChild(statusSpan);
-
-                const payloadCell = document.createElement('td');
-                payloadCell.className = 'preview';
-                payloadCell.textContent = item.payload.substring(0, 100).replace(/\n/g, ' ');
+                const timeCell = h('td', { className: 'ts' }, new Date(item.time).toLocaleTimeString());
+                const statusCell = h(
+                    'td',
+                    {},
+                    h('span', { className: `${statusClass} small fw-bold` }, String(item.displayStatus || item.status)),
+                );
+                const payloadCell = h('td', { className: 'preview' }, item.payload.substring(0, 100).replace(/\n/g, ' '));
 
                 row.append(timeCell, statusCell, payloadCell);
                 tbody.appendChild(row);
@@ -1044,9 +1025,8 @@ function initPublishers(config, schema) {
             renderHistory();
         } catch (e) {
             responseDiv.textContent = `Error: ${e.message}`;
-            const errorNode = document.createElement('span');
+            const errorNode = h('span', {}, 'Error');
             errorNode.style.color = 'var(--accent-kafka)';
-            errorNode.textContent = 'Error';
             document.getElementById('pub-response-status').replaceChildren(errorNode);
         }
     };

@@ -1,18 +1,73 @@
 use anyhow::Context;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use mq_bridge_app::config::{AppConfig, load_config_at_path};
+use mq_bridge_app::config::{AppConfig, SecretReferenceSummary, SecretStore, load_config_at_path};
 use mq_bridge_app::mq_bridge::{CanonicalMessage, Handled};
 use mq_bridge_app::ui_app::UiApp;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::Manager;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
+const DESKTOP_SECRET_SERVICE: &str = "com.marcomq.mqbridgeapp";
+
 #[derive(Clone)]
 struct DesktopState {
     app: UiApp,
+}
+
+#[derive(Serialize)]
+struct DesktopSecretStatusItem {
+    key: String,
+    extracted: bool,
+    stored: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize, Default)]
+struct DesktopSecretStatusSummary {
+    routes: HashMap<String, Vec<DesktopSecretStatusItem>>,
+    consumers: HashMap<String, Vec<DesktopSecretStatusItem>>,
+    publishers: HashMap<String, Vec<DesktopSecretStatusItem>>,
+}
+
+#[derive(Debug, Clone)]
+struct DesktopKeyringSecretStore {
+    service: String,
+    metadata_path: PathBuf,
+}
+
+impl DesktopKeyringSecretStore {
+    fn new(service: impl Into<String>, metadata_path: impl Into<PathBuf>) -> Self {
+        Self {
+            service: service.into(),
+            metadata_path: metadata_path.into(),
+        }
+    }
+}
+
+impl SecretStore for DesktopKeyringSecretStore {
+    fn store(&self, secrets: &HashMap<String, String>) -> anyhow::Result<()> {
+        for (key, value) in secrets {
+            let entry = keyring::Entry::new(&self.service, key)
+                .with_context(|| format!("Failed to open desktop keyring entry for '{key}'"))?;
+            entry
+                .set_password(value)
+                .with_context(|| format!("Failed to store secret '{key}' in desktop keyring"))?;
+            let stored_value = entry.get_password().with_context(|| {
+                format!("Failed to verify stored secret '{key}' in desktop keyring")
+            })?;
+            if stored_value != *value {
+                anyhow::bail!("Stored secret verification failed for '{key}'");
+            }
+        }
+        write_desktop_secret_metadata(&self.metadata_path, secrets.keys())?;
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -81,11 +136,148 @@ fn handled_to_bridge_response(handled: Handled) -> BridgeResponse {
     }
 }
 
+fn json_response(status: u16, body_json: serde_json::Value) -> BridgeResponse {
+    BridgeResponse {
+        status,
+        content_type: Some("application/json".to_string()),
+        body_text: None,
+        body_json: Some(body_json),
+        headers: HashMap::new(),
+    }
+}
+
+fn keyring_secret_status(service: &str, key: &str) -> (bool, Option<String>) {
+    let entry = match keyring::Entry::new(service, key) {
+        Ok(entry) => entry,
+        Err(error) => {
+            let message = format!("open failed: {error}");
+            warn!("failed to open desktop keyring entry for '{key}': {error}");
+            return (false, Some(message));
+        }
+    };
+
+    match entry.get_password() {
+        Ok(_) => (true, None),
+        Err(keyring::Error::NoEntry) => (false, None),
+        Err(error) => {
+            let message = error.to_string();
+            warn!("failed to verify secret '{key}' in desktop keyring: {error}");
+            (false, Some(message))
+        }
+    }
+}
+
+fn read_desktop_secret_metadata(metadata_path: &Path) -> HashSet<String> {
+    let Ok(content) = std::fs::read_to_string(metadata_path) else {
+        return HashSet::new();
+    };
+    serde_json::from_str::<Vec<String>>(&content)
+        .map(|keys| keys.into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn write_desktop_secret_metadata<'a>(
+    metadata_path: &Path,
+    keys: impl IntoIterator<Item = &'a String>,
+) -> anyhow::Result<()> {
+    let mut keys: Vec<String> = keys.into_iter().cloned().collect();
+    keys.sort();
+    keys.dedup();
+    let content = serde_json::to_string_pretty(&keys)?;
+    std::fs::write(metadata_path, content).with_context(|| {
+        format!(
+            "Failed to write desktop secret metadata '{}'",
+            metadata_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn clear_desktop_secret_metadata(metadata_path: &Path) -> anyhow::Result<()> {
+    write_desktop_secret_metadata(metadata_path, std::iter::empty::<&String>())
+}
+
+fn summarize_desktop_secret_status(
+    summary: SecretReferenceSummary,
+    extracted_keys: &HashSet<String>,
+    service: &str,
+) -> DesktopSecretStatusSummary {
+    let map_status = |entries: HashMap<String, Vec<String>>| {
+        entries
+            .into_iter()
+            .map(|(name, keys)| {
+                let items = keys
+                    .into_iter()
+                    .map(|key| {
+                        let extracted = extracted_keys.contains(&key);
+                        let (stored, error) = if extracted {
+                            keyring_secret_status(service, &key)
+                        } else {
+                            (false, None)
+                        };
+                        DesktopSecretStatusItem {
+                            key,
+                            extracted,
+                            stored,
+                            error,
+                        }
+                    })
+                    .collect();
+                (name, items)
+            })
+            .collect()
+    };
+
+    DesktopSecretStatusSummary {
+        routes: map_status(summary.routes),
+        consumers: map_status(summary.consumers),
+        publishers: map_status(summary.publishers),
+    }
+}
+
 #[tauri::command]
 async fn execute_ui_request(
     state: tauri::State<'_, DesktopState>,
-    request: DesktopUiRequest,
+    mut request: DesktopUiRequest,
 ) -> Result<BridgeResponse, String> {
+    if request.method.eq_ignore_ascii_case("GET") && request.path == "/desktop-secrets" {
+        let config = state.app.get_config().await;
+        let metadata_path = desktop_secret_metadata_path(Path::new(state.app.config_file_path()));
+        let extracted_keys = read_desktop_secret_metadata(&metadata_path);
+        let summary = summarize_desktop_secret_status(
+            config.referenced_secret_keys(),
+            &extracted_keys,
+            DESKTOP_SECRET_SERVICE,
+        );
+        return Ok(json_response(
+            200,
+            serde_json::to_value(summary).map_err(|error| error.to_string())?,
+        ));
+    }
+
+    if request.method.eq_ignore_ascii_case("DELETE") && request.path == "/desktop-secrets" {
+        let metadata_path = desktop_secret_metadata_path(Path::new(state.app.config_file_path()));
+        let deleted = delete_desktop_secrets_for_metadata(&metadata_path, DESKTOP_SECRET_SERVICE)
+            .map_err(|error| error.to_string())?;
+        return Ok(json_response(
+            200,
+            serde_json::json!({ "deleted": deleted }),
+        ));
+    }
+
+    if request.method.eq_ignore_ascii_case("POST")
+        && request.path == "/config"
+        && !request.body_text.trim().is_empty()
+        && let Ok(mut config_value) = serde_json::from_str::<serde_json::Value>(&request.body_text)
+    {
+        if let Some(object) = config_value.as_object_mut() {
+            object.insert("extract_secrets".into(), serde_json::Value::Bool(true));
+            if let Ok(body_text) = serde_json::to_string(&config_value) {
+                request.body_text = body_text;
+            }
+        }
+    }
+
     let mut message = CanonicalMessage::from(request.body_text);
     message
         .metadata
@@ -167,6 +359,59 @@ fn desktop_config_path<R: tauri::Runtime>(
     Ok(config_dir.join("config.yml"))
 }
 
+fn desktop_secret_metadata_path(config_path: &Path) -> PathBuf {
+    config_path.with_file_name("secret_refs.json")
+}
+
+fn load_desktop_secrets_into_env(metadata_path: &Path, service: &str) -> anyhow::Result<()> {
+    for key in read_desktop_secret_metadata(metadata_path) {
+        if std::env::var_os(&key).is_some() {
+            continue;
+        }
+
+        let entry = keyring::Entry::new(service, &key)
+            .with_context(|| format!("Failed to open desktop keyring entry for '{key}'"))?;
+
+        match entry.get_password() {
+            Ok(value) => {
+                // Desktop startup happens before worker threads spin up, which keeps
+                // this process-wide env injection aligned with the config loader.
+                unsafe {
+                    std::env::set_var(&key, value);
+                }
+            }
+            Err(keyring::Error::NoEntry) => {}
+            Err(error) => {
+                warn!("failed to load secret '{key}' from desktop keyring: {error}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn delete_desktop_secrets_for_metadata(
+    metadata_path: &Path,
+    service: &str,
+) -> anyhow::Result<usize> {
+    let mut deleted = 0usize;
+    for key in read_desktop_secret_metadata(metadata_path) {
+        let entry = keyring::Entry::new(service, &key)
+            .with_context(|| format!("Failed to open desktop keyring entry for '{key}'"))?;
+
+        match entry.delete_credential() {
+            Ok(()) => deleted += 1,
+            Err(keyring::Error::NoEntry) => {}
+            Err(error) => {
+                warn!("failed to delete secret '{key}' from desktop keyring: {error}");
+            }
+        }
+    }
+
+    clear_desktop_secret_metadata(metadata_path)?;
+    Ok(deleted)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -174,6 +419,13 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let config_path = desktop_config_path(app)?;
+            let metadata_path = desktop_secret_metadata_path(&config_path);
+            let secret_store = Arc::new(DesktopKeyringSecretStore::new(
+                DESKTOP_SECRET_SERVICE,
+                metadata_path.clone(),
+            ));
+            load_desktop_secrets_into_env(&metadata_path, DESKTOP_SECRET_SERVICE)
+                .context("Failed to hydrate desktop config secrets from keyring")?;
             let (mut config, config_file_path) = load_config_at_path(
                 config_path
                     .to_str()
@@ -181,27 +433,21 @@ pub fn run() {
                     .to_string(),
             )
             .context("Failed to load desktop configuration")?;
-
-            if config.extract_secrets {
-                warn!(
-                    "Desktop app does not use .env-based secret extraction. Disabling `extract_secrets` for this session."
-                );
-                config.extract_secrets = false;
-            }
+            config.extract_secrets = true;
 
             init_logging(&config);
 
             let builder = PrometheusBuilder::new();
             let recorder = builder.build_recorder();
             let prometheus_handle = recorder.handle();
-            metrics::set_global_recorder(recorder).context("Failed to install Prometheus recorder")?;
+            metrics::set_global_recorder(recorder)
+                .context("Failed to install Prometheus recorder")?;
 
             metrics::describe_gauge!(
                 "mq_bridge_app_info",
                 "Information about the mq-bridge-app application"
             );
-            metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION"))
-                .set(1.0);
+            metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
             tauri::async_runtime::block_on(async {
                 deploy_routes(&mut config)
@@ -210,7 +456,12 @@ pub fn run() {
             })?;
 
             app.manage(DesktopState {
-                app: UiApp::new(config, prometheus_handle, config_file_path),
+                app: UiApp::new_with_secret_store(
+                    config,
+                    prometheus_handle,
+                    config_file_path,
+                    secret_store,
+                ),
             });
 
             Ok(())

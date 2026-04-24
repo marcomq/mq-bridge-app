@@ -126,13 +126,11 @@
         new Promise((resolve) => {
             ensureStyles();
 
-            const backdrop = document.createElement('div');
-            backdrop.className = 'mqb-dialog-backdrop';
+            const backdrop = h('div', { className: 'mqb-dialog-backdrop' });
 
             const hasInput = placeholder !== null;
             const hasChoices = Array.isArray(choices) && choices.length > 0;
-            const dialog = document.createElement('div');
-            dialog.className = 'mqb-dialog';
+            const dialog = h('div', { className: 'mqb-dialog' });
             dialog.replaceChildren(
                 h('div', { className: 'mqb-dialog__header' }, title),
                 h(

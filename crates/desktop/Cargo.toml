@@ -21,6 +21,7 @@ path = "src/main.rs"
 [dependencies]
 mq_bridge_app = { package = "mq-bridge-app-core", path = "../core" }
 anyhow = "1.0.102"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 metrics = { version = "0.24.3" }
 metrics-exporter-prometheus = "0.18.1"
 rustls = "0.23.38"

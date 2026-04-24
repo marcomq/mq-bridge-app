@@ -394,6 +394,13 @@
         window.addEventListener('load', async () => {
             const config = await (await fetch('/config')).json();
             const schema = await (await fetch('/schema.json')).json();
+
+            if (window.__MQB_DESKTOP__) {
+                delete config.extract_secrets;
+                if (schema?.properties) {
+                    delete schema.properties.extract_secrets;
+                }
+            }
             
             window.runSaveButtonAction = async (button, action) => {
                 const originalLabel = button?.textContent?.trim() || 'Save';

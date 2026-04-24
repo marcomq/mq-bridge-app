@@ -4,6 +4,8 @@
         return;
     }
 
+    window.__MQB_DESKTOP__ = true;
+
     const originalFetch = window.fetch.bind(window);
 
     const isLocalUiRequest = (url) => {
@@ -14,6 +16,7 @@
             '/health',
             '/schema.json',
             '/config',
+            '/desktop-secrets',
             '/consumer-status',
             '/consumer-start',
             '/consumer-stop',

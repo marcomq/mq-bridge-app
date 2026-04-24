@@ -506,30 +506,32 @@ async function initConsumers(config, schema) {
         }
 
         if (messages.length === 0) {
-            const row = document.createElement('tr');
-            const cell = document.createElement('td');
+            const cell = h('td', {}, 'Waiting for messages...');
             cell.colSpan = 2;
             cell.style.textAlign = 'center';
             cell.style.padding = '20px';
             cell.style.color = 'var(--text-dim)';
-            cell.textContent = 'Waiting for messages...';
-            row.appendChild(cell);
+            const row = h('tr', {}, cell);
             logBody.replaceChildren(row);
         } else {
             const rows = messages.map((message, msgIdx) => {
-                const row = document.createElement('tr');
+                const row = h('tr', {});
                 row.style.cursor = 'zoom-in';
                 row.addEventListener('click', () => window.showMsgDetails(name, msgIdx));
 
-                const timeCell = document.createElement('td');
-                timeCell.className = 'text-muted small';
                 const uuidTime = message.metadata?.id ? extractUuidV7Timestamp(message.metadata.id) : null;
-                timeCell.textContent = uuidTime || (message.time ? new Date(message.time).toLocaleTimeString() : 'N/A');
+                const timeCell = h(
+                    'td',
+                    { className: 'text-muted small' },
+                    uuidTime || (message.time ? new Date(message.time).toLocaleTimeString() : 'N/A'),
+                );
 
-                const payloadCell = document.createElement('td');
-                payloadCell.className = 'font-monospace small text-break text-truncate';
+                const payloadCell = h(
+                    'td',
+                    { className: 'font-monospace small text-break text-truncate' },
+                    typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload),
+                );
                 payloadCell.style.maxWidth = '400px';
-                payloadCell.textContent = typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload);
 
                 row.append(timeCell, payloadCell);
                 return row;

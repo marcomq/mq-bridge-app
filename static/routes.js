@@ -369,6 +369,95 @@ async function initSettings(config, schema) {
     if (formActions) formActions.style.display = 'flex';
     const submitBtn = document.getElementById('js-submit');
     if (submitBtn) submitBtn.onclick = (e) => window.saveConfig(false, e.currentTarget);
+
+    let desktopSecretsBtn = document.getElementById('js-delete-desktop-secrets');
+    let desktopSecretsCheckBtn = document.getElementById('js-check-desktop-secrets');
+    if (window.__MQB_DESKTOP__ && formActions && !desktopSecretsBtn) {
+        desktopSecretsCheckBtn = lib.h('wa-button', { id: 'js-check-desktop-secrets' }, 'Check Stored Secrets');
+        desktopSecretsCheckBtn.setAttribute('variant', 'neutral');
+        desktopSecretsCheckBtn.setAttribute('appearance', 'outlined');
+        desktopSecretsCheckBtn.setAttribute('size', 'small');
+        formActions.appendChild(desktopSecretsCheckBtn);
+
+        desktopSecretsBtn = lib.h('wa-button', { id: 'js-delete-desktop-secrets' }, 'Delete Stored Secrets');
+        desktopSecretsBtn.setAttribute('variant', 'danger');
+        desktopSecretsBtn.setAttribute('appearance', 'outlined');
+        desktopSecretsBtn.setAttribute('size', 'small');
+        formActions.appendChild(desktopSecretsBtn);
+    }
+
+    if (desktopSecretsBtn) {
+        desktopSecretsBtn.onclick = async (event) => {
+            try {
+                const confirmed = await window.mqbConfirm(
+                    'Delete all securely stored secrets referenced by the current desktop config?',
+                    'Delete Stored Secrets',
+                );
+                if (!confirmed) return;
+
+                const response = await fetch('/desktop-secrets', { method: 'DELETE' });
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(text || 'Failed to delete stored secrets');
+                }
+
+                const result = await response.json().catch(() => ({ deleted: 0 }));
+                const deleted = Number(result?.deleted || 0);
+                await window.mqbAlert(
+                    deleted > 0
+                        ? `Deleted ${deleted} stored secret${deleted === 1 ? '' : 's'}.`
+                        : 'No stored secrets were found for the current desktop config.',
+                    'Stored Secrets',
+                );
+            } catch (error) {
+                await window.mqbAlert(`Failed to delete stored secrets: ${error.message}`, 'Stored Secrets');
+            }
+        };
+    }
+
+    if (desktopSecretsCheckBtn) {
+        desktopSecretsCheckBtn.onclick = async () => {
+            try {
+                const response = await fetch('/desktop-secrets', { cache: 'no-store' });
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(text || 'Failed to inspect stored secrets');
+                }
+
+                const summary = await response.json();
+                const groups = [
+                    ['Routes', summary.routes || {}],
+                    ['Consumers', summary.consumers || {}],
+                    ['Publishers', summary.publishers || {}],
+                ];
+
+                const lines = [];
+                for (const [label, entries] of groups) {
+                    const names = Object.keys(entries).sort();
+                    if (names.length === 0) continue;
+                    lines.push(`${label}:`);
+                    for (const name of names) {
+                        const items = entries[name] || [];
+                        const extracted = items.filter((item) => item.extracted).length;
+                        const stored = items.filter((item) => item.stored).length;
+                        const total = items.length;
+                        lines.push(`- ${name}: ${extracted}/${total} extracted, ${stored}/${total} stored`);
+                        const errors = items
+                            .filter((item) => item.error)
+                            .map((item) => `${item.key}: ${item.error}`);
+                        errors.forEach((message) => lines.push(`  ${message}`));
+                    }
+                }
+
+                const message = lines.length > 0
+                    ? lines.join('\n')
+                    : 'The current desktop config does not reference any extracted secrets.';
+                await window.mqbAlert(message, 'Stored Secrets');
+            } catch (error) {
+                await window.mqbAlert(`Failed to inspect stored secrets: ${error.message}`, 'Stored Secrets');
+            }
+        };
+    }
 }
 
 window.initRoutes = initRoutes;

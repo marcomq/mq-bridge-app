@@ -240,6 +240,65 @@ const tlsRenderer = {
   },
 };
 
+const basicAuthRenderer = {
+  render: (node, path, elementId, dataPath, context) => {
+    const store = context.store;
+    const currentValue = store.getPath(dataPath) ?? node.defaultValue ?? null;
+    const tuple = Array.isArray(currentValue)
+      ? currentValue
+      : currentValue && typeof currentValue === "object"
+        ? [currentValue[0] ?? "", currentValue[1] ?? ""]
+        : ["", ""];
+
+    const syncValue = (index, value) => {
+      const next = [tuple[0] ?? "", tuple[1] ?? ""];
+      next[index] = value;
+      tuple[index] = value;
+      const hasAnyValue = next.some((item) => String(item || "").trim() !== "");
+      store.setPath(dataPath, hasAnyValue ? next : null);
+    };
+
+    const usernameInput = h("input", {
+      className: "field-input",
+      type: "text",
+      value: tuple[0] ?? "",
+      oninput: (event) => syncValue(0, event.currentTarget.value),
+    });
+    usernameInput.style.fontFamily = "var(--font-ui)";
+
+    const passwordInput = h("input", {
+      className: "field-input",
+      type: "password",
+      value: tuple[1] ?? "",
+      oninput: (event) => syncValue(1, event.currentTarget.value),
+    });
+    passwordInput.style.fontFamily = "var(--font-ui)";
+
+    const descriptionBlock = node.description
+      ? h("div", { className: "form-description form-description-block" }, node.description)
+      : document.createTextNode("");
+
+    return h(
+      "fieldset",
+      { className: "ui_basic_auth", id: elementId },
+      h("legend", {}, node.title || "Basic Auth"),
+      descriptionBlock,
+      h(
+        "div",
+        { className: "wa-form-row" },
+        h("label", { className: "wa-form-label" }, "Username"),
+        h("div", { className: "wa-form-col" }, usernameInput),
+      ),
+      h(
+        "div",
+        { className: "wa-form-row" },
+        h("label", { className: "wa-form-label" }, "Password"),
+        h("div", { className: "wa-form-col" }, passwordInput),
+      ),
+    );
+  },
+};
+
 const createCustomCollapsibleRenderer = (visibleKeys) => ({
   render: (node, path, elementId, dataPath, context) => {
     fixNullBooleans(node, dataPath, context);
@@ -460,7 +519,7 @@ const ENDPOINT_PRIMARY_KEYS = {
   static: [],
   memory: ["topic"],
   amqp: ["url", "queue", "topic", "tls", "basic_auth"],
-  mongodb: ["url", "database", "collection", "tls", "basic_auth"],
+  mongodb: ["url", "database", "collection", "username", "password", "tls"],
   mqtt: ["url", "topic", "tls", "basic_auth"],
   http: ["url", "method", "path", "tls", "basic_auth", "custom_headers"],
   sled: ["path", "tree"],
@@ -532,6 +591,7 @@ const descriptionRenderer = {
 const CUSTOM_RENDERERS = {
   Route: routeObjectRenderer,
   tls: tlsRenderer,
+  basic_auth: basicAuthRenderer,
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,
