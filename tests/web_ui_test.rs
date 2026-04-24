@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 fn get_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -21,7 +21,11 @@ fn test_mutex() -> &'static tokio::sync::Mutex<()> {
 }
 
 fn unique_config_path(port: u16) -> PathBuf {
-    std::env::temp_dir().join(format!("mq_bridge_app_test_{}_{}.yml", port, uuid::Uuid::new_v4()))
+    std::env::temp_dir().join(format!(
+        "mq_bridge_app_test_{}_{}.yml",
+        port,
+        uuid::Uuid::new_v4()
+    ))
 }
 
 async fn start_test_server(port: u16, config: AppConfig, config_file: &PathBuf) -> JoinHandle<()> {
@@ -31,9 +35,14 @@ async fn start_test_server(port: u16, config: AppConfig, config_file: &PathBuf) 
     let config_file_path = config_file.to_string_lossy().to_string();
 
     let server = tokio::spawn(async move {
-        web_ui::start_web_server(format!("127.0.0.1:{}", port), config, handle, config_file_path)
-            .await
-            .unwrap();
+        web_ui::start_web_server(
+            format!("127.0.0.1:{}", port),
+            config,
+            handle,
+            config_file_path,
+        )
+        .await
+        .unwrap();
     });
 
     sleep(Duration::from_millis(200)).await;
@@ -70,12 +79,19 @@ async fn http_post_json(port: u16, path: &str, json_payload: &str) -> String {
 }
 
 fn response_body(response: &str) -> &str {
-    response.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or("")
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("")
 }
 
 async fn read_json_response(port: u16, path: &str) -> serde_json::Value {
     let response = http_get(port, path).await;
-    assert!(response.contains("200 OK"), "unexpected response: {}", response);
+    assert!(
+        response.contains("200 OK"),
+        "unexpected response: {}",
+        response
+    );
     serde_json::from_str(response_body(&response)).unwrap()
 }
 
@@ -176,7 +192,11 @@ async fn test_web_ui_post_config_deploys_enabled_route() {
         r#"{{"log_level":"debug","logger":"plain","routes":{{"{route_name}":{{"enabled":true,"input":{{"memory":{{"topic":"in"}}}},"output":{{"memory":{{"topic":"out"}}}}}}}}}}"#
     );
     let response = http_post_json(port, "/config", &json_payload).await;
-    assert!(response.contains("200 OK"), "unexpected response: {}", response);
+    assert!(
+        response.contains("200 OK"),
+        "unexpected response: {}",
+        response
+    );
 
     sleep(Duration::from_millis(200)).await;
     let routes = mq_bridge_app::mq_bridge::list_routes();
@@ -202,7 +222,11 @@ async fn test_web_ui_post_config_accepts_disabled_route_without_deploying_it() {
         r#"{{"log_level":"debug","logger":"plain","routes":{{"{route_name}":{{"enabled":false,"input":{{"memory":{{"topic":"disabled-in"}}}},"output":{{"memory":{{"topic":"disabled-out"}}}}}}}}}}"#
     );
     let response = http_post_json(port, "/config", &json_payload).await;
-    assert!(response.contains("200 OK"), "unexpected response: {}", response);
+    assert!(
+        response.contains("200 OK"),
+        "unexpected response: {}",
+        response
+    );
 
     sleep(Duration::from_millis(200)).await;
     let routes = mq_bridge_app::mq_bridge::list_routes();
@@ -230,32 +254,44 @@ async fn test_web_ui_can_disable_existing_route_and_runtime_status_updates() {
         r#"{{"log_level":"debug","logger":"plain","routes":{{"{route_name}":{{"enabled":true,"input":{{"memory":{{"topic":"toggle-in"}}}},"output":{{"memory":{{"topic":"toggle-out"}}}}}}}}}}"#
     );
     let response = http_post_json(port, "/config", &enabled_payload).await;
-    assert!(response.contains("200 OK"), "unexpected response: {}", response);
+    assert!(
+        response.contains("200 OK"),
+        "unexpected response: {}",
+        response
+    );
 
     sleep(Duration::from_millis(200)).await;
     let runtime_before = read_json_response(port, "/runtime-status").await;
-    assert!(runtime_before["active_routes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|name| name == &serde_json::Value::String(route_name.clone())));
+    assert!(
+        runtime_before["active_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == &serde_json::Value::String(route_name.clone()))
+    );
 
     let disabled_payload = format!(
         r#"{{"log_level":"debug","logger":"plain","routes":{{"{route_name}":{{"enabled":false,"input":{{"memory":{{"topic":"toggle-in"}}}},"output":{{"memory":{{"topic":"toggle-out"}}}}}}}}}}"#
     );
     let response = http_post_json(port, "/config", &disabled_payload).await;
-    assert!(response.contains("200 OK"), "unexpected response: {}", response);
+    assert!(
+        response.contains("200 OK"),
+        "unexpected response: {}",
+        response
+    );
 
     sleep(Duration::from_millis(200)).await;
     let routes = mq_bridge_app::mq_bridge::list_routes();
     assert!(!routes.contains(&route_name));
 
     let runtime_after = read_json_response(port, "/runtime-status").await;
-    assert!(!runtime_after["active_routes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|name| name == &serde_json::Value::String(route_name.clone())));
+    assert!(
+        !runtime_after["active_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == &serde_json::Value::String(route_name.clone()))
+    );
 
     server.abort();
     stop_all_routes().await;

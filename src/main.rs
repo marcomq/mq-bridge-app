@@ -4,7 +4,7 @@
 //  git clone https://github.com/marcomq/mq-bridge-app
 
 use mq_bridge_app::{
-    config::{load_config, AppConfig},
+    config::{AppConfig, load_config},
     web_ui,
 };
 
@@ -12,8 +12,8 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tracing::{info, warn};
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 use anyhow::Context;
 #[derive(Parser, Debug)]
@@ -57,11 +57,12 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", schema_json);
         } else {
             let path = std::path::Path::new(&schema_path);
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    std::fs::create_dir_all(parent)
-                        .context("Failed to create parent directory for schema")?;
-                }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+                && !parent.exists()
+            {
+                std::fs::create_dir_all(parent)
+                    .context("Failed to create parent directory for schema")?;
             }
             std::fs::write(path, schema_json).context("Failed to write schema file")?;
         }
@@ -265,7 +266,7 @@ fn init_logging(config: &AppConfig) {
 async fn platform_specific_shutdown() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         match signal(SignalKind::terminate()) {
             Ok(mut stream) => {
                 use tracing::info;

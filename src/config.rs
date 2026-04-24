@@ -3,8 +3,8 @@ use std::{collections::HashMap, path::Path};
 use anyhow::Result;
 use config::Config;
 use mq_bridge::{
-    models::{Endpoint, SecretExtractor},
     Route,
+    models::{Endpoint, SecretExtractor},
 };
 use schemars::JsonSchema;
 
@@ -342,36 +342,38 @@ routes:
     fn test_config_from_env_vars() {
         // Set environment variables
         // Clear the var first to avoid interference from other tests
-        std::env::remove_var("MQB__LOG_LEVEL");
-        std::env::set_var("MQB__LOG_LEVEL", "trace");
-        std::env::set_var("MQB__LOGGER", "json");
+        unsafe {
+            std::env::remove_var("MQB__LOG_LEVEL");
+            std::env::set_var("MQB__LOG_LEVEL", "trace");
+            std::env::set_var("MQB__LOGGER", "json");
 
-        // Route 0: Kafka to NATS
-        std::env::set_var(
-            "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__INPUT__KAFKA__BROKERS",
-            "env-kafka:9092",
-        );
-        // Source
-        std::env::set_var(
-            "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__INPUT__KAFKA__GROUP_ID",
-            "env-group",
-        );
-        std::env::set_var(
-            "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__INPUT__KAFKA__TOPIC",
-            "env-in-topic",
-        );
-        // Sink
-        std::env::set_var(
-            "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__OUTPUT__NATS__URL",
-            "nats://env-nats:4222",
-        );
-        std::env::set_var(
-            "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__OUTPUT__NATS__SUBJECT",
-            "env-out-subject",
-        );
+            // Route 0: Kafka to NATS
+            std::env::set_var(
+                "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__INPUT__KAFKA__BROKERS",
+                "env-kafka:9092",
+            );
+            // Source
+            std::env::set_var(
+                "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__INPUT__KAFKA__GROUP_ID",
+                "env-group",
+            );
+            std::env::set_var(
+                "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__INPUT__KAFKA__TOPIC",
+                "env-in-topic",
+            );
+            // Sink
+            std::env::set_var(
+                "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__OUTPUT__NATS__URL",
+                "nats://env-nats:4222",
+            );
+            std::env::set_var(
+                "MQB__ROUTES__KAFKA_TO_NATS_FROM_ENV__OUTPUT__NATS__SUBJECT",
+                "env-out-subject",
+            );
 
-        std::env::set_var("CONFIG_FILE", "_"); // ignore existing config.yaml
-                                               // Load config
+            std::env::set_var("CONFIG_FILE", "_"); // ignore existing config.yaml
+        }
+        // Load config
         let (config, _) = load_config(None, None, None, None).unwrap();
 
         // Assertions
