@@ -2,6 +2,7 @@
 FROM --platform=$BUILDPLATFORM rust:1.92-bookworm AS builder
 ARG TARGETARCH
 ARG BUILDPLATFORM
+ARG ENABLE_IBM_MQ=false
 # Bump DOCKER_CACHE_VERSION in release.yml to invalidate this cache
 ARG CACHE_BUST=1
 
@@ -90,14 +91,14 @@ ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
     PKG_CONFIG_ALLOW_CROSS=1
 
-# IBM MQ — only available for AMD64
+# IBM MQ — only available for AMD64 when explicitly enabled
 WORKDIR /opt/mqm
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
+RUN if [ "$TARGETARCH" = "amd64" ] && [ "$ENABLE_IBM_MQ" = "true" ]; then \
         curl -LO https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqdev/redist/9.4.5.0-IBM-MQC-Redist-LinuxX64.tar.gz \
         && tar -xzf *.tar.gz \
         && rm *.tar.gz; \
     else \
-        echo "Skipping IBM MQ installation for $TARGETARCH" \
+        echo "Skipping IBM MQ installation for $TARGETARCH (enabled=$ENABLE_IBM_MQ)" \
         && mkdir -p /opt/mqm/lib64 /opt/mqm/licenses; \
     fi
 
@@ -119,7 +120,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/src/mq-bridge-app/target,id=target-${TARGETARCH}-${CACHE_BUST},sharing=locked \
     if [ "$TARGETARCH" = "amd64" ]; then \
         RUST_TARGET="x86_64-unknown-linux-gnu"; \
-        CARGO_FEATURES="--features=ibm-mq"; \
+        if [ "$ENABLE_IBM_MQ" = "true" ]; then \
+            CARGO_FEATURES="--features=ibm-mq"; \
+        else \
+            CARGO_FEATURES=""; \
+        fi; \
     else \
         RUST_TARGET="aarch64-unknown-linux-gnu"; \
         CARGO_FEATURES="--features=arm64-cross-compile"; \
@@ -131,7 +136,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 # Identify and copy only the necessary MQ libraries for the final stage
 RUN mkdir /mq-libs && \
-    if [ "$TARGETARCH" = "amd64" ]; then \
+    if [ "$TARGETARCH" = "amd64" ] && [ "$ENABLE_IBM_MQ" = "true" ]; then \
         ldd mq-bridge-app | grep '/opt/mqm/lib64/' | awk '{print $3}' | xargs -I {} cp -L {} /mq-libs/; \
     fi
 
@@ -167,4 +172,3 @@ EXPOSE 9090
 EXPOSE 9091
 
 ENTRYPOINT ["/usr/local/bin/mq-bridge-app"]
-

@@ -1,5 +1,6 @@
 async function initRoutes(config, schema) {
     const lib = window.VanillaSchemaForms;
+    const h = lib.h;
     const container = document.getElementById('routes-container');
     const ROUTE_VALIDATION_NOISE = [
         "Schema: must have required property 'name'",
@@ -73,30 +74,45 @@ async function initRoutes(config, schema) {
 
     const routeList = document.getElementById('route-list');
 
+    const createRouteSidebarItem = (route, index) => {
+        const inputProto =
+          Object.keys(route.input)
+            .filter((key) => key !== "middlewares")[0]?.toUpperCase() || "N/A";
+        const outputProto =
+          Object.keys(route.output)
+            .filter((key) => key !== "middlewares")[0]?.toUpperCase() || "N/A";
+        const item = h(
+            'div',
+            {
+                className: `sidebar-item route-item${isRouteEnabled(route) ? '' : ' is-disabled'}`,
+                'data-idx': String(index),
+            },
+            h('span', { className: `proto-badge proto-${inputProto.toLowerCase()}` }, inputProto.substring(0, 4)),
+            h('span', { className: 'item-name' }, route.name),
+        );
+
+        if (isRouteEnabled(route) && hasMetricsMiddleware(route)) {
+            const throughput = h('span', { className: 'route-throughput', 'data-route-name': route.name }, '0 msg/s');
+            item.appendChild(throughput);
+        }
+
+        if (!isRouteEnabled(route)) {
+            item.appendChild(h('span', { className: 'route-disabled-tag' }, 'OFF'));
+        }
+
+        const outputBadge = h('span', { className: `proto-badge proto-${outputProto.toLowerCase()}` }, outputProto.substring(0, 4));
+        outputBadge.style.marginLeft = 'auto';
+        item.appendChild(outputBadge);
+
+        return item;
+    };
+
     const renderSidebar = () => {
         if (!routeList) return;
-        routeList.innerHTML = '<div class="sidebar-group-label">Routes</div>' +
-            routesArray.map((r, i) => {
-                const inputProto =
-                  Object.keys(r.input)
-                  .filter((key) => key !== "middlewares")[0]?.toUpperCase() || "N/A";
-                const outputProto =
-                  Object.keys(r.output)
-                    .filter((key) => key !== "middlewares")[0]?.toUpperCase() || "N/A";
-                const metricsBadge = isRouteEnabled(r) && hasMetricsMiddleware(r)
-                    ? `<span class="route-throughput" data-route-name="${r.name}">0 msg/s</span>`
-                    : '';
-                const disabledClass = isRouteEnabled(r) ? '' : ' is-disabled';
-                return `
-                    <div class="sidebar-item route-item${disabledClass}" data-idx="${i}">
-                        <span class="proto-badge proto-${inputProto.toLowerCase()}">${inputProto.substring(0,4)}</span>
-                        <span class="item-name">${r.name}</span>
-                        ${metricsBadge}
-                        ${isRouteEnabled(r) ? '' : '<span class="route-disabled-tag">OFF</span>'}
-                        <span class="proto-badge proto-${outputProto.toLowerCase()}" style="margin-left:auto;">${outputProto.substring(0,4)}</span>
-                    </div>
-                `;
-            }).join('');
+        routeList.replaceChildren(
+            h('div', { className: 'sidebar-group-label' }, 'Routes'),
+            ...routesArray.map((route, index) => createRouteSidebarItem(route, index)),
+        );
 
         const hasRoutes = routesArray.length > 0;
         document.getElementById('route-empty-alert').style.display = hasRoutes ? 'none' : 'block';

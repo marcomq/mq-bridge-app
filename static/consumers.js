@@ -1,4 +1,5 @@
 async function initConsumers(config, schema) {
+    const h = window.VanillaSchemaForms.h;
     const consumers = config.consumers || [];
     const MSG_STORAGE_KEY = 'mqb_consumer_messages';
     const defaultMetricsMiddleware = () => [{ metrics: {} }];
@@ -185,12 +186,40 @@ async function initConsumers(config, schema) {
             : null;
     };
 
-    const escapeHtml = (value) =>
-        String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
+    const createResponseMetaRow = (key, value) => {
+        return h(
+            'div',
+            { className: 'response-meta-row' },
+            h('span', { className: 'response-meta-key' }, String(key)),
+            h('span', { className: 'response-meta-value' }, String(value)),
+        );
+    };
+
+    const createResponseMetaBlock = (title, entries) => {
+        const block = h('div', { className: 'response-meta-block' }, h('div', { className: 'section-label' }, title));
+        entries.forEach(([key, value]) => block.appendChild(createResponseMetaRow(key, value)));
+        return block;
+    };
+
+    const createSidebarItem = (consumer, index) => {
+        const proto = getConsumerInputType(consumer).toUpperCase();
+        const status = consumerStatus[consumer.name];
+        const statusClass = status
+            ? (status.running ? (status.status?.healthy ? 'status-ok' : 'status-err') : 'status-off')
+            : 'status-off';
+
+        const countNode = h('span', { className: 'msg-count' }, String(consumerMessages[consumer.name]?.length || 0));
+        countNode.style.marginLeft = 'auto';
+
+        return h(
+            'div',
+            { className: 'sidebar-item cons-item', 'data-idx': String(index) },
+            h('span', { className: `proto-badge proto-${proto.toLowerCase()}` }, proto),
+            h('span', { className: 'item-name' }, consumer.name),
+            countNode,
+            h('span', { className: `item-status ${statusClass}` }),
+        );
+    };
 
     const renderConsumerResponseEditor = (consumer, idx) => {
         const container = document.getElementById('cons-response-editor');
@@ -208,29 +237,69 @@ async function initConsumers(config, schema) {
 
         const headerRows = Object.entries(response.headers).sort(([a], [b]) => a.localeCompare(b));
         container.style.display = 'block';
-        container.innerHTML = `
-            <div class="section-toolbar response-editor-header">
-                <div class="section-label">Custom Response</div>
-                <span class="form-description">Returned to request-response consumer endpoints after the message is logged.</span>
-            </div>
-            <div class="response-editor-grid">
-                <div class="section-label">Headers</div>
-                <div id="cons-response-headers">
-                    ${headerRows.map(([key, value], headerIdx) => `
-                        <div class="response-header-row" data-header-idx="${headerIdx}">
-                            <input class="field-input cons-response-header-key" type="text" placeholder="Header name" value="${escapeHtml(key)}">
-                            <input class="field-input cons-response-header-value" type="text" placeholder="Header value" value="${escapeHtml(value)}">
-                            <wa-button variant="neutral" appearance="outlined" size="small" class="cons-response-header-delete">Delete</wa-button>
-                        </div>
-                    `).join('')}
-                </div>
-                <div class="response-editor-actions">
-                    <wa-button variant="neutral" appearance="outlined" size="small" id="cons-response-add-header">Add Header</wa-button>
-                </div>
-                <div class="section-label">Payload</div>
-                <textarea class="body-editor" id="cons-response-payload" spellcheck="false" placeholder="Response body">${escapeHtml(response.payload)}</textarea>
-            </div>
-        `;
+        const toolbar = h(
+            'div',
+            { className: 'section-toolbar response-editor-header' },
+            h('div', { className: 'section-label' }, 'Custom Response'),
+            h('span', { className: 'form-description' }, 'Returned to request-response consumer endpoints after the message is logged.'),
+        );
+
+        const grid = h('div', { className: 'response-editor-grid' });
+        const headersLabel = h('div', { className: 'section-label' }, 'Headers');
+        const headersContainer = h('div', { id: 'cons-response-headers' });
+
+        headerRows.forEach(([key, value], headerIdx) => {
+            const keyInput = h('input', {
+                className: 'field-input cons-response-header-key',
+                type: 'text',
+                placeholder: 'Header name',
+            });
+            keyInput.value = key;
+
+            const valueInput = h('input', {
+                className: 'field-input cons-response-header-value',
+                type: 'text',
+                placeholder: 'Header value',
+            });
+            valueInput.value = value;
+
+            const deleteButton = h('wa-button', { className: 'cons-response-header-delete' }, 'Delete');
+            deleteButton.setAttribute('variant', 'neutral');
+            deleteButton.setAttribute('appearance', 'outlined');
+            deleteButton.setAttribute('size', 'small');
+            headersContainer.appendChild(
+                h(
+                    'div',
+                    { className: 'response-header-row', 'data-header-idx': String(headerIdx) },
+                    keyInput,
+                    valueInput,
+                    deleteButton,
+                ),
+            );
+        });
+
+        const addHeaderButton = h('wa-button', { id: 'cons-response-add-header' }, 'Add Header');
+        addHeaderButton.setAttribute('variant', 'neutral');
+        addHeaderButton.setAttribute('appearance', 'outlined');
+        addHeaderButton.setAttribute('size', 'small');
+        const actions = h('div', { className: 'response-editor-actions' }, addHeaderButton);
+
+        const payloadInput = h('textarea', {
+            className: 'body-editor',
+            id: 'cons-response-payload',
+            placeholder: 'Response body',
+        });
+        payloadInput.spellcheck = false;
+        payloadInput.value = response.payload;
+
+        grid.append(
+            headersLabel,
+            headersContainer,
+            actions,
+            h('div', { className: 'section-label' }, 'Payload'),
+            payloadInput,
+        );
+        container.replaceChildren(toolbar, grid);
 
         const syncResponseState = () => {
             const headers = {};
@@ -266,21 +335,10 @@ async function initConsumers(config, schema) {
     const renderSidebar = () => {
         const list = document.getElementById('cons-list');
         if (!list) return;
-        list.innerHTML = '<div class="sidebar-group-label">Saved</div>' + 
-            consumers.map((c, i) => {
-                const proto = getConsumerInputType(c).toUpperCase();
-                const status = consumerStatus[c.name];
-                const statusClass = status
-                    ? (status.running ? (status.status?.healthy ? 'status-ok' : 'status-err') : 'status-off')
-                    : 'status-off';
-                return `
-                <div class="sidebar-item cons-item" data-idx="${i}">
-                    <span class="proto-badge proto-${proto.toLowerCase()}">${proto}</span>
-                    <span class="item-name">${c.name}</span>
-                    <span class="msg-count" style="margin-left:auto;">${consumerMessages[c.name]?.length || 0}</span>
-                    <span class="item-status ${statusClass}"></span>
-                </div>
-            `}).join('');
+        list.replaceChildren(
+            h('div', { className: 'sidebar-group-label' }, 'Saved'),
+            ...consumers.map((consumer, index) => createSidebarItem(consumer, index)),
+        );
         
         const hasCons = consumers.length > 0;
         document.getElementById('cons-empty-alert').style.display = hasCons ? 'none' : 'block';
@@ -335,23 +393,15 @@ async function initConsumers(config, schema) {
         }
 
         const metadataEntries = Object.entries(msg.metadata || {}).sort(([a], [b]) => a.localeCompare(b));
-        const metadataHtml = metadataEntries.length > 0
-            ? `
-                <div class="response-meta-block">
-                    <div class="section-label">Headers</div>
-                    ${metadataEntries.map(([k, v]) => `
-                        <div class="response-meta-row">
-                            <span class="response-meta-key">${k}</span>
-                            <span class="response-meta-value">${String(v)}</span>
-                        </div>
-                    `).join('')}
-                </div>
-                <div class="section-label">Body</div>
-            `
-            : '';
+        const detailChildren = [];
+        if (metadataEntries.length > 0) {
+            detailChildren.push(createResponseMetaBlock('Headers', metadataEntries));
+            detailChildren.push(h('div', { className: 'section-label' }, 'Body'));
+        }
 
-        detailContent.innerHTML = `${metadataHtml}<div id="cons-msg-payload"></div>`;
-        const payloadContainer = detailContent.querySelector('#cons-msg-payload');
+        const payloadContainer = h('div', { id: 'cons-msg-payload' });
+        detailChildren.push(payloadContainer);
+        detailContent.replaceChildren(...detailChildren);
         payloadContainer.textContent = payload;
         payloadContainer.style.whiteSpace = 'pre-wrap';
         payloadContainer.style.fontFamily = 'var(--font)';
@@ -450,23 +500,42 @@ async function initConsumers(config, schema) {
 
         const liveTitle = document.getElementById('cons-live-title');
         if (liveTitle) {
-            liveTitle.innerHTML = `Incoming Messages: <wa-badge variant="${statusVariant}">${statusText}</wa-badge>`;
+            const badge = h('wa-badge', {}, statusText);
+            badge.setAttribute('variant', statusVariant);
+            liveTitle.replaceChildren('Incoming Messages: ', badge);
         }
 
-        logBody.innerHTML = `
-                            ${messages.length === 0 ? 
-                                '<tr><td colspan="2" style="text-align:center; padding: 20px; color: var(--text-dim);">Waiting for messages...</td></tr>' : 
-                                messages.map((m, mIdx) => {
-                                    const uuidTime = m.metadata?.id ? extractUuidV7Timestamp(m.metadata.id) : null;
-                                    const time = uuidTime || (m.time ? new Date(m.time).toLocaleTimeString() : 'N/A');
-                                    const payload = typeof m.payload === 'string' ? m.payload : JSON.stringify(m.payload);
-                                    return `<tr onclick="showMsgDetails('${name}', ${mIdx})" style="cursor: zoom-in;">
-                                        <td class="text-muted small">${time}</td>
-                                        <td class="font-monospace small text-break text-truncate" style="max-width: 400px;">${payload}</td>
-                                    </tr>`;
-                                }).join('')
-                            }
-        `;
+        if (messages.length === 0) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 2;
+            cell.style.textAlign = 'center';
+            cell.style.padding = '20px';
+            cell.style.color = 'var(--text-dim)';
+            cell.textContent = 'Waiting for messages...';
+            row.appendChild(cell);
+            logBody.replaceChildren(row);
+        } else {
+            const rows = messages.map((message, msgIdx) => {
+                const row = document.createElement('tr');
+                row.style.cursor = 'zoom-in';
+                row.addEventListener('click', () => window.showMsgDetails(name, msgIdx));
+
+                const timeCell = document.createElement('td');
+                timeCell.className = 'text-muted small';
+                const uuidTime = message.metadata?.id ? extractUuidV7Timestamp(message.metadata.id) : null;
+                timeCell.textContent = uuidTime || (message.time ? new Date(message.time).toLocaleTimeString() : 'N/A');
+
+                const payloadCell = document.createElement('td');
+                payloadCell.className = 'font-monospace small text-break text-truncate';
+                payloadCell.style.maxWidth = '400px';
+                payloadCell.textContent = typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload);
+
+                row.append(timeCell, payloadCell);
+                return row;
+            });
+            logBody.replaceChildren(...rows);
+        }
 
         document.getElementById('cons-clear-history').onclick = () => {
             consumerMessages[name] = [];

@@ -69,9 +69,23 @@ async fn http_get(port: u16, path: &str) -> String {
 }
 
 async fn http_post_json(port: u16, path: &str, json_payload: &str) -> String {
+    http_post_json_with_headers(port, path, json_payload, &[]).await
+}
+
+async fn http_post_json_with_headers(
+    port: u16,
+    path: &str,
+    json_payload: &str,
+    headers: &[(&str, &str)],
+) -> String {
+    let extra_headers = headers
+        .iter()
+        .map(|(key, value)| format!("{key}: {value}\r\n"))
+        .collect::<String>();
     let request = format!(
-        "POST {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "POST {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
         path,
+        extra_headers,
         json_payload.len(),
         json_payload
     );
@@ -308,6 +322,35 @@ async fn test_web_ui_post_config_accepts_disabled_route_without_deploying_it() {
 
     let config_json = read_json_response(port, "/config").await;
     assert_eq!(config_json["routes"][&route_name]["enabled"], false);
+
+    server.abort();
+    stop_all_routes().await;
+    let _ = std::fs::remove_file(config_file);
+}
+
+#[tokio::test]
+async fn test_web_ui_rejects_cross_origin_post_requests() {
+    let _guard = test_mutex().lock().await;
+    stop_all_routes().await;
+
+    let port = get_free_port();
+    let config_file = unique_config_path(port);
+    let server = start_test_server(port, AppConfig::default(), &config_file).await;
+
+    let response = http_post_json_with_headers(
+        port,
+        "/config",
+        r#"{"log_level":"debug","logger":"plain","routes":{}}"#,
+        &[("Origin", "http://evil.example")],
+    )
+    .await;
+
+    assert!(
+        response.contains("403 Forbidden"),
+        "unexpected response: {}",
+        response
+    );
+    assert!(response_body(&response).contains("Forbidden"));
 
     server.abort();
     stop_all_routes().await;

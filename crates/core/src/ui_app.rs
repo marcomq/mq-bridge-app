@@ -116,6 +116,58 @@ fn query_param(msg: &CanonicalMessage, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn header_value<'a>(msg: &'a CanonicalMessage, key: &str) -> Option<&'a str> {
+    msg.metadata
+        .get(key)
+        .or_else(|| msg.metadata.get(&key.to_ascii_lowercase()))
+        .map(String::as_str)
+}
+
+fn extract_authority(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let after_scheme = if let Some((_, remainder)) = trimmed.split_once("://") {
+        remainder
+    } else {
+        trimmed
+    };
+
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+
+    if authority.is_empty() {
+        None
+    } else {
+        Some(authority)
+    }
+}
+
+fn is_same_origin_request(msg: &CanonicalMessage) -> bool {
+    let Some(host) = header_value(msg, "Host").and_then(extract_authority) else {
+        return true;
+    };
+
+    for header_name in ["Origin", "Referer"] {
+        let Some(header) = header_value(msg, header_name) else {
+            continue;
+        };
+        let Some(authority) = extract_authority(header) else {
+            return false;
+        };
+        if !authority.eq_ignore_ascii_case(host) {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn extract_label_value(segment: &str, label: &str) -> Option<String> {
     let pattern = format!(r#"{label}=""#);
     let start = segment.find(&pattern)? + pattern.len();
@@ -237,6 +289,20 @@ impl UiApp {
             .map(|s| s.as_str())
             .unwrap_or("/");
         let path = raw_path.to_lowercase();
+
+        if method == "POST"
+            && matches!(
+                path.as_str(),
+                "/config" | "/publish" | "/consumer-start" | "/consumer-stop"
+            )
+            && !is_same_origin_request(&msg)
+        {
+            return Ok(Handled::Publish(
+                msg!("Forbidden")
+                    .with_status_code("403")
+                    .with_content_type("text/plain; charset=utf-8"),
+            ));
+        }
 
         let result = match (method.as_str(), path.as_str()) {
             ("GET", "/health") => Ok(Handled::Publish(msg!("OK"))),

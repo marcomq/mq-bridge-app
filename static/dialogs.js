@@ -1,4 +1,37 @@
 (function () {
+    const h = (...args) => {
+        const hyperscript = window.VanillaSchemaForms?.h;
+        if (typeof hyperscript === 'function') {
+            return hyperscript(...args);
+        }
+
+        const [tagName, attrs = {}, ...children] = args;
+        const element = document.createElement(tagName);
+        Object.entries(attrs || {}).forEach(([key, value]) => {
+            if (value === null || value === undefined || value === false) return;
+            if (key === 'className') {
+                element.className = value;
+                return;
+            }
+            if (key === 'style' && typeof value === 'object') {
+                Object.assign(element.style, value);
+                return;
+            }
+            element.setAttribute(key, String(value));
+        });
+
+        children.flat().forEach((child) => {
+            if (child === null || child === undefined || child === false || child === '') return;
+            if (child instanceof Node) {
+                element.appendChild(child);
+            } else {
+                element.appendChild(document.createTextNode(String(child)));
+            }
+        });
+
+        return element;
+    };
+
     const ensureStyles = () => {
         if (document.getElementById('mqb-dialog-styles')) return;
 
@@ -100,24 +133,48 @@
             const hasChoices = Array.isArray(choices) && choices.length > 0;
             const dialog = document.createElement('div');
             dialog.className = 'mqb-dialog';
-            dialog.innerHTML = `
-                <div class="mqb-dialog__header">${title}</div>
-                <div class="mqb-dialog__body">
-                    <div>${message}</div>
-                    ${hasChoices ? `
-                        <select class="mqb-dialog__select">
-                            ${choices.map((choice) => `
-                                <option value="${escapeHtml(choice.value)}">${escapeHtml(choice.label)}</option>
-                            `).join('')}
-                        </select>
-                    ` : ''}
-                    ${hasInput ? `<input class="mqb-dialog__input" type="text">` : ''}
-                </div>
-                <div class="mqb-dialog__actions">
-                    ${cancelLabel ? `<button class="mqb-dialog__button mqb-dialog__button--neutral" data-role="cancel">${cancelLabel}</button>` : ''}
-                    <button class="mqb-dialog__button mqb-dialog__button--brand" data-role="confirm">${confirmLabel}</button>
-                </div>
-            `;
+            dialog.replaceChildren(
+                h('div', { className: 'mqb-dialog__header' }, title),
+                h(
+                    'div',
+                    { className: 'mqb-dialog__body' },
+                    h('div', {}, message),
+                    hasChoices
+                        ? h(
+                            'select',
+                            { className: 'mqb-dialog__select' },
+                            ...choices.map((choice) =>
+                                h('option', { value: String(choice.value) }, String(choice.label)),
+                            ),
+                        )
+                        : '',
+                    hasInput
+                        ? h('input', { className: 'mqb-dialog__input', type: 'text' })
+                        : '',
+                ),
+                h(
+                    'div',
+                    { className: 'mqb-dialog__actions' },
+                    cancelLabel
+                        ? h(
+                            'button',
+                            {
+                                className: 'mqb-dialog__button mqb-dialog__button--neutral',
+                                'data-role': 'cancel',
+                            },
+                            cancelLabel,
+                        )
+                        : '',
+                    h(
+                        'button',
+                        {
+                            className: 'mqb-dialog__button mqb-dialog__button--brand',
+                            'data-role': 'confirm',
+                        },
+                        confirmLabel,
+                    ),
+                ),
+            );
 
             backdrop.appendChild(dialog);
             document.body.appendChild(backdrop);

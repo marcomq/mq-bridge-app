@@ -1,4 +1,5 @@
 function initPublishers(config, schema) {
+    const h = window.VanillaSchemaForms.h;
     const container = document.getElementById('publishers-container');
     const publishers = config.publishers || [];
     const STORAGE_KEY = 'mqb_publisher_state';
@@ -30,6 +31,32 @@ function initPublishers(config, schema) {
     const saveHistory = () => {
         history = history.slice(0, 1000); // Keep last 1000 entries
         localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    };
+
+    const createSidebarItem = (publisher, index) => {
+        const type = getEndpointType(publisher).toUpperCase();
+        return h(
+            'div',
+            { className: 'sidebar-item pub-item', 'data-idx': String(index) },
+            h('span', { className: `proto-badge proto-${type.toLowerCase()}` }, type),
+            h('span', { className: 'item-name' }, publisher.name),
+            h('span', { className: 'item-status status-off' }),
+        );
+    };
+
+    const createMetaRow = (key, value) => {
+        return h(
+            'div',
+            { className: 'response-meta-row' },
+            h('span', { className: 'response-meta-key' }, String(key)),
+            h('span', { className: 'response-meta-value' }, String(value)),
+        );
+    };
+
+    const createMetaBlock = (title, entries) => {
+        const block = h('div', { className: 'response-meta-block' }, h('div', { className: 'section-label' }, title));
+        entries.forEach(([key, value]) => block.appendChild(createMetaRow(key, value)));
+        return block;
     };
 
     const sortEntries = (obj) =>
@@ -302,16 +329,22 @@ function initPublishers(config, schema) {
         if (!methodSelect) return;
 
         if (endpointType === 'http') {
-            methodSelect.innerHTML = HTTP_METHOD_OPTIONS
-                .map((method) => `<option>${method}</option>`)
-                .join('');
+            methodSelect.replaceChildren(
+                ...HTTP_METHOD_OPTIONS.map((method) => {
+                    const option = document.createElement('option');
+                    option.textContent = method;
+                    return option;
+                }),
+            );
             methodSelect.value = 'POST';
             methodSelect.disabled = false;
             methodSelect.title = 'HTTP publishers currently send POST requests.';
             return;
         }
 
-        methodSelect.innerHTML = `<option>TARGET</option>`;
+        const targetOption = document.createElement('option');
+        targetOption.textContent = 'TARGET';
+        methodSelect.replaceChildren(targetOption);
         methodSelect.value = 'TARGET';
         methodSelect.disabled = true;
         methodSelect.title = `Quick access fields for the ${endpointType.toUpperCase()} publisher configuration are shown next to the endpoint type.`;
@@ -482,17 +515,10 @@ function initPublishers(config, schema) {
 
     const renderSidebar = () => {
         if (!pubList) return;
-        pubList.innerHTML = '<div class="sidebar-group-label">Saved</div>' +
-            publishers.map((p, i) => {
-                const type = getEndpointType(p).toUpperCase();
-                return `
-                <div class="sidebar-item pub-item" data-idx="${i}">
-                    <span class="proto-badge proto-${type.toLowerCase()}">${type}</span>
-                    <span class="item-name">${p.name}</span>
-                    <span class="item-status status-off"></span>
-                </div>
-            `;
-            }).join('');
+        pubList.replaceChildren(
+            h('div', { className: 'sidebar-group-label' }, 'Saved'),
+            ...publishers.map((publisher, index) => createSidebarItem(publisher, index)),
+        );
 
         const hasPubs = publishers.length > 0;
         document.getElementById('pub-empty-alert').style.display = hasPubs ? 'none' : 'block';
@@ -607,10 +633,29 @@ function initPublishers(config, schema) {
 
     const addMetadataRow = (k = '', v = '') => {
         const row = document.createElement('tr');
-        row.innerHTML = `
-            <td><input type="text" class="kv-input meta-key" placeholder="Key" value="${k}"></td>
-            <td><input type="text" class="kv-input meta-val" placeholder="Value" value="${v}"></td>
-            <td><div class="btn-icon remove-meta">&times;</div></td>`;
+        const keyCell = document.createElement('td');
+        const keyInput = document.createElement('input');
+        keyInput.type = 'text';
+        keyInput.className = 'kv-input meta-key';
+        keyInput.placeholder = 'Key';
+        keyInput.value = k;
+        keyCell.appendChild(keyInput);
+
+        const valueCell = document.createElement('td');
+        const valueInput = document.createElement('input');
+        valueInput.type = 'text';
+        valueInput.className = 'kv-input meta-val';
+        valueInput.placeholder = 'Value';
+        valueInput.value = v;
+        valueCell.appendChild(valueInput);
+
+        const removeCell = document.createElement('td');
+        const removeButton = document.createElement('div');
+        removeButton.className = 'btn-icon remove-meta';
+        removeButton.textContent = '×';
+        removeCell.appendChild(removeButton);
+
+        row.append(keyCell, valueCell, removeCell);
         metaContainer.appendChild(row);
         row.querySelector('.remove-meta').onclick = () => {
             row.remove();
@@ -636,15 +681,29 @@ function initPublishers(config, schema) {
         const size = new TextEncoder().encode(payloadStr).length;
         const sizeStr = size > 1024 ? (size/1024).toFixed(2) + ' KB' : size + ' B';
 
-        statusTarget.innerHTML = `
-            <span style="color:${statusColor}; font-weight: bold; padding: 2px 4px; border-radius: 3px; background: rgba(0,0,0,0.2)">${statusLabel}${statusText ? ` ${statusText}` : ''}</span>
-            <span style="margin-left:12px; opacity: 0.8;">Time: <strong style="color:var(--text-primary)">${duration}ms</strong></span>
-            <span style="margin-left:12px; opacity: 0.8;">Size: <strong style="color:var(--text-primary)">${sizeStr}</strong></span>
-        `;
+        const statusBadge = h('span', {}, `${statusLabel}${statusText ? ` ${statusText}` : ''}`);
+        statusBadge.style.color = statusColor;
+        statusBadge.style.fontWeight = 'bold';
+        statusBadge.style.padding = '2px 4px';
+        statusBadge.style.borderRadius = '3px';
+        statusBadge.style.background = 'rgba(0,0,0,0.2)';
+
+        const timeStrong = h('strong', {}, `${duration}ms`);
+        const timeNode = h('span', {}, 'Time: ', timeStrong);
+        timeNode.style.marginLeft = '12px';
+        timeNode.style.opacity = '0.8';
+        timeStrong.style.color = 'var(--text-primary)';
+
+        const sizeStrong = h('strong', {}, sizeStr);
+        const sizeNode = h('span', {}, 'Size: ', sizeStrong);
+        sizeNode.style.marginLeft = '12px';
+        sizeNode.style.opacity = '0.8';
+        sizeStrong.style.color = 'var(--text-primary)';
+
+        statusTarget.replaceChildren(statusBadge, timeNode, sizeNode);
 
         let payloadContent = "";
-        let responseMetaHtml = "";
-        let requestMetaHtml = "";
+        const responseChildren = [];
 
         const requestHeaders = Array.isArray(requestInfo.headers) ? requestInfo.headers : [];
         const requestRows = [];
@@ -654,26 +713,16 @@ function initPublishers(config, schema) {
         if (requestInfo.query) requestRows.push(["Query", requestInfo.query]);
 
         if (requestRows.length > 0 || requestHeaders.length > 0) {
-            requestMetaHtml = `
-                <div class="response-meta-block">
-                    <div class="section-label">Request</div>
-                    ${requestRows.map(([k, v]) => `
-                        <div class="response-meta-row">
-                            <span class="response-meta-key">${k}</span>
-                            <span class="response-meta-value">${String(v)}</span>
-                        </div>
-                    `).join('')}
-                    ${requestHeaders.length > 0 ? `
-                        <div class="section-label" style="margin-top:10px;">Headers</div>
-                        ${requestHeaders.map(({ k, v }) => `
-                            <div class="response-meta-row">
-                                <span class="response-meta-key">${k}</span>
-                                <span class="response-meta-value">${String(v)}</span>
-                            </div>
-                        `).join('')}
-                    ` : ''}
-                </div>
-            `;
+            const requestBlock = createMetaBlock('Request', requestRows);
+            if (requestHeaders.length > 0) {
+                const headersLabel = h('div', { className: 'section-label' }, 'Headers');
+                headersLabel.style.marginTop = '10px';
+                requestBlock.appendChild(headersLabel);
+                requestHeaders.forEach(({ k, v }) => {
+                    requestBlock.appendChild(createMetaRow(k, v));
+                });
+            }
+            responseChildren.push(requestBlock);
         }
 
         if (data && typeof data === "object") {
@@ -681,18 +730,8 @@ function initPublishers(config, schema) {
             if (isResponse) {
                 const sortedHeaders = sortEntries(data.metadata);
                 if (sortedHeaders.length > 0) {
-                    responseMetaHtml = `
-                        <div class="response-meta-block">
-                            <div class="section-label">Response Headers</div>
-                            ${sortedHeaders.map(([k, v]) => `
-                                <div class="response-meta-row">
-                                    <span class="response-meta-key">${k}</span>
-                                    <span class="response-meta-value">${String(v)}</span>
-                                </div>
-                            `).join('')}
-                        </div>
-                        <div class="section-label">Body</div>
-                    `;
+                    responseChildren.push(createMetaBlock('Response Headers', sortedHeaders));
+                    responseChildren.push(h('div', { className: 'section-label' }, 'Body'));
                 }
                 payloadContent = typeof data.payload === 'string' ? data.payload : JSON.stringify(data.payload, null, 2);
             } else if (data.status === "Ack") {
@@ -704,8 +743,9 @@ function initPublishers(config, schema) {
             payloadContent = String(data || "");
         }
 
-        responseBody.innerHTML = requestMetaHtml + responseMetaHtml + `<div id="pub-actual-payload"></div>`;
-        const payloadContainer = responseBody.querySelector("#pub-actual-payload");
+        const payloadContainer = h('div', { id: 'pub-actual-payload' });
+        responseChildren.push(payloadContainer);
+        responseBody.replaceChildren(...responseChildren);
         payloadContainer.textContent = payloadContent;
         payloadContainer.style.whiteSpace = 'pre-wrap';
         payloadContainer.style.fontFamily = 'var(--font)';
@@ -744,39 +784,79 @@ function initPublishers(config, schema) {
         const name = publishers[currentIdx]?.name;
         const filteredHistory = history.filter(item => item.name === name);
 
-        historyContainer.innerHTML = `
-            <div class="section-toolbar">
-                <span class="section-label">Execution History</span>
-                <wa-button variant="neutral" appearance="outlined" size="small" class="ghost-action" id="pub-clear-history">Clear</wa-button>
-            </div>
-            <div style="overflow:auto;flex:1">
-                <table class="msg-table">
-                    <thead>
-                        <tr>
-                            <th style="width: 100px;">Time</th>
-                            <th style="width: 80px;">Status</th>
-                            <th>Payload Preview</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${filteredHistory.length === 0 ? 
-                            '<tr><td colspan="3" style="text-align:center; padding: 20px; color: var(--text-dim);">No history for this publisher.</td></tr>' : 
-                            filteredHistory.map((item) => {
-                                const isOk = typeof item.ok === 'boolean' ? item.ok : item.status < 300;
-                                const statusClass = isOk ? 'status-ok' : 'status-err';
-                                const time = new Date(item.time).toLocaleTimeString();
-                                const payload = item.payload.substring(0, 100).replace(/\n/g, ' ');
-                                return `<tr class="history-row" data-hidx="${history.indexOf(item)}" style="cursor: zoom-in;">
-                                    <td class="ts">${time}</td>
-                                    <td><span class="${statusClass} small fw-bold">${item.displayStatus || item.status}</span></td>
-                                    <td class="preview">${payload}</td>
-                                </tr>`;
-                            }).join('')
-                        }
-                    </tbody>
-                </table>
-            </div>
-        `;
+        const clearButton = h('wa-button', { id: 'pub-clear-history', className: 'ghost-action' }, 'Clear');
+        clearButton.setAttribute('variant', 'neutral');
+        clearButton.setAttribute('appearance', 'outlined');
+        clearButton.setAttribute('size', 'small');
+        const toolbar = h(
+            'div',
+            { className: 'section-toolbar' },
+            h('span', { className: 'section-label' }, 'Execution History'),
+            clearButton,
+        );
+
+        const wrapper = document.createElement('div');
+        wrapper.style.overflow = 'auto';
+        wrapper.style.flex = '1';
+
+        const table = document.createElement('table');
+        table.className = 'msg-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        [
+            ['Time', '100px'],
+            ['Status', '80px'],
+            ['Payload Preview', null],
+        ].forEach(([label, width]) => {
+            const th = document.createElement('th');
+            if (width) th.style.width = width;
+            th.textContent = label;
+            headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+
+        const tbody = document.createElement('tbody');
+        if (filteredHistory.length === 0) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 3;
+            cell.style.textAlign = 'center';
+            cell.style.padding = '20px';
+            cell.style.color = 'var(--text-dim)';
+            cell.textContent = 'No history for this publisher.';
+            row.appendChild(cell);
+            tbody.appendChild(row);
+        } else {
+            filteredHistory.forEach((item) => {
+                const isOk = typeof item.ok === 'boolean' ? item.ok : item.status < 300;
+                const statusClass = isOk ? 'status-ok' : 'status-err';
+                const row = document.createElement('tr');
+                row.className = 'history-row';
+                row.dataset.hidx = String(history.indexOf(item));
+                row.style.cursor = 'zoom-in';
+
+                const timeCell = document.createElement('td');
+                timeCell.className = 'ts';
+                timeCell.textContent = new Date(item.time).toLocaleTimeString();
+
+                const statusCell = document.createElement('td');
+                const statusSpan = document.createElement('span');
+                statusSpan.className = `${statusClass} small fw-bold`;
+                statusSpan.textContent = String(item.displayStatus || item.status);
+                statusCell.appendChild(statusSpan);
+
+                const payloadCell = document.createElement('td');
+                payloadCell.className = 'preview';
+                payloadCell.textContent = item.payload.substring(0, 100).replace(/\n/g, ' ');
+
+                row.append(timeCell, statusCell, payloadCell);
+                tbody.appendChild(row);
+            });
+        }
+
+        table.append(thead, tbody);
+        wrapper.appendChild(table);
+        historyContainer.replaceChildren(toolbar, wrapper);
 
         document.getElementById('pub-clear-history').onclick = () => {
             history = history.filter(item => item.name !== name);
@@ -962,7 +1042,10 @@ function initPublishers(config, schema) {
             renderHistory();
         } catch (e) {
             responseDiv.textContent = `Error: ${e.message}`;
-            document.getElementById('pub-response-status').innerHTML = `<span style="color:var(--accent-kafka)">Error</span>`;
+            const errorNode = document.createElement('span');
+            errorNode.style.color = 'var(--accent-kafka)';
+            errorNode.textContent = 'Error';
+            document.getElementById('pub-response-status').replaceChildren(errorNode);
         }
     };
 

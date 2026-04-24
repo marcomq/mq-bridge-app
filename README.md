@@ -56,7 +56,7 @@ docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app ghcr.io/marcomq/m
 ```
 
 > [!NOTE]
-> Only the amd64 docker container includes IBM MQ support, as there is no redistributable IBM MQ client library for arm64 yet. You may still start in emulation mode with `--platform=linux/amd64` or you would need to build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
+> The default `latest` image is a plain multi-arch image for `amd64` and `arm64`. IBM MQ support is published separately as the `latest-ibm-mq` and `ibm-mq` tags on `amd64`, since there is no redistributable IBM MQ client library for arm64 yet. You may still start that image in emulation mode with `--platform=linux/amd64` or build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
 
 ### Cargo
 

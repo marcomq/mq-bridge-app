@@ -579,7 +579,7 @@ endpointTypes.forEach((type) => {
   CUSTOM_RENDERERS[type] = createEndpointRenderer(type);
 });
 CUSTOM_RENDERERS["AppConfig"] = appConfigRenderer;
-CUSTOM_RENDERERS["route"] = advancedOptionsRenderer;
+CUSTOM_RENDERERS["route"] = routeObjectRenderer;
 
 // 4. Apply the renderers
 setCustomRenderers(CUSTOM_RENDERERS);
