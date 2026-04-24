@@ -6,6 +6,7 @@ async function initRoutes(config, schema) {
         "Schema: must have required property 'endpoint'",
     ];
     const defaultMetricsMiddleware = () => [{ metrics: {} }];
+    const isRouteEnabled = (route) => route?.enabled !== false;
     const hasMetricsMiddleware = (route) => {
         const hasMetrics = (endpoint) =>
             (endpoint?.middlewares || []).some((middleware) => Object.prototype.hasOwnProperty.call(middleware || {}, 'metrics'));
@@ -26,6 +27,10 @@ async function initRoutes(config, schema) {
         const mongoDbConfigSchema = routeSchema.$defs?.MongoDbConfig;
         if (mongoDbConfigSchema?.properties?.format) {
             mongoDbConfigSchema.properties.format.default = 'raw';
+        }
+
+        if (routeSchema?.properties?.enabled) {
+            routeSchema.properties.enabled.hidden = true;
         }
     };
     const scrubRouteValidationNoise = (root) => {
@@ -78,14 +83,16 @@ async function initRoutes(config, schema) {
                 const outputProto =
                   Object.keys(r.output)
                     .filter((key) => key !== "middlewares")[0]?.toUpperCase() || "N/A";
-                const metricsBadge = hasMetricsMiddleware(r)
+                const metricsBadge = isRouteEnabled(r) && hasMetricsMiddleware(r)
                     ? `<span class="route-throughput" data-route-name="${r.name}">0 msg/s</span>`
                     : '';
+                const disabledClass = isRouteEnabled(r) ? '' : ' is-disabled';
                 return `
-                    <div class="sidebar-item route-item" data-idx="${i}">
+                    <div class="sidebar-item route-item${disabledClass}" data-idx="${i}">
                         <span class="proto-badge proto-${inputProto.toLowerCase()}">${inputProto.substring(0,4)}</span>
                         <span class="item-name">${r.name}</span>
                         ${metricsBadge}
+                        ${isRouteEnabled(r) ? '' : '<span class="route-disabled-tag">OFF</span>'}
                         <span class="proto-badge proto-${outputProto.toLowerCase()}" style="margin-left:auto;">${outputProto.substring(0,4)}</span>
                     </div>
                 `;
@@ -116,6 +123,21 @@ async function initRoutes(config, schema) {
         });
     };
 
+    const syncRouteToggleButton = () => {
+        const route = routesArray[currentIdx];
+        const toggleBtn = document.getElementById('route-toggle');
+        if (!toggleBtn || !route) return;
+
+        const enabled = isRouteEnabled(route);
+        toggleBtn.textContent = enabled ? 'Disable' : 'Enable';
+        toggleBtn.variant = enabled ? 'danger' : 'success';
+        toggleBtn.appearance = enabled ? 'outlined' : 'filled';
+        toggleBtn.title = enabled
+            ? 'Disable this route and stop deploying it on save'
+            : 'Enable this route and deploy it again on save';
+        toggleBtn.style.display = '';
+    };
+
     const updateUI = async () => {
         if (routesArray.length === 0) return;
         const idx = currentIdx;
@@ -130,6 +152,7 @@ async function initRoutes(config, schema) {
             $defs: schema.$defs 
         }));
         applyEndpointSchemaDefaults(routeSchema);
+        syncRouteToggleButton();
         await lib.init(configFormContainer, routeSchema, config.routes[routeName], (updated) => {
             const oldName = routeName; // Capture the original name
             const newName = updated.name; // Get the potentially new name from the form
@@ -146,22 +169,11 @@ async function initRoutes(config, schema) {
             } else {
                 // Name did not change, just update the config object
                 config.routes[oldName] = updated;
-                // Update protocol badges in the sidebar if input/output changed
-                const currentRouteItem = document.querySelector(`#route-list .route-item[data-idx="${idx}"]`);
-                if (currentRouteItem) {
-                    const inputProto =
-                      Object.keys(updated.input)
-                        .filter((key) => key !== "middlewares")[0]
-                        ?.toUpperCase() || "N/A";
-                    const outputProto =
-                      Object.keys(updated.output)
-                        .filter((key) => key !== "middlewares")[0]
-                        ?.toUpperCase() || "N/A";
-                    currentRouteItem.querySelector('.proto-badge:first-of-type').textContent = inputProto;
-                    currentRouteItem.querySelector('.proto-badge:first-of-type').className = `proto-badge proto-${inputProto.toLowerCase()}`;
-                    currentRouteItem.querySelector('.proto-badge:last-of-type').textContent = outputProto;
-                    currentRouteItem.querySelector('.proto-badge:last-of-type').className = `proto-badge proto-${outputProto.toLowerCase()}`;
-                }
+                routesArray[idx] = { name: oldName, ...updated };
+                renderSidebar();
+                renderRuntimeMetrics();
+                setActiveItem(idx);
+                syncRouteToggleButton();
             }
         });
         watchRouteValidationNoise(configFormContainer);
@@ -176,6 +188,7 @@ async function initRoutes(config, schema) {
                 if (!name) return;
                 if (config.routes[name]) return alert("Route already exists");
                 config.routes[name] = {
+                    enabled: true,
                     input: { middlewares: defaultMetricsMiddleware(), null: null },
                     output: { middlewares: defaultMetricsMiddleware(), null: null }
                     // Add default view properties if needed
@@ -218,6 +231,7 @@ async function initRoutes(config, schema) {
             if (!name) return;
             if (config.routes[name]) return alert("Route already exists");
             config.routes[name] = {
+                enabled: true,
                 input: { middlewares: defaultMetricsMiddleware(), null: null },
                 output: { middlewares: defaultMetricsMiddleware(), null: null }
             };
@@ -234,6 +248,7 @@ async function initRoutes(config, schema) {
             if (!name) return;
             if (config.routes[name]) return alert("Route already exists");
             config.routes[name] = {
+                enabled: true,
                 input: { middlewares: defaultMetricsMiddleware(), null: null },
                 output: { middlewares: defaultMetricsMiddleware(), null: null }
             };
@@ -262,6 +277,40 @@ async function initRoutes(config, schema) {
             updateUI();
         };
 
+        document.getElementById('route-toggle').onclick = async (e) => {
+            const routeName = routesArray[currentIdx].name;
+            const currentRoute = config.routes[routeName];
+            if (!currentRoute) return;
+
+            const previousEnabled = isRouteEnabled(currentRoute);
+            currentRoute.enabled = !isRouteEnabled(currentRoute);
+            routesArray[currentIdx] = { name: routeName, ...currentRoute };
+            renderSidebar();
+            renderRuntimeMetrics();
+            setActiveItem(currentIdx);
+            syncRouteToggleButton();
+
+            const saved = await window.saveConfig(false, e.currentTarget);
+            if (!saved) {
+                currentRoute.enabled = previousEnabled;
+                routesArray[currentIdx] = { name: routeName, ...currentRoute };
+                renderSidebar();
+                renderRuntimeMetrics();
+                setActiveItem(currentIdx);
+                syncRouteToggleButton();
+                return;
+            }
+
+            const refreshedConfig = await (await fetch('/config')).json();
+            window.appConfig = refreshedConfig;
+            await window.pollRuntimeStatus();
+            window.initRoutes(window.appConfig, window.appSchema);
+            const refreshedIdx = Object.keys(window.appConfig.routes || {}).indexOf(routeName);
+            if (refreshedIdx !== -1) {
+                window.restoreRouteState(refreshedIdx);
+            }
+        };
+
         document.getElementById('route-save').onclick = (e) => window.saveConfig(false, e.currentTarget);
     }
 
@@ -271,11 +320,15 @@ async function initRoutes(config, schema) {
 
     // Initial setup if routes exist
     if (routesArray.length > 0) {
+        const toggleBtn = document.getElementById('route-toggle');
+        if (toggleBtn) toggleBtn.style.display = '';
         setActiveItem(0);
         updateUI();
     } else {
         document.getElementById('route-main-ui').style.display = 'none';
         document.getElementById('route-empty-alert').style.display = 'block';
+        const toggleBtn = document.getElementById('route-toggle');
+        if (toggleBtn) toggleBtn.style.display = 'none';
     }
 }
 

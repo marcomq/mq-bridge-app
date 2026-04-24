@@ -88,6 +88,7 @@
                                 <div class="section-toolbar">
                                     <div class="section-label">Definition</div>
                                     <div class="form-actions-row section-actions">
+                                        <wa-button variant="neutral" appearance="outlined" size="small" id="route-toggle">Disable</wa-button>
                                         <wa-button variant="brand" size="small" id="route-save">Save</wa-button>
                                         <wa-button variant="neutral" appearance="outlined" size="small" id="route-clone">Clone</wa-button>
                                         <wa-button variant="danger" appearance="outlined" size="small" id="route-delete">Delete</wa-button>
@@ -178,14 +179,28 @@
                     <div id="pub-empty-alert" class="empty-state" style="display:none;">No publishers configured. Click "+" to create one.</div>
                     <div id="pub-main-ui" style="display:contents">
                         <div class="request-bar">
-                            <select class="proto-select" id="pub-proto">
-                                <option>HTTP</option><option>Kafka</option><option>MQTT</option>
-                                <option>gRPC</option><option>AMQP</option>
-                            </select>
-                            <select class="method-select" id="pub-method">
-                                <option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option>
-                            </select>
-                            <input class="url-input" id="pub-url" value="http://localhost:8080/api/orders">
+                            <div class="request-field" id="pub-proto-wrap">
+                                <span class="request-field-label" id="pub-proto-label">Type</span>
+                                <input class="proto-select" id="pub-proto" readonly>
+                            </div>
+                            <div class="request-field" id="pub-method-wrap">
+                                <span class="request-field-label" id="pub-method-label">Method</span>
+                                <select class="method-select" id="pub-method">
+                                    <option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option>
+                                </select>
+                            </div>
+                            <div class="request-field" id="pub-extra-1-wrap" hidden>
+                                <span class="request-field-label" id="pub-extra-1-label">Target</span>
+                                <input class="url-input request-field-input" id="pub-extra-1">
+                            </div>
+                            <div class="request-field" id="pub-extra-2-wrap" hidden>
+                                <span class="request-field-label" id="pub-extra-2-label">Target</span>
+                                <input class="url-input request-field-input" id="pub-extra-2">
+                            </div>
+                            <div class="request-field request-field--wide" id="pub-url-wrap">
+                                <span class="request-field-label" id="pub-url-label">URL</span>
+                                <input class="url-input request-field-input" id="pub-url" value="http://localhost:8080/api/orders">
+                            </div>
                             <wa-button variant="brand" size="small" id="pub-send">Send</wa-button>
                         </div>
 

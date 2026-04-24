@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::{AppConfig, RouteConfig};
 use anyhow::Result;
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -159,6 +159,10 @@ fn route_has_metrics(route: &Route) -> bool {
     };
 
     has_metrics(&route.input) || has_metrics(&route.output)
+}
+
+fn route_is_active(route_config: &RouteConfig) -> bool {
+    route_config.enabled && !matches!(route_config.route.input.endpoint_type, EndpointType::Null)
 }
 
 impl WebUiHandler {
@@ -458,7 +462,7 @@ impl WebUiHandler {
         let metrics_enabled_routes: HashSet<String> = config
             .routes
             .iter()
-            .filter(|(_, route)| route_has_metrics(route))
+            .filter(|(_, route)| route.enabled && route_has_metrics(&route.route))
             .map(|(name, _)| name.clone())
             .collect();
         drop(config);
@@ -547,7 +551,7 @@ impl WebUiHandler {
         tracing::info!("Received new configuration via Web UI. Reloading...");
 
         // Normalize names early to ensure consistent comparison with old_config
-        let routes: HashMap<String, Route> = new_config
+        let routes: HashMap<String, RouteConfig> = new_config
             .routes
             .drain()
             .map(|(k, v)| (k.trim().replace(' ', "_").to_lowercase(), v))
@@ -562,7 +566,10 @@ impl WebUiHandler {
             .collect();
 
         for (name, route) in &routes {
-            if let Err(e) = route.check(name, None) {
+            if !route.enabled {
+                continue;
+            }
+            if let Err(e) = route.route.check(name, None) {
                 let err_msg = format!("Route {}: validation failed: {}", name, e);
                 tracing::error!("{}", err_msg);
                 return Ok(Handled::Publish(
@@ -648,8 +655,8 @@ impl WebUiHandler {
             *config_guard = new_config;
         }
         for route in routes.values() {
-            if route.is_ref() {
-                route.register_output_endpoint(None)?;
+            if route.enabled && route.route.is_ref() {
+                route.route.register_output_endpoint(None)?;
             }
         }
         for consumer in &consumers {
@@ -661,7 +668,7 @@ impl WebUiHandler {
 
         // 4. Deploy new or changed persistent routes
         for (name, route) in &routes {
-            if matches!(route.input.endpoint_type, EndpointType::Null) {
+            if !route_is_active(route) {
                 continue;
             }
 
@@ -672,7 +679,7 @@ impl WebUiHandler {
             };
 
             if should_deploy {
-                if let Err(e) = route.deploy(name).await {
+                if let Err(e) = route.route.deploy(name).await {
                     let err_msg = format!("Failed to deploy route {}: {}", name, e);
                     return Ok(Handled::Publish(
                         CanonicalMessage::from(err_msg).with_status_code("500"),

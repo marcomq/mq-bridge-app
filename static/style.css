@@ -282,6 +282,10 @@ body {
     border-left-color: var(--accent-blue);
 }
 
+.sidebar-item.is-disabled {
+    opacity: 0.7;
+}
+
 .proto-badge {
     font-size: 9px;
     font-weight: 700;
@@ -318,6 +322,22 @@ body {
     color: var(--accent-amqp);
 }
 
+.proto-nats,
+.proto-memory,
+.proto-file,
+.proto-sled,
+.proto-mongodb,
+.proto-ibmmq,
+.proto-zeromq,
+.proto-static,
+.proto-response,
+.proto-switch,
+.proto-custom,
+.proto-null {
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    color: var(--accent-blue);
+}
+
 .item-name {
     font-size: 11px;
     white-space: nowrap;
@@ -331,6 +351,14 @@ body {
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+}
+
+.route-disabled-tag {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-right: 4px;
 }
 
 .item-status {
@@ -432,12 +460,33 @@ body {
 /* ── PUBLISHER: request bar ── */
 .request-bar {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 6px;
     padding: 10px 12px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
     flex-shrink: 0;
+}
+
+.request-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    flex: 0 0 auto;
+}
+
+.request-field--wide {
+    flex: 1 1 320px;
+}
+
+.request-field-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    line-height: 1;
 }
 
 .proto-select,
@@ -456,8 +505,10 @@ body {
 }
 
 .proto-select {
-    width: 78px;
-    color: var(--accent-grpc);
+    min-width: 80px;
+    max-width: 120px;
+    align-self: stretch;
+    cursor: default;
 }
 
 .method-select {
@@ -466,7 +517,6 @@ body {
 }
 
 .url-input {
-    flex: 1 1 320px;
     min-width: 0;
     background: var(--bg-input);
     border: 1px solid var(--border);
@@ -476,6 +526,10 @@ body {
     font-family: var(--font);
     color: var(--text-primary);
     outline: none;
+}
+
+.request-field-input {
+    width: 100%;
 }
 
 .url-input:disabled {

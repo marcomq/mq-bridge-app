@@ -167,13 +167,16 @@ async fn main() -> anyhow::Result<()> {
         let routes = std::mem::take(&mut config.routes);
 
         for route in routes.values() {
-            if route.is_ref() {
-                route.register_output_endpoint(None)?;
+            if route.enabled && route.route.is_ref() {
+                route.route.register_output_endpoint(None)?;
             }
         }
 
         for (name, route) in routes {
-            route.deploy(&name).await?;
+            if !route.enabled {
+                continue;
+            }
+            route.route.deploy(&name).await?;
         }
     }
 

@@ -33,34 +33,93 @@ function initPublishers(config, schema) {
         custom_headers: {},
     });
 
-    const REQUEST_BAR_BINDINGS = {
-        http: { field: 'url', label: 'URL', placeholder: 'https://example.com/api' },
-        kafka: { field: 'url', label: 'BROKERS', placeholder: 'kafka:9092' },
-        mqtt: { field: 'url', label: 'BROKER', placeholder: 'tcp://localhost:1883' },
-        grpc: { field: 'url', label: 'URL', placeholder: 'http://localhost:50051' },
-        amqp: { field: 'url', label: 'URL', placeholder: 'amqp://guest:guest@localhost:5672/%2f' },
-        ibmmq: { field: 'url', label: 'URL', placeholder: 'mq-host(1414)' },
-        nats: { field: 'url', label: 'SERVERS', placeholder: 'nats://localhost:4222' },
-        mongodb: { field: 'url', label: 'URL', placeholder: 'mongodb://localhost:27017' },
-        zeromq: { field: 'url', label: 'URL', placeholder: 'tcp://127.0.0.1:5555' },
-        file: { field: 'path', label: 'PATH', placeholder: '/tmp/messages.jsonl' },
-        memory: { field: 'topic', label: 'TOPIC', placeholder: 'events' },
-        sled: { field: 'path', label: 'PATH', placeholder: './data/sled' },
+    const REQUEST_BAR_LAYOUTS = {
+        http: {
+            showMethod: true,
+            fields: [
+                { inputId: 'pub-url', field: 'url', label: 'URL', placeholder: 'https://example.com/api' },
+            ],
+        },
+        kafka: {
+            fields: [
+                { inputId: 'pub-extra-1', field: 'topic', label: 'TOPIC', placeholder: 'events' },
+                { inputId: 'pub-url', field: 'url', label: 'BROKERS', placeholder: 'kafka:9092' },
+            ],
+        },
+        mqtt: {
+            fields: [
+                { inputId: 'pub-extra-1', field: 'topic', label: 'TOPIC', placeholder: 'events/updates' },
+                { inputId: 'pub-url', field: 'url', label: 'BROKER', placeholder: 'tcp://localhost:1883' },
+            ],
+        },
+        grpc: {
+            fields: [
+                { inputId: 'pub-url', field: 'url', label: 'URL', placeholder: 'http://localhost:50051' },
+            ],
+        },
+        amqp: {
+            fields: [
+                { inputId: 'pub-extra-1', field: 'queue', label: 'QUEUE', placeholder: 'jobs' },
+                { inputId: 'pub-url', field: 'url', label: 'URL', placeholder: 'amqp://guest:guest@localhost:5672/%2f' },
+            ],
+        },
+        ibmmq: {
+            fields: [
+                { inputId: 'pub-extra-1', field: 'queue', label: 'QUEUE', placeholder: 'DEV.QUEUE.1' },
+                { inputId: 'pub-extra-2', field: 'topic', label: 'TOPIC', placeholder: 'topic://events' },
+                { inputId: 'pub-url', field: 'url', label: 'HOST', placeholder: 'mq-host(1414)' },
+            ],
+        },
+        nats: {
+            fields: [
+                { inputId: 'pub-extra-1', field: 'subject', label: 'SUBJECT', placeholder: 'events.created' },
+                { inputId: 'pub-url', field: 'url', label: 'SERVERS', placeholder: 'nats://localhost:4222' },
+            ],
+        },
+        mongodb: {
+            fields: [
+                { inputId: 'pub-extra-1', field: 'database', label: 'DATABASE', placeholder: 'app' },
+                { inputId: 'pub-extra-2', field: 'collection', label: 'COLLECTION', placeholder: 'messages' },
+                { inputId: 'pub-url', field: 'url', label: 'URL', placeholder: 'mongodb://localhost:27017' },
+            ],
+        },
+        zeromq: {
+            fields: [
+                { inputId: 'pub-extra-1', field: 'topic', label: 'TOPIC', placeholder: 'events' },
+                { inputId: 'pub-url', field: 'url', label: 'URL', placeholder: 'tcp://127.0.0.1:5555' },
+            ],
+        },
+        file: {
+            fields: [
+                { inputId: 'pub-url', field: 'path', label: 'PATH', placeholder: '/tmp/messages.jsonl' },
+            ],
+        },
+        memory: {
+            fields: [
+                { inputId: 'pub-url', field: 'topic', label: 'TOPIC', placeholder: 'events' },
+            ],
+        },
+        sled: {
+            fields: [
+                { inputId: 'pub-extra-1', field: 'tree', label: 'TREE', placeholder: 'default' },
+                { inputId: 'pub-url', field: 'path', label: 'PATH', placeholder: './data/sled' },
+            ],
+        },
     };
 
     const SCHEMA_REQUEST_BAR_FIELDS = {
         HttpConfig: ['url', 'custom_headers'],
-        KafkaConfig: ['url'],
-        MqttConfig: ['url'],
+        KafkaConfig: ['url', 'topic'],
+        MqttConfig: ['url', 'topic'],
         GrpcConfig: ['url'],
-        AmqpConfig: ['url'],
-        IbmMqConfig: ['url'],
-        NatsConfig: ['url'],
-        MongoDbConfig: ['url'],
-        ZeroMqConfig: ['url'],
+        AmqpConfig: ['url', 'queue'],
+        IbmMqConfig: ['url', 'queue', 'topic'],
+        NatsConfig: ['url', 'subject'],
+        MongoDbConfig: ['url', 'database', 'collection'],
+        ZeroMqConfig: ['url', 'topic'],
         FileConfig: ['path'],
         MemoryConfig: ['topic'],
-        SledConfig: ['path'],
+        SledConfig: ['path', 'tree'],
     };
 
     const applyEndpointSchemaDefaults = (itemSchema) => {
@@ -126,24 +185,67 @@ function initPublishers(config, schema) {
         return publisher.endpoint[endpointType];
     };
 
-    const getRequestBarBinding = (endpointType) => REQUEST_BAR_BINDINGS[endpointType] || null;
+    const getRequestBarLayout = (endpointType) => REQUEST_BAR_LAYOUTS[endpointType] || { fields: [] };
 
-    const getRequestBarValue = (publisher) => {
+    const getRequestBarFieldValue = (publisher, descriptor) => {
+        if (!descriptor) return '';
         const endpointType = getEndpointType(publisher);
-        const binding = getRequestBarBinding(endpointType);
-        if (!binding) return '';
-
         const endpointConfig = ensureEndpointConfig(publisher, endpointType);
-        return typeof endpointConfig?.[binding.field] === 'string' ? endpointConfig[binding.field] : '';
+        return typeof endpointConfig?.[descriptor.field] === 'string' ? endpointConfig[descriptor.field] : '';
     };
 
-    const setRequestBarValue = (publisher, rawValue) => {
+    const setRequestBarFieldValue = (publisher, descriptor, rawValue) => {
+        if (!descriptor) return;
         const endpointType = getEndpointType(publisher);
-        const binding = getRequestBarBinding(endpointType);
-        if (!binding) return;
-
         const endpointConfig = ensureEndpointConfig(publisher, endpointType);
-        endpointConfig[binding.field] = rawValue;
+        endpointConfig[descriptor.field] = rawValue;
+    };
+
+    const getPublishStatusInfo = (endpointType, response, responseData) => {
+        if (!response.ok) {
+            return {
+                ok: false,
+                code: response.status,
+                label: String(response.status),
+                text: response.statusText || 'Error',
+            };
+        }
+
+        if (endpointType === 'http') {
+            return {
+                ok: true,
+                code: response.status,
+                label: String(response.status),
+                text: response.statusText || 'OK',
+            };
+        }
+
+        if (responseData && typeof responseData === 'object') {
+            if (responseData.status === 'Ack') {
+                return {
+                    ok: true,
+                    code: response.status,
+                    label: 'ACK',
+                    text: `${endpointType.toUpperCase()} accepted`,
+                };
+            }
+
+            if (responseData.status === 'Response') {
+                return {
+                    ok: true,
+                    code: response.status,
+                    label: 'RESP',
+                    text: `${endpointType.toUpperCase()} replied`,
+                };
+            }
+        }
+
+        return {
+            ok: true,
+            code: response.status,
+            label: 'OK',
+            text: `${endpointType.toUpperCase()} sent`,
+        };
     };
 
     const setMethodSelectMode = (methodSelect, endpointType) => {
@@ -159,12 +261,10 @@ function initPublishers(config, schema) {
             return;
         }
 
-        const binding = getRequestBarBinding(endpointType);
-        const label = binding?.label || 'TARGET';
-        methodSelect.innerHTML = `<option>${label}</option>`;
-        methodSelect.value = label;
+        methodSelect.innerHTML = `<option>TARGET</option>`;
+        methodSelect.value = 'TARGET';
         methodSelect.disabled = true;
-        methodSelect.title = `Quick access field for the ${endpointType.toUpperCase()} publisher configuration.`;
+        methodSelect.title = `Quick access fields for the ${endpointType.toUpperCase()} publisher configuration are shown next to the endpoint type.`;
     };
 
     const syncPublisherSidebar = () => {
@@ -185,28 +285,45 @@ function initPublishers(config, schema) {
 
         const protocolSelect = document.getElementById('pub-proto');
         const methodSelect = document.getElementById('pub-method');
-        const urlInput = document.getElementById('pub-url');
         const endpointType = getEndpointType(pub);
-        const binding = getRequestBarBinding(endpointType);
+        const layout = getRequestBarLayout(endpointType);
 
         if (protocolSelect) {
             const protocolValue = endpointType === 'ibmmq' ? 'MQ' : endpointType.toUpperCase();
-            protocolSelect.value = ['HTTP', 'KAFKA', 'MQTT', 'GRPC', 'AMQP', 'MQ'].includes(protocolValue)
-                ? protocolValue
-                : 'HTTP';
+            protocolSelect.value = protocolValue;
             protocolSelect.disabled = true;
         }
 
+        const methodWrap = document.getElementById('pub-method-wrap');
+        if (methodWrap) {
+            methodWrap.hidden = !layout.showMethod;
+        }
         setMethodSelectMode(methodSelect, endpointType);
 
-        if (urlInput) {
-            urlInput.value = getRequestBarValue(pub);
-            urlInput.disabled = !binding;
-            urlInput.placeholder = binding?.placeholder || 'No quick-access field for this publisher type';
-            urlInput.title = binding
-                ? `${binding.label} for this ${endpointType.toUpperCase()} publisher`
-                : `No quick-access field is configured for ${endpointType.toUpperCase()} publishers.`;
-        }
+        ['pub-extra-1', 'pub-extra-2', 'pub-url'].forEach((inputId) => {
+            const input = document.getElementById(inputId);
+            const wrap = document.getElementById(`${inputId}-wrap`);
+            const label = document.getElementById(`${inputId}-label`);
+            const descriptor = layout.fields.find((field) => field.inputId === inputId);
+
+            if (!input || !wrap || !label) return;
+
+            if (!descriptor) {
+                wrap.hidden = true;
+                input.value = '';
+                input.disabled = true;
+                input.placeholder = '';
+                input.title = '';
+                return;
+            }
+
+            wrap.hidden = false;
+            label.textContent = descriptor.label;
+            input.disabled = false;
+            input.value = getRequestBarFieldValue(pub, descriptor);
+            input.placeholder = descriptor.placeholder || '';
+            input.title = `${descriptor.label} for this ${endpointType.toUpperCase()} publisher`;
+        });
     };
 
     const buildHttpRequestMetadata = () => {
@@ -314,13 +431,16 @@ function initPublishers(config, schema) {
     const renderSidebar = () => {
         if (!pubList) return;
         pubList.innerHTML = '<div class="sidebar-group-label">Saved</div>' +
-            publishers.map((p, i) => `
+            publishers.map((p, i) => {
+                const type = getEndpointType(p).toUpperCase();
+                return `
                 <div class="sidebar-item pub-item" data-idx="${i}">
-                    <span class="proto-badge proto-http">HTTP</span>
+                    <span class="proto-badge proto-${type.toLowerCase()}">${type}</span>
                     <span class="item-name">${p.name}</span>
                     <span class="item-status status-off"></span>
                 </div>
-            `).join('');
+            `;
+            }).join('');
 
         const hasPubs = publishers.length > 0;
         document.getElementById('pub-empty-alert').style.display = hasPubs ? 'none' : 'block';
@@ -406,10 +526,13 @@ function initPublishers(config, schema) {
         const pub = publishers[currentIdx];
         const s = getPublisherState(pub.name);
         if (payloadArea) s.payload = payloadArea.value;
-        const urlInput = document.getElementById('pub-url');
-        setRequestBarValue(pub, urlInput?.value.trim() || '');
-
         const endpointType = getEndpointType(pub);
+        const layout = getRequestBarLayout(endpointType);
+        layout.fields.forEach((descriptor) => {
+            const input = document.getElementById(descriptor.inputId);
+            setRequestBarFieldValue(pub, descriptor, input?.value.trim() || '');
+        });
+
         if (endpointType === 'http') {
             const httpConfig = ensureHttpConfig(pub);
             const customHeaders = {};
@@ -439,7 +562,7 @@ function initPublishers(config, schema) {
         row.querySelectorAll('input').forEach(i => i.oninput = updateStateFromUI);
     };
 
-    const formatResponseDetails = (status, statusText, duration, data, requestInfo = {}) => {
+    const formatResponseDetails = (statusInfo, duration, data, requestInfo = {}) => {
         const statusTarget = document.getElementById("pub-response-status"); // Removed responseContainer from here
         const responseBody = document.getElementById("pub-response");
         const responseContainer = document.getElementById("pub-response-container");
@@ -447,7 +570,9 @@ function initPublishers(config, schema) {
 
         if (!statusTarget || !responseBody || !responseContainer) return;
 
-        const statusColor = status < 300 ? "var(--accent-http)" : "var(--accent-kafka)";
+        const statusColor = statusInfo?.ok ? "var(--accent-http)" : "var(--accent-kafka)";
+        const statusLabel = statusInfo?.label || 'OK';
+        const statusText = statusInfo?.text || '';
         
         // Calculate approximate size
         const payloadStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
@@ -455,7 +580,7 @@ function initPublishers(config, schema) {
         const sizeStr = size > 1024 ? (size/1024).toFixed(2) + ' KB' : size + ' B';
 
         statusTarget.innerHTML = `
-            <span style="color:${statusColor}; font-weight: bold; padding: 2px 4px; border-radius: 3px; background: rgba(0,0,0,0.2)">${status} ${statusText}</span>
+            <span style="color:${statusColor}; font-weight: bold; padding: 2px 4px; border-radius: 3px; background: rgba(0,0,0,0.2)">${statusLabel}${statusText ? ` ${statusText}` : ''}</span>
             <span style="margin-left:12px; opacity: 0.8;">Time: <strong style="color:var(--text-primary)">${duration}ms</strong></span>
             <span style="margin-left:12px; opacity: 0.8;">Size: <strong style="color:var(--text-primary)">${sizeStr}</strong></span>
         `;
@@ -536,7 +661,7 @@ function initPublishers(config, schema) {
         if (responseTab) {
             responseTab.style.display = 'flex';
             responseTab.style.color = statusColor;
-            responseTab.textContent = `Response ✓ ${status}`;
+            responseTab.textContent = `Response ✓ ${statusLabel}`;
         }
 
         // Ensure split.js is initialized for the publisher pane
@@ -580,12 +705,13 @@ function initPublishers(config, schema) {
                         ${filteredHistory.length === 0 ? 
                             '<tr><td colspan="3" style="text-align:center; padding: 20px; color: var(--text-dim);">No history for this publisher.</td></tr>' : 
                             filteredHistory.map((item) => {
-                                const statusClass = item.status < 300 ? 'status-ok' : 'status-err'; // Using custom classes
+                                const isOk = typeof item.ok === 'boolean' ? item.ok : item.status < 300;
+                                const statusClass = isOk ? 'status-ok' : 'status-err';
                                 const time = new Date(item.time).toLocaleTimeString();
                                 const payload = item.payload.substring(0, 100).replace(/\n/g, ' ');
                                 return `<tr class="history-row" data-hidx="${history.indexOf(item)}" style="cursor: zoom-in;">
                                     <td class="ts">${time}</td>
-                                    <td><span class="${statusClass} small fw-bold">${item.status}</span></td>
+                                    <td><span class="${statusClass} small fw-bold">${item.displayStatus || item.status}</span></td>
                                     <td class="preview">${payload}</td>
                                 </tr>`;
                             }).join('')
@@ -611,7 +737,12 @@ function initPublishers(config, schema) {
                 applyHistoryRequestToPublisher(publisher, item);
                 saveAppState();
                 await updateUIFromState();
-                formatResponseDetails(item.status, item.statusText, item.duration, item.responseData, {
+                formatResponseDetails({
+                    ok: typeof item.ok === 'boolean' ? item.ok : item.status < 300,
+                    code: item.status,
+                    label: item.displayStatus || String(item.status),
+                    text: item.displayStatusText || item.statusText,
+                }, item.duration, item.responseData, {
                     headers: item.metadata || [],
                     method: item.requestMetadata?.http_method,
                     path: item.requestMetadata?.http_path,
@@ -643,7 +774,7 @@ function initPublishers(config, schema) {
         const name = prompt("Publisher Name:");
         if (!name) return;
         if (config.publishers.some(p => p.name === name)) return alert("Publisher already exists");
-        config.publishers.push({ name, endpoint: { null: null }, comment: '', view: {} });
+        config.publishers.push({ name, endpoint: { null: null }, comment: '' });
         // Re-render the sidebar with the new publisher
         // Re-initialize publishers tab to refresh the list
         window.initPublishers(config, schema);
@@ -677,7 +808,10 @@ function initPublishers(config, schema) {
 
     document.getElementById('pub-save').onclick = (e) => window.saveConfig(false, e.currentTarget);
     document.getElementById('add-meta').onclick = () => addMetadataRow();
-    document.getElementById('pub-url').oninput = updateStateFromUI;
+    ['pub-url', 'pub-extra-1', 'pub-extra-2'].forEach((id) => {
+        const input = document.getElementById(id);
+        if (input) input.oninput = updateStateFromUI;
+    });
     document.getElementById('pub-beautify').onclick = () => {
         try {
             payloadArea.value = JSON.stringify(JSON.parse(payloadArea.value), null, 2);
@@ -723,13 +857,15 @@ function initPublishers(config, schema) {
         const metadata = buildHttpRequestMetadata();
         const urlInput = document.getElementById('pub-url');
         const requestUrl = urlInput?.value.trim() || '';
-        const requestBinding = getRequestBarBinding(getEndpointType(pub));
+        const layout = getRequestBarLayout(getEndpointType(pub));
+        const requestBinding = layout.fields.find((field) => field.inputId === 'pub-url') || layout.fields[0] || null;
 
         responseDiv.textContent = 'Sending...'; // Use textContent for simple message
         document.getElementById('pub-response-container').style.display = 'flex';
         
         try {
             const startTime = Date.now();
+            const endpointType = getEndpointType(pub);
             const res = await fetch('/publish', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -743,7 +879,9 @@ function initPublishers(config, schema) {
                 responseData = JSON.parse(text);
             } catch(e) { /* not JSON */ }
 
-            formatResponseDetails(res.status, res.statusText, duration, responseData, {
+            const statusInfo = getPublishStatusInfo(endpointType, res, responseData);
+
+            formatResponseDetails(statusInfo, duration, responseData, {
                 headers: metaArr,
                 method: metadata.http_method,
                 path: metadata.http_path,
@@ -760,8 +898,11 @@ function initPublishers(config, schema) {
                 targetLabel: requestBinding?.label,
                 url: requestUrl,
                 responseData, 
+                ok: statusInfo.ok,
                 status: res.status, 
                 statusText: res.statusText,
+                displayStatus: statusInfo.label,
+                displayStatusText: statusInfo.text,
                 duration,
                 time: Date.now()
             });

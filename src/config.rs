@@ -12,6 +12,10 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_route_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
 pub struct AppConfig {
     #[serde(default = "default_log_level")]
@@ -27,7 +31,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub metrics_addr: String,
     #[serde(default)]
-    pub routes: HashMap<String, Route>,
+    pub routes: HashMap<String, RouteConfig>,
     #[serde(default)]
     pub consumers: Vec<ConsumerConfig>,
     #[serde(default)]
@@ -41,14 +45,19 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
+pub struct RouteConfig {
+    #[serde(default = "default_route_enabled")]
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub route: Route,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
 pub struct ConsumerConfig {
     pub name: String,
     pub endpoint: Endpoint,
     #[serde(default)]
     pub comment: String,
-    /// Configuration for the UI view/display
-    #[serde(default)]
-    pub view: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
@@ -57,9 +66,6 @@ pub struct PublisherClient {
     pub endpoint: Endpoint,
     #[serde(default)]
     pub comment: String,
-    /// Configuration for the UI view/display
-    #[serde(default)]
-    pub view: HashMap<String, serde_json::Value>,
 }
 
 fn expand_variables(content: &str) -> Result<String, anyhow::Error> {
@@ -184,7 +190,7 @@ pub fn load_config(
 impl AppConfig {
     pub fn save(&mut self, path: &str) -> Result<()> {
         // Sanitize route names to ensure compatibility with environment variables
-        let sanitized_routes: HashMap<String, Route> = self
+        let sanitized_routes: HashMap<String, RouteConfig> = self
             .routes
             .drain()
             .map(|(k, v)| (k.trim().replace(' ', "_").to_lowercase(), v))
@@ -216,7 +222,7 @@ impl AppConfig {
         for (name, route) in &mut self.routes {
             let name = name.to_uppercase(); // Names are already sanitized in save()
             let prefix = format!("MQB__ROUTES__{}__", name);
-            route.extract_secrets(&prefix, &mut all_secrets);
+            route.route.extract_secrets(&prefix, &mut all_secrets);
         }
         for consumer in &mut self.consumers {
             let name = consumer.name.trim().replace(' ', "_").to_uppercase();
@@ -326,7 +332,8 @@ routes:
         assert_eq!(config.routes.len(), 1);
 
         let route = &config.routes["kafka_to_nats"];
-        if let mq_bridge::models::EndpointType::Kafka(k) = &route.input.endpoint_type {
+        assert!(route.enabled);
+        if let mq_bridge::models::EndpointType::Kafka(k) = &route.route.input.endpoint_type {
             assert_eq!(k.url, "kafka:9092");
             assert_eq!(k.topic.as_deref(), Some("in_topic"));
         }
@@ -377,11 +384,35 @@ routes:
         assert_eq!(name, "kafka_to_nats_from_env");
 
         // Assert source
-        if let mq_bridge::models::EndpointType::Kafka(k) = &route.input.endpoint_type {
+        assert!(route.enabled);
+        if let mq_bridge::models::EndpointType::Kafka(k) = &route.route.input.endpoint_type {
             assert_eq!(k.url, "env-kafka:9092"); // group_id is now optional
             assert_eq!(k.topic.as_deref(), Some("env-in-topic"));
         } else {
             panic!("Expected Kafka source endpoint");
         }
+    }
+
+    #[test]
+    fn test_config_deserializes_disabled_route() {
+        let yaml_config = r#"
+routes:
+  paused_route:
+    enabled: false
+    input:
+      memory:
+        topic: "in_topic"
+    output:
+      memory:
+        topic: "out_topic"
+"#;
+
+        let config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
+        let route = &config.routes["paused_route"];
+        assert!(!route.enabled);
+        assert!(matches!(
+            route.route.input.endpoint_type,
+            mq_bridge::models::EndpointType::Memory(_)
+        ));
     }
 }

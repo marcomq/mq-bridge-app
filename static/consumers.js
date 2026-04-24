@@ -215,7 +215,7 @@ async function initConsumers(config, schema) {
         document.getElementById('cons-add').onclick = () => {
             const name = prompt("Consumer Name:");
             if (!name) return;
-            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '', view: {} });
+            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '' });
             // Re-initialize consumers tab to refresh the list
             window.initConsumers(config, schema);
             setActiveItem(config.consumers.length - 1);
@@ -339,7 +339,7 @@ async function initConsumers(config, schema) {
         document.getElementById('cons-add').onclick = () => {
             const name = prompt("Consumer Name:");
             if (!name) return;
-            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '', view: {} });
+            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '' });
             window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
             setActiveItem(config.consumers.length - 1);
             updateUI();
@@ -350,7 +350,7 @@ async function initConsumers(config, schema) {
             const name = prompt("Consumer Name:");
             if (!name) return;
             if (config.consumers.some(c => c.name === name)) return alert("Consumer already exists");
-            config.consumers.push({ name, input: { null: null }, comment: '', view: {} });
+            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '' });
             window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
             setActiveItem(config.consumers.length - 1);
             updateUI();
@@ -477,7 +477,7 @@ async function initConsumers(config, schema) {
         document.getElementById('cons-add').onclick = () => {
             const name = prompt("Consumer Name:");
             if (!name) return;
-            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '', view: {} });
+            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '' });
             window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
             setActiveItem(config.consumers.length - 1);
             updateUI();
