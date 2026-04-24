@@ -3,6 +3,20 @@ function initPublishers(config, schema) {
     const publishers = config.publishers || [];
     const STORAGE_KEY = 'mqb_publisher_state';
     const HISTORY_KEY = 'mqb_publisher_history';
+    const PUBLISHER_TYPE_OPTIONS = [
+        'http',
+        'grpc',
+        'nats',
+        'memory',
+        'amqp',
+        'kafka',
+        'mqtt',
+        'mongodb',
+        'zeromq',
+        'file',
+        'sled',
+        'ibmmq',
+    ];
 
     let appState = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
@@ -164,6 +178,42 @@ function initPublishers(config, schema) {
         return endpointTypeKeys.find((key) => key in endpoint) || 'null';
     };
 
+    const createDefaultPublisherEndpoint = (endpointType) => ({ [endpointType]: {} });
+
+    const nextPublisherName = (endpointType) => {
+        const existingNames = new Set((config.publishers || []).map((publisher) => publisher.name));
+        let index = 1;
+        let candidate = `${endpointType}_${index}`;
+        while (existingNames.has(candidate)) {
+            index += 1;
+            candidate = `${endpointType}_${index}`;
+        }
+        return candidate;
+    };
+
+    const addPublisher = async () => {
+        const endpointType = await window.mqbChoose(
+            "Choose the endpoint type for the new publisher.",
+            "Add Publisher",
+            {
+                confirmLabel: 'Create',
+                choices: PUBLISHER_TYPE_OPTIONS.map((type) => ({
+                    value: type,
+                    label: type.toUpperCase(),
+                })),
+            },
+        );
+        if (!endpointType) return;
+        config.publishers.push({
+            name: nextPublisherName(endpointType),
+            endpoint: createDefaultPublisherEndpoint(endpointType),
+            comment: '',
+        });
+        window.initPublishers(config, schema);
+        setActiveItem(config.publishers.length - 1);
+        updateUIFromState();
+    };
+
     const ensureHttpConfig = (publisher) => {
         publisher.endpoint ||= {};
         if (!publisher.endpoint.http || typeof publisher.endpoint.http !== 'object') {
@@ -310,6 +360,7 @@ function initPublishers(config, schema) {
 
             if (!descriptor) {
                 wrap.hidden = true;
+                wrap.style.display = 'none';
                 input.value = '';
                 input.disabled = true;
                 input.placeholder = '';
@@ -318,6 +369,7 @@ function initPublishers(config, schema) {
             }
 
             wrap.hidden = false;
+            wrap.style.display = '';
             label.textContent = descriptor.label;
             input.disabled = false;
             input.value = getRequestBarFieldValue(pub, descriptor);
@@ -512,13 +564,18 @@ function initPublishers(config, schema) {
                 httpConfigSchema.properties.custom_headers.hidden = true;
             }
         }
-        await window.VanillaSchemaForms.init(configFormContainer, itemSchema, publishers[idx], (updated) => {
-            publishers[idx] = updated;
-            const label = document.querySelector(`#pub-list .pub-item[data-idx="${idx}"] .item-name`);
-            if (label) label.textContent = updated.name;
-            syncRequestBar();
-            syncPublisherSidebar();
-        });
+        window._mqb_form_mode = 'publisher';
+        try {
+            await window.VanillaSchemaForms.init(configFormContainer, itemSchema, publishers[idx], (updated) => {
+                publishers[idx] = updated;
+                const label = document.querySelector(`#pub-list .pub-item[data-idx="${idx}"] .item-name`);
+                if (label) label.textContent = updated.name;
+                syncRequestBar();
+                syncPublisherSidebar();
+            });
+        } finally {
+            window._mqb_form_mode = null;
+        }
     };
 
     const updateStateFromUI = () => {
@@ -770,23 +827,13 @@ function initPublishers(config, schema) {
         });
     };
 
-    document.getElementById('pub-add').onclick = () => {
-        const name = prompt("Publisher Name:");
-        if (!name) return;
-        if (config.publishers.some(p => p.name === name)) return alert("Publisher already exists");
-        config.publishers.push({ name, endpoint: { null: null }, comment: '' });
-        // Re-render the sidebar with the new publisher
-        // Re-initialize publishers tab to refresh the list
-        window.initPublishers(config, schema);
-        setActiveItem(config.publishers.length - 1);
-        updateUIFromState();
-    };
+    document.getElementById('pub-add').onclick = addPublisher;
 
     document.getElementById('pub-clone').onclick = () => {
         const current = config.publishers[currentIdx];
         const cloned = JSON.parse(JSON.stringify(current));
         cloned.name += '_copy';
-        if (config.publishers.some(p => p.name === cloned.name)) return alert("Cloned publisher name already exists. Please choose a different name.");
+        if (config.publishers.some(p => p.name === cloned.name)) return window.mqbAlert("Cloned publisher name already exists. Please choose a different name.");
         config.publishers.push(cloned);
         // Re-initialize publishers tab to refresh the list
         window.initPublishers(config, schema);
@@ -794,19 +841,24 @@ function initPublishers(config, schema) {
         updateUIFromState();
     };
 
-    document.getElementById('pub-delete').onclick = () => {
-        if (config.publishers.length <= 1) return alert("Cannot delete last publisher");
-        if (!confirm("Delete this publisher?")) return;
+    document.getElementById('pub-delete').onclick = async () => {
+        if (!await window.mqbConfirm("Delete this publisher?", "Delete Publisher")) return;
         // Clear state for the deleted publisher
         delete appState[config.publishers[currentIdx].name];
         config.publishers.splice(currentIdx, 1);
+        if (config.publishers.length === 0) {
+            await window.saveConfigSection('publishers', config.publishers, false);
+        }
         // Re-initialize publishers tab to refresh the list
         window.initPublishers(config, schema);
-        setActiveItem(0);
-        updateUIFromState();
+        if (config.publishers.length > 0) {
+            setActiveItem(Math.max(0, currentIdx - 1));
+            updateUIFromState();
+        }
     };
 
-    document.getElementById('pub-save').onclick = (e) => window.saveConfig(false, e.currentTarget);
+    document.getElementById('pub-save').onclick = (e) =>
+        window.saveConfigSection('publishers', config.publishers, false, e.currentTarget);
     document.getElementById('add-meta').onclick = () => addMetadataRow();
     ['pub-url', 'pub-extra-1', 'pub-extra-2'].forEach((id) => {
         const input = document.getElementById(id);
@@ -817,7 +869,7 @@ function initPublishers(config, schema) {
             payloadArea.value = JSON.stringify(JSON.parse(payloadArea.value), null, 2);
             updateStateFromUI();
         } catch (e) {
-            alert("Invalid JSON");
+            window.mqbAlert("Invalid JSON");
         }
     };
 
@@ -845,7 +897,7 @@ function initPublishers(config, schema) {
         updateStateFromUI();
 
         // Auto-save configuration before sending
-        const saved = await window.saveConfig(true);
+        const saved = await window.saveConfigSection('publishers', config.publishers, true);
         if (!saved) return;
 
         const pub = publishers[currentIdx];

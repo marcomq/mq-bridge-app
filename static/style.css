@@ -1241,6 +1241,40 @@ wa-button[variant="neutral"]::part(base) {
     word-break: break-word;
 }
 
+#cons-response-editor {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.response-editor-header {
+    align-items: baseline;
+    gap: 12px;
+}
+
+.response-editor-grid {
+    display: grid;
+    gap: 10px;
+}
+
+.response-header-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.response-editor-actions {
+    display: flex;
+    justify-content: flex-start;
+}
+
+@media (max-width: 760px) {
+    .response-header-row {
+        grid-template-columns: 1fr;
+    }
+}
+
 .kv-input {
     width: 100%;
     background: transparent;

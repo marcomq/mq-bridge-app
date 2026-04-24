@@ -3,11 +3,14 @@ use crate::ui_app::{
     ConsumerStatusResponse, PublishRequest, PublishResponse, RuntimeStatusResponse, UiApp,
 };
 use anyhow::{Result, anyhow};
+use schemars::schema_for;
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum UiCommand {
     GetConfig,
+    GetSchema,
     UpdateConfig(AppConfig),
     ConsumerStatus { name: String },
     StartConsumer { name: String },
@@ -22,6 +25,7 @@ pub enum UiCommand {
 pub enum UiResponse {
     Ack { message: String },
     Config(AppConfig),
+    Schema(serde_json::Value),
     ConsumerStatus(ConsumerStatusResponse),
     Messages(HashMap<String, VecDeque<serde_json::Value>>),
     Publish(PublishResponse),
@@ -68,6 +72,12 @@ impl UiApp {
     pub async fn execute(&self, command: UiCommand) -> Result<UiResponse, UiCommandError> {
         match command {
             UiCommand::GetConfig => Ok(UiResponse::Config(self.get_config().await)),
+            UiCommand::GetSchema => {
+                let schema = schema_for!(AppConfig);
+                Ok(UiResponse::Schema(
+                    serde_json::to_value(schema).map_err(|e| UiCommandError::Failed(e.into()))?,
+                ))
+            }
             UiCommand::UpdateConfig(config) => self
                 .update_config(config)
                 .await

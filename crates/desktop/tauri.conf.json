@@ -1,0 +1,29 @@
+{
+  "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "MQ Bridge App",
+  "version": "0.2.0",
+  "identifier": "com.marcomq.mqbridgeapp",
+  "build": {
+    "frontendDist": "../../static"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "MQ Bridge App",
+        "width": 1024,
+        "height": 960,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

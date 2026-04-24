@@ -153,29 +153,34 @@ async function initRoutes(config, schema) {
         }));
         applyEndpointSchemaDefaults(routeSchema);
         syncRouteToggleButton();
-        await lib.init(configFormContainer, routeSchema, config.routes[routeName], (updated) => {
-            const oldName = routeName; // Capture the original name
-            const newName = updated.name; // Get the potentially new name from the form
+        window._mqb_form_mode = 'route';
+        try {
+            await lib.init(configFormContainer, routeSchema, config.routes[routeName], (updated) => {
+                const oldName = routeName; // Capture the original name
+                const newName = updated.name; // Get the potentially new name from the form
 
-            if (newName && newName !== oldName) {
-                // Name has changed, update the config object
-                delete config.routes[oldName];
-                config.routes[newName] = updated;
-                // Re-initialize the entire routes tab to reflect the name change in the sidebar
-                window.initRoutes(config, schema);
-                // After re-initialization, find the new index of the renamed route and set it active
-                const newIdx = Object.keys(config.routes).indexOf(newName);
-                if (newIdx !== -1) setActiveItem(newIdx);
-            } else {
-                // Name did not change, just update the config object
-                config.routes[oldName] = updated;
-                routesArray[idx] = { name: oldName, ...updated };
-                renderSidebar();
-                renderRuntimeMetrics();
-                setActiveItem(idx);
-                syncRouteToggleButton();
-            }
-        });
+                if (newName && newName !== oldName) {
+                    // Name has changed, update the config object
+                    delete config.routes[oldName];
+                    config.routes[newName] = updated;
+                    // Re-initialize the entire routes tab to reflect the name change in the sidebar
+                    window.initRoutes(config, schema);
+                    // After re-initialization, find the new index of the renamed route and set it active
+                    const newIdx = Object.keys(config.routes).indexOf(newName);
+                    if (newIdx !== -1) setActiveItem(newIdx);
+                } else {
+                    // Name did not change, just update the config object
+                    config.routes[oldName] = updated;
+                    routesArray[idx] = { name: oldName, ...updated };
+                    renderSidebar();
+                    renderRuntimeMetrics();
+                    setActiveItem(idx);
+                    syncRouteToggleButton();
+                }
+            });
+        } finally {
+            window._mqb_form_mode = null;
+        }
         watchRouteValidationNoise(configFormContainer);
     };
 
@@ -183,10 +188,10 @@ async function initRoutes(config, schema) {
     const restoreRouteState = async (idx) => {
         if (routesArray.length === 0) {
             // If no routes, ensure the "add new" button is functional
-            document.getElementById('route-add').onclick = () => {
-                const name = prompt("Route Name:");
+            document.getElementById('route-add').onclick = async () => {
+                const name = await window.mqbPrompt("Choose a name for the new route.", "Add Route", { placeholder: "my_route" });
                 if (!name) return;
-                if (config.routes[name]) return alert("Route already exists");
+                if (config.routes[name]) return window.mqbAlert("Route already exists");
                 config.routes[name] = {
                     enabled: true,
                     input: { middlewares: defaultMetricsMiddleware(), null: null },
@@ -226,10 +231,10 @@ async function initRoutes(config, schema) {
 
     // Only set up add button if no routes exist initially
     if (routesArray.length === 0) {
-        document.getElementById('route-add').onclick = () => {
-            const name = prompt("Route Name:");
+        document.getElementById('route-add').onclick = async () => {
+            const name = await window.mqbPrompt("Choose a name for the new route.", "Add Route", { placeholder: "my_route" });
             if (!name) return;
-            if (config.routes[name]) return alert("Route already exists");
+            if (config.routes[name]) return window.mqbAlert("Route already exists");
             config.routes[name] = {
                 enabled: true,
                 input: { middlewares: defaultMetricsMiddleware(), null: null },
@@ -243,10 +248,10 @@ async function initRoutes(config, schema) {
         document.getElementById('route-main-ui').style.display = 'none';
         document.getElementById('route-empty-alert').style.display = 'block';
     } else {
-        document.getElementById('route-add').onclick = () => {
-            const name = prompt("Route Name:");
+        document.getElementById('route-add').onclick = async () => {
+            const name = await window.mqbPrompt("Choose a name for the new route.", "Add Route", { placeholder: "my_route" });
             if (!name) return;
-            if (config.routes[name]) return alert("Route already exists");
+            if (config.routes[name]) return window.mqbAlert("Route already exists");
             config.routes[name] = {
                 enabled: true,
                 input: { middlewares: defaultMetricsMiddleware(), null: null },
@@ -260,21 +265,25 @@ async function initRoutes(config, schema) {
         document.getElementById('route-clone').onclick = () => {
             const currentName = routesArray[currentIdx].name;
             const newName = currentName + '_copy';
-            if (config.routes[newName]) return alert("Cloned route name already exists. Please choose a different name.");
+            if (config.routes[newName]) return window.mqbAlert("Cloned route name already exists. Please choose a different name.");
             config.routes[newName] = JSON.parse(JSON.stringify(config.routes[currentName]));
             window.initRoutes(config, schema); // Re-initialize to re-render the whole UI
             setActiveItem(Object.keys(config.routes).length - 1);
             updateUI();
         };
 
-        document.getElementById('route-delete').onclick = () => {
-            if (routesArray.length <= 1) return alert("Cannot delete last route");
-            if (!confirm("Delete this route?")) return;
+        document.getElementById('route-delete').onclick = async () => {
+            if (!await window.mqbConfirm("Delete this route?", "Delete Route")) return;
             const nameToDelete = routesArray[currentIdx].name;
             delete config.routes[nameToDelete];
+            if (Object.keys(config.routes).length === 0) {
+                await window.saveConfigSection('routes', config.routes, false);
+            }
             window.initRoutes(config, schema); // Re-initialize to re-render the whole UI
-            setActiveItem(0); // Select first item after deletion
-            updateUI();
+            if (Object.keys(config.routes).length > 0) {
+                setActiveItem(Math.max(0, currentIdx - 1));
+                updateUI();
+            }
         };
 
         document.getElementById('route-toggle').onclick = async (e) => {
@@ -290,7 +299,7 @@ async function initRoutes(config, schema) {
             setActiveItem(currentIdx);
             syncRouteToggleButton();
 
-            const saved = await window.saveConfig(false, e.currentTarget);
+            const saved = await window.saveConfigSection('routes', config.routes, false, e.currentTarget);
             if (!saved) {
                 currentRoute.enabled = previousEnabled;
                 routesArray[currentIdx] = { name: routeName, ...currentRoute };
@@ -301,8 +310,8 @@ async function initRoutes(config, schema) {
                 return;
             }
 
-            const refreshedConfig = await (await fetch('/config')).json();
-            window.appConfig = refreshedConfig;
+            const refreshedConfig = await window.fetchConfigFromServer();
+            window.appConfig.routes = refreshedConfig.routes;
             await window.pollRuntimeStatus();
             window.initRoutes(window.appConfig, window.appSchema);
             const refreshedIdx = Object.keys(window.appConfig.routes || {}).indexOf(routeName);
@@ -311,7 +320,8 @@ async function initRoutes(config, schema) {
             }
         };
 
-        document.getElementById('route-save').onclick = (e) => window.saveConfig(false, e.currentTarget);
+        document.getElementById('route-save').onclick = (e) =>
+            window.saveConfigSection('routes', config.routes, false, e.currentTarget);
     }
 
     // Mark as initialized and expose the restore function
@@ -335,7 +345,9 @@ async function initRoutes(config, schema) {
 async function initSettings(config, schema) {
     const lib = window.VanillaSchemaForms;
     const container = document.getElementById('form-container');
+    window._mqb_form_mode = 'settings';
     const form = await lib.init(container, JSON.parse(JSON.stringify(schema)), config);
+    window._mqb_form_mode = null;
 
     const formActions = document.getElementById('form-actions');
     if (formActions) formActions.style.display = 'flex';

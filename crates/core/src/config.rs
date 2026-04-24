@@ -58,6 +58,16 @@ pub struct ConsumerConfig {
     pub endpoint: Endpoint,
     #[serde(default)]
     pub comment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<ConsumerResponseConfig>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
+pub struct ConsumerResponseConfig {
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub payload: String,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
@@ -83,24 +93,44 @@ fn source_from_str(
     Ok(config::File::from_str(&expanded, format).required(false))
 }
 
-pub fn load_config(
+fn load_config_internal(
     config_path: Option<String>,
     init_config_path: Option<String>,
     init_config_str: Option<String>,
     config_str: Option<String>,
+    load_dotenv: bool,
+    use_env_overrides: bool,
 ) -> Result<(AppConfig, String), anyhow::Error> {
-    match dotenvy::dotenv() {
-        Ok(path) => println!("INFO: Loaded .env file from {:?}", path),
-        Err(e) => println!("DEBUG: No .env file loaded: {}", e),
+    if load_dotenv {
+        match dotenvy::dotenv() {
+            Ok(path) => println!("INFO: Loaded .env file from {:?}", path),
+            Err(e) => println!("DEBUG: No .env file loaded: {}", e),
+        }
     }
 
-    let persistent_file = config_path.unwrap_or_else(|| {
-        std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string())
-    });
+    let persistent_file = if use_env_overrides {
+        config_path.unwrap_or_else(|| {
+            std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string())
+        })
+    } else {
+        config_path.unwrap_or_else(|| "config.yml".to_string())
+    };
 
-    let init_config_path = init_config_path.or_else(|| std::env::var("INIT_CONFIG_FILE").ok());
-    let init_config_str = init_config_str.or_else(|| std::env::var("INIT_CONFIG_STRING").ok());
-    let config_str = config_str.or_else(|| std::env::var("CONFIG_STRING").ok());
+    let init_config_path = if use_env_overrides {
+        init_config_path.or_else(|| std::env::var("INIT_CONFIG_FILE").ok())
+    } else {
+        init_config_path
+    };
+    let init_config_str = if use_env_overrides {
+        init_config_str.or_else(|| std::env::var("INIT_CONFIG_STRING").ok())
+    } else {
+        init_config_str
+    };
+    let config_str = if use_env_overrides {
+        config_str.or_else(|| std::env::var("CONFIG_STRING").ok())
+    } else {
+        config_str
+    };
 
     let mut builder = Config::builder().set_default("log_level", "info")?;
 
@@ -171,20 +201,46 @@ pub fn load_config(
         builder = builder.add_source(source_from_str(override_str, config::FileFormat::Yaml)?);
     }
 
-    let settings = builder
-        .add_source(
+    let builder = if use_env_overrides {
+        builder.add_source(
             config::Environment::default()
                 .prefix("MQB")
                 .separator("__")
                 .ignore_empty(true)
                 .try_parsing(true),
         )
-        .build()?;
+    } else {
+        builder
+    };
+
+    let settings = builder.build()?;
 
     settings.clone().try_deserialize::<serde_json::Value>()?;
 
     let config: AppConfig = settings.try_deserialize()?;
     Ok((config, persistent_file))
+}
+
+pub fn load_config(
+    config_path: Option<String>,
+    init_config_path: Option<String>,
+    init_config_str: Option<String>,
+    config_str: Option<String>,
+) -> Result<(AppConfig, String), anyhow::Error> {
+    load_config_internal(
+        config_path,
+        init_config_path,
+        init_config_str,
+        config_str,
+        true,
+        true,
+    )
+}
+
+pub fn load_config_at_path(
+    config_path: impl Into<String>,
+) -> Result<(AppConfig, String), anyhow::Error> {
+    load_config_internal(Some(config_path.into()), None, None, None, false, false)
 }
 
 impl AppConfig {
@@ -213,6 +269,11 @@ impl AppConfig {
         strip_nulls(&mut config_value);
 
         let yaml = serde_yaml_ng::to_string(&config_value)?;
+        if let Some(parent) = Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::write(path, yaml)?;
         Ok(())
     }

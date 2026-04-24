@@ -36,14 +36,24 @@ setConfig({
     customVisibility: (node, path) => {
       const description = node.description || "";
       const lowerPath = path.toLowerCase();
+      const formMode = window._mqb_form_mode || "";
+
+      if (formMode === "publisher" && description.includes("Consumer only")) {
+        return false;
+      }
+      if (formMode === "consumer" && description.includes("Publisher only")) {
+        return false;
+      }
 
       if (
+        formMode === "route" &&
         lowerPath.includes(".input") &&
         description.includes("Publisher only")
       ) {
         return false;
       }
       if (
+        formMode === "route" &&
         lowerPath.includes(".output") &&
         description.includes("Consumer only")
       ) {
@@ -442,28 +452,31 @@ const ADVANCED_KEYS = [
   "extract_secrets",
 ];
 
-const ENDPOINT_PRIMARY_KEYS = [
-  "url",
-  "brokers",
-  "queue",
-  "topic",
-  "stream",
-  "subject",
-  "group_id",
-  "queue_url",
-  "endpoint_url",
-  "collection",
-  "database",
-  "path",
-  "routes",
-  "tls",
-  "basic_auth",
-];
+const ENDPOINT_PRIMARY_KEYS = {
+  aws: ["queue_url", "topic_arn", "endpoint_url"],
+  kafka: ["url", "topic", "group_id", "tls", "basic_auth"],
+  nats: ["url", "subject", "stream", "tls", "basic_auth"],
+  file: ["path"],
+  static: [],
+  memory: ["topic"],
+  amqp: ["url", "queue", "topic", "tls", "basic_auth"],
+  mongodb: ["url", "database", "collection", "tls", "basic_auth"],
+  mqtt: ["url", "topic", "tls", "basic_auth"],
+  http: ["url", "method", "path", "tls", "basic_auth", "custom_headers"],
+  sled: ["path", "tree"],
+  htmx: ["routes"],
+  ref: [],
+  ibmmq: ["url", "queue", "topic", "tls", "basic_auth"],
+  zeromq: ["url", "topic"],
+  switch: ["metadata_key", "cases", "default"],
+  response: [],
+  custom: [],
+};
 
-const advancedOptionsRenderer = {
+const createEndpointRenderer = (type) => ({
   render: (node, path, elementId, dataPath, context) => {
     fixNullBooleans(node, dataPath, context);
-    return createCustomCollapsibleRenderer(ENDPOINT_PRIMARY_KEYS).render(
+    return createCustomCollapsibleRenderer(ENDPOINT_PRIMARY_KEYS[type] || []).render(
       node,
       path,
       elementId,
@@ -471,7 +484,7 @@ const advancedOptionsRenderer = {
       context,
     );
   },
-};
+});
 
 const appConfigRenderer = createCustomCollapsibleRenderer(ADVANCED_KEYS);
 
@@ -563,7 +576,7 @@ const endpointTypes = [
   "custom",
 ];
 endpointTypes.forEach((type) => {
-  CUSTOM_RENDERERS[type] = advancedOptionsRenderer;
+  CUSTOM_RENDERERS[type] = createEndpointRenderer(type);
 });
 CUSTOM_RENDERERS["AppConfig"] = appConfigRenderer;
 CUSTOM_RENDERERS["route"] = advancedOptionsRenderer;

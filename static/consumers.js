@@ -2,6 +2,29 @@ async function initConsumers(config, schema) {
     const consumers = config.consumers || [];
     const MSG_STORAGE_KEY = 'mqb_consumer_messages';
     const defaultMetricsMiddleware = () => [{ metrics: {} }];
+    const CONSUMER_TYPE_OPTIONS = [
+        'http',
+        'grpc',
+        'nats',
+        'memory',
+        'amqp',
+        'kafka',
+        'mqtt',
+        'mongodb',
+        'zeromq',
+        'file',
+        'sled',
+    ];
+    const RESPONSE_CAPABLE_CONSUMER_TYPES = new Set([
+        'http',
+        'nats',
+        'memory',
+        'amqp',
+        'mongodb',
+        'mqtt',
+        'zeromq',
+        'kafka',
+    ]);
 
     const applyEndpointSchemaDefaults = (itemSchema) => {
         const fileConfigSchema = itemSchema.$defs?.FileConfig;
@@ -37,6 +60,10 @@ async function initConsumers(config, schema) {
     const saveMessages = () => localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
 
     let consumerStatus = {};
+    if (!(window._mqb_saved_consumer_names instanceof Set)) {
+        window._mqb_saved_consumer_names = new Set(consumers.map((consumer) => consumer.name));
+    }
+    const isSavedConsumer = (name) => window._mqb_saved_consumer_names.has(name);
 
     const schedulePoll = (delayMs) => {
         if (window._mqb_consumer_poll_nonce !== pollNonce) return;
@@ -45,6 +72,10 @@ async function initConsumers(config, schema) {
     };
 
     const fetchConsumerStatus = async (name) => {
+        if (!isSavedConsumer(name)) {
+            consumerStatus[name] = { running: false, status: { healthy: false }, unsaved: true };
+            return;
+        }
         try {
             const res = await fetch(`/consumer-status?consumer=${encodeURIComponent(name)}`);
             if (res.ok) {
@@ -75,7 +106,7 @@ async function initConsumers(config, schema) {
             }
         } catch (e) { 
             console.error(`Error during ${action}:`, e);
-            alert(`Failed to ${action} consumer`);
+            window.mqbAlert(`Failed to ${action} consumer`);
         } finally {
             const toggleBtn = document.getElementById('cons-toggle');
             if (toggleBtn) {
@@ -96,6 +127,140 @@ async function initConsumers(config, schema) {
     const getConsumerInputType = (consumer) => {
         const input = consumer?.endpoint || {};
         return Object.keys(input).filter((key) => key !== 'middlewares')[0] || 'N/A';
+    };
+
+    const createDefaultConsumerEndpoint = (endpointType) => ({
+        middlewares: defaultMetricsMiddleware(),
+        [endpointType]: {},
+    });
+
+    const nextConsumerName = (endpointType) => {
+        const existingNames = new Set((config.consumers || []).map((consumer) => consumer.name));
+        let index = 1;
+        let candidate = `${endpointType}_${index}`;
+        while (existingNames.has(candidate)) {
+            index += 1;
+            candidate = `${endpointType}_${index}`;
+        }
+        return candidate;
+    };
+
+    const addConsumer = async () => {
+        const endpointType = await window.mqbChoose(
+            "Choose the endpoint type for the new consumer.",
+            "Add Consumer",
+            {
+                confirmLabel: 'Create',
+                choices: CONSUMER_TYPE_OPTIONS.map((type) => ({
+                    value: type,
+                    label: type.toUpperCase(),
+                })),
+            },
+        );
+        if (!endpointType) return;
+        config.consumers.push({
+            name: nextConsumerName(endpointType),
+            endpoint: createDefaultConsumerEndpoint(endpointType),
+            comment: '',
+            response: null,
+        });
+        window.initConsumers(config, schema);
+        setActiveItem(config.consumers.length - 1);
+        updateUI();
+    };
+
+    const consumerSupportsCustomResponse = (consumer) =>
+        RESPONSE_CAPABLE_CONSUMER_TYPES.has(getConsumerInputType(consumer).toLowerCase());
+
+    const normalizeConsumerResponse = (response) => {
+        if (!response || typeof response !== 'object') return null;
+        const headers = Object.fromEntries(
+            Object.entries(response.headers || {})
+                .map(([key, value]) => [String(key).trim(), String(value).trim()])
+                .filter(([key, value]) => key && value),
+        );
+        const payload = typeof response.payload === 'string' ? response.payload : '';
+        return Object.keys(headers).length > 0 || payload.trim()
+            ? { headers, payload }
+            : null;
+    };
+
+    const escapeHtml = (value) =>
+        String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+
+    const renderConsumerResponseEditor = (consumer, idx) => {
+        const container = document.getElementById('cons-response-editor');
+        if (!container) return;
+
+        if (!consumerSupportsCustomResponse(consumer)) {
+            container.style.display = 'none';
+            container.innerHTML = '';
+            config.consumers[idx].response = null;
+            return;
+        }
+
+        const response = normalizeConsumerResponse(consumer.response) || { headers: {}, payload: '' };
+        config.consumers[idx].response = response;
+
+        const headerRows = Object.entries(response.headers).sort(([a], [b]) => a.localeCompare(b));
+        container.style.display = 'block';
+        container.innerHTML = `
+            <div class="section-toolbar response-editor-header">
+                <div class="section-label">Custom Response</div>
+                <span class="form-description">Returned to request-response consumer endpoints after the message is logged.</span>
+            </div>
+            <div class="response-editor-grid">
+                <div class="section-label">Headers</div>
+                <div id="cons-response-headers">
+                    ${headerRows.map(([key, value], headerIdx) => `
+                        <div class="response-header-row" data-header-idx="${headerIdx}">
+                            <input class="field-input cons-response-header-key" type="text" placeholder="Header name" value="${escapeHtml(key)}">
+                            <input class="field-input cons-response-header-value" type="text" placeholder="Header value" value="${escapeHtml(value)}">
+                            <wa-button variant="neutral" appearance="outlined" size="small" class="cons-response-header-delete">Delete</wa-button>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="response-editor-actions">
+                    <wa-button variant="neutral" appearance="outlined" size="small" id="cons-response-add-header">Add Header</wa-button>
+                </div>
+                <div class="section-label">Payload</div>
+                <textarea class="body-editor" id="cons-response-payload" spellcheck="false" placeholder="Response body">${escapeHtml(response.payload)}</textarea>
+            </div>
+        `;
+
+        const syncResponseState = () => {
+            const headers = {};
+            container.querySelectorAll('.response-header-row').forEach((row) => {
+                const key = row.querySelector('.cons-response-header-key')?.value?.trim() || '';
+                const value = row.querySelector('.cons-response-header-value')?.value?.trim() || '';
+                if (key && value) headers[key] = value;
+            });
+            const payload = container.querySelector('#cons-response-payload')?.value || '';
+            config.consumers[idx].response = normalizeConsumerResponse({ headers, payload });
+        };
+
+        container.querySelector('#cons-response-add-header')?.addEventListener('click', () => {
+            headerRows.push(['', '']);
+            config.consumers[idx].response = normalizeConsumerResponse({ headers: Object.fromEntries(headerRows), payload: response.payload }) || { headers: {}, payload: response.payload };
+            renderConsumerResponseEditor(config.consumers[idx], idx);
+        });
+
+        container.querySelectorAll('.cons-response-header-delete').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.target.closest('.response-header-row')?.remove();
+                syncResponseState();
+            });
+        });
+
+        container.querySelectorAll('.cons-response-header-key, .cons-response-header-value').forEach((input) => {
+            input.addEventListener('input', syncResponseState);
+        });
+        container.querySelector('#cons-response-payload')?.addEventListener('input', syncResponseState);
     };
 
     const renderSidebar = () => {
@@ -212,15 +377,7 @@ async function initConsumers(config, schema) {
     const restoreConsumerState = async (idx) => {
     if (consumers.length === 0) {
             // If no consumers, ensure the "add new" button is functional
-        document.getElementById('cons-add').onclick = () => {
-            const name = prompt("Consumer Name:");
-            if (!name) return;
-            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '' });
-            // Re-initialize consumers tab to refresh the list
-            window.initConsumers(config, schema);
-            setActiveItem(config.consumers.length - 1);
-            updateUI();
-        };
+        document.getElementById('cons-add').onclick = addConsumer;
         return;
     }
 
@@ -249,14 +406,25 @@ async function initConsumers(config, schema) {
             $defs: schema.$defs 
         }));
         applyEndpointSchemaDefaults(itemSchema);
+        if (itemSchema.properties?.response) {
+            itemSchema.properties.response.hidden = true;
+        }
         if (consumers[idx]) await refreshConsumerStatuses();
-        await window.VanillaSchemaForms.init(configFormContainer, itemSchema, config.consumers[idx], (updated) => {
-            config.consumers[idx] = updated;
-            // Update name in sidebar list
-            const label = document.querySelector(`#cons-list .cons-item[data-idx="${idx}"] .item-name`);
-            if (label) label.textContent = updated.name;
-            updateConsumerList(); // Update protocol badge
-        });
+        window._mqb_form_mode = 'consumer';
+        try {
+            await window.VanillaSchemaForms.init(configFormContainer, itemSchema, config.consumers[idx], (updated) => {
+                updated.response = config.consumers[idx]?.response || null;
+                config.consumers[idx] = updated;
+                // Update name in sidebar list
+                const label = document.querySelector(`#cons-list .cons-item[data-idx="${idx}"] .item-name`);
+                if (label) label.textContent = updated.name;
+                updateConsumerList(); // Update protocol badge
+                renderConsumerResponseEditor(updated, idx);
+            });
+        } finally {
+            window._mqb_form_mode = null;
+        }
+        renderConsumerResponseEditor(config.consumers[idx], idx);
         renderLiveLog();
     };
 
@@ -336,25 +504,10 @@ async function initConsumers(config, schema) {
 
     // Only set up add button if no consumers exist initially
     if (consumers.length === 0) {
-        document.getElementById('cons-add').onclick = () => {
-            const name = prompt("Consumer Name:");
-            if (!name) return;
-            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '' });
-            window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
-            setActiveItem(config.consumers.length - 1);
-            updateUI();
-        };
+        document.getElementById('cons-add').onclick = addConsumer;
     } else {
         // For existing consumers, these buttons are always present
-        document.getElementById('cons-add').onclick = () => {
-            const name = prompt("Consumer Name:");
-            if (!name) return;
-            if (config.consumers.some(c => c.name === name)) return alert("Consumer already exists");
-            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '' });
-            window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
-            setActiveItem(config.consumers.length - 1);
-            updateUI();
-        };
+        document.getElementById('cons-add').onclick = addConsumer;
 
         document.getElementById('cons-clone').onclick = () => {
             const current = config.consumers[currentIdx];
@@ -366,16 +519,37 @@ async function initConsumers(config, schema) {
             updateUI();
         };
 
-        document.getElementById('cons-delete').onclick = () => {
-            if (config.consumers.length <= 1) return alert("Cannot delete last consumer");
-            if (!confirm("Delete this consumer?")) return;
+        document.getElementById('cons-delete').onclick = async () => {
+            if (!await window.mqbConfirm("Delete this consumer?", "Delete Consumer")) return;
             config.consumers.splice(currentIdx, 1);
+            if (config.consumers.length === 0) {
+                await window.saveConfigSection('consumers', config.consumers, false);
+            }
             window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
-            setActiveItem(0); // Select first item after deletion
-            updateUI();
+            if (config.consumers.length > 0) {
+                setActiveItem(Math.max(0, currentIdx - 1));
+                updateUI();
+            }
         };
 
-        document.getElementById('cons-save').onclick = (e) => window.saveConfig(false, e.currentTarget);
+        document.getElementById('cons-save').onclick = async (e) => {
+            const selectedName = config.consumers[currentIdx]?.name || null;
+            const saved = await window.saveConfigSection('consumers', config.consumers, false, e.currentTarget);
+            if (!saved) return;
+
+            const refreshedConfig = await window.fetchConfigFromServer();
+            window.appConfig.consumers = refreshedConfig.consumers;
+            window._mqb_saved_consumer_names = new Set(
+                (refreshedConfig.consumers || []).map((consumer) => consumer.name),
+            );
+            window.initConsumers(window.appConfig, window.appSchema);
+
+            const refreshedIdx = (window.appConfig.consumers || [])
+                .findIndex((consumer) => consumer.name === selectedName);
+            if (refreshedIdx !== -1) {
+                window.restoreConsumerState(refreshedIdx);
+            }
+        };
     }
 
 
@@ -474,14 +648,7 @@ async function initConsumers(config, schema) {
         document.getElementById('ctab-msg').click();
     } else {
         // If no consumers, ensure the "add new" button is functional
-        document.getElementById('cons-add').onclick = () => {
-            const name = prompt("Consumer Name:");
-            if (!name) return;
-            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '' });
-            window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
-            setActiveItem(config.consumers.length - 1);
-            updateUI();
-        };
+        document.getElementById('cons-add').onclick = addConsumer;
     }
 }
 window.initConsumers = initConsumers;

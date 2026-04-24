@@ -1,11 +1,15 @@
-use crate::config::{AppConfig, ConsumerConfig, RouteConfig};
+use crate::config::{AppConfig, ConsumerConfig, ConsumerResponseConfig, RouteConfig};
+use crate::ui_api::{UiCommand, UiCommandError, UiResponse};
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
 use mq_bridge::models::{Endpoint, EndpointType, MemoryConfig, Route};
 use mq_bridge::route::RouteHandle;
-use mq_bridge::{CanonicalMessage, Handled, Publisher, Sent, unregister_publisher};
+use mq_bridge::{
+    CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -53,6 +57,63 @@ pub struct PublishResponse {
     pub payload: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
+}
+
+trait CanonicalMessageExt {
+    fn with_content_type(self, content_type: impl Into<String>) -> Self;
+    fn with_status_code(self, status_code: impl Into<String>) -> Self;
+}
+
+impl CanonicalMessageExt for CanonicalMessage {
+    fn with_content_type(self, content_type: impl Into<String>) -> Self {
+        self.with_metadata_kv("Content-Type", content_type)
+    }
+
+    fn with_status_code(self, status_code: impl Into<String>) -> Self {
+        self.with_metadata_kv("http_status_code", status_code)
+    }
+}
+
+fn sanitize_relative_path(request_path: &str) -> Option<PathBuf> {
+    let mut sanitized = PathBuf::new();
+
+    for component in Path::new(request_path).components() {
+        match component {
+            Component::Normal(part) => sanitized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    if sanitized.as_os_str().is_empty() {
+        None
+    } else {
+        Some(sanitized)
+    }
+}
+
+fn resolve_static_asset_path(request_path: &str) -> Option<PathBuf> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    if request_path == "/" || request_path.is_empty() {
+        return Some(workspace_root.join("static/index.html"));
+    }
+
+    if let Some(relative) = request_path.strip_prefix("/node_modules/") {
+        return sanitize_relative_path(relative)
+            .map(|path| workspace_root.join("node_modules").join(path));
+    }
+
+    let relative = request_path.trim_start_matches('/');
+    sanitize_relative_path(relative).map(|path| workspace_root.join("static").join(path))
+}
+
+fn query_param(msg: &CanonicalMessage, key: &str) -> Option<String> {
+    let query = msg.metadata.get("http_query")?;
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(&format!("{key}=")))
+        .map(ToString::to_string)
 }
 
 fn extract_label_value(segment: &str, label: &str) -> Option<String> {
@@ -108,6 +169,38 @@ fn route_is_active(route_config: &RouteConfig) -> bool {
     route_config.enabled && !matches!(route_config.route.input.endpoint_type, EndpointType::Null)
 }
 
+fn endpoint_supports_consumer_response(endpoint: &Endpoint) -> bool {
+    matches!(
+        endpoint.endpoint_type,
+        EndpointType::Http(_)
+            | EndpointType::Nats(_)
+            | EndpointType::Memory(_)
+            | EndpointType::Amqp(_)
+            | EndpointType::MongoDb(_)
+            | EndpointType::Mqtt(_)
+            | EndpointType::ZeroMq(_)
+            | EndpointType::Kafka(_)
+    )
+}
+
+fn normalize_consumer_response(
+    response: Option<ConsumerResponseConfig>,
+) -> Option<ConsumerResponseConfig> {
+    response.and_then(|mut response| {
+        response.headers.retain(|key, value| {
+            let trimmed_key = key.trim();
+            let trimmed_value = value.trim();
+            !trimmed_key.is_empty() && !trimmed_value.is_empty()
+        });
+
+        if response.headers.is_empty() && response.payload.trim().is_empty() {
+            None
+        } else {
+            Some(response)
+        }
+    })
+}
+
 impl UiApp {
     pub fn new(
         initial_config: AppConfig,
@@ -125,6 +218,77 @@ impl UiApp {
 
     pub async fn get_config(&self) -> AppConfig {
         self.config.read().await.clone()
+    }
+
+    pub async fn handle_ui_message(
+        &self,
+        msg: CanonicalMessage,
+        serve_static_assets: bool,
+    ) -> Result<Handled, HandlerError> {
+        let method = msg
+            .metadata
+            .get("http_method")
+            .map(|s| s.as_str())
+            .unwrap_or("GET")
+            .to_uppercase();
+        let raw_path = msg
+            .metadata
+            .get("http_path")
+            .map(|s| s.as_str())
+            .unwrap_or("/");
+        let path = raw_path.to_lowercase();
+
+        let result = match (method.as_str(), path.as_str()) {
+            ("GET", "/health") => Ok(Handled::Publish(msg!("OK"))),
+            ("GET", "/schema.json") => self.execute_ui_command(UiCommand::GetSchema).await,
+            ("GET", "/config") => self.execute_ui_command(UiCommand::GetConfig).await,
+            ("GET", "/consumer-status") => {
+                let name = query_param(&msg, "consumer").unwrap_or_default();
+                self.execute_ui_command(UiCommand::ConsumerStatus { name })
+                    .await
+            }
+            ("POST", "/consumer-start") => {
+                let name = query_param(&msg, "consumer").unwrap_or_default();
+                self.execute_ui_command(UiCommand::StartConsumer { name })
+                    .await
+            }
+            ("POST", "/consumer-stop") => {
+                let name = query_param(&msg, "consumer").unwrap_or_default();
+                self.execute_ui_command(UiCommand::StopConsumer { name })
+                    .await
+            }
+            ("GET", "/messages") => {
+                let consumer = query_param(&msg, "consumer");
+                self.execute_ui_command(UiCommand::GetMessages { consumer })
+                    .await
+            }
+            ("POST", "/config") => self.handle_update_config_message(msg).await,
+            ("POST", "/publish") => self.handle_publish_message(msg).await,
+            ("GET", "/runtime-status") => self.execute_ui_command(UiCommand::RuntimeStatus).await,
+            ("GET", "/metrics") => self.execute_ui_command(UiCommand::RenderMetrics).await,
+            ("GET", _) if serve_static_assets => self.handle_static_asset(raw_path),
+            _ => Ok(Handled::Publish(msg!("Not Found").with_status_code("404"))),
+        };
+
+        let handled = match result {
+            Ok(h) => h,
+            Err(e) => Handled::Publish(
+                msg!(format!("Internal Server Error: {}", e)).with_status_code("500"),
+            ),
+        };
+
+        let response = match handled {
+            Handled::Ack => msg!("OK"),
+            Handled::Publish(m) => m,
+        };
+
+        let response = if !response.metadata.contains_key("http_status_code") {
+            response.with_status_code("200")
+        } else {
+            response
+        };
+
+        Ok(Handled::Publish(response))
     }
 
     pub fn render_metrics(&self) -> String {
@@ -349,6 +513,7 @@ impl UiApp {
             .drain(..)
             .map(|mut c| {
                 c.name = c.name.trim().to_string();
+                c.response = normalize_consumer_response(c.response);
                 c
             })
             .collect();
@@ -363,6 +528,15 @@ impl UiApp {
                 .map_err(|e| anyhow!("Route {name}: validation failed: {e}"))?;
         }
         for consumer in &consumers {
+            if consumer.response.is_some()
+                && !endpoint_supports_consumer_response(&consumer.endpoint)
+            {
+                return Err(anyhow!(
+                    "Consumer {}: custom responses are not supported for endpoint type {}",
+                    consumer.name,
+                    consumer.endpoint.endpoint_type.name()
+                ));
+            }
             let temp_route = Route::new(consumer.endpoint.clone(), Endpoint::null());
             temp_route
                 .check(&consumer.name, None)
@@ -468,6 +642,125 @@ impl UiApp {
         Ok(())
     }
 
+    pub async fn execute_ui_command(&self, command: UiCommand) -> Result<Handled, HandlerError> {
+        match self.execute(command).await {
+            Ok(response) => self.ui_response_to_handled(response),
+            Err(error) => Ok(self.map_ui_command_error(error)),
+        }
+    }
+
+    fn json_response<T: serde::Serialize>(&self, value: &T) -> Result<Handled, HandlerError> {
+        Ok(Handled::Publish(
+            CanonicalMessage::from_type(value)
+                .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                .with_content_type("application/json"),
+        ))
+    }
+
+    fn map_ui_command_error(&self, error: UiCommandError) -> Handled {
+        match error {
+            UiCommandError::InvalidInput(err) => {
+                tracing::error!("{err}");
+                Handled::Publish(
+                    CanonicalMessage::from(err.to_string())
+                        .with_status_code(UiCommandError::InvalidInput(err).http_status_code()),
+                )
+            }
+            UiCommandError::NotFound { resource, name } => Handled::Publish(
+                CanonicalMessage::from(format!("{resource} not found: {name}"))
+                    .with_status_code("404"),
+            ),
+            UiCommandError::Failed(err) => {
+                tracing::error!("{err}");
+                Handled::Publish(
+                    CanonicalMessage::from(err.to_string())
+                        .with_status_code(UiCommandError::Failed(err).http_status_code()),
+                )
+            }
+        }
+    }
+
+    fn ui_response_to_handled(&self, response: UiResponse) -> Result<Handled, HandlerError> {
+        match response {
+            UiResponse::Ack { message } => Ok(Handled::Publish(CanonicalMessage::from(message))),
+            UiResponse::Config(config) => self.json_response(&config),
+            UiResponse::Schema(schema) => self.json_response(&schema),
+            UiResponse::ConsumerStatus(status) => self.json_response(&status),
+            UiResponse::Messages(messages) => Ok(Handled::Publish(
+                CanonicalMessage::from_type(&messages)
+                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                    .with_content_type("application/json")
+                    .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
+            )),
+            UiResponse::Publish(response) => self.json_response(&response),
+            UiResponse::RuntimeStatus(status) => Ok(Handled::Publish(
+                CanonicalMessage::from_type(&status)
+                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                    .with_content_type("application/json")
+                    .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
+            )),
+            UiResponse::Metrics(metrics) => Ok(Handled::Publish(
+                CanonicalMessage::from(metrics).with_content_type("text/plain; version=0.0.4"),
+            )),
+        }
+    }
+
+    fn handle_static_asset(&self, request_path: &str) -> Result<Handled, HandlerError> {
+        let Some(file_path) = resolve_static_asset_path(request_path) else {
+            return Ok(Handled::Publish(msg!("Not Found").with_status_code("404")));
+        };
+
+        match std::fs::read(&file_path) {
+            Ok(contents) => Ok(Handled::Publish(msg!(contents).with_content_type(
+                mq_bridge::endpoints::http::guess_content_type(&file_path.to_string_lossy()),
+            ))),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Handled::Publish(msg!("Not Found").with_status_code("404")))
+            }
+            Err(err) => Err(HandlerError::NonRetryable(err.into())),
+        }
+    }
+
+    async fn handle_publish_message(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
+        match serde_json::from_slice::<PublishRequest>(&msg.payload) {
+            Ok(request) => self.execute_ui_command(UiCommand::Publish(request)).await,
+            Err(e) => Ok(
+                self.map_ui_command_error(UiCommandError::invalid_input(format!(
+                    "Json deserialize error: {e}"
+                ))),
+            ),
+        }
+    }
+
+    async fn handle_update_config_message(
+        &self,
+        msg: CanonicalMessage,
+    ) -> Result<Handled, HandlerError> {
+        let body = msg.payload;
+        let new_config: AppConfig = match serde_json::from_slice(&body) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                let mut msg_str = format!("Json deserialize error: {}", e);
+                if e.line() == 1 {
+                    let col = e.column();
+                    let idx = col.saturating_sub(1);
+                    let len = body.len();
+                    let start = idx.saturating_sub(30);
+                    let end = (idx + 30).min(len);
+                    let snippet = String::from_utf8_lossy(&body[start..end]);
+                    msg_str.push_str(&format!("\nAt: ...{}...", snippet));
+                }
+                tracing::error!("{}", msg_str);
+                return Ok(Handled::Publish(
+                    CanonicalMessage::from(msg_str).with_status_code("400"),
+                ));
+            }
+        };
+
+        self.execute_ui_command(UiCommand::UpdateConfig(new_config))
+            .await
+    }
+
     async fn start_ui_collector_routes(&self, consumers: &[ConsumerConfig]) -> Result<()> {
         let mut handles = self.ui_handles.write().await;
         for consumer in consumers {
@@ -476,22 +769,43 @@ impl UiApp {
             }
             let name = consumer.name.clone();
             let topic = format!("ui_collector_{name}");
-            let output = Endpoint::new_memory(&topic, 1000);
+            let log_channel =
+                mq_bridge::get_or_create_channel(&MemoryConfig::new(&topic, Some(1000)));
+            let response_config = normalize_consumer_response(consumer.response.clone());
+            let output = if endpoint_supports_consumer_response(&consumer.endpoint) {
+                Endpoint::new_response()
+            } else {
+                Endpoint::null()
+            };
 
             let closure_name = name.clone();
             let route = Route::new(consumer.endpoint.clone(), output).with_handler(
                 move |msg: CanonicalMessage| {
                     let name = closure_name.clone();
+                    let log_channel = log_channel.clone();
+                    let response_config = response_config.clone();
                     async move {
                         let val = serde_json::json!({
                             "time": chrono::Local::now().to_rfc3339(),
-                            "metadata": msg.metadata,
+                            "metadata": msg.metadata.clone(),
                             "payload": msg.get_payload_str()
                         });
                         let mut enriched = CanonicalMessage::from_type(&val)
                             .unwrap_or_else(|_| CanonicalMessage::from(""));
                         enriched.metadata.insert("ui_source".into(), name);
-                        Ok(Handled::Publish(enriched))
+                        log_channel
+                            .sender
+                            .send(vec![enriched])
+                            .await
+                            .map_err(|e| HandlerError::NonRetryable(anyhow!(e.to_string())))?;
+
+                        if let Some(response_config) = response_config.clone() {
+                            let mut response = CanonicalMessage::from(response_config.payload);
+                            response.metadata = response_config.headers;
+                            Ok(Handled::Publish(response))
+                        } else {
+                            Ok(Handled::Ack)
+                        }
                     }
                 },
             );

@@ -28,6 +28,8 @@
     <!-- Split.js -->
     <script src="/vendor/split/split.min.js"></script>
 
+    <script src="/dialogs.js"></script>
+    <script src="/tauri-bridge.js"></script>
     <script src="/vanilla-schema-forms.js"></script>
     <script src="/custom-form.js"></script>
     <script src="/routes.js"></script>
@@ -132,6 +134,7 @@
                                     </div>
                                 </div>
                                 <div id="cons-config-form" class="field-grid"></div>
+                                <div id="cons-response-editor" style="display:none;"></div>
                             </div>
                         </div>
                         <div class="pane-container" id="cons-msg-panel">
@@ -406,10 +409,12 @@
                         button.textContent = originalLabel;
                         button.disabled = originalDisabled ?? false;
                     }
-                    alert("Error saving: " + e.message);
+                    window.mqbAlert("Error saving: " + e.message);
                     return null;
                 }
             };
+
+            window.fetchConfigFromServer = async () => (await fetch('/config', { cache: 'no-store' })).json();
 
             // Global helper for saving configuration
             window.saveConfig = async (silent = false, button = null) => {
@@ -434,9 +439,44 @@
                     return await doSave();
                 } catch (e) {
                     if (!silent) {
-                        alert("Error saving: " + e.message);
+                        window.mqbAlert("Error saving: " + e.message);
                     }
                     return false;
+                }
+            };
+
+            window.saveConfigSection = async (sectionName, sectionValue, silent = false, button = null) => {
+                const doSave = async () => {
+                    const serverConfig = await window.fetchConfigFromServer();
+                    const nextConfig = { ...serverConfig, [sectionName]: sectionValue };
+                    const response = await fetch('/config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(nextConfig)
+                    });
+                    if (!response.ok) {
+                        const text = await response.text();
+                        throw new Error(text);
+                    }
+                    const refreshedConfig = await window.fetchConfigFromServer();
+                    window.appConfig = {
+                        ...window.appConfig,
+                        [sectionName]: refreshedConfig[sectionName]
+                    };
+                    return refreshedConfig;
+                };
+
+                if (button) {
+                    return window.runSaveButtonAction(button, doSave);
+                }
+
+                try {
+                    return await doSave();
+                } catch (e) {
+                    if (!silent) {
+                        window.mqbAlert("Error saving: " + e.message);
+                    }
+                    return null;
                 }
             };
 

@@ -29,4 +29,5 @@ db
 
 /node_modules
 /target
+/crates/desktop/gen
 config.yml

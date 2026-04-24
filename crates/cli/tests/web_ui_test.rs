@@ -78,6 +78,14 @@ async fn http_post_json(port: u16, path: &str, json_payload: &str) -> String {
     send_http_request(port, &request).await
 }
 
+async fn http_post(port: u16, path: &str) -> String {
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        path
+    );
+    send_http_request(port, &request).await
+}
+
 fn response_body(response: &str) -> &str {
     response
         .split_once("\r\n\r\n")
@@ -203,6 +211,72 @@ async fn test_web_ui_post_config_deploys_enabled_route() {
     assert!(routes.contains(&route_name));
 
     mq_bridge_app::mq_bridge::stop_route(&route_name).await;
+    server.abort();
+    stop_all_routes().await;
+    let _ = std::fs::remove_file(config_file);
+}
+
+#[tokio::test]
+async fn test_consumer_custom_response_is_returned_for_http_consumer() {
+    let _guard = test_mutex().lock().await;
+    stop_all_routes().await;
+
+    let ui_port = get_free_port();
+    let consumer_port = get_free_port();
+    let config_file = unique_config_path(ui_port);
+    let server = start_test_server(ui_port, AppConfig::default(), &config_file).await;
+
+    let consumer_name = format!("test_consumer_{}", uuid::Uuid::new_v4().simple());
+    let json_payload = format!(
+        r#"{{
+            "log_level":"debug",
+            "logger":"plain",
+            "consumers":[{{
+                "name":"{consumer_name}",
+                "endpoint":{{"http":{{"url":"127.0.0.1:{consumer_port}"}}}},
+                "comment":"",
+                "response":{{
+                    "headers":{{"Content-Type":"application/json","X-Test-Reply":"configured"}},
+                    "payload":"{{\"ok\":true}}"
+                }}
+            }}]
+        }}"#
+    );
+    let response = http_post_json(ui_port, "/config", &json_payload).await;
+    assert!(
+        response.contains("200 OK"),
+        "unexpected response: {}",
+        response
+    );
+
+    let start_response = http_post(
+        ui_port,
+        &format!("/consumer-start?consumer={consumer_name}"),
+    )
+    .await;
+    assert!(
+        start_response.contains("200 OK"),
+        "unexpected response: {}",
+        start_response
+    );
+
+    sleep(Duration::from_millis(200)).await;
+
+    let consumer_response = send_http_request(
+        consumer_port,
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+    )
+    .await;
+    assert!(
+        consumer_response.contains("200 OK"),
+        "unexpected consumer response: {}",
+        consumer_response
+    );
+    let consumer_response_lower = consumer_response.to_ascii_lowercase();
+    assert!(consumer_response_lower.contains("x-test-reply: configured"));
+    assert!(consumer_response_lower.contains("content-type: application/json"));
+    assert!(consumer_response.contains("{\"ok\":true}"));
+
     server.abort();
     stop_all_routes().await;
     let _ = std::fs::remove_file(config_file);
