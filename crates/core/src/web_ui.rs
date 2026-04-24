@@ -1,5 +1,7 @@
 use crate::config::AppConfig;
-use crate::ui_app::{PublishRequest, UiApp};
+use crate::ui_api::{UiCommand, UiCommandError, UiResponse};
+use crate::ui_app::PublishRequest;
+use crate::ui_app::UiApp;
 use anyhow::Result;
 use mq_bridge::endpoints::http::guess_content_type;
 use mq_bridge::models::{Endpoint, EndpointType, HttpConfig, Route};
@@ -73,6 +75,68 @@ struct WebUiHttpHandler {
 }
 
 impl WebUiHttpHandler {
+    fn json_response<T: serde::Serialize>(&self, value: &T) -> Result<Handled, HandlerError> {
+        Ok(Handled::Publish(
+            CanonicalMessage::from_type(value)
+                .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                .with_content_type("application/json"),
+        ))
+    }
+
+    fn map_ui_command_error(&self, error: UiCommandError) -> Handled {
+        match error {
+            UiCommandError::InvalidInput(err) => {
+                tracing::error!("{err}");
+                Handled::Publish(
+                    CanonicalMessage::from(err.to_string())
+                        .with_status_code(UiCommandError::InvalidInput(err).http_status_code()),
+                )
+            }
+            UiCommandError::NotFound { resource, name } => Handled::Publish(
+                CanonicalMessage::from(format!("{resource} not found: {name}"))
+                    .with_status_code("404"),
+            ),
+            UiCommandError::Failed(err) => {
+                tracing::error!("{err}");
+                Handled::Publish(
+                    CanonicalMessage::from(err.to_string())
+                        .with_status_code(UiCommandError::Failed(err).http_status_code()),
+                )
+            }
+        }
+    }
+
+    async fn execute_command(&self, command: UiCommand) -> Result<Handled, HandlerError> {
+        match self.app.execute(command).await {
+            Ok(response) => self.ui_response_to_handled(response),
+            Err(error) => Ok(self.map_ui_command_error(error)),
+        }
+    }
+
+    fn ui_response_to_handled(&self, response: UiResponse) -> Result<Handled, HandlerError> {
+        match response {
+            UiResponse::Ack { message } => Ok(Handled::Publish(CanonicalMessage::from(message))),
+            UiResponse::Config(config) => self.json_response(&config),
+            UiResponse::ConsumerStatus(status) => self.json_response(&status),
+            UiResponse::Messages(messages) => Ok(Handled::Publish(
+                CanonicalMessage::from_type(&messages)
+                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                    .with_content_type("application/json")
+                    .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
+            )),
+            UiResponse::Publish(response) => self.json_response(&response),
+            UiResponse::RuntimeStatus(status) => Ok(Handled::Publish(
+                CanonicalMessage::from_type(&status)
+                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                    .with_content_type("application/json")
+                    .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
+            )),
+            UiResponse::Metrics(metrics) => Ok(Handled::Publish(
+                CanonicalMessage::from(metrics).with_content_type("text/plain; version=0.0.4"),
+            )),
+        }
+    }
+
     fn handle_static_asset(&self, request_path: &str) -> Result<Handled, HandlerError> {
         let Some(file_path) = resolve_static_asset_path(request_path) else {
             return Ok(Handled::Publish(msg!("Not Found").with_status_code("404")));
@@ -111,17 +175,15 @@ impl WebUiHttpHandler {
                     .map_err(|e| HandlerError::NonRetryable(e.into()))?
                     .with_content_type("application/json")
             })),
-            ("GET", "/config") => self.handle_get_config().await,
+            ("GET", "/config") => self.execute_command(UiCommand::GetConfig).await,
             ("GET", "/consumer-status") => self.handle_consumer_status(&msg).await,
             ("POST", "/consumer-start") => self.handle_consumer_start(&msg).await,
             ("POST", "/consumer-stop") => self.handle_consumer_stop(&msg).await,
             ("GET", "/messages") => self.handle_get_messages(&msg).await,
             ("POST", "/config") => self.handle_update_config(msg).await,
             ("POST", "/publish") => self.handle_publish(msg).await,
-            ("GET", "/runtime-status") => self.handle_runtime_status().await,
-            ("GET", "/metrics") => Ok(Handled::Publish(
-                msg!(self.app.render_metrics()).with_content_type("text/plain; version=0.0.4"),
-            )),
+            ("GET", "/runtime-status") => self.execute_command(UiCommand::RuntimeStatus).await,
+            ("GET", "/metrics") => self.execute_command(UiCommand::RenderMetrics).await,
             ("GET", _) => self.handle_static_asset(raw_path),
             _ => Ok(Handled::Publish(msg!("Not Found").with_status_code("404"))),
         };
@@ -147,100 +209,43 @@ impl WebUiHttpHandler {
         Ok(Handled::Publish(response))
     }
 
-    async fn handle_get_config(&self) -> Result<Handled, HandlerError> {
-        let current_config = self.app.get_config().await;
-        Ok(Handled::Publish(
-            CanonicalMessage::from_type(&current_config)
-                .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                .with_content_type("application/json"),
-        ))
-    }
-
     async fn handle_consumer_status(
         &self,
         msg: &CanonicalMessage,
     ) -> Result<Handled, HandlerError> {
         let name = query_param(msg, "consumer").unwrap_or_default();
-
-        if let Some(status) = self.app.consumer_status(&name).await {
-            Ok(Handled::Publish(
-                CanonicalMessage::from_type(&status)
-                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                    .with_content_type("application/json"),
-            ))
-        } else {
-            Ok(Handled::Publish(
-                msg!("Consumer not found").with_status_code("404"),
-            ))
-        }
+        self.execute_command(UiCommand::ConsumerStatus { name })
+            .await
     }
 
     async fn handle_consumer_start(&self, msg: &CanonicalMessage) -> Result<Handled, HandlerError> {
         let name = query_param(msg, "consumer").unwrap_or_default();
-
-        if self
-            .app
-            .start_consumer(&name)
+        self.execute_command(UiCommand::StartConsumer { name })
             .await
-            .map_err(HandlerError::NonRetryable)?
-        {
-            Ok(Handled::Publish(msg!("Started")))
-        } else {
-            Ok(Handled::Publish(
-                msg!("Consumer not found").with_status_code("404"),
-            ))
-        }
     }
 
     async fn handle_consumer_stop(&self, msg: &CanonicalMessage) -> Result<Handled, HandlerError> {
         let name = query_param(msg, "consumer").unwrap_or_default();
-        let _ = self.app.stop_consumer(&name).await;
-        Ok(Handled::Publish(msg!("Stopped")))
+        self.execute_command(UiCommand::StopConsumer { name }).await
     }
 
     async fn handle_get_messages(&self, msg: &CanonicalMessage) -> Result<Handled, HandlerError> {
         let target_consumer = query_param(msg, "consumer");
-        let grouped_messages = self.app.get_messages(target_consumer.as_deref()).await;
-
-        Ok(Handled::Publish(
-            CanonicalMessage::from_type(&grouped_messages)
-                .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                .with_content_type("application/json")
-                .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
-        ))
+        self.execute_command(UiCommand::GetMessages {
+            consumer: target_consumer,
+        })
+        .await
     }
 
     async fn handle_publish(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
-        let request: PublishRequest =
-            serde_json::from_slice(&msg.payload).unwrap_or(PublishRequest {
-                name: String::new(),
-                payload: String::new(),
-                metadata: Default::default(),
-            });
-
-        match self.app.publish(request).await {
-            Ok(Some(response)) => Ok(Handled::Publish(
-                CanonicalMessage::from_type(&response)
-                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                    .with_content_type("application/json"),
-            )),
-            Ok(None) => Ok(Handled::Publish(
-                msg!("Publisher not found").with_status_code("404"),
-            )),
-            Err(e) => Ok(Handled::Publish(
-                msg!(e.to_string()).with_status_code("500"),
-            )),
+        match serde_json::from_slice::<PublishRequest>(&msg.payload) {
+            Ok(request) => self.execute_command(UiCommand::Publish(request)).await,
+            Err(e) => Ok(
+                self.map_ui_command_error(UiCommandError::invalid_input(format!(
+                    "Json deserialize error: {e}"
+                ))),
+            ),
         }
-    }
-
-    async fn handle_runtime_status(&self) -> Result<Handled, HandlerError> {
-        let status = self.app.runtime_status().await;
-        Ok(Handled::Publish(
-            CanonicalMessage::from_type(&status)
-                .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                .with_content_type("application/json")
-                .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
-        ))
     }
 
     async fn handle_update_config(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
@@ -265,17 +270,8 @@ impl WebUiHttpHandler {
             }
         };
 
-        match self.app.update_config(new_config).await {
-            Ok(()) => Ok(Handled::Publish(
-                CanonicalMessage::from("Configuration updated").with_status_code("200"),
-            )),
-            Err(e) => {
-                tracing::error!("{}", e);
-                Ok(Handled::Publish(
-                    CanonicalMessage::from(e.to_string()).with_status_code("500"),
-                ))
-            }
-        }
+        self.execute_command(UiCommand::UpdateConfig(new_config))
+            .await
     }
 }
 

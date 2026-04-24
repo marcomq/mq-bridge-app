@@ -25,20 +25,20 @@ struct RouteMetricSample {
     observed_at: Instant,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RuntimeStatusResponse {
     pub active_consumers: Vec<String>,
     pub active_routes: Vec<String>,
     pub route_throughput: HashMap<String, f64>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ConsumerStatusResponse {
     pub running: bool,
     pub status: mq_bridge::traits::EndpointStatus,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PublishRequest {
     pub name: String,
     pub payload: String,
@@ -46,7 +46,7 @@ pub struct PublishRequest {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PublishResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
