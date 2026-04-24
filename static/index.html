@@ -44,9 +44,9 @@
 
         </div>
         <div class="topbar-spacer"></div>
-        <div class="topbar-status">
-            <div class="status-dot"></div>
-            mq-bridge connected
+        <div class="topbar-status topbar-status-idle" id="runtime-status" hidden>
+            <div class="status-dot" id="runtime-status-dot"></div>
+            <span id="runtime-status-label">mq-bridge connected</span>
         </div>
     </div>
 
@@ -74,7 +74,7 @@
                 <div class="sidebar">
                     <div class="sidebar-header">
                         <input class="sidebar-search" id="route-filter" type="text" placeholder="Filter routes…">
-                        <div class="btn-icon" id="route-add" title="Add route">+</div>
+                        <wa-button size="small" appearance="outlined" class="icon-button" id="route-add" title="Add route">+</wa-button>
                     </div>
                     <div class="sidebar-list" id="route-list">
                         <div class="sidebar-group-label">Routes</div>
@@ -82,15 +82,15 @@
                     </div>
                 </div>
                 <div class="main-content">
-                    <div id="route-empty-alert" class="alert alert-info" style="padding:20px; display:none;">No routes configured. Click "+" to create one.</div>
+                    <div id="route-empty-alert" class="empty-state" style="display:none;">No routes configured. Click "+" to create one.</div>
                         <div id="route-main-ui" class="pane-container">
                             <div class="pane-top" style="padding:12px;">
                                 <div class="section-toolbar">
                                     <div class="section-label">Definition</div>
                                     <div class="form-actions-row section-actions">
-                                        <button class="btn-primary" id="route-save">Save</button>
-                                        <button class="btn-secondary" id="route-clone">Clone</button>
-                                        <button class="btn-danger" id="route-delete">Delete</button>
+                                        <wa-button variant="brand" size="small" id="route-save">Save</wa-button>
+                                        <wa-button variant="neutral" appearance="outlined" size="small" id="route-clone">Clone</wa-button>
+                                        <wa-button variant="danger" appearance="outlined" size="small" id="route-delete">Delete</wa-button>
                                     </div>
                                 </div>
                                 <div id="route-config-form" class="field-grid"></div>
@@ -106,7 +106,7 @@
                 <div class="sidebar">
                     <div class="sidebar-header">
                         <input class="sidebar-search" id="cons-filter" type="text" placeholder="Filter consumers…">
-                        <div class="btn-icon" id="cons-add" title="Add consumer">+</div>
+                        <wa-button size="small" appearance="outlined" class="icon-button" id="cons-add" title="Add consumer">+</wa-button>
                     </div>
                     <div class="sidebar-list" id="cons-list">
                         <div class="sidebar-group-label">Saved</div>
@@ -114,7 +114,7 @@
                     </div>
                 </div>
                 <div class="main-content">
-                    <div id="cons-empty-alert" class="alert alert-info" style="padding:20px; display:none;">No consumers configured. Click "+ New" to create one.</div>
+                    <div id="cons-empty-alert" class="empty-state" style="display:none;">No consumers configured. Click "+" to create one.</div>
                     <div id="cons-main-ui" style="display:contents">
                         <div class="content-tabs" id="cons-sub-tabs">
                             <div class="content-tab" data-target="cons-def-panel" id="ctab-def">Definition</div>
@@ -125,9 +125,9 @@
                                 <div class="section-toolbar">
                                     <div class="section-label">Definition</div>
                                     <div class="form-actions-row section-actions">
-                                        <button class="btn-primary" id="cons-save">Save</button>
-                                        <button class="btn-secondary" id="cons-clone">Clone</button>
-                                        <button class="btn-danger" id="cons-delete">Delete</button>
+                                        <wa-button variant="brand" size="small" id="cons-save">Save</wa-button>
+                                        <wa-button variant="neutral" appearance="outlined" size="small" id="cons-clone">Clone</wa-button>
+                                        <wa-button variant="danger" appearance="outlined" size="small" id="cons-delete">Delete</wa-button>
                                     </div>
                                 </div>
                                 <div id="cons-config-form" class="field-grid"></div>
@@ -137,7 +137,7 @@
                             <div class="pane-top" id="cons-list-pane">
                                 <div class="msg-table-header">
                                     <span class="msg-table-title" id="cons-live-title">Incoming Messages:</span>
-                                    <button class="btn-clear" id="cons-clear-history">Clear</button>
+                                    <wa-button variant="neutral" appearance="outlined" size="small" class="ghost-action" id="cons-clear-history">Clear</wa-button>
                                     <wa-button variant="success" id="cons-toggle" size="small">Start</wa-button>
                                 </div>
                                 <div style="overflow:auto;flex:1;" id="consumer-log-body-wrapper">
@@ -167,7 +167,7 @@
                 <div class="sidebar">
                     <div class="sidebar-header">
                         <input class="sidebar-search" id="pub-filter" type="text" placeholder="Filter publishers…">
-                        <div class="btn-icon" id="pub-add" title="Add publisher">+</div>
+                        <wa-button size="small" appearance="outlined" class="icon-button" id="pub-add" title="Add publisher">+</wa-button>
                     </div>
                     <div class="sidebar-list" id="pub-list">
                         <div class="sidebar-group-label">Saved</div>
@@ -175,7 +175,7 @@
                     </div>
                 </div>
                 <div class="main-content">
-                    <div id="pub-empty-alert" class="alert alert-info" style="display:none;">No publishers configured. Click "+ New" to create one.</div>
+                    <div id="pub-empty-alert" class="empty-state" style="display:none;">No publishers configured. Click "+" to create one.</div>
                     <div id="pub-main-ui" style="display:contents">
                         <div class="request-bar">
                             <select class="proto-select" id="pub-proto">
@@ -186,7 +186,7 @@
                                 <option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option>
                             </select>
                             <input class="url-input" id="pub-url" value="http://localhost:8080/api/orders">
-                            <button class="btn-send" id="pub-send">Send</button>
+                            <wa-button variant="brand" size="small" id="pub-send">Send</wa-button>
                         </div>
 
                         <div class="content-tabs" id="pub-sub-tabs">
@@ -203,7 +203,7 @@
                                 <div class="pane-top" id="pub-payload-pane">
                                     <div class="section-toolbar">
                                         <div class="section-label">Request Body</div>
-                                        <button class="btn-primary" id="pub-beautify">Beautify JSON</button>
+                                        <wa-button variant="neutral" appearance="outlined" size="small" id="pub-beautify">Beautify JSON</wa-button>
                                     </div>
                                     <textarea class="body-editor" id="pub-payload" spellcheck="false"></textarea>
                                 </div>
@@ -211,7 +211,7 @@
                                 <div class="pane-top" id="pub-meta-pane" style="display:none;">
                                     <div class="section-toolbar">
                                         <div class="section-label">Headers</div>
-                                        <button class="btn-primary" id="add-meta">+ Add Header</button>
+                                        <wa-button variant="neutral" appearance="outlined" size="small" id="add-meta">+ Add Header</wa-button>
                                     </div>
                                     <table class="kv-table" id="metadata-container">
                                         <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
@@ -225,9 +225,9 @@
                                     <div class="section-toolbar">
                                         <div class="section-label">Definition</div>
                                         <div class="form-actions-row section-actions">
-                                            <button class="btn-primary" id="pub-save">Save</button>
-                                            <button class="btn-secondary" id="pub-clone">Clone</button>
-                                            <button class="btn-danger" id="pub-delete">Delete</button>
+                                            <wa-button variant="brand" size="small" id="pub-save">Save</wa-button>
+                                            <wa-button variant="neutral" appearance="outlined" size="small" id="pub-clone">Clone</wa-button>
+                                            <wa-button variant="danger" appearance="outlined" size="small" id="pub-delete">Delete</wa-button>
                                         </div>
                                     </div>
                                     <div id="pub-config-form" class="field-grid"></div>
@@ -251,10 +251,10 @@
         <div class="tab-content-panel" id="tab-config">
                 <div id="form-container" class="field-grid"></div>
                 <div id="form-actions" class="form-actions-row" style="display: none;">
-                    <button class="btn-primary" id="js-submit">Save</button>
-                    <button class="btn-secondary" id="js-show-json" type="button" title="Show current configuration as JSON" onclick="showJsonModal()">
+                    <wa-button variant="brand" size="small" id="js-submit">Save</wa-button>
+                    <wa-button variant="neutral" appearance="outlined" size="small" id="js-show-json" type="button" title="Show current configuration as JSON" onclick="showJsonModal()">
                         {?} JSON
-                    </button>
+                    </wa-button>
                 </div>
             </div>
     </div><!-- app-body -->
@@ -262,7 +262,7 @@
     <!-- JSON Preview Modal -->
     <wa-dialog label="Current Configuration (JSON)" id="jsonPreviewModal">
         <pre><code id="json-output"></code></pre>
-        <button slot="footer" class="btn-primary" onclick="document.getElementById('jsonPreviewModal').open = false">Close</button>
+        <wa-button slot="footer" variant="brand" size="small" onclick="document.getElementById('jsonPreviewModal').open = false">Close</wa-button>
     </wa-dialog>
 
     <script>
@@ -303,13 +303,102 @@
             document.getElementById('jsonPreviewModal').open = true;
         }
 
+        window._mqb_runtime_status = {
+            active_consumers: [],
+            active_routes: [],
+            route_throughput: {}
+        };
+
+        window.renderRuntimeStatus = () => {
+            const status = window._mqb_runtime_status || {};
+            const activeConsumers = status.active_consumers || [];
+            const activeRoutes = status.active_routes || [];
+            const isConnected = activeConsumers.length > 0 || activeRoutes.length > 0;
+
+            const badge = document.getElementById('runtime-status');
+            const label = document.getElementById('runtime-status-label');
+            if (!badge || !label) return;
+
+            if (!isConnected) {
+                badge.hidden = true;
+                badge.classList.add('topbar-status-idle');
+                badge.classList.remove('topbar-status-live');
+                label.textContent = 'mq-bridge idle';
+                return;
+            }
+
+            badge.hidden = false;
+            badge.classList.remove('topbar-status-idle');
+            badge.classList.add('topbar-status-live');
+
+            const parts = [];
+            if (activeRoutes.length > 0) parts.push(`${activeRoutes.length} active route${activeRoutes.length === 1 ? '' : 's'}`);
+            if (activeConsumers.length > 0) parts.push(`${activeConsumers.length} active consumer${activeConsumers.length === 1 ? '' : 's'}`);
+            label.textContent = parts.join(' • ');
+        };
+
+        window.pollRuntimeStatus = async () => {
+            try {
+                const response = await fetch('/runtime-status', { cache: 'no-store' });
+                if (!response.ok) throw new Error(`runtime-status ${response.status}`);
+                window._mqb_runtime_status = await response.json();
+            } catch (error) {
+                window._mqb_runtime_status = {
+                    active_consumers: [],
+                    active_routes: [],
+                    route_throughput: {}
+                };
+            }
+
+            window.renderRuntimeStatus();
+            if (window.renderRoutesRuntimeMetrics) {
+                window.renderRoutesRuntimeMetrics();
+            }
+        };
+
         window.addEventListener('load', async () => {
             const config = await (await fetch('/config')).json();
             const schema = await (await fetch('/schema.json')).json();
             
-            // Global helper for saving configuration
-            window.saveConfig = async (silent = false) => {
+            window.runSaveButtonAction = async (button, action) => {
+                const originalLabel = button?.textContent?.trim() || 'Save';
+                const originalDisabled = button?.disabled;
+                const originalLoading = button?.loading;
+
+                if (button) {
+                    button.disabled = true;
+                    if ('loading' in button) button.loading = true;
+                    button.textContent = 'Saving...';
+                }
+
                 try {
+                    const result = await action();
+
+                    if (button) {
+                        if ('loading' in button) button.loading = false;
+                        button.textContent = 'Saved';
+                        setTimeout(() => {
+                            button.textContent = originalLabel;
+                            button.disabled = originalDisabled ?? false;
+                            if ('loading' in button) button.loading = originalLoading ?? false;
+                        }, 1200);
+                    }
+
+                    return result;
+                } catch (e) {
+                    if (button) {
+                        if ('loading' in button) button.loading = false;
+                        button.textContent = originalLabel;
+                        button.disabled = originalDisabled ?? false;
+                    }
+                    alert("Error saving: " + e.message);
+                    return null;
+                }
+            };
+
+            // Global helper for saving configuration
+            window.saveConfig = async (silent = false, button = null) => {
+                const doSave = async () => {
                     const response = await fetch('/config', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -319,10 +408,19 @@
                         const text = await response.text();
                         throw new Error(text);
                     }
-                    if (!silent) alert("Configuration saved successfully!");
                     return true;
+                };
+
+                if (button) {
+                    return window.runSaveButtonAction(button, doSave);
+                }
+
+                try {
+                    return await doSave();
                 } catch (e) {
-                    alert("Error saving: " + e.message);
+                    if (!silent) {
+                        alert("Error saving: " + e.message);
+                    }
                     return false;
                 }
             };
@@ -357,6 +455,10 @@
                 defaultTabId = config.default_tab || 'routes';
             }
             switchMain(defaultTabId);
+
+            window.renderRuntimeStatus();
+            await window.pollRuntimeStatus();
+            window._mqb_runtime_poll_timer = setInterval(window.pollRuntimeStatus, 2000);
         });
     </script>
 </body>

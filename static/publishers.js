@@ -527,7 +527,7 @@ function initPublishers(config, schema) {
         payloadContainer.textContent = payloadContent;
         payloadContainer.style.whiteSpace = 'pre-wrap';
         payloadContainer.style.fontFamily = 'var(--font)';
-        payloadContainer.style.color = '#a8d8a8';
+        payloadContainer.style.color = 'var(--text-payload)';
 
         if (copyBtn) copyBtn.onclick = () => navigator.clipboard.writeText(payloadContent);
 
@@ -565,7 +565,7 @@ function initPublishers(config, schema) {
         historyContainer.innerHTML = `
             <div class="section-toolbar">
                 <span class="section-label">Execution History</span>
-                <button class="btn-clear" id="pub-clear-history">Clear</button>
+                <wa-button variant="neutral" appearance="outlined" size="small" class="ghost-action" id="pub-clear-history">Clear</wa-button>
             </div>
             <div style="overflow:auto;flex:1">
                 <table class="msg-table">
@@ -675,7 +675,7 @@ function initPublishers(config, schema) {
         updateUIFromState();
     };
 
-    document.getElementById('pub-save').onclick = () => window.saveConfig();
+    document.getElementById('pub-save').onclick = (e) => window.saveConfig(false, e.currentTarget);
     document.getElementById('add-meta').onclick = () => addMetadataRow();
     document.getElementById('pub-url').oninput = updateStateFromUI;
     document.getElementById('pub-beautify').onclick = () => {

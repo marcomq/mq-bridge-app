@@ -16,6 +16,12 @@ const {
   rendererConfig,
 } = window.VanillaSchemaForms;
 
+Object.assign(rendererConfig.classes, {
+  buttonPrimary: "wa-native-button wa-native-button--brand",
+  buttonSecondary: "wa-native-button wa-native-button--neutral",
+  buttonDanger: "wa-native-button wa-native-button--danger",
+});
+
 // Apply global I18N overrides
 setI18n({
   keys: {
@@ -263,9 +269,11 @@ const createCustomCollapsibleRenderer = (visibleKeys) => ({
       );
 
       toggleBtn = h(
-        "button",
+        "wa-button",
         {
-          type: "button",
+          size: "small",
+          variant: "neutral",
+          appearance: "plain",
           className: "btn-linkish",
           onclick: (e) => toggleDisclosure(e, hiddenId),
         },
@@ -402,10 +410,12 @@ const routesRenderer = {
           h("input", keyInputAttrs),
         ),
         h(
-          "button",
+          "wa-button",
           {
-            type: "button",
-            className: `btn-danger btn-remove-ap ${rendererConfig.triggers.removeAdditionalProperty}`,
+            variant: "danger",
+            appearance: "outlined",
+            size: "small",
+            className: `btn-remove-ap ${rendererConfig.triggers.removeAdditionalProperty}`,
           },
           "Remove Route",
         ),

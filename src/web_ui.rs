@@ -8,10 +8,11 @@ use mq_bridge::{
     msg, unregister_publisher, CanonicalMessage, Handled, HandlerError, Publisher, Sent,
 };
 use schemars::schema_for;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 /// We are using mq-bridge here, instead of standard actix web server.
@@ -95,6 +96,69 @@ struct WebUiHandler {
     metrics_handle: PrometheusHandle,
     config_file_path: Arc<String>,
     ui_handles: Arc<RwLock<HashMap<String, RouteHandle>>>,
+    throughput_samples: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
+}
+
+#[derive(Clone, Copy)]
+struct RouteMetricSample {
+    total_messages: f64,
+    observed_at: Instant,
+}
+
+#[derive(serde::Serialize)]
+struct RuntimeStatusResponse {
+    active_consumers: Vec<String>,
+    active_routes: Vec<String>,
+    route_throughput: HashMap<String, f64>,
+}
+
+fn extract_label_value(segment: &str, label: &str) -> Option<String> {
+    let pattern = format!(r#"{label}=""#);
+    let start = segment.find(&pattern)? + pattern.len();
+    let remainder = &segment[start..];
+    let end = remainder.find('"')?;
+    Some(remainder[..end].to_string())
+}
+
+fn parse_route_metric_totals(metrics_text: &str) -> HashMap<(String, String), f64> {
+    let mut totals = HashMap::new();
+
+    for line in metrics_text.lines() {
+        if !line.starts_with("queue_messages_processed_total{") {
+            continue;
+        }
+
+        let Some(labels_end) = line.find('}') else {
+            continue;
+        };
+        let labels = &line["queue_messages_processed_total{".len()..labels_end];
+        let value_str = line[labels_end + 1..].trim();
+        let Ok(value) = value_str.parse::<f64>() else {
+            continue;
+        };
+
+        let Some(route) = extract_label_value(labels, "route") else {
+            continue;
+        };
+        let Some(endpoint) = extract_label_value(labels, "endpoint") else {
+            continue;
+        };
+
+        totals.insert((route, endpoint), value);
+    }
+
+    totals
+}
+
+fn route_has_metrics(route: &Route) -> bool {
+    let has_metrics = |endpoint: &Endpoint| {
+        endpoint
+            .middlewares
+            .iter()
+            .any(|middleware| matches!(middleware, mq_bridge::models::Middleware::Metrics(_)))
+    };
+
+    has_metrics(&route.input) || has_metrics(&route.output)
 }
 
 impl WebUiHandler {
@@ -143,6 +207,7 @@ impl WebUiHandler {
             ("GET", "/messages") => self.handle_get_messages(&msg).await,
             ("POST", "/config") => self.handle_update_config(msg).await,
             ("POST", "/publish") => self.handle_publish(msg).await,
+            ("GET", "/runtime-status") => self.handle_runtime_status().await,
             ("GET", "/metrics") => Ok(Handled::Publish(
                 msg!(self.metrics_handle.render()).with_content_type("text/plain; version=0.0.4"),
             )),
@@ -209,6 +274,15 @@ impl WebUiHandler {
                     target: name.clone(),
                     ..Default::default()
                 }
+            } else if matches!(c.endpoint.endpoint_type, EndpointType::Http(_)) {
+                // HTTP consumers are passive listeners. Probing them by creating a
+                // fresh consumer can start a shared listener as a side effect, which
+                // makes the UI status poll look like a restart loop.
+                mq_bridge::traits::EndpointStatus {
+                    healthy: false,
+                    target: name.clone(),
+                    ..Default::default()
+                }
             } else {
                 // If not running, probe connectivity to show if config is valid and broker reachable.
                 match c.endpoint.create_consumer(&name).await {
@@ -253,7 +327,7 @@ impl WebUiHandler {
         if let Some(c) = consumer_config {
             self.start_ui_collector_routes(&[c])
                 .await
-                .map_err(|e| HandlerError::NonRetryable(e))?;
+                .map_err(HandlerError::NonRetryable)?;
             Ok(Handled::Publish(msg!("Started")))
         } else {
             Ok(Handled::Publish(
@@ -370,6 +444,82 @@ impl WebUiHandler {
                 msg!("Publisher not found").with_status_code("404"),
             ))
         }
+    }
+
+    async fn handle_runtime_status(&self) -> Result<Handled, HandlerError> {
+        let active_consumers: Vec<String> = self.ui_handles.read().await.keys().cloned().collect();
+
+        let active_routes: Vec<String> = mq_bridge::list_routes()
+            .into_iter()
+            .filter(|name| name != "web_ui" && !name.starts_with("ui_collector_route_"))
+            .collect();
+
+        let config = self.config.read().await;
+        let metrics_enabled_routes: HashSet<String> = config
+            .routes
+            .iter()
+            .filter(|(_, route)| route_has_metrics(route))
+            .map(|(name, _)| name.clone())
+            .collect();
+        drop(config);
+
+        let route_totals = parse_route_metric_totals(&self.metrics_handle.render());
+        let now = Instant::now();
+        let mut samples = self.throughput_samples.write().await;
+        let mut route_throughput = HashMap::new();
+
+        for route_name in &metrics_enabled_routes {
+            let input_total = route_totals
+                .get(&(route_name.clone(), "input".to_string()))
+                .copied();
+            let output_total = route_totals
+                .get(&(route_name.clone(), "output".to_string()))
+                .copied();
+            let Some(total_messages) = input_total.or(output_total) else {
+                route_throughput.insert(route_name.clone(), 0.0);
+                continue;
+            };
+
+            let throughput = if let Some(previous) = samples.get(route_name) {
+                let elapsed = now.duration_since(previous.observed_at).as_secs_f64();
+                if elapsed > 0.0 && total_messages >= previous.total_messages {
+                    (total_messages - previous.total_messages) / elapsed
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            samples.insert(
+                route_name.clone(),
+                RouteMetricSample {
+                    total_messages,
+                    observed_at: now,
+                },
+            );
+            route_throughput.insert(route_name.clone(), throughput);
+        }
+
+        samples.retain(|route_name, _| metrics_enabled_routes.contains(route_name));
+
+        let mut active_consumers = active_consumers;
+        active_consumers.sort();
+        let mut active_routes = active_routes;
+        active_routes.sort();
+
+        let resp = RuntimeStatusResponse {
+            active_consumers,
+            active_routes,
+            route_throughput,
+        };
+
+        Ok(Handled::Publish(
+            CanonicalMessage::from_type(&resp)
+                .map_err(|e| HandlerError::NonRetryable(e.into()))?
+                .with_content_type("application/json")
+                .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
+        ))
     }
 
     async fn handle_update_config(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
@@ -590,6 +740,7 @@ pub async fn start_web_server(
         metrics_handle,
         config_file_path: Arc::new(config_file_path),
         ui_handles,
+        throughput_samples: Arc::new(RwLock::new(HashMap::new())),
     };
 
     let input = Endpoint {

@@ -1,6 +1,7 @@
 async function initConsumers(config, schema) {
     const consumers = config.consumers || [];
     const MSG_STORAGE_KEY = 'mqb_consumer_messages';
+    const defaultMetricsMiddleware = () => [{ metrics: {} }];
 
     const applyEndpointSchemaDefaults = (itemSchema) => {
         const fileConfigSchema = itemSchema.$defs?.FileConfig;
@@ -189,7 +190,7 @@ async function initConsumers(config, schema) {
         payloadContainer.textContent = payload;
         payloadContainer.style.whiteSpace = 'pre-wrap';
         payloadContainer.style.fontFamily = 'var(--font)';
-        payloadContainer.style.color = '#a8d8a8';
+        payloadContainer.style.color = 'var(--text-payload)';
 
         // Update detail info (time, metadata if available)
         const uuidTime = msg.metadata?.id ? extractUuidV7Timestamp(msg.metadata.id) : null;
@@ -214,7 +215,7 @@ async function initConsumers(config, schema) {
         document.getElementById('cons-add').onclick = () => {
             const name = prompt("Consumer Name:");
             if (!name) return;
-            config.consumers.push({ name, input: { null: null }, comment: '', view: {} });
+            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '', view: {} });
             // Re-initialize consumers tab to refresh the list
             window.initConsumers(config, schema);
             setActiveItem(config.consumers.length - 1);
@@ -338,7 +339,7 @@ async function initConsumers(config, schema) {
         document.getElementById('cons-add').onclick = () => {
             const name = prompt("Consumer Name:");
             if (!name) return;
-            config.consumers.push({ name, input: { null: null }, comment: '', view: {} });
+            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '', view: {} });
             window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
             setActiveItem(config.consumers.length - 1);
             updateUI();
@@ -374,7 +375,7 @@ async function initConsumers(config, schema) {
             updateUI();
         };
 
-        document.getElementById('cons-save').onclick = () => window.saveConfig();
+        document.getElementById('cons-save').onclick = (e) => window.saveConfig(false, e.currentTarget);
     }
 
 
@@ -476,7 +477,7 @@ async function initConsumers(config, schema) {
         document.getElementById('cons-add').onclick = () => {
             const name = prompt("Consumer Name:");
             if (!name) return;
-            config.consumers.push({ name, input: { null: null }, comment: '', view: {} });
+            config.consumers.push({ name, endpoint: { middlewares: defaultMetricsMiddleware(), null: null }, comment: '', view: {} });
             window.initConsumers(config, schema); // Re-initialize to re-render the whole UI
             setActiveItem(config.consumers.length - 1);
             updateUI();

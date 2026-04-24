@@ -1,6 +1,22 @@
 async function initRoutes(config, schema) {
     const lib = window.VanillaSchemaForms;
     const container = document.getElementById('routes-container');
+    const ROUTE_VALIDATION_NOISE = [
+        "Schema: must have required property 'name'",
+        "Schema: must have required property 'endpoint'",
+    ];
+    const defaultMetricsMiddleware = () => [{ metrics: {} }];
+    const hasMetricsMiddleware = (route) => {
+        const hasMetrics = (endpoint) =>
+            (endpoint?.middlewares || []).some((middleware) => Object.prototype.hasOwnProperty.call(middleware || {}, 'metrics'));
+        return hasMetrics(route?.input) || hasMetrics(route?.output);
+    };
+    const formatThroughput = (value) => {
+        if (!Number.isFinite(value) || value <= 0) return '0 msg/s';
+        if (value >= 100) return `${Math.round(value)} msg/s`;
+        if (value >= 10) return `${value.toFixed(1)} msg/s`;
+        return `${value.toFixed(2)} msg/s`;
+    };
     const applyEndpointSchemaDefaults = (routeSchema) => {
         const fileConfigSchema = routeSchema.$defs?.FileConfig;
         if (fileConfigSchema?.properties?.format) {
@@ -11,6 +27,35 @@ async function initRoutes(config, schema) {
         if (mongoDbConfigSchema?.properties?.format) {
             mongoDbConfigSchema.properties.format.default = 'raw';
         }
+    };
+    const scrubRouteValidationNoise = (root) => {
+        if (!root) return;
+
+        root.querySelectorAll('div, small, span').forEach((node) => {
+            const text = node.textContent?.trim();
+            if (!text || !ROUTE_VALIDATION_NOISE.some((msg) => text.includes(msg))) {
+                return;
+            }
+
+            const removable = node.closest('[data-validation-for], #form-global-errors > *, .invalid-feedback, .js-validation-error');
+            if (removable) {
+                removable.remove();
+                return;
+            }
+
+            node.remove();
+        });
+    };
+    const watchRouteValidationNoise = (root) => {
+        if (!root) return;
+        if (root._routeValidationNoiseObserver) {
+            root._routeValidationNoiseObserver.disconnect();
+        }
+
+        scrubRouteValidationNoise(root);
+        const observer = new MutationObserver(() => scrubRouteValidationNoise(root));
+        observer.observe(root, { childList: true, subtree: true, characterData: true });
+        root._routeValidationNoiseObserver = observer;
     };
     // Convert routes object to an array of objects for easier iteration and access to properties
     const routesArray = Object.entries(config.routes || {}).map(([name, details]) => ({ name, ...details }));
@@ -33,10 +78,14 @@ async function initRoutes(config, schema) {
                 const outputProto =
                   Object.keys(r.output)
                     .filter((key) => key !== "middlewares")[0]?.toUpperCase() || "N/A";
+                const metricsBadge = hasMetricsMiddleware(r)
+                    ? `<span class="route-throughput" data-route-name="${r.name}">0 msg/s</span>`
+                    : '';
                 return `
                     <div class="sidebar-item route-item" data-idx="${i}">
                         <span class="proto-badge proto-${inputProto.toLowerCase()}">${inputProto.substring(0,4)}</span>
                         <span class="item-name">${r.name}</span>
+                        ${metricsBadge}
                         <span class="proto-badge proto-${outputProto.toLowerCase()}" style="margin-left:auto;">${outputProto.substring(0,4)}</span>
                     </div>
                 `;
@@ -47,7 +96,18 @@ async function initRoutes(config, schema) {
         document.getElementById('route-main-ui').style.display = hasRoutes ? 'flex' : 'none'; // Use flex for pane-container
     };
 
+    const renderRuntimeMetrics = () => {
+        const runtimeStatus = window._mqb_runtime_status || {};
+        const throughputMap = runtimeStatus.route_throughput || {};
+        document.querySelectorAll('#route-list .route-throughput').forEach((node) => {
+            const routeName = node.getAttribute('data-route-name');
+            node.textContent = formatThroughput(Number(throughputMap[routeName] || 0));
+        });
+    };
+
     renderSidebar();
+    renderRuntimeMetrics();
+    window.renderRoutesRuntimeMetrics = renderRuntimeMetrics;
 
     const setActiveItem = (idx) => {
         currentIdx = idx;
@@ -104,6 +164,7 @@ async function initRoutes(config, schema) {
                 }
             }
         });
+        watchRouteValidationNoise(configFormContainer);
     };
 
     // This function is called by index.html when the routes tab is activated
@@ -115,8 +176,8 @@ async function initRoutes(config, schema) {
                 if (!name) return;
                 if (config.routes[name]) return alert("Route already exists");
                 config.routes[name] = {
-                    input: { null: null },
-                    output: { middlewares: [], null: null }
+                    input: { middlewares: defaultMetricsMiddleware(), null: null },
+                    output: { middlewares: defaultMetricsMiddleware(), null: null }
                     // Add default view properties if needed
                 };
                 window.initRoutes(config, schema); // Re-initialize to re-render the whole UI
@@ -157,8 +218,8 @@ async function initRoutes(config, schema) {
             if (!name) return;
             if (config.routes[name]) return alert("Route already exists");
             config.routes[name] = {
-                input: { null: null },
-                output: { middlewares: [], null: null }
+                input: { middlewares: defaultMetricsMiddleware(), null: null },
+                output: { middlewares: defaultMetricsMiddleware(), null: null }
             };
             window.initRoutes(config, schema); // Re-initialize to re-render the whole UI
             setActiveItem(Object.keys(config.routes).length - 1);
@@ -173,8 +234,8 @@ async function initRoutes(config, schema) {
             if (!name) return;
             if (config.routes[name]) return alert("Route already exists");
             config.routes[name] = {
-                input: { null: null },
-                output: { middlewares: [], null: null }
+                input: { middlewares: defaultMetricsMiddleware(), null: null },
+                output: { middlewares: defaultMetricsMiddleware(), null: null }
             };
             window.initRoutes(config, schema); // Re-initialize to re-render the whole UI
             setActiveItem(Object.keys(config.routes).length - 1);
@@ -200,6 +261,8 @@ async function initRoutes(config, schema) {
             setActiveItem(0); // Select first item after deletion
             updateUI();
         };
+
+        document.getElementById('route-save').onclick = (e) => window.saveConfig(false, e.currentTarget);
     }
 
     // Mark as initialized and expose the restore function
@@ -224,7 +287,7 @@ async function initSettings(config, schema) {
     const formActions = document.getElementById('form-actions');
     if (formActions) formActions.style.display = 'flex';
     const submitBtn = document.getElementById('js-submit');
-    if (submitBtn) submitBtn.onclick = () => window.saveConfig();
+    if (submitBtn) submitBtn.onclick = (e) => window.saveConfig(false, e.currentTarget);
 }
 
 window.initRoutes = initRoutes;
