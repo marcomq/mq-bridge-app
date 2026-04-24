@@ -379,7 +379,9 @@ function initPublishers(config, schema) {
 
         const methodWrap = document.getElementById('pub-method-wrap');
         if (methodWrap) {
-            methodWrap.hidden = !layout.showMethod;
+            const showMethod = endpointType === 'http' && !!layout.showMethod;
+            methodWrap.hidden = !showMethod;
+            methodWrap.style.display = showMethod ? '' : 'none';
         }
         setMethodSelectMode(methodSelect, endpointType);
 

@@ -54,14 +54,14 @@
 
     <!-- MAIN TABS -->
     <div class="main-tabs" id="mainTabs">
-        <div class="main-tab" onclick="switchMain('routes')" id="mtab-routes">
-            <span class="tab-icon">⇄</span> Routes
+        <div class="main-tab" onclick="switchMain('publishers')" id="mtab-publishers">
+            <span class="tab-icon">↑</span> Publishers
         </div>
         <div class="main-tab" onclick="switchMain('consumers')" id="mtab-consumers">
             <span class="tab-icon">↓</span> Consumers
         </div>
-        <div class="main-tab" onclick="switchMain('publishers')" id="mtab-publishers">
-            <span class="tab-icon">↑</span> Publishers
+        <div class="main-tab" onclick="switchMain('routes')" id="mtab-routes">
+            <span class="tab-icon">⇄</span> Routes
         </div>
         <div class="main-tab" onclick="switchMain('config')" id="mtab-config">
             <span class="tab-icon">⚙</span> App Config
@@ -296,23 +296,40 @@
             if (name === 'routes' && window.initRoutes && !window._mqb_routes_initialized) {
                 window.initRoutes(window.appConfig, window.appSchema);
                 window._mqb_routes_initialized = true;
-            } else if (name === 'consumers' && window.initConsumers && !window._mqb_consumers_initialized) {
+            }
+            if (name === 'consumers' && window.initConsumers && !window._mqb_consumers_initialized) {
                 window.initConsumers(window.appConfig, window.appSchema);
                 window._mqb_consumers_initialized = true;
-            } else if (name === 'consumers' && window.restoreConsumerState) {
-                const match = window.location.hash.match(/^#consumers:(\d+)$/);
-                const idx = match ? parseInt(match[1], 10) : 0;
-                window.restoreConsumerState(idx);
-            } else if (name === 'publishers' && window.initPublishers && !window._mqb_publishers_initialized) {
+            }
+            if (name === 'publishers' && window.initPublishers && !window._mqb_publishers_initialized) {
                 window.initPublishers(window.appConfig, window.appSchema);
                 window._mqb_publishers_initialized = true;
-            } else if (name === 'config' && window.initSettings && !window._mqb_config_initialized) {
+            }
+            if (name === 'config' && window.initSettings && !window._mqb_config_initialized) {
                 window.initSettings(window.appConfig, window.appSchema);
                 window._mqb_config_initialized = true;
             }
 
+            if (name === 'routes' && window.restoreRouteState) {
+                const match = window.location.hash.match(/^#routes:(\d+)$/);
+                const idx = match ? parseInt(match[1], 10) : 0;
+                window.restoreRouteState(idx);
+            } else if (name === 'consumers' && window.restoreConsumerState) {
+                const match = window.location.hash.match(/^#consumers:(\d+)$/);
+                const idx = match ? parseInt(match[1], 10) : 0;
+                window.restoreConsumerState(idx);
+            } else if (name === 'publishers' && window.restorePublisherState) {
+                const match = window.location.hash.match(/^#publishers:(\d+)$/);
+                const idx = match ? parseInt(match[1], 10) : 0;
+                window.restorePublisherState(idx);
+            }
+
             // Update URL hash
-            history.replaceState(null, null, `#${name}`);
+            const currentHash = window.location.hash;
+            const nextHash = currentHash === `#${name}` || currentHash.startsWith(`#${name}:`)
+                ? currentHash
+                : `#${name}`;
+            history.replaceState(null, null, nextHash);
         }
 
         // Function to show JSON modal
@@ -484,35 +501,39 @@
             window.appConfig = config;
             window.appSchema = schema; // Store schema globally for tab initializations
             
-            // Hash-based navigation
-            const tabMap = {
-                '#routes': 'routes',
-                '#consumers': 'consumers',
-                '#publishers': 'publishers',
-                '#config': 'config'
+            const resolveTabFromHash = (hash) => {
+                if (!hash) return null;
+                if (hash === '#publishers' || hash.startsWith('#publishers:')) return 'publishers';
+                if (hash === '#consumers' || hash.startsWith('#consumers:')) return 'consumers';
+                if (hash === '#routes' || hash.startsWith('#routes:')) return 'routes';
+                if (hash === '#config') return 'config';
+                return null;
             };
 
             // Handle hash changes (back/forward navigation)
             window.addEventListener('hashchange', () => {
-                const hash = window.location.hash;
-                if (hash && tabMap[hash]) {
-                    switchMain(tabMap[hash]);
+                const targetTab = resolveTabFromHash(window.location.hash);
+                if (targetTab) {
+                    switchMain(targetTab);
                 }
             });
 
-            // Handle initial tab based on URL hash or default
             const hash = window.location.hash;
-            let defaultTabId;
-            if (hash && tabMap[hash]) { // Check if hash exists and is a valid tab
-                defaultTabId = tabMap[hash]; // Use the tab name directly
-            } else {
-                // Fallback to config.default_tab or 'routes'
-                defaultTabId = config.default_tab || 'routes';
-            }
-            switchMain(defaultTabId);
-
             window.renderRuntimeStatus();
             await window.pollRuntimeStatus();
+
+            const hashTab = resolveTabFromHash(hash);
+            const activeRoutes = window._mqb_runtime_status?.active_routes || [];
+            const configuredDefault = config.default_tab;
+            const validDefaultTab = ['publishers', 'consumers', 'routes', 'config'].includes(configuredDefault)
+                ? configuredDefault
+                : null;
+            const defaultTabId = hashTab
+                || (activeRoutes.length > 0 ? 'routes' : null)
+                || validDefaultTab
+                || 'publishers';
+
+            switchMain(defaultTabId);
             window._mqb_runtime_poll_timer = setInterval(window.pollRuntimeStatus, 2000);
         });
     </script>
