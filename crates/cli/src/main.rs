@@ -5,7 +5,7 @@
 
 use mq_bridge_app::{
     config::{AppConfig, load_config},
-    web_ui,
+    mq_bridge, web_ui,
 };
 
 use clap::Parser;

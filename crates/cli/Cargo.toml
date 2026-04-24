@@ -1,0 +1,53 @@
+[package]
+name = "mq-bridge-app"
+version = "0.2.0"
+edition = "2024"
+authors = ["Marco Mengelkochs"]
+repository = "https://github.com/marcomq/mq-bridge-app"
+license = "MIT"
+description = "A message queue bridge application written in Rust, designed to connect different messaging systems like RabbitMQ, Kafka, and NATS."
+readme = "../../README.md"
+keywords = ["messaging", "kafka", "nats", "amqp", "cqrs"]
+categories = ["asynchronous", "network-programming"]
+
+[[bin]]
+name = "mq-bridge-app"
+path = "src/main.rs"
+
+[dependencies]
+mq_bridge_app = { package = "mq-bridge-app-core", path = "../core" }
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+metrics = { version = "0.24.3" }
+metrics-exporter-prometheus = "0.18.1"
+rustls = "0.23.38"
+schemars = "1.2.1"
+serde_json = "1.0.149"
+tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+
+[features]
+default = ["full"]
+integration-test = ["mq_bridge_app/integration-test"]
+ibm-mq = ["mq_bridge_app/ibm-mq"]
+arm64-cross-compile = ["mq_bridge_app/arm64-cross-compile"]
+full = ["mq_bridge_app/full"]
+middleware = ["mq_bridge_app/middleware"]
+mongodb = ["mq_bridge_app/mongodb"]
+http = ["mq_bridge_app/http"]
+kafka = ["mq_bridge_app/kafka"]
+aws = ["mq_bridge_app/aws"]
+nats = ["mq_bridge_app/nats"]
+mqtt = ["mq_bridge_app/mqtt"]
+zeromq = ["mq_bridge_app/zeromq"]
+sled = ["mq_bridge_app/sled"]
+grpc = ["mq_bridge_app/grpc"]
+amqp = ["mq_bridge_app/amqp"]
+
+[dev-dependencies]
+metrics = { version = "0.24.3" }
+metrics-exporter-prometheus = "0.18.1"
+serde_json = "1.0.149"
+tokio = { version = "1.51.0", features = ["io-util", "net", "rt-multi-thread", "macros", "sync", "time"] }
+uuid = { version = "1.23", features = ["v4"] }

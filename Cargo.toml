@@ -1,79 +1,12 @@
-[package]
-name = "mq-bridge-app"
-version = "0.2.0"
-edition = "2024"
-authors = ["Marco Mengelkochs"]
-repository = "https://github.com/marcomq/mq-bridge-app"
-license = "MIT"
-description = "A message queue bridge application written in Rust, designed to connect different messaging systems like RabbitMQ, Kafka, and NATS."
-readme = "README.md"
-keywords = ["messaging", "kafka", "nats", "amqp", "cqrs"]
-categories = ["asynchronous", "network-programming"]
-
-[[bin]]
-name = "mq-bridge-app"
-path = "src/main.rs"
+[workspace]
+members = ["crates/core", "crates/cli"]
+default-members = ["crates/cli"]
+resolver = "2"
 
 [profile.release]
-# Link-Time Optimization.
-# lto = true
-# Abort on panic to reduce binary size.
 panic = "abort"
 
 [profile.release-with-lto]
 inherits = "release"
 lto = true
-strip = true        
-
-
-[dependencies]
-mq-bridge = { path = "../mq-bridge", features = ["schema"] }
-# mq-bridge = { version="0.2.12", features = ["schema"] }
-
-config = { version = "0.15.22", features = ["yaml"] }
-dotenvy = "0.15.7"
-serde = { version = "1.0.228", features = ["derive"] }
-shellexpand = "3.1.2"
-serde_yaml_ng = "0.10.0"
-
-# Async runtime
-tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync"] }
-clap = { version = "4.6.0", features = ["derive"] }
-
-# Error handling
-anyhow = "1.0.102"
-
-# Logging & Tracing
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
-
-rdkafka = { version = "0.38.0", features = ["tokio"], optional = true }
-
-# Metrics
-metrics = { version = "0.24.3" }
-metrics-exporter-prometheus = "0.18.1"
-schemars = "1.2.1"
-serde_json = "1.0.149"
-hex = "0.4"
-futures = "0.3.32"
-uuid = { version = "1.23", features = ["v4"] }
-rustls = "0.23.38"
-chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
-
-[features]
-default = ["full"]
-integration-test = []
-ibm-mq = ["mq-bridge/ibm-mq"]
-arm64-cross-compile = ["rdkafka", "rdkafka/cmake-build"]
-full = ["mq-bridge/full"]
-middleware = ["mq-bridge/middleware"]
-mongodb = ["mq-bridge/mongodb"]
-http = ["mq-bridge/http"]
-kafka = ["mq-bridge/kafka"]
-aws = ["mq-bridge/aws"]
-nats = ["mq-bridge/nats"]
-mqtt = ["mq-bridge/mqtt"]
-zeromq = ["mq-bridge/zeromq"]
-sled = ["mq-bridge/sled"]
-grpc = ["mq-bridge/grpc"]
-amqp = ["mq-bridge/amqp"]
+strip = true

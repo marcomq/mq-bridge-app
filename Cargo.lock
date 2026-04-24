@@ -2915,8 +2915,25 @@ name = "mq-bridge-app"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "mq-bridge-app-core",
+ "rustls 0.23.38",
+ "schemars",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "mq-bridge-app-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
  "config",
  "dotenvy",
  "futures",
@@ -2933,7 +2950,6 @@ dependencies = [
  "shellexpand",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 

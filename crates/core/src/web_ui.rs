@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::ui_app::{PublishRequest, UiApp};
 use anyhow::Result;
+use mq_bridge::endpoints::http::guess_content_type;
 use mq_bridge::models::{Endpoint, EndpointType, HttpConfig, Route};
 use mq_bridge::{CanonicalMessage, Handled, HandlerError, msg};
 use schemars::schema_for;
@@ -42,43 +43,20 @@ fn sanitize_relative_path(request_path: &str) -> Option<PathBuf> {
     }
 }
 
-fn guess_content_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or_default()
-    {
-        "html" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "text/javascript; charset=utf-8",
-        "json" | "map" => "application/json; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "ico" => "image/x-icon",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        "txt" => "text/plain; charset=utf-8",
-        _ => "application/octet-stream",
-    }
-}
-
 fn resolve_static_asset_path(request_path: &str) -> Option<PathBuf> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
     if request_path == "/" || request_path.is_empty() {
-        return Some(PathBuf::from("static/index.html"));
+        return Some(workspace_root.join("static/index.html"));
     }
 
     if let Some(relative) = request_path.strip_prefix("/node_modules/") {
         return sanitize_relative_path(relative)
-            .map(|path| PathBuf::from("node_modules").join(path));
+            .map(|path| workspace_root.join("node_modules").join(path));
     }
 
     let relative = request_path.trim_start_matches('/');
-    sanitize_relative_path(relative).map(|path| PathBuf::from("static").join(path))
+    sanitize_relative_path(relative).map(|path| workspace_root.join("static").join(path))
 }
 
 fn query_param(msg: &CanonicalMessage, key: &str) -> Option<String> {
@@ -102,7 +80,7 @@ impl WebUiHttpHandler {
 
         match std::fs::read(&file_path) {
             Ok(contents) => Ok(Handled::Publish(
-                msg!(contents).with_content_type(guess_content_type(&file_path)),
+                msg!(contents).with_content_type(guess_content_type(&file_path.to_string_lossy())),
             )),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 Ok(Handled::Publish(msg!("Not Found").with_status_code("404")))
