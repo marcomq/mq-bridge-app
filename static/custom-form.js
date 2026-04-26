@@ -12,9 +12,15 @@ const {
   getName,
   createTypeSelectArrayRenderer,
   createOptionalRenderer,
+  formatWebAwesomeLabel,
   hydrateNodeWithData,
   rendererConfig,
 } = window.VanillaSchemaForms;
+
+// mq-bridge-specific layer on top of vanilla-schema-forms.
+// Keep this file focused on app UX decisions: compact rows, visibility rules,
+// endpoint-specific renderers, and custom editors for shapes that are awkward
+// with the generic schema renderer.
 
 Object.assign(rendererConfig.classes, {
   buttonPrimary: "wa-native-button wa-native-button--brand",
@@ -36,7 +42,16 @@ setConfig({
     customVisibility: (node, path) => {
       const description = node.description || "";
       const lowerPath = path.toLowerCase();
+      const pathSegments = lowerPath.split(".");
+      const fieldKey = pathSegments[pathSegments.length - 1] || "";
       const formMode = window._mqb_form_mode || "";
+
+      if (
+        formMode === "publisher" &&
+        ["url", "method", "queue", "topic", "database"].includes(fieldKey)
+      ) {
+        return false;
+      }
 
       if (formMode === "publisher" && description.includes("Consumer only")) {
         return false;
@@ -79,6 +94,7 @@ setConfig({
       "password",
       "topic",
       "group",
+      "path",
       "key",
       "value",
       "required",
@@ -125,10 +141,6 @@ domRenderer.renderFieldWrapper = (node, elementId, inputElement, wrapperClass) =
   }
 
   const formatLabelText = () => {
-    if (node.title) {
-      return node.title;
-    }
-
     const segments = String(elementId || "").split(".");
     const fieldKey = segments[segments.length - 1] || "";
     const parentKey = segments[segments.length - 2] || "";
@@ -142,14 +154,9 @@ domRenderer.renderFieldWrapper = (node, elementId, inputElement, wrapperClass) =
       if (explicitLabel) {
         return explicitLabel;
       }
-      return `Item ${Number(fieldKey) + 1}`;
     }
 
-    return fieldKey
-      .replace(/^__var_/, "")
-      .replace(/_/g, " ")
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .replace(/\b\w/g, (char) => char.toUpperCase()) || "Value";
+    return formatWebAwesomeLabel(node, elementId);
   };
 
   const labelText = formatLabelText();
@@ -179,14 +186,200 @@ domRenderer.renderFieldWrapper = (node, elementId, inputElement, wrapperClass) =
  */
 const tlsBaseRenderer = createOptionalRenderer("required");
 
-const toggleDisclosure = (e, targetId) => {
+const toggleDisclosure = (button, targetId) => {
   const target = document.getElementById(targetId);
-  if (!target) return;
+  if (!target || !button) return;
 
   const isHidden = target.style.display === "none";
   target.style.display = isHidden ? "block" : "none";
-  e.currentTarget.textContent = isHidden ? "Hide" : "Show more...";
+  button.setAttribute("aria-expanded", isHidden ? "true" : "false");
+  button.textContent = isHidden
+    ? (
+      button.getAttribute("data-expanded-label")
+      || button.getAttribute("data-label-collapse")
+      || "Hide"
+    )
+    : (
+      button.getAttribute("data-collapsed-label")
+      || button.getAttribute("data-label-expand")
+      || "Show more..."
+    );
 };
+
+const syncToggleTarget = (input) => {
+  if (!input?.hasAttribute?.("data-toggle-target")) return;
+  const targetId = input.getAttribute("data-toggle-target");
+  const target = targetId ? document.getElementById(targetId) : null;
+  if (!target) return;
+  target.style.display = input.checked ? "block" : "none";
+};
+
+// Small delegated fallback for our own custom disclosure/toggle markup.
+// The library already handles most standard controls, but these listeners keep
+// custom sections working even when schema subtrees are rebuilt after type switches.
+const installFormInteractionDelegates = () => {
+  if (window._mqb_form_interactions_installed) return;
+  window._mqb_form_interactions_installed = true;
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-disclosure-target]");
+    if (!button) return;
+    event.preventDefault();
+    toggleDisclosure(button, button.getAttribute("data-disclosure-target"));
+  });
+
+  document.addEventListener("change", (event) => {
+    const input = event.target.closest?.("[data-toggle-target]");
+    if (input) {
+      syncToggleTarget(input);
+    }
+  });
+};
+
+installFormInteractionDelegates();
+
+// App-config list items are rebuilt often and default to generic labels such as
+// "Item 1". We sync the visible legend from each row's `name` field so arrays of
+// publishers/consumers/routes are easier to scan.
+const getArrayItemNameField = (container) =>
+  container?.querySelector?.(
+    'input[id$=".name"], input[name$="[name]"], input[name="name"], textarea[id$=".name"], textarea[name$="[name]"], textarea[name="name"]',
+  ) || null;
+
+const getArrayItemLegend = (arrayItem) => {
+  if (!arrayItem?.querySelector) return null;
+
+  const directContent = arrayItem.querySelector(
+    `:scope > .${rendererConfig.triggers.arrayItemContent}`,
+  );
+  const directLegend = directContent?.querySelector?.(":scope > fieldset > legend");
+  if (directLegend) {
+    return directLegend;
+  }
+
+  return arrayItem.querySelector("legend");
+};
+
+const updateArrayItemLabel = (arrayItem) => {
+  if (!arrayItem) return;
+
+  const legend = getArrayItemLegend(arrayItem);
+  const nameField = getArrayItemNameField(arrayItem);
+  if (!legend || !nameField) return;
+
+  const currentLabel = String(legend.textContent || "").trim();
+  const fallbackLabel = arrayItem.getAttribute("data-default-label")
+    || currentLabel
+    || "Item";
+
+  if (!arrayItem.getAttribute("data-default-label") && /^Item\s+\d+$/i.test(currentLabel)) {
+    arrayItem.setAttribute("data-default-label", currentLabel);
+  }
+
+  const nextLabel = String(nameField.value || "").trim() || fallbackLabel;
+  legend.textContent = nextLabel;
+};
+
+const syncNamedArrayItemLabels = (root = document) => {
+  root.querySelectorAll?.(`.${rendererConfig.triggers.arrayItemRow}`).forEach((row) => {
+    updateArrayItemLabel(row);
+  });
+};
+
+domRenderer.renderArrayItem = (content, options) => {
+  const isRemovable = options?.isRemovable !== false;
+  const contentWrapper = h(
+    "div",
+    {
+      className: `${rendererConfig.classes.arrayItemContent} ${rendererConfig.triggers.arrayItemContent} mqb-array-item-content`,
+    },
+    content,
+  );
+
+  if (isRemovable) {
+    contentWrapper.appendChild(
+      h(
+        "button",
+        {
+          type: "button",
+          className: `${rendererConfig.classes.buttonDanger} ${rendererConfig.triggers.removeArrayItem} mqb-array-item-delete`,
+        },
+        "Remove",
+      ),
+    );
+  }
+
+  const row = h(
+    rendererConfig.elements.arrayItem || "div",
+    {
+      className: `${rendererConfig.classes.arrayItemRow} ${rendererConfig.triggers.arrayItemRow} mqb-array-item-row`,
+    },
+    contentWrapper,
+  );
+
+  const legend = row.querySelector("legend");
+  if (legend) {
+    const label = legend.textContent?.trim();
+    if (label) {
+      row.setAttribute("data-default-label", label);
+    }
+  }
+
+  setTimeout(() => updateArrayItemLabel(row), 0);
+  setTimeout(() => updateArrayItemLabel(row), 50);
+  return row;
+};
+
+const installArrayItemNameSync = () => {
+  if (window._mqb_array_item_name_sync_installed) return;
+  window._mqb_array_item_name_sync_installed = true;
+
+  document.addEventListener("input", (event) => {
+    const input = event.target.closest?.(
+      'input[id$=".name"], input[name$="[name]"], input[name="name"]',
+    );
+    if (!input) return;
+    updateArrayItemLabel(
+      input.closest(`.${rendererConfig.triggers.arrayItemRow}`),
+    );
+  });
+
+  const startObserver = () => {
+    const target = document.body || document.documentElement;
+    if (!(target instanceof Node)) return false;
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        mutation.addedNodes.forEach((node) => {
+          if (!(node instanceof Element)) return;
+          if (node.matches?.(`.${rendererConfig.triggers.arrayItemRow}`)) {
+            updateArrayItemLabel(node);
+            setTimeout(() => updateArrayItemLabel(node), 50);
+          } else {
+            syncNamedArrayItemLabels(node);
+            setTimeout(() => syncNamedArrayItemLabels(node), 50);
+          }
+        });
+      }
+    });
+
+    observer.observe(target, { childList: true, subtree: true });
+    return true;
+  };
+
+  if (!startObserver()) {
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        startObserver();
+        syncNamedArrayItemLabels();
+      },
+      { once: true },
+    );
+  }
+};
+
+installArrayItemNameSync();
 
 // Helper to fix null booleans
 const fixNullBooleans = (node, dataPath, context) => {
@@ -240,6 +433,8 @@ const tlsRenderer = {
   },
 };
 
+// These custom renderers are intentionally narrow. They exist only where the
+// schema-native UI is too noisy or does not match the stored data shape well.
 const basicAuthRenderer = {
   render: (node, path, elementId, dataPath, context) => {
     const store = context.store;
@@ -299,6 +494,99 @@ const basicAuthRenderer = {
   },
 };
 
+const customHeadersRenderer = {
+  render: (node, path, elementId, dataPath, context) => {
+    const store = context.store;
+    const currentValue = store.getPath(dataPath) ?? node.defaultValue ?? {};
+    const headers = currentValue && typeof currentValue === "object" ? currentValue : {};
+
+    const itemsContainer = h("div", { className: "response-editor-grid" });
+
+    const syncHeaders = () => {
+      const next = {};
+      itemsContainer.querySelectorAll(".response-header-row").forEach((row) => {
+        const key = row.querySelector(".cons-response-header-key")?.value?.trim() || "";
+        const value = row.querySelector(".cons-response-header-value")?.value?.trim() || "";
+        if (key) next[key] = value;
+      });
+      store.setPath(dataPath, next);
+    };
+
+    const appendHeaderRow = (key = "", value = "") => {
+      const keyInput = h("input", {
+        className: "field-input cons-response-header-key",
+        type: "text",
+        placeholder: "Header name",
+        value: key,
+      });
+
+      const valueInput = h("input", {
+        className: "field-input cons-response-header-value",
+        type: "text",
+        placeholder: "Header value",
+        value,
+      });
+
+      const deleteButton = h("wa-button", { className: "cons-response-header-delete" }, "Delete");
+      deleteButton.setAttribute("variant", "neutral");
+      deleteButton.setAttribute("appearance", "outlined");
+      deleteButton.setAttribute("size", "small");
+
+      const row = h(
+        "div",
+        { className: "response-header-row" },
+        keyInput,
+        valueInput,
+        deleteButton,
+      );
+
+      deleteButton.onclick = (event) => {
+        event.preventDefault();
+        row.remove();
+        syncHeaders();
+      };
+
+      [keyInput, valueInput].forEach((input) => {
+        input.addEventListener("input", syncHeaders);
+      });
+
+      itemsContainer.appendChild(row);
+      return row;
+    };
+
+    Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)).forEach(([key, value]) => {
+      appendHeaderRow(String(key), String(value ?? ""));
+    });
+
+    const addButton = h("wa-button", { className: "mqb-custom-headers-add" }, "Add Header");
+    addButton.setAttribute("variant", "neutral");
+    addButton.setAttribute("appearance", "outlined");
+    addButton.setAttribute("size", "small");
+    addButton.onclick = (event) => {
+      event.preventDefault();
+      const row = appendHeaderRow("", "");
+      syncHeaders();
+      row.querySelector(".cons-response-header-key")?.focus();
+    };
+
+    const descriptionBlock = node.description
+      ? h("div", { className: "form-description form-description-block" }, node.description)
+      : document.createTextNode("");
+
+    return h(
+      "fieldset",
+      { className: "ui_custom_headers", id: elementId },
+      h("legend", {}, node.title || "Custom Headers"),
+      descriptionBlock,
+      h("div", { className: "section-label" }, "Headers"),
+      itemsContainer,
+      h("div", { className: "response-editor-actions" }, addButton),
+    );
+  },
+};
+
+// Reusable compact object renderer: keep a few important fields visible and move
+// the rest behind a small disclosure without changing the underlying schema.
 const createCustomCollapsibleRenderer = (visibleKeys) => ({
   render: (node, path, elementId, dataPath, context) => {
     fixNullBooleans(node, dataPath, context);
@@ -323,7 +611,7 @@ const createCustomCollapsibleRenderer = (visibleKeys) => ({
       context,
       visibleProps,
       elementId,
-      dataPath
+      dataPath,
     );
 
     let hiddenContent = null;
@@ -334,19 +622,27 @@ const createCustomCollapsibleRenderer = (visibleKeys) => ({
       hiddenContent = h(
         "div",
         { id: hiddenId, style: "display: none;", className: "form-advanced-block" },
-        renderProperties(context, hiddenProps, elementId, dataPath)
+        renderProperties(context, hiddenProps, elementId, dataPath),
       );
 
       toggleBtn = h(
-        "wa-button",
+        "button",
         {
+          type: "button",
           size: "small",
-          variant: "neutral",
-          appearance: "plain",
-          className: "btn-linkish",
-          onclick: (e) => toggleDisclosure(e, hiddenId),
+          className: "btn-linkish js-disclosure-toggle",
+          "data-disclosure-target": hiddenId,
+          "data-collapsed-label": "Show more...",
+          "data-expanded-label": "Hide",
+          "data-label-expand": "Show more...",
+          "data-label-collapse": "Hide",
+          "aria-expanded": "false",
+          onclick: (event) => {
+            event.preventDefault();
+            toggleDisclosure(event.currentTarget, hiddenId);
+          },
         },
-        "Show more..."
+        "Show more...",
       );
     }
 
@@ -479,12 +775,10 @@ const routesRenderer = {
           h("input", keyInputAttrs),
         ),
         h(
-          "wa-button",
+          "button",
           {
-            variant: "danger",
-            appearance: "outlined",
-            size: "small",
-            className: `btn-remove-ap ${rendererConfig.triggers.removeAdditionalProperty}`,
+            type: "button",
+            className: `btn-remove-ap ${rendererConfig.classes.buttonDanger} ${rendererConfig.triggers.removeAdditionalProperty}`,
           },
           "Remove Route",
         ),
@@ -500,6 +794,7 @@ const ADVANCED_KEYS = [
   "topic",
   "stream",
   "subject",
+  "path",
   "topic_arn",
   "collection",
   "queue_url",
@@ -510,6 +805,10 @@ const ADVANCED_KEYS = [
   "description",
   "extract_secrets",
 ];
+
+const CONSUMER_VISIBLE_ENDPOINT_KEYS = {
+  http: ["tls", "basic_auth", "path"],
+};
 
 const ENDPOINT_PRIMARY_KEYS = {
   aws: ["queue_url", "topic_arn", "endpoint_url"],
@@ -535,7 +834,11 @@ const ENDPOINT_PRIMARY_KEYS = {
 const createEndpointRenderer = (type) => ({
   render: (node, path, elementId, dataPath, context) => {
     fixNullBooleans(node, dataPath, context);
-    return createCustomCollapsibleRenderer(ENDPOINT_PRIMARY_KEYS[type] || []).render(
+    const formMode = window._mqb_form_mode || "";
+    const visibleKeys = formMode === "consumer"
+      ? (CONSUMER_VISIBLE_ENDPOINT_KEYS[type] || ENDPOINT_PRIMARY_KEYS[type] || [])
+      : (ENDPOINT_PRIMARY_KEYS[type] || []);
+    return createCustomCollapsibleRenderer(visibleKeys).render(
       node,
       path,
       elementId,
@@ -547,14 +850,112 @@ const createEndpointRenderer = (type) => ({
 
 const appConfigRenderer = createCustomCollapsibleRenderer(ADVANCED_KEYS);
 
+const rootRenderer = {
+  render: (node, path, elementId, dataPath, context) => {
+    const formMode = window._mqb_form_mode || "";
+
+    if (formMode === "publisher") {
+      return createCustomCollapsibleRenderer(["name", "endpoint"]).render(
+        node,
+        path,
+        elementId,
+        dataPath,
+        context,
+      );
+    }
+
+    if (formMode === "consumer") {
+      return createCustomCollapsibleRenderer(["name", "endpoint"]).render(
+        node,
+        path,
+        elementId,
+        dataPath,
+        context,
+      );
+    }
+
+    if (formMode === "settings") {
+      return appConfigRenderer.render(node, path, elementId, dataPath, context);
+    }
+
+    return renderObject(context, node, elementId, false, dataPath);
+  },
+};
+
 /**
  * Custom renderer for Middlewares array.
  * Replaces the standard "Add Item" button with an "Add Middleware" button that opens a select.
  */
-const middlewaresRenderer = createTypeSelectArrayRenderer({
+const baseMiddlewaresRenderer = createTypeSelectArrayRenderer({
   buttonLabel: "Add Middleware",
   itemLabel: "Middleware",
 });
+
+const middlewaresRenderer = {
+  render: (node, path, elementId, dataPath, context, isHeadless = false) => {
+    const element = baseMiddlewaresRenderer.render(
+      node,
+      path,
+      elementId,
+      dataPath,
+      context,
+      isHeadless,
+    );
+
+    const toggleButton = element.querySelector?.(
+      `.${rendererConfig.triggers.arrayTypeToggle}`,
+    );
+    const typeSelect = element.querySelector?.(
+      `.${rendererConfig.triggers.arrayTypeSelect}`,
+    );
+
+    if (toggleButton && typeSelect) {
+      toggleButton.classList.remove(rendererConfig.triggers.arrayTypeToggle);
+      toggleButton.onclick = (event) => {
+        event.preventDefault();
+        toggleButton.style.display = "none";
+        typeSelect.style.display = "inline-block";
+        typeSelect.focus();
+
+        // Mirror the upstream one-click behavior first, but flush layout before
+        // opening the picker because hidden selects can fail the rendered-state
+        // check in some browsers. If that still fails, retry on the next frame
+        // and otherwise leave the select visible as a manual fallback.
+        typeSelect.getBoundingClientRect();
+
+        const tryShowPicker = () => {
+          try {
+            if (typeof typeSelect.showPicker === "function") {
+              typeSelect.showPicker();
+              return true;
+            }
+          } catch {
+            // Fall through to the next fallback.
+          }
+
+          return false;
+        };
+
+        if (!tryShowPicker()) {
+          window.requestAnimationFrame(() => {
+            tryShowPicker();
+          });
+        }
+      };
+
+      typeSelect.addEventListener("focusout", () => {
+        window.setTimeout(() => {
+          if (!typeSelect.value) {
+            typeSelect.style.display = "none";
+            toggleButton.style.display = "";
+          }
+        }, 0);
+      });
+    }
+
+    return element;
+  },
+};
 
 /**
  * Custom renderer for description field to use a textarea.
@@ -587,11 +988,14 @@ const descriptionRenderer = {
 
 /**
  * Registry of custom renderers.
+ * Prefer putting app-specific behavior here before overriding global renderer
+ * internals. That keeps upgrades of vanilla-schema-forms less painful.
  */
 const CUSTOM_RENDERERS = {
   Route: routeObjectRenderer,
   tls: tlsRenderer,
   basic_auth: basicAuthRenderer,
+  custom_headers: customHeadersRenderer,
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,
@@ -640,6 +1044,7 @@ endpointTypes.forEach((type) => {
 });
 CUSTOM_RENDERERS["AppConfig"] = appConfigRenderer;
 CUSTOM_RENDERERS["route"] = routeObjectRenderer;
+CUSTOM_RENDERERS.root = rootRenderer;
 
 // 4. Apply the renderers
 setCustomRenderers(CUSTOM_RENDERERS);

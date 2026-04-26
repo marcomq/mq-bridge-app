@@ -3,9 +3,11 @@
   "dependencies": {
     "@awesome.me/webawesome": "^3.5.0",
     "split.js": "^1.6.5",
-    "vanilla-schema-forms": "^0.1.6"
+    "vanilla-schema-forms": "^0.1.7"
   },
   "scripts": {
+    "test:ui": "playwright test",
+    "test:ui:headed": "playwright test --headed",
     "vendor:js": "cp node_modules/vanilla-schema-forms/dist/vanilla-schema-forms.umd.js static/vanilla-schema-forms.js",
     "vendor:webawesome": "rm -rf static/vendor/webawesome && mkdir -p static/vendor/webawesome && npx esbuild static/webawesome-init.js --bundle --format=esm --minify --outfile=static/vendor/webawesome/webawesome.bundle.js && npx esbuild node_modules/@awesome.me/webawesome/dist/styles/webawesome.css --bundle --minify --outfile=static/vendor/webawesome/webawesome.bundle.css",
     "vendor:split": "mkdir -p static/vendor/split && cp node_modules/split.js/dist/split.min.js static/vendor/split/split.min.js",
@@ -13,6 +15,7 @@
     "update:ui-vendor": "npm update @awesome.me/webawesome split.js && npm run vendor"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "esbuild": "^0.28.0"
   }
 }

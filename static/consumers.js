@@ -248,7 +248,18 @@ async function initConsumers(config, schema) {
         const headersLabel = h('div', { className: 'section-label' }, 'Headers');
         const headersContainer = h('div', { id: 'cons-response-headers' });
 
-        headerRows.forEach(([key, value], headerIdx) => {
+        const syncResponseState = () => {
+            const headers = {};
+            container.querySelectorAll('.response-header-row').forEach((row) => {
+                const key = row.querySelector('.cons-response-header-key')?.value?.trim() || '';
+                const value = row.querySelector('.cons-response-header-value')?.value?.trim() || '';
+                if (key && value) headers[key] = value;
+            });
+            const payload = container.querySelector('#cons-response-payload')?.value || '';
+            config.consumers[idx].response = normalizeConsumerResponse({ headers, payload });
+        };
+
+        const appendHeaderRow = (key = '', value = '') => {
             const keyInput = h('input', {
                 className: 'field-input cons-response-header-key',
                 type: 'text',
@@ -267,16 +278,30 @@ async function initConsumers(config, schema) {
             deleteButton.setAttribute('variant', 'neutral');
             deleteButton.setAttribute('appearance', 'outlined');
             deleteButton.setAttribute('size', 'small');
-            headersContainer.appendChild(
-                h(
-                    'div',
-                    { className: 'response-header-row', 'data-header-idx': String(headerIdx) },
-                    keyInput,
-                    valueInput,
-                    deleteButton,
-                ),
+
+            const row = h(
+                'div',
+                { className: 'response-header-row' },
+                keyInput,
+                valueInput,
+                deleteButton,
             );
-        });
+
+            deleteButton.onclick = (event) => {
+                event.preventDefault();
+                row.remove();
+                syncResponseState();
+            };
+
+            [keyInput, valueInput].forEach((input) => {
+                input.addEventListener('input', syncResponseState);
+            });
+
+            headersContainer.appendChild(row);
+            return row;
+        };
+
+        headerRows.forEach(([key, value]) => appendHeaderRow(key, value));
 
         const addHeaderButton = h('wa-button', { id: 'cons-response-add-header' }, 'Add Header');
         addHeaderButton.setAttribute('variant', 'neutral');
@@ -300,36 +325,14 @@ async function initConsumers(config, schema) {
             payloadInput,
         );
         container.replaceChildren(toolbar, grid);
-
-        const syncResponseState = () => {
-            const headers = {};
-            container.querySelectorAll('.response-header-row').forEach((row) => {
-                const key = row.querySelector('.cons-response-header-key')?.value?.trim() || '';
-                const value = row.querySelector('.cons-response-header-value')?.value?.trim() || '';
-                if (key && value) headers[key] = value;
-            });
-            const payload = container.querySelector('#cons-response-payload')?.value || '';
-            config.consumers[idx].response = normalizeConsumerResponse({ headers, payload });
+        addHeaderButton.onclick = (event) => {
+            event.preventDefault();
+            const row = appendHeaderRow('', '');
+            syncResponseState();
+            row.querySelector('.cons-response-header-key')?.focus();
         };
 
-        container.querySelector('#cons-response-add-header')?.addEventListener('click', () => {
-            headerRows.push(['', '']);
-            config.consumers[idx].response = normalizeConsumerResponse({ headers: Object.fromEntries(headerRows), payload: response.payload }) || { headers: {}, payload: response.payload };
-            renderConsumerResponseEditor(config.consumers[idx], idx);
-        });
-
-        container.querySelectorAll('.cons-response-header-delete').forEach((button) => {
-            button.addEventListener('click', (event) => {
-                event.preventDefault();
-                event.target.closest('.response-header-row')?.remove();
-                syncResponseState();
-            });
-        });
-
-        container.querySelectorAll('.cons-response-header-key, .cons-response-header-value').forEach((input) => {
-            input.addEventListener('input', syncResponseState);
-        });
-        container.querySelector('#cons-response-payload')?.addEventListener('input', syncResponseState);
+        payloadInput.addEventListener('input', syncResponseState);
     };
 
     const renderSidebar = () => {
@@ -458,6 +461,10 @@ async function initConsumers(config, schema) {
         applyEndpointSchemaDefaults(itemSchema);
         if (itemSchema.properties?.response) {
             itemSchema.properties.response.hidden = true;
+        }
+        const httpConfigSchema = itemSchema.$defs?.HttpConfig;
+        if (httpConfigSchema?.properties?.custom_headers) {
+            httpConfigSchema.properties.custom_headers.hidden = true;
         }
         if (consumers[idx]) await refreshConsumerStatuses();
         window._mqb_form_mode = 'consumer';

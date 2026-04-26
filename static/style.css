@@ -33,7 +33,7 @@
     --tab-h: 28px;
     --sidebar-w: 220px;
     --topbar-h: 36px;
-    --font: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+    --font: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Geist Mono', monospace, system-ui, -apple-system, sans-serif;
     --font-ui: system-ui, -apple-system, sans-serif;
 }
 
@@ -51,6 +51,17 @@
     --text-dim: #7d8590;
     --text-payload: #a8d8a8;
     --accent-mqtt: #d2a8ff;
+}
+@font-face {
+    font-family: 'Geist Mono';
+    src: url('/vendor/fonts/GeistMono-Regular.woff2') format('woff2');
+    font-weight: 400;
+}
+
+@font-face {
+    font-family: 'Geist Mono';
+    src: url('/vendor/fonts/GeistMono-Medium.woff2') format('woff2');
+    font-weight: 500;
 }
 
 body {
@@ -640,9 +651,32 @@ textarea.field-input {
     max-width: min(980px, 100%);
 }
 
-.field-grid .array-item,
+.field-grid .array-item-row,
+.field-grid .js-array-item-row,
 .field-grid .additional-property-row {
-    margin-top: 10px;
+    margin-top: 18px;
+}
+
+.field-grid .array-item-row,
+.field-grid .js-array-item-row {
+    padding-top: 14px;
+    border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+}
+
+.field-grid .array-item-row:first-child,
+.field-grid .js-array-item-row:first-child {
+    padding-top: 0;
+    border-top: 0;
+}
+
+.mqb-array-item-content {
+    display: grid;
+    gap: 14px;
+}
+
+.mqb-array-item-delete {
+    justify-self: start;
+    margin-top: 2px;
 }
 
 .field-grid input[type="checkbox"],
@@ -1242,9 +1276,9 @@ wa-button[variant="neutral"]::part(base) {
 }
 
 #cons-response-editor {
-    margin-top: 16px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border);
+    margin-bottom: 18px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--border);
 }
 
 .response-editor-header {
