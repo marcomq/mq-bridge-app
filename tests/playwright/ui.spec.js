@@ -12,6 +12,12 @@ async function openConsumerDefinition(page, index = 0) {
   await expect(page.locator("#cons-config-form")).toBeVisible();
 }
 
+async function openConsumerResponse(page, index = 0) {
+  await page.goto(`/#consumers:${index}`);
+  await page.locator("#cons-response-tab").click();
+  await expect(page.locator("#cons-response-editor")).toBeVisible();
+}
+
 async function clickAllVisibleShowMore(container) {
   const buttons = container.locator("button", { hasText: "Show more" });
   const count = await buttons.count();
@@ -53,15 +59,13 @@ test("publisher advanced fields can be expanded and middleware picker opens", as
   await expect(page.locator("#pub-config-form select.js-array-type-select").first()).toBeVisible();
 });
 
-test("consumer response editor stays visible above the schema form", async ({ page }) => {
+test("consumer response editor is available in its own response tab", async ({ page }) => {
   await openConsumerDefinition(page, 0);
+  await expect(page.locator("#cons-response-tab")).toBeVisible();
 
-  const responseBox = await page.locator("#cons-response-editor").boundingBox();
-  const formBox = await page.locator("#cons-config-form").boundingBox();
-
-  expect(responseBox).not.toBeNull();
-  expect(formBox).not.toBeNull();
-  expect(responseBox.y).toBeLessThan(formBox.y);
+  await page.locator("#cons-response-tab").click();
+  await expect(page.locator("#cons-response-panel")).toBeVisible();
+  await expect(page.locator("#cons-response-editor")).toBeVisible();
 });
 
 test("publisher form hides transport fields already handled by the request bar", async ({ page }) => {
@@ -86,9 +90,7 @@ test("publisher form hides transport fields already handled by the request bar",
 });
 
 test("consumer custom response headers can be added and removed", async ({ page }) => {
-  await openConsumerDefinition(page, 0);
-
-  await expect(page.locator("#cons-response-editor")).toBeVisible();
+  await openConsumerResponse(page, 0);
   await page.locator("#cons-response-editor").getByText("Add Header", { exact: true }).click();
 
   const rows = page.locator("#cons-response-editor .response-header-row");

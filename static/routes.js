@@ -65,6 +65,169 @@ async function initRoutes(config, schema) {
     };
     // Convert routes object to an array of objects for easier iteration and access to properties
     const routesArray = Object.entries(config.routes || {}).map(([name, details]) => ({ name, ...details }));
+    window.registerDirtySection('routes', {
+        buttonId: 'route-save',
+        getValue: () => config.routes,
+    });
+    const cloneJson = (value) => JSON.parse(JSON.stringify(value));
+    const nextConsumerName = (baseName) => {
+        const existingNames = new Set((config.consumers || []).map((consumer) => consumer.name));
+        let candidate = baseName;
+        let index = 1;
+        while (existingNames.has(candidate)) {
+            candidate = `${baseName}_${index}`;
+            index += 1;
+        }
+        return candidate;
+    };
+    const nextPublisherName = (baseName) => {
+        const existingNames = new Set((config.publishers || []).map((publisher) => publisher.name));
+        let candidate = baseName;
+        let index = 1;
+        while (existingNames.has(candidate)) {
+            candidate = `${baseName}_${index}`;
+            index += 1;
+        }
+        return candidate;
+    };
+    const nextRouteName = (baseName) => {
+        const existingNames = new Set(Object.keys(config.routes || {}));
+        let candidate = baseName;
+        let index = 1;
+        while (existingNames.has(candidate)) {
+            candidate = `${baseName}_${index}`;
+            index += 1;
+        }
+        return candidate;
+    };
+    const openRouteAt = (routeName) => {
+        window.initRoutes(config, schema);
+        if (window.switchMain) window.switchMain('routes');
+        const routeIdx = Object.keys(config.routes || {}).indexOf(routeName);
+        if (routeIdx !== -1 && window.restoreRouteState) {
+            window.restoreRouteState(routeIdx);
+        }
+    };
+    const openConsumerAt = (idx) => {
+        window.initConsumers(config, window.appSchema);
+        if (window.switchMain) window.switchMain('consumers');
+        if (window.restoreConsumerState) {
+            window.restoreConsumerState(idx);
+        }
+    };
+    const openPublisherAt = (idx) => {
+        window.initPublishers(config, window.appSchema);
+        if (window.switchMain) window.switchMain('publishers');
+        if (window.restorePublisherState) {
+            window.restorePublisherState(idx);
+        }
+    };
+    const createRefInputEndpoint = (refName) => ({
+        middlewares: defaultMetricsMiddleware(),
+        ref: refName,
+    });
+    const getCurrentRouteEntry = () => routesArray[currentIdx] || null;
+
+    const copyCurrentRoute = async () => {
+        const current = getCurrentRouteEntry();
+        if (!current) return;
+
+        const choice = await window.mqbChoose(
+            "Choose what to create from this route.",
+            "Copy Route",
+            {
+                confirmLabel: 'Continue',
+                choices: [
+                    { value: 'input_consumer', label: 'Input -> New Consumer', description: 'Copies the current route input into a consumer.' },
+                    { value: 'output_publisher', label: 'Output -> New Publisher', description: 'Copies the current route output into a publisher.' },
+                    { value: 'output_ref', label: 'Output -> New Ref Route', description: 'Creates a new route with a ref input and this output.' },
+                ],
+            },
+        );
+        if (!choice) return;
+
+        if (choice === 'input_consumer') {
+            const consumerName = await window.mqbPrompt(
+                'Choose a name for the new consumer.',
+                'Copy Route Input',
+                {
+                    confirmLabel: 'Create',
+                    value: nextConsumerName(`${current.name}_consumer`),
+                    placeholder: 'route_consumer',
+                },
+            );
+            if (!consumerName) return;
+            if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
+                return window.mqbAlert("Consumer already exists");
+            }
+
+            config.consumers.push({
+                name: consumerName,
+                endpoint: cloneJson(current.input),
+                comment: '',
+                response: null,
+            });
+            window.refreshDirtySection('consumers');
+            openConsumerAt(config.consumers.length - 1);
+            return;
+        }
+
+        if (choice === 'output_publisher') {
+            const publisherName = await window.mqbPrompt(
+                'Choose a name for the new publisher.',
+                'Copy Route Output',
+                {
+                    confirmLabel: 'Create',
+                    value: nextPublisherName(`${current.name}_publisher`),
+                    placeholder: 'route_publisher',
+                },
+            );
+            if (!publisherName) return;
+            if ((config.publishers || []).some((publisher) => publisher.name === publisherName)) {
+                return window.mqbAlert("Publisher already exists");
+            }
+
+            config.publishers.push({
+                name: publisherName,
+                endpoint: cloneJson(current.output),
+                comment: '',
+            });
+            window.refreshDirtySection('publishers');
+            openPublisherAt(config.publishers.length - 1);
+            return;
+        }
+
+        const refTarget = await window.mqbPrompt(
+            'Choose the ref input name for the new route.',
+            'Copy Route Output as Ref',
+            {
+                confirmLabel: 'Next',
+                value: current.name,
+                placeholder: 'route_ref',
+            },
+        );
+        if (!refTarget) return;
+
+        const routeName = await window.mqbPrompt(
+                'Choose a name for the new route.',
+                'Copy Route Output as Ref',
+                {
+                    confirmLabel: 'Create',
+                    value: nextRouteName(`${current.name}_ref_route`),
+                    placeholder: 'ref_route',
+                },
+            );
+        if (!routeName) return;
+        if (config.routes[routeName]) return window.mqbAlert("Route already exists");
+
+        config.routes[routeName] = {
+            enabled: true,
+            input: createRefInputEndpoint(refTarget),
+            output: cloneJson(current.output),
+        };
+        window.refreshDirtySection('routes');
+        openRouteAt(routeName);
+    };
 
     let currentIdx = 0; // Currently active route index
 
@@ -179,6 +342,7 @@ async function initRoutes(config, schema) {
                     // Name has changed, update the config object
                     delete config.routes[oldName];
                     config.routes[newName] = updated;
+                    window.refreshDirtySection('routes');
                     // Re-initialize the entire routes tab to reflect the name change in the sidebar
                     window.initRoutes(config, schema);
                     // After re-initialization, find the new index of the renamed route and set it active
@@ -192,6 +356,7 @@ async function initRoutes(config, schema) {
                     renderRuntimeMetrics();
                     setActiveItem(idx);
                     syncRouteToggleButton();
+                    window.refreshDirtySection('routes');
                 }
             });
         } finally {
@@ -279,7 +444,9 @@ async function initRoutes(config, schema) {
         };
 
         document.getElementById('route-clone').onclick = () => {
-            const currentName = routesArray[currentIdx].name;
+            const currentRoute = getCurrentRouteEntry();
+            if (!currentRoute) return;
+            const currentName = currentRoute.name;
             const newName = currentName + '_copy';
             if (config.routes[newName]) return window.mqbAlert("Cloned route name already exists. Please choose a different name.");
             config.routes[newName] = JSON.parse(JSON.stringify(config.routes[currentName]));
@@ -290,7 +457,9 @@ async function initRoutes(config, schema) {
 
         document.getElementById('route-delete').onclick = async () => {
             if (!await window.mqbConfirm("Delete this route?", "Delete Route")) return;
-            const nameToDelete = routesArray[currentIdx].name;
+            const currentRoute = getCurrentRouteEntry();
+            if (!currentRoute) return;
+            const nameToDelete = currentRoute.name;
             delete config.routes[nameToDelete];
             if (Object.keys(config.routes).length === 0) {
                 await window.saveConfigSection('routes', config.routes, false);
@@ -303,7 +472,9 @@ async function initRoutes(config, schema) {
         };
 
         document.getElementById('route-toggle').onclick = async (e) => {
-            const routeName = routesArray[currentIdx].name;
+            const currentRouteEntry = getCurrentRouteEntry();
+            if (!currentRouteEntry) return;
+            const routeName = currentRouteEntry.name;
             const currentRoute = config.routes[routeName];
             if (!currentRoute) return;
 
@@ -338,6 +509,7 @@ async function initRoutes(config, schema) {
 
         document.getElementById('route-save').onclick = (e) =>
             window.saveConfigSection('routes', config.routes, false, e.currentTarget);
+        document.getElementById('route-copy').onclick = copyCurrentRoute;
     }
 
     // Mark as initialized and expose the restore function
@@ -361,6 +533,10 @@ async function initRoutes(config, schema) {
 async function initSettings(config, schema) {
     const lib = window.VanillaSchemaForms;
     const container = document.getElementById('form-container');
+    window.registerDirtySection('config', {
+        buttonId: 'js-submit',
+        getValue: () => window.appConfig,
+    });
     window._mqb_form_mode = 'settings';
     const form = await lib.init(container, JSON.parse(JSON.stringify(schema)), config);
     window._mqb_form_mode = null;
@@ -369,6 +545,10 @@ async function initSettings(config, schema) {
     if (formActions) formActions.style.display = 'flex';
     const submitBtn = document.getElementById('js-submit');
     if (submitBtn) submitBtn.onclick = (e) => window.saveConfig(false, e.currentTarget);
+
+    const scheduleDirtyRefresh = () => window.setTimeout(() => window.refreshDirtySection('config'), 0);
+    container.oninput = scheduleDirtyRefresh;
+    container.onchange = scheduleDirtyRefresh;
 
     let desktopSecretsBtn = document.getElementById('js-delete-desktop-secrets');
     let desktopSecretsCheckBtn = document.getElementById('js-check-desktop-secrets');

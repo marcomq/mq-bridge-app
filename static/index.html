@@ -87,15 +87,21 @@
                     <div id="route-empty-alert" class="empty-state" style="display:none;">No routes configured. Click "+" to create one.</div>
                         <div id="route-main-ui" class="pane-container">
                             <div class="pane-top" style="padding:12px;">
-                                <div class="section-toolbar">
-                                    <div class="section-label">Definition</div>
-                                    <div class="form-actions-row section-actions">
-                                        <wa-button variant="neutral" appearance="outlined" size="small" id="route-toggle">Disable</wa-button>
-                                        <wa-button variant="brand" size="small" id="route-save">Save</wa-button>
-                                        <wa-button variant="neutral" appearance="outlined" size="small" id="route-clone">Clone</wa-button>
-                                        <wa-button variant="danger" appearance="outlined" size="small" id="route-delete">Delete</wa-button>
+                                <div class="section-toolbar editor-action-bar editor-action-bar--compact">
+                                    <div class="form-actions-row section-actions section-actions-right">
+                                        <div class="editor-action-cluster">
+                                            <wa-button variant="neutral" appearance="outlined" size="small" id="route-copy">Copy to...</wa-button>
+                                            <wa-button variant="neutral" appearance="outlined" size="small" id="route-clone">Clone</wa-button>
+                                        </div>
+                                        <div class="toolbar-divider" aria-hidden="true"></div>
+                                        <div class="editor-action-cluster">
+                                            <wa-button variant="brand" size="small" id="route-save">Save</wa-button>
+                                            <wa-button variant="neutral" appearance="outlined" size="small" id="route-toggle">Disable</wa-button>
+                                            <wa-button variant="danger" appearance="outlined" size="small" id="route-delete">Delete</wa-button>
+                                        </div>
                                     </div>
                                 </div>
+                                <div class="section-label">Definition</div>
                                 <div id="route-config-form" class="field-grid"></div>
                             </div>
                         </div>
@@ -121,20 +127,30 @@
                     <div id="cons-main-ui" style="display:contents">
                         <div class="content-tabs" id="cons-sub-tabs">
                             <div class="content-tab" data-target="cons-def-panel" id="ctab-def">Definition</div>
+                            <div class="content-tab" data-target="cons-response-panel" id="cons-response-tab" style="display:none;">Response</div>
                             <div class="content-tab active" data-target="cons-msg-panel" id="ctab-msg">Messages</div>
                         </div>
                         <div class="pane-container" id="cons-def-panel" style="display:none;">
                             <div class="pane-top" style="padding:12px;">
-                                <div class="section-toolbar">
-                                    <div class="section-label">Definition</div>
-                                    <div class="form-actions-row section-actions">
-                                        <wa-button variant="brand" size="small" id="cons-save">Save</wa-button>
-                                        <wa-button variant="neutral" appearance="outlined" size="small" id="cons-clone">Clone</wa-button>
-                                        <wa-button variant="danger" appearance="outlined" size="small" id="cons-delete">Delete</wa-button>
+                                <div class="section-toolbar editor-action-bar editor-action-bar--compact">
+                                    <div class="form-actions-row section-actions section-actions-right">
+                                        <div class="editor-action-cluster">
+                                            <wa-button variant="neutral" appearance="outlined" size="small" id="cons-copy">Copy to...</wa-button>
+                                            <wa-button variant="neutral" appearance="outlined" size="small" id="cons-clone">Clone</wa-button>
+                                        </div>
+                                        <div class="toolbar-divider" aria-hidden="true"></div>
+                                        <div class="editor-action-cluster">
+                                            <wa-button variant="brand" size="small" id="cons-save">Save</wa-button>
+                                            <wa-button variant="danger" appearance="outlined" size="small" id="cons-delete">Delete</wa-button>
+                                        </div>
                                     </div>
                                 </div>
-                                <div id="cons-response-editor" style="display:none;"></div>
                                 <div id="cons-config-form" class="field-grid"></div>
+                            </div>
+                        </div>
+                        <div class="pane-container" id="cons-response-panel" style="display:none;">
+                            <div class="pane-top" style="padding:12px;">
+                                <div id="cons-response-editor" style="display:none;"></div>
                             </div>
                         </div>
                         <div class="pane-container" id="cons-msg-panel">
@@ -240,12 +256,17 @@
                                 <div class="pane-top" id="pub-history-pane" style="display:none;"></div>
 
                                 <div class="pane-top" id="pub-config-pane" style="display:none;">
-                                    <div class="section-toolbar">
-                                        <div class="section-label">Definition</div>
-                                        <div class="form-actions-row section-actions">
-                                            <wa-button variant="brand" size="small" id="pub-save">Save</wa-button>
-                                            <wa-button variant="neutral" appearance="outlined" size="small" id="pub-clone">Clone</wa-button>
-                                            <wa-button variant="danger" appearance="outlined" size="small" id="pub-delete">Delete</wa-button>
+                                    <div class="section-toolbar editor-action-bar editor-action-bar--compact">
+                                        <div class="form-actions-row section-actions section-actions-right">
+                                            <div class="editor-action-cluster">
+                                                <wa-button variant="neutral" appearance="outlined" size="small" id="pub-copy">Copy to...</wa-button>
+                                                <wa-button variant="neutral" appearance="outlined" size="small" id="pub-clone">Clone</wa-button>
+                                            </div>
+                                            <div class="toolbar-divider" aria-hidden="true"></div>
+                                            <div class="editor-action-cluster">
+                                                <wa-button variant="brand" size="small" id="pub-save">Save</wa-button>
+                                                <wa-button variant="danger" appearance="outlined" size="small" id="pub-delete">Delete</wa-button>
+                                            </div>
                                         </div>
                                     </div>
                                     <div id="pub-config-form" class="field-grid"></div>
@@ -267,13 +288,20 @@
 
         <!-- CONFIG TAB -->
         <div class="tab-content-panel" id="tab-config">
-                <div id="form-container" class="field-grid"></div>
-                <div id="form-actions" class="form-actions-row" style="display: none;">
-                    <wa-button variant="brand" size="small" id="js-submit">Save</wa-button>
-                    <wa-button variant="neutral" appearance="outlined" size="small" id="js-show-json" type="button" title="Show current configuration as JSON" onclick="showJsonModal()">
-                        {?} JSON
-                    </wa-button>
+                <div id="form-actions" class="section-toolbar editor-action-bar editor-action-bar--config editor-action-bar--compact" style="display: none;">
+                    <div class="form-actions-row section-actions section-actions-right">
+                        <div class="editor-action-cluster">
+                            <wa-button variant="neutral" appearance="outlined" size="small" id="js-show-json" type="button" title="Show current configuration as JSON" onclick="showJsonModal()">
+                                {?} JSON
+                            </wa-button>
+                        </div>
+                        <div class="toolbar-divider" aria-hidden="true"></div>
+                        <div class="editor-action-cluster">
+                            <wa-button variant="brand" size="small" id="js-submit">Save</wa-button>
+                        </div>
+                    </div>
                 </div>
+                <div id="form-container" class="field-grid"></div>
             </div>
     </div><!-- app-body -->
 
@@ -343,6 +371,76 @@
             active_routes: [],
             route_throughput: {}
         };
+        window._mqb_dirty_sections = {};
+
+        const normalizeSectionState = (value) => {
+            if (Array.isArray(value)) {
+                return value.map((item) => normalizeSectionState(item));
+            }
+
+            if (value && typeof value === 'object') {
+                return Object.keys(value)
+                    .sort()
+                    .reduce((acc, key) => {
+                        acc[key] = normalizeSectionState(value[key]);
+                        return acc;
+                    }, {});
+            }
+
+            return value ?? null;
+        };
+
+        const serializeSectionState = (value) => JSON.stringify(normalizeSectionState(value));
+
+        window.syncSaveButtonLabel = (button) => {
+            if (!button) return;
+            const baseLabel = button.dataset.baseLabel || button.textContent?.trim() || 'Save';
+            button.dataset.baseLabel = baseLabel;
+
+            if (button.dataset.saving === 'true') return;
+
+            const isDirty = button.dataset.dirty === 'true';
+            button.textContent = isDirty ? `${baseLabel} *` : baseLabel;
+            button.title = isDirty ? 'Unsaved changes' : '';
+            button.classList.toggle('is-dirty', isDirty);
+        };
+
+        window.registerDirtySection = (sectionName, options) => {
+            if (!sectionName || !options?.buttonId || typeof options.getValue !== 'function') return;
+
+            const previous = window._mqb_dirty_sections[sectionName];
+            const currentSerialized = serializeSectionState(options.getValue());
+            const tracker = {
+                ...options,
+                baseline: previous?.baseline ?? currentSerialized,
+            };
+            window._mqb_dirty_sections[sectionName] = tracker;
+            window.refreshDirtySection(sectionName);
+        };
+
+        window.refreshDirtySection = (sectionName) => {
+            const tracker = window._mqb_dirty_sections?.[sectionName];
+            if (!tracker) return false;
+
+            const button = document.getElementById(tracker.buttonId);
+            if (!button) return false;
+
+            const currentSerialized = serializeSectionState(tracker.getValue());
+            const isDirty = currentSerialized !== tracker.baseline;
+            button.dataset.dirty = isDirty ? 'true' : 'false';
+            window.syncSaveButtonLabel(button);
+            return isDirty;
+        };
+
+        window.markSectionSaved = (sectionName, savedValue = undefined) => {
+            const tracker = window._mqb_dirty_sections?.[sectionName];
+            if (!tracker) return;
+
+            tracker.baseline = serializeSectionState(
+                savedValue === undefined ? tracker.getValue() : savedValue,
+            );
+            window.refreshDirtySection(sectionName);
+        };
 
         window.renderRuntimeStatus = () => {
             const status = window._mqb_runtime_status || {};
@@ -403,11 +501,13 @@
             }
             
             window.runSaveButtonAction = async (button, action) => {
-                const originalLabel = button?.textContent?.trim() || 'Save';
+                const originalLabel = button?.dataset?.baseLabel || button?.textContent?.trim() || 'Save';
                 const originalDisabled = button?.disabled;
                 const originalLoading = button?.loading;
 
                 if (button) {
+                    button.dataset.baseLabel = originalLabel;
+                    button.dataset.saving = 'true';
                     button.disabled = true;
                     if ('loading' in button) button.loading = true;
                     button.textContent = 'Saving...';
@@ -420,18 +520,20 @@
                         if ('loading' in button) button.loading = false;
                         button.textContent = 'Saved';
                         setTimeout(() => {
-                            button.textContent = originalLabel;
+                            button.dataset.saving = 'false';
                             button.disabled = originalDisabled ?? false;
                             if ('loading' in button) button.loading = originalLoading ?? false;
+                            window.syncSaveButtonLabel(button);
                         }, 1200);
                     }
 
                     return result;
                 } catch (e) {
                     if (button) {
+                        button.dataset.saving = 'false';
                         if ('loading' in button) button.loading = false;
-                        button.textContent = originalLabel;
                         button.disabled = originalDisabled ?? false;
+                        window.syncSaveButtonLabel(button);
                     }
                     window.mqbAlert("Error saving: " + e.message);
                     return null;
@@ -452,6 +554,7 @@
                         const text = await response.text();
                         throw new Error(text);
                     }
+                    window.markSectionSaved('config', window.appConfig);
                     return true;
                 };
 
@@ -487,6 +590,7 @@
                         ...window.appConfig,
                         [sectionName]: refreshedConfig[sectionName]
                     };
+                    window.markSectionSaved(sectionName, refreshedConfig[sectionName]);
                     return refreshedConfig;
                 };
 

@@ -840,6 +840,16 @@ textarea.field-input {
     justify-content: flex-end;
 }
 
+.section-actions-left {
+    margin-left: 0;
+    justify-content: flex-start;
+}
+
+.section-actions-right {
+    margin-left: auto;
+    justify-content: flex-end;
+}
+
 .form-advanced-block {
     margin-top: 12px;
     padding-top: 6px;
@@ -949,6 +959,14 @@ textarea.field-input {
     .form-description-block {
         margin-left: 0;
         max-width: 100%;
+    }
+
+    .toolbar-group {
+        width: 100%;
+    }
+
+    .section-actions-right {
+        margin-left: 0;
     }
 }
 
@@ -1214,6 +1232,64 @@ wa-button[variant="neutral"]::part(base) {
     justify-content: flex-end;
 }
 
+.editor-action-bar {
+    position: sticky;
+    top: -12px;
+    z-index: 6;
+    margin: -12px -12px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg-panel) 94%, var(--bg-base));
+    backdrop-filter: blur(8px);
+}
+
+.section-toolbar.editor-action-bar {
+    float: right;
+    border-left: 1px solid var(--border);
+}
+
+.editor-action-bar--compact {
+    justify-content: flex-end;
+}
+
+.editor-action-bar--config {
+    margin: -12px -12px 14px;
+}
+
+.toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+.toolbar-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--border);
+    flex-shrink: 0;
+}
+
+.editor-action-cluster {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.editor-action-bar--compact .section-actions-right {
+    display: inline-flex;
+    flex: 0 0 auto;
+    width: auto;
+    max-width: 100%;
+}
+
+wa-button.is-dirty::part(base) {
+    border-color: color-mix(in srgb, var(--accent-blue) 70%, var(--border));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 18%, transparent);
+}
+
 .body-editor {
     flex: 1;
     background: var(--bg-input);
@@ -1276,14 +1352,15 @@ wa-button[variant="neutral"]::part(base) {
 }
 
 #cons-response-editor {
-    margin-bottom: 18px;
-    padding-bottom: 18px;
-    border-bottom: 1px solid var(--border);
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: 0;
 }
 
 .response-editor-header {
     align-items: baseline;
     gap: 12px;
+    margin-right: 0;
 }
 
 .response-editor-grid {
@@ -1301,6 +1378,10 @@ wa-button[variant="neutral"]::part(base) {
 .response-editor-actions {
     display: flex;
     justify-content: flex-start;
+}
+
+.mqb-choice-link {
+    justify-content: left;
 }
 
 @media (max-width: 760px) {

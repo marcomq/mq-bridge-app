@@ -50,6 +50,10 @@ async function initConsumers(config, schema) {
     const logBody = document.getElementById('consumer-log-body');
     const consSubTabs = document.getElementById('cons-sub-tabs');
     let currentIdx = 0;
+    window.registerDirtySection('consumers', {
+        buttonId: 'cons-save',
+        getValue: () => config.consumers,
+    });
 
     const updateUrlHash = () => {
         const idx = typeof currentIdx !== 'undefined' ? currentIdx : 0;
@@ -146,6 +150,160 @@ async function initConsumers(config, schema) {
         return candidate;
     };
 
+    const cloneJson = (value) => JSON.parse(JSON.stringify(value));
+
+    const nextPublisherName = (baseName) => {
+        const existingNames = new Set((config.publishers || []).map((publisher) => publisher.name));
+        let candidate = baseName;
+        let index = 1;
+        while (existingNames.has(candidate)) {
+            candidate = `${baseName}_${index}`;
+            index += 1;
+        }
+        return candidate;
+    };
+
+    const nextRouteName = (baseName) => {
+        const existingNames = new Set(Object.keys(config.routes || {}));
+        let candidate = baseName;
+        let index = 1;
+        while (existingNames.has(candidate)) {
+            candidate = `${baseName}_${index}`;
+            index += 1;
+        }
+        return candidate;
+    };
+
+    const createEmptyRouteConfig = () => ({
+        enabled: true,
+        input: { middlewares: defaultMetricsMiddleware(), null: null },
+        output: { middlewares: defaultMetricsMiddleware(), null: null },
+    });
+
+    const openConsumerAt = (idx) => {
+        window.initConsumers(config, schema);
+        if (window.switchMain) window.switchMain('consumers');
+        if (window.restoreConsumerState) {
+            window.restoreConsumerState(idx);
+        }
+    };
+
+    const openPublisherAt = (idx) => {
+        window.initPublishers(config, window.appSchema);
+        if (window.switchMain) window.switchMain('publishers');
+        if (window.restorePublisherState) {
+            window.restorePublisherState(idx);
+        }
+    };
+
+    const openRouteAt = (routeName) => {
+        window.initRoutes(config, window.appSchema);
+        if (window.switchMain) window.switchMain('routes');
+        const routeIdx = Object.keys(config.routes || {}).indexOf(routeName);
+        if (routeIdx !== -1 && window.restoreRouteState) {
+            window.restoreRouteState(routeIdx);
+        }
+    };
+
+    const copyCurrentConsumer = async () => {
+        const current = config.consumers[currentIdx];
+        if (!current) return;
+
+        const choice = await window.mqbChoose(
+            "Choose where to copy this consumer definition.",
+            "Copy Consumer",
+            {
+                confirmLabel: 'Continue',
+                choices: [
+                    { value: 'route_input', label: 'New Route Input' },
+                    { value: 'publisher', label: 'New Publisher (review required)' },
+                    { value: 'ref', label: 'New Ref Consumer' },
+                ],
+            },
+        );
+        if (!choice) return;
+
+        if (choice === 'route_input') {
+            const routeName = await window.mqbPrompt(
+                "Choose a name for the new route. The output stays null until you review it.",
+                "Copy to Route",
+                {
+                    confirmLabel: 'Create',
+                    value: nextRouteName(`${current.name}_route`),
+                    placeholder: 'consumer_route',
+                },
+            );
+            if (!routeName) return;
+            if (config.routes[routeName]) return window.mqbAlert("Route already exists");
+
+            const routeConfig = createEmptyRouteConfig();
+            routeConfig.input = cloneJson(current.endpoint);
+            config.routes[routeName] = routeConfig;
+            window.refreshDirtySection('routes');
+            openRouteAt(routeName);
+            return;
+        }
+
+        if (choice === 'publisher') {
+            const publisherName = await window.mqbPrompt(
+                "Choose a name for the new publisher. Consumer-specific fields may need adjustment after copying.",
+                "Copy to Publisher",
+                {
+                    confirmLabel: 'Create',
+                    value: nextPublisherName(`${current.name}_publisher`),
+                    placeholder: 'consumer_publisher',
+                },
+            );
+            if (!publisherName) return;
+            if ((config.publishers || []).some((publisher) => publisher.name === publisherName)) {
+                return window.mqbAlert("Publisher already exists");
+            }
+
+            config.publishers.push({
+                name: publisherName,
+                endpoint: cloneJson(current.endpoint),
+                comment: current.comment || '',
+            });
+            window.refreshDirtySection('publishers');
+            openPublisherAt(config.publishers.length - 1);
+            return;
+        }
+
+        const refTarget = await window.mqbPrompt(
+            'Enter the ref target name. This must match a registered endpoint name at runtime.',
+            'Copy as Ref Consumer',
+            {
+                confirmLabel: 'Next',
+                value: current.name,
+                placeholder: 'route_or_ref_name',
+            },
+        );
+        if (!refTarget) return;
+
+        const consumerName = await window.mqbPrompt(
+            'Choose a name for the new ref consumer.',
+            'Copy as Ref Consumer',
+            {
+                confirmLabel: 'Create',
+                value: nextConsumerName('ref'),
+                placeholder: 'ref_consumer',
+            },
+        );
+        if (!consumerName) return;
+        if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
+            return window.mqbAlert("Consumer already exists");
+        }
+
+        config.consumers.push({
+            name: consumerName,
+            endpoint: { ref: refTarget },
+            comment: current.comment || '',
+            response: null,
+        });
+        window.refreshDirtySection('consumers');
+        openConsumerAt(config.consumers.length - 1);
+    };
+
     const addConsumer = async () => {
         const endpointType = await window.mqbChoose(
             "Choose the endpoint type for the new consumer.",
@@ -223,12 +381,19 @@ async function initConsumers(config, schema) {
 
     const renderConsumerResponseEditor = (consumer, idx) => {
         const container = document.getElementById('cons-response-editor');
+        const responseTab = document.getElementById('cons-response-tab');
+        const responsePanel = document.getElementById('cons-response-panel');
         if (!container) return;
 
         if (!consumerSupportsCustomResponse(consumer)) {
+            if (responseTab) responseTab.style.display = 'none';
+            if (responsePanel) responsePanel.style.display = 'none';
             container.style.display = 'none';
             container.innerHTML = '';
             config.consumers[idx].response = null;
+            if (responseTab?.classList.contains('active')) {
+                document.getElementById('ctab-def')?.click();
+            }
             return;
         }
 
@@ -236,6 +401,7 @@ async function initConsumers(config, schema) {
         config.consumers[idx].response = response;
 
         const headerRows = Object.entries(response.headers).sort(([a], [b]) => a.localeCompare(b));
+        if (responseTab) responseTab.style.display = 'flex';
         container.style.display = 'block';
         const toolbar = h(
             'div',
@@ -257,6 +423,7 @@ async function initConsumers(config, schema) {
             });
             const payload = container.querySelector('#cons-response-payload')?.value || '';
             config.consumers[idx].response = normalizeConsumerResponse({ headers, payload });
+            window.refreshDirtySection('consumers');
         };
 
         const appendHeaderRow = (key = '', value = '') => {
@@ -477,6 +644,7 @@ async function initConsumers(config, schema) {
                 if (label) label.textContent = updated.name;
                 updateConsumerList(); // Update protocol badge
                 renderConsumerResponseEditor(updated, idx);
+                window.refreshDirtySection('consumers');
             });
         } finally {
             window._mqb_form_mode = null;
@@ -586,6 +754,7 @@ async function initConsumers(config, schema) {
     } else {
         // For existing consumers, these buttons are always present
         document.getElementById('cons-add').onclick = addConsumer;
+        document.getElementById('cons-copy').onclick = copyCurrentConsumer;
 
         document.getElementById('cons-clone').onclick = () => {
             const current = config.consumers[currentIdx];
@@ -636,6 +805,7 @@ async function initConsumers(config, schema) {
         tab.onclick = () => {
             consSubTabs.querySelectorAll('.content-tab').forEach(t => t.classList.remove('active'));
             document.getElementById('cons-def-panel').style.display = 'none';
+            document.getElementById('cons-response-panel').style.display = 'none';
             document.getElementById('cons-msg-panel').style.display = 'none';
 
             tab.classList.add('active');
@@ -727,6 +897,7 @@ async function initConsumers(config, schema) {
     } else {
         // If no consumers, ensure the "add new" button is functional
         document.getElementById('cons-add').onclick = addConsumer;
+        document.getElementById('cons-copy').onclick = copyCurrentConsumer;
     }
 }
 window.initConsumers = initConsumers;

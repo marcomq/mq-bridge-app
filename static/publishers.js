@@ -218,6 +218,151 @@ function initPublishers(config, schema) {
         return candidate;
     };
 
+    const cloneJson = (value) => JSON.parse(JSON.stringify(value));
+
+    const createEmptyRouteConfig = () => ({
+        enabled: true,
+        input: { middlewares: [{ metrics: {} }], null: null },
+        output: { middlewares: [{ metrics: {} }], null: null },
+    });
+    const createRefInputEndpoint = (refName) => ({
+        middlewares: [{ metrics: {} }],
+        ref: refName,
+    });
+
+    const nextRouteName = (baseName) => {
+        const existingNames = new Set(Object.keys(config.routes || {}));
+        let candidate = baseName;
+        let index = 1;
+        while (existingNames.has(candidate)) {
+            candidate = `${baseName}_${index}`;
+            index += 1;
+        }
+        return candidate;
+    };
+
+    const openPublisherAt = (idx) => {
+        window.initPublishers(config, schema);
+        if (window.switchMain) window.switchMain('publishers');
+        if (window.restorePublisherState) {
+            window.restorePublisherState(idx);
+        }
+    };
+
+    const openConsumerAt = (idx) => {
+        window.initConsumers(config, window.appSchema);
+        if (window.switchMain) window.switchMain('consumers');
+        if (window.restoreConsumerState) {
+            window.restoreConsumerState(idx);
+        }
+    };
+
+    const openRouteAt = (routeName) => {
+        window.initRoutes(config, window.appSchema);
+        if (window.switchMain) window.switchMain('routes');
+        const routeIdx = Object.keys(config.routes || {}).indexOf(routeName);
+        if (routeIdx !== -1 && window.restoreRouteState) {
+            window.restoreRouteState(routeIdx);
+        }
+    };
+
+    const copyCurrentPublisher = async () => {
+        const current = config.publishers[currentIdx];
+        if (!current) return;
+        const currentEndpoint = cloneJson(current.endpoint || { null: null });
+
+        const choice = await window.mqbChoose(
+            "Choose where to copy this publisher definition.",
+            "Copy Publisher",
+            {
+                confirmLabel: 'Continue',
+                choices: [
+                    { value: 'route_output', label: 'New Route Output', description: 'Creates a route with this publisher as output.' },
+                    { value: 'consumer', label: 'New Consumer', description: 'Copies the endpoint into a consumer. Review after copying.' },
+                    { value: 'ref', label: 'New Ref Route', description: 'Creates a route with a ref input and this publisher as output.' },
+                ],
+            },
+        );
+        if (!choice) return;
+
+        if (choice === 'route_output') {
+            const routeName = await window.mqbPrompt(
+                "Choose a name for the new route. The input stays null until you review it.",
+                "Copy to Route",
+                {
+                    confirmLabel: 'Create',
+                    value: nextRouteName(`${current.name}_route`),
+                    placeholder: 'publisher_route',
+                },
+            );
+            if (!routeName) return;
+            if (config.routes[routeName]) return window.mqbAlert("Route already exists");
+
+            const routeConfig = createEmptyRouteConfig();
+            routeConfig.output = currentEndpoint;
+            config.routes[routeName] = routeConfig;
+            window.refreshDirtySection('routes');
+            openRouteAt(routeName);
+            return;
+        }
+
+        if (choice === 'consumer') {
+            const consumerName = await window.mqbPrompt(
+                "Choose a name for the new consumer. Publisher-specific fields may need adjustment after copying.",
+                "Copy to Consumer",
+                {
+                    confirmLabel: 'Create',
+                    value: nextConsumerName(getEndpointType(current)),
+                    placeholder: 'publisher_consumer',
+                },
+            );
+            if (!consumerName) return;
+            if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
+                return window.mqbAlert("Consumer already exists");
+            }
+
+            config.consumers.push({
+                name: consumerName,
+                endpoint: currentEndpoint,
+                comment: current.comment || '',
+                response: null,
+            });
+            window.refreshDirtySection('consumers');
+            openConsumerAt(config.consumers.length - 1);
+            return;
+        }
+
+        const refTarget = await window.mqbPrompt(
+            'Choose the ref input name. Other endpoints can reference this publisher through that name after the route is saved and running.',
+            'Copy to Ref Route',
+            {
+                confirmLabel: 'Next',
+                value: current.name,
+                placeholder: 'publisher_ref',
+            },
+        );
+        if (!refTarget) return;
+
+        const routeName = await window.mqbPrompt(
+            'Choose a name for the new route that exposes this publisher via ref.',
+            'Copy to Ref Route',
+            {
+                confirmLabel: 'Create',
+                value: nextRouteName(`${current.name}_ref_route`),
+                placeholder: 'publisher_ref_route',
+            },
+        );
+        if (!routeName) return;
+        if (config.routes[routeName]) return window.mqbAlert("Route already exists");
+
+        const routeConfig = createEmptyRouteConfig();
+        routeConfig.input = createRefInputEndpoint(refTarget);
+        routeConfig.output = currentEndpoint;
+        config.routes[routeName] = routeConfig;
+        window.refreshDirtySection('routes');
+        openRouteAt(routeName);
+    };
+
     const addPublisher = async () => {
         const endpointType = await window.mqbChoose(
             "Choose the endpoint type for the new publisher.",
@@ -508,6 +653,10 @@ function initPublishers(config, schema) {
     const responseDiv = document.getElementById('pub-response');
     const pubSubTabs = document.getElementById('pub-sub-tabs');
     let currentIdx = 0;
+    window.registerDirtySection('publishers', {
+        buttonId: 'pub-save',
+        getValue: () => config.publishers,
+    });
 
     const renderSidebar = () => {
         if (!pubList) return;
@@ -594,6 +743,7 @@ function initPublishers(config, schema) {
                 if (label) label.textContent = updated.name;
                 syncRequestBar();
                 syncPublisherSidebar();
+                window.refreshDirtySection('publishers');
             });
         } finally {
             window._mqb_form_mode = null;
@@ -625,6 +775,7 @@ function initPublishers(config, schema) {
             httpConfig.custom_headers = customHeaders;
         }
         saveAppState();
+        window.refreshDirtySection('publishers');
     };
 
     const addMetadataRow = (k = '', v = '') => {
@@ -891,6 +1042,7 @@ function initPublishers(config, schema) {
     };
 
     document.getElementById('pub-add').onclick = addPublisher;
+    document.getElementById('pub-copy').onclick = copyCurrentPublisher;
 
     document.getElementById('pub-clone').onclick = () => {
         const current = config.publishers[currentIdx];
