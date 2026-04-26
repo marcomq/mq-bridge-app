@@ -50,10 +50,17 @@ async function initConsumers(config, schema) {
     const logBody = document.getElementById('consumer-log-body');
     const consSubTabs = document.getElementById('cons-sub-tabs');
     let currentIdx = 0;
+    const hadDirtyTracker = Boolean(window._mqb_dirty_sections?.consumers);
+    const settleInitialDirtyBaseline = () => {
+        window.setTimeout(() => {
+            window.markSectionSaved('consumers', config.consumers);
+        }, 0);
+    };
     window.registerDirtySection('consumers', {
         buttonId: 'cons-save',
         getValue: () => config.consumers,
     });
+    const hadUnsavedChangesBeforeInit = window.refreshDirtySection('consumers');
 
     const updateUrlHash = () => {
         const idx = typeof currentIdx !== 'undefined' ? currentIdx : 0;
@@ -66,7 +73,8 @@ async function initConsumers(config, schema) {
 
     let consumerStatus = {};
     if (!(window._mqb_saved_consumer_names instanceof Set)) {
-        window._mqb_saved_consumer_names = new Set(consumers.map((consumer) => consumer.name));
+        const savedConsumers = window._mqb_saved_sections?.consumers || consumers;
+        window._mqb_saved_consumer_names = new Set((savedConsumers || []).map((consumer) => consumer.name));
     }
     const isSavedConsumer = (name) => window._mqb_saved_consumer_names.has(name);
 
@@ -180,27 +188,52 @@ async function initConsumers(config, schema) {
         output: { middlewares: defaultMetricsMiddleware(), null: null },
     });
 
-    const openConsumerAt = (idx) => {
+    const openConsumerAt = (idx, tab = 'messages') => {
+        window._mqb_pending_consumer_restore = { idx, tab };
+        window.history.replaceState(null, null, `#consumers:${idx}`);
+        if (window.switchMain) {
+            window.switchMain('consumers');
+            window.setTimeout(() => {
+                window.restoreConsumerState?.(idx, { tab });
+            }, 0);
+            return;
+        }
         window.initConsumers(config, schema);
-        if (window.switchMain) window.switchMain('consumers');
         if (window.restoreConsumerState) {
-            window.restoreConsumerState(idx);
+            window.restoreConsumerState(idx, { tab });
         }
     };
 
-    const openPublisherAt = (idx) => {
+    const openPublisherAt = (idx, tab = 'payload') => {
+        window._mqb_pending_publisher_restore = { idx, tab };
+        window.history.replaceState(null, null, `#publishers:${idx}`);
+        if (window.switchMain) {
+            window.switchMain('publishers');
+            window.setTimeout(() => {
+                window.restorePublisherState?.(idx, { tab });
+            }, 0);
+            return;
+        }
         window.initPublishers(config, window.appSchema);
-        if (window.switchMain) window.switchMain('publishers');
         if (window.restorePublisherState) {
-            window.restorePublisherState(idx);
+            window.restorePublisherState(idx, { tab });
         }
     };
 
     const openRouteAt = (routeName) => {
-        window.initRoutes(config, window.appSchema);
-        if (window.switchMain) window.switchMain('routes');
         const routeIdx = Object.keys(config.routes || {}).indexOf(routeName);
-        if (routeIdx !== -1 && window.restoreRouteState) {
+        if (routeIdx === -1) return;
+        window._mqb_pending_route_restore = { idx: routeIdx };
+        window.history.replaceState(null, null, `#routes:${routeIdx}`);
+        if (window.switchMain) {
+            window.switchMain('routes');
+            window.setTimeout(() => {
+                window.restoreRouteState?.(routeIdx);
+            }, 0);
+            return;
+        }
+        window.initRoutes(config, window.appSchema);
+        if (window.restoreRouteState) {
             window.restoreRouteState(routeIdx);
         }
     };
@@ -265,7 +298,7 @@ async function initConsumers(config, schema) {
                 comment: current.comment || '',
             });
             window.refreshDirtySection('publishers');
-            openPublisherAt(config.publishers.length - 1);
+            openPublisherAt(config.publishers.length - 1, 'definition');
             return;
         }
 
@@ -397,8 +430,8 @@ async function initConsumers(config, schema) {
             return;
         }
 
-        const response = normalizeConsumerResponse(consumer.response) || { headers: {}, payload: '' };
-        config.consumers[idx].response = response;
+        const normalizedResponse = normalizeConsumerResponse(consumer.response);
+        const response = normalizedResponse || { headers: {}, payload: '' };
 
         const headerRows = Object.entries(response.headers).sort(([a], [b]) => a.localeCompare(b));
         if (responseTab) responseTab.style.display = 'flex';
@@ -594,7 +627,7 @@ async function initConsumers(config, schema) {
     };
 
     // This function is called by index.html when the consumers tab is activated
-    const restoreConsumerState = async (idx) => {
+    const restoreConsumerState = async (idx, options = {}) => {
     if (consumers.length === 0) {
             // If no consumers, ensure the "add new" button is functional
         document.getElementById('cons-add').onclick = addConsumer;
@@ -603,12 +636,20 @@ async function initConsumers(config, schema) {
 
         setActiveItem(idx);
         await updateUI();
-        startPolling();
+        const activeConsumer = consumers[idx];
+        if (activeConsumer && isSavedConsumer(activeConsumer.name)) {
+            startPolling();
+        }
 
-        // Ensure the messages tab is active by default
-        const msgTab = document.getElementById('ctab-msg');
-        if (msgTab && !msgTab.classList.contains('active')) {
-            msgTab.click();
+        const targetTab = options.tab || 'messages';
+        const tabId = targetTab === 'definition'
+            ? 'ctab-def'
+            : targetTab === 'response'
+                ? 'cons-response-tab'
+                : 'ctab-msg';
+        const target = document.getElementById(tabId);
+        if (target && !target.classList.contains('active')) {
+            target.click();
         }
     };
 
@@ -633,7 +674,7 @@ async function initConsumers(config, schema) {
         if (httpConfigSchema?.properties?.custom_headers) {
             httpConfigSchema.properties.custom_headers.hidden = true;
         }
-        if (consumers[idx]) await refreshConsumerStatuses();
+        if (consumers[idx] && isSavedConsumer(consumers[idx].name)) await refreshConsumerStatuses();
         window._mqb_form_mode = 'consumer';
         try {
             await window.VanillaSchemaForms.init(configFormContainer, itemSchema, config.consumers[idx], (updated) => {
@@ -888,13 +929,31 @@ async function initConsumers(config, schema) {
 
     // Initial setup if consumers exist
     if (consumers.length > 0) {
-        // Default to the first consumer and messages tab
-        setActiveItem(0);
-        updateUI();
-        startPolling();
-        // Manually click the messages tab to ensure it's active and Split.js is initialized
-        document.getElementById('ctab-msg').click();
+        const pendingRestore = window._mqb_pending_consumer_restore || null;
+        window._mqb_pending_consumer_restore = null;
+        const initialIdx = pendingRestore?.idx ?? 0;
+        const initialTab = pendingRestore?.tab || 'messages';
+
+        setActiveItem(initialIdx);
+        updateUI().then(() => {
+            if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
+                settleInitialDirtyBaseline();
+            }
+        });
+        const initialConsumer = consumers[initialIdx];
+        if (initialConsumer && isSavedConsumer(initialConsumer.name)) {
+            startPolling();
+        }
+        const tabId = initialTab === 'definition'
+            ? 'ctab-def'
+            : initialTab === 'response'
+                ? 'cons-response-tab'
+                : 'ctab-msg';
+        document.getElementById(tabId)?.click();
     } else {
+        if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
+            settleInitialDirtyBaseline();
+        }
         // If no consumers, ensure the "add new" button is functional
         document.getElementById('cons-add').onclick = addConsumer;
         document.getElementById('cons-copy').onclick = copyCurrentConsumer;

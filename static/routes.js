@@ -31,7 +31,15 @@ async function initRoutes(config, schema) {
         }
 
         if (routeSchema?.properties?.enabled) {
-            routeSchema.properties.enabled.hidden = true;
+            delete routeSchema.properties.enabled;
+        }
+
+        if (routeSchema?.properties?.description) {
+            delete routeSchema.properties.description;
+        }
+
+        if (Array.isArray(routeSchema?.required)) {
+            routeSchema.required = routeSchema.required.filter((key) => key !== 'enabled' && key !== 'description');
         }
     };
     const scrubRouteValidationNoise = (root) => {
@@ -101,25 +109,50 @@ async function initRoutes(config, schema) {
         return candidate;
     };
     const openRouteAt = (routeName) => {
-        window.initRoutes(config, schema);
-        if (window.switchMain) window.switchMain('routes');
         const routeIdx = Object.keys(config.routes || {}).indexOf(routeName);
-        if (routeIdx !== -1 && window.restoreRouteState) {
+        if (routeIdx === -1) return;
+        window._mqb_pending_route_restore = { idx: routeIdx };
+        window.history.replaceState(null, null, `#routes:${routeIdx}`);
+        if (window.switchMain) {
+            window.switchMain('routes');
+            window.setTimeout(() => {
+                window.restoreRouteState?.(routeIdx);
+            }, 0);
+            return;
+        }
+        window.initRoutes(config, schema);
+        if (window.restoreRouteState) {
             window.restoreRouteState(routeIdx);
         }
     };
-    const openConsumerAt = (idx) => {
+    const openConsumerAt = (idx, tab = 'definition') => {
+        window._mqb_pending_consumer_restore = { idx, tab };
+        window.history.replaceState(null, null, `#consumers:${idx}`);
+        if (window.switchMain) {
+            window.switchMain('consumers');
+            window.setTimeout(() => {
+                window.restoreConsumerState?.(idx, { tab });
+            }, 0);
+            return;
+        }
         window.initConsumers(config, window.appSchema);
-        if (window.switchMain) window.switchMain('consumers');
         if (window.restoreConsumerState) {
-            window.restoreConsumerState(idx);
+            window.restoreConsumerState(idx, { tab });
         }
     };
-    const openPublisherAt = (idx) => {
+    const openPublisherAt = (idx, tab = 'definition') => {
+        window._mqb_pending_publisher_restore = { idx, tab };
+        window.history.replaceState(null, null, `#publishers:${idx}`);
+        if (window.switchMain) {
+            window.switchMain('publishers');
+            window.setTimeout(() => {
+                window.restorePublisherState?.(idx, { tab });
+            }, 0);
+            return;
+        }
         window.initPublishers(config, window.appSchema);
-        if (window.switchMain) window.switchMain('publishers');
         if (window.restorePublisherState) {
-            window.restorePublisherState(idx);
+            window.restorePublisherState(idx, { tab });
         }
     };
     const createRefInputEndpoint = (refName) => ({
@@ -168,7 +201,7 @@ async function initRoutes(config, schema) {
                 response: null,
             });
             window.refreshDirtySection('consumers');
-            openConsumerAt(config.consumers.length - 1);
+            openConsumerAt(config.consumers.length - 1, 'definition');
             return;
         }
 
@@ -193,7 +226,7 @@ async function initRoutes(config, schema) {
                 comment: '',
             });
             window.refreshDirtySection('publishers');
-            openPublisherAt(config.publishers.length - 1);
+            openPublisherAt(config.publishers.length - 1, 'definition');
             return;
         }
 
@@ -236,6 +269,40 @@ async function initRoutes(config, schema) {
     container.style.display = 'contents'; // Ensure the container is visible
 
     const routeList = document.getElementById('route-list');
+    const preserveToolbarClick = (buttonId) => {
+        const button = document.getElementById(buttonId);
+        if (!button) return null;
+        button.onmousedown = (event) => {
+            event.preventDefault();
+        };
+        return button;
+    };
+    const settleRouteSavedState = () => {
+        window.setTimeout(() => {
+            window.markSectionSaved('routes');
+            const saveButton = document.getElementById('route-save');
+            if (saveButton) {
+                saveButton.dataset.dirty = 'false';
+                window.syncSaveButtonLabel(saveButton);
+            }
+        }, 0);
+    };
+    const syncRoutesArrayFromConfig = (routesConfig) => {
+        routesArray.splice(
+            0,
+            routesArray.length,
+            ...Object.entries(routesConfig || {}).map(([name, details]) => ({ name, ...details })),
+        );
+    };
+    const splitRouteFormData = (routeName, updated) => {
+        const nextName = typeof updated?.name === 'string' ? updated.name.trim() : '';
+        const routeData = { ...(updated || {}) };
+        delete routeData.name;
+        return {
+            nextName: nextName || routeName,
+            routeData,
+        };
+    };
 
     const createRouteSidebarItem = (route, index) => {
         const inputProto =
@@ -294,6 +361,7 @@ async function initRoutes(config, schema) {
     renderSidebar();
     renderRuntimeMetrics();
     window.renderRoutesRuntimeMetrics = renderRuntimeMetrics;
+    ['route-copy', 'route-clone', 'route-save', 'route-toggle', 'route-delete'].forEach(preserveToolbarClick);
 
     const setActiveItem = (idx) => {
         currentIdx = idx;
@@ -334,14 +402,14 @@ async function initRoutes(config, schema) {
         syncRouteToggleButton();
         window._mqb_form_mode = 'route';
         try {
-            await lib.init(configFormContainer, routeSchema, config.routes[routeName], (updated) => {
+            await lib.init(configFormContainer, routeSchema, { name: routeName, ...config.routes[routeName] }, (updated) => {
                 const oldName = routeName; // Capture the original name
-                const newName = updated.name; // Get the potentially new name from the form
+                const { nextName: newName, routeData } = splitRouteFormData(oldName, updated);
 
                 if (newName && newName !== oldName) {
                     // Name has changed, update the config object
                     delete config.routes[oldName];
-                    config.routes[newName] = updated;
+                    config.routes[newName] = routeData;
                     window.refreshDirtySection('routes');
                     // Re-initialize the entire routes tab to reflect the name change in the sidebar
                     window.initRoutes(config, schema);
@@ -350,8 +418,8 @@ async function initRoutes(config, schema) {
                     if (newIdx !== -1) setActiveItem(newIdx);
                 } else {
                     // Name did not change, just update the config object
-                    config.routes[oldName] = updated;
-                    routesArray[idx] = { name: oldName, ...updated };
+                    config.routes[oldName] = routeData;
+                    routesArray[idx] = { name: oldName, ...routeData };
                     renderSidebar();
                     renderRuntimeMetrics();
                     setActiveItem(idx);
@@ -461,13 +529,26 @@ async function initRoutes(config, schema) {
             if (!currentRoute) return;
             const nameToDelete = currentRoute.name;
             delete config.routes[nameToDelete];
-            if (Object.keys(config.routes).length === 0) {
-                await window.saveConfigSection('routes', config.routes, false);
-            }
-            window.initRoutes(config, schema); // Re-initialize to re-render the whole UI
-            if (Object.keys(config.routes).length > 0) {
-                setActiveItem(Math.max(0, currentIdx - 1));
-                updateUI();
+            const nextIdx = Math.max(0, currentIdx - 1);
+            const saved = await window.saveConfigSection('routes', config.routes, false, document.getElementById('route-save'));
+            if (!saved) return;
+
+            const refreshedConfig = await window.fetchConfigFromServer();
+            window.appConfig.routes = refreshedConfig.routes;
+            config.routes = refreshedConfig.routes;
+            syncRoutesArrayFromConfig(refreshedConfig.routes);
+            window.markSectionSaved('routes', refreshedConfig.routes);
+            await window.pollRuntimeStatus();
+            renderSidebar();
+            renderRuntimeMetrics();
+            if (Object.keys(window.appConfig.routes || {}).length > 0) {
+                setActiveItem(nextIdx);
+                await updateUI();
+                settleRouteSavedState();
+            } else {
+                document.getElementById('route-main-ui').style.display = 'none';
+                document.getElementById('route-empty-alert').style.display = 'block';
+                settleRouteSavedState();
             }
         };
 
@@ -507,8 +588,30 @@ async function initRoutes(config, schema) {
             }
         };
 
-        document.getElementById('route-save').onclick = (e) =>
-            window.saveConfigSection('routes', config.routes, false, e.currentTarget);
+        document.getElementById('route-save').onclick = async (e) => {
+            const currentRoute = getCurrentRouteEntry();
+            const selectedName = currentRoute?.name || null;
+            const saved = await window.saveConfigSection('routes', config.routes, false, e.currentTarget);
+            if (!saved) return;
+
+            const refreshedConfig = await window.fetchConfigFromServer();
+            window.appConfig.routes = refreshedConfig.routes;
+            config.routes = refreshedConfig.routes;
+            syncRoutesArrayFromConfig(refreshedConfig.routes);
+            window.markSectionSaved('routes', refreshedConfig.routes);
+            await window.pollRuntimeStatus();
+
+            const refreshedIdx = selectedName
+                ? Object.keys(window.appConfig.routes || {}).indexOf(selectedName)
+                : 0;
+            if (refreshedIdx !== -1) {
+                renderSidebar();
+                renderRuntimeMetrics();
+                setActiveItem(refreshedIdx);
+                await updateUI();
+                settleRouteSavedState();
+            }
+        };
         document.getElementById('route-copy').onclick = copyCurrentRoute;
     }
 

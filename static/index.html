@@ -227,7 +227,7 @@
                             <div class="content-tab active" data-target="pub-payload-pane" id="ctab-payload">Body</div>
                             <div class="content-tab" data-target="pub-meta-pane">Headers</div>
                             <div class="content-tab" data-target="pub-history-pane">History</div>
-                            <div class="content-tab" data-target="pub-config-pane">Definition</div>
+                            <div class="content-tab" data-target="pub-config-pane" id="ctab-config">Definition</div>
                             <div style="flex:1"></div>
                             <div class="content-tab" id="pub-response-tab" style="display:none">Response</div>
                         </div>
@@ -339,17 +339,23 @@
             }
 
             if (name === 'routes' && window.restoreRouteState) {
+                const pending = window._mqb_pending_route_restore || null;
+                window._mqb_pending_route_restore = null;
                 const match = window.location.hash.match(/^#routes:(\d+)$/);
-                const idx = match ? parseInt(match[1], 10) : 0;
+                const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
                 window.restoreRouteState(idx);
             } else if (name === 'consumers' && window.restoreConsumerState) {
+                const pending = window._mqb_pending_consumer_restore || null;
+                window._mqb_pending_consumer_restore = null;
                 const match = window.location.hash.match(/^#consumers:(\d+)$/);
-                const idx = match ? parseInt(match[1], 10) : 0;
-                window.restoreConsumerState(idx);
+                const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
+                window.restoreConsumerState(idx, { tab: pending?.tab });
             } else if (name === 'publishers' && window.restorePublisherState) {
+                const pending = window._mqb_pending_publisher_restore || null;
+                window._mqb_pending_publisher_restore = null;
                 const match = window.location.hash.match(/^#publishers:(\d+)$/);
-                const idx = match ? parseInt(match[1], 10) : 0;
-                window.restorePublisherState(idx);
+                const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
+                window.restorePublisherState(idx, { tab: pending?.tab });
             }
 
             // Update URL hash
@@ -372,25 +378,26 @@
             route_throughput: {}
         };
         window._mqb_dirty_sections = {};
+        window._mqb_saved_sections = {};
 
         const normalizeSectionState = (value) => {
             if (Array.isArray(value)) {
-                return value.map((item) => normalizeSectionState(item));
+                return value.map(normalizeSectionState);
             }
 
             if (value && typeof value === 'object') {
-                return Object.keys(value)
-                    .sort()
-                    .reduce((acc, key) => {
-                        acc[key] = normalizeSectionState(value[key]);
-                        return acc;
-                    }, {});
+                return Object.keys(value).sort().reduce((acc, key) => {
+                    const val = normalizeSectionState(value[key]);
+                    if (val !== undefined) acc[key] = val;
+                    return acc;
+                }, {});
             }
-
-            return value ?? null;
+            return value;
         };
 
         const serializeSectionState = (value) => JSON.stringify(normalizeSectionState(value));
+        const cloneSectionState = (value) =>
+            JSON.parse(serializeSectionState(value));
 
         window.syncSaveButtonLabel = (button) => {
             if (!button) return;
@@ -410,9 +417,12 @@
 
             const previous = window._mqb_dirty_sections[sectionName];
             const currentSerialized = serializeSectionState(options.getValue());
+            const savedSnapshot = Object.prototype.hasOwnProperty.call(window._mqb_saved_sections, sectionName)
+                ? serializeSectionState(window._mqb_saved_sections[sectionName])
+                : currentSerialized;
             const tracker = {
                 ...options,
-                baseline: previous?.baseline ?? currentSerialized,
+                baseline: previous?.baseline ?? savedSnapshot,
             };
             window._mqb_dirty_sections[sectionName] = tracker;
             window.refreshDirtySection(sectionName);
@@ -434,11 +444,13 @@
 
         window.markSectionSaved = (sectionName, savedValue = undefined) => {
             const tracker = window._mqb_dirty_sections?.[sectionName];
+            const nextSavedValue = savedValue === undefined
+                ? tracker?.getValue?.()
+                : savedValue;
+            window._mqb_saved_sections[sectionName] = cloneSectionState(nextSavedValue);
             if (!tracker) return;
 
-            tracker.baseline = serializeSectionState(
-                savedValue === undefined ? tracker.getValue() : savedValue,
-            );
+            tracker.baseline = serializeSectionState(nextSavedValue);
             window.refreshDirtySection(sectionName);
         };
 
@@ -554,6 +566,8 @@
                         const text = await response.text();
                         throw new Error(text);
                     }
+                    const refreshedConfig = await window.fetchConfigFromServer();
+                    Object.assign(window.appConfig, refreshedConfig);
                     window.markSectionSaved('config', window.appConfig);
                     return true;
                 };
@@ -586,10 +600,7 @@
                         throw new Error(text);
                     }
                     const refreshedConfig = await window.fetchConfigFromServer();
-                    window.appConfig = {
-                        ...window.appConfig,
-                        [sectionName]: refreshedConfig[sectionName]
-                    };
+                    window.appConfig[sectionName] = refreshedConfig[sectionName];
                     window.markSectionSaved(sectionName, refreshedConfig[sectionName]);
                     return refreshedConfig;
                 };
@@ -611,6 +622,12 @@
             // Global state for saving
             window.appConfig = config;
             window.appSchema = schema; // Store schema globally for tab initializations
+            window._mqb_saved_sections = {
+                routes: cloneSectionState(config.routes),
+                consumers: cloneSectionState(config.consumers),
+                publishers: cloneSectionState(config.publishers),
+                config: cloneSectionState(config),
+            };
             
             const resolveTabFromHash = (hash) => {
                 if (!hash) return null;

@@ -32,6 +32,14 @@ function initPublishers(config, schema) {
         history = history.slice(0, 1000); // Keep last 1000 entries
         localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
     };
+    const preserveToolbarClick = (buttonId) => {
+        const button = document.getElementById(buttonId);
+        if (!button) return null;
+        button.onmousedown = (event) => {
+            event.preventDefault();
+        };
+        return button;
+    };
 
     const createSidebarItem = (publisher, index) => {
         const type = getEndpointType(publisher).toUpperCase();
@@ -218,6 +226,17 @@ function initPublishers(config, schema) {
         return candidate;
     };
 
+    const nextConsumerName = (endpointType) => {
+        const existingNames = new Set((config.consumers || []).map((consumer) => consumer.name));
+        let index = 1;
+        let candidate = `${endpointType}_${index}`;
+        while (existingNames.has(candidate)) {
+            index += 1;
+            candidate = `${endpointType}_${index}`;
+        }
+        return candidate;
+    };
+
     const cloneJson = (value) => JSON.parse(JSON.stringify(value));
 
     const createEmptyRouteConfig = () => ({
@@ -241,27 +260,52 @@ function initPublishers(config, schema) {
         return candidate;
     };
 
-    const openPublisherAt = (idx) => {
+    const openPublisherAt = (idx, tab = 'definition') => {
+        window._mqb_pending_publisher_restore = { idx, tab };
+        window.history.replaceState(null, null, `#publishers:${idx}`);
+        if (window.switchMain) {
+            window.switchMain('publishers');
+            window.setTimeout(() => {
+                window.restorePublisherState?.(idx, { tab });
+            }, 0);
+            return;
+        }
         window.initPublishers(config, schema);
-        if (window.switchMain) window.switchMain('publishers');
         if (window.restorePublisherState) {
-            window.restorePublisherState(idx);
+            window.restorePublisherState(idx, { tab });
         }
     };
 
-    const openConsumerAt = (idx) => {
+    const openConsumerAt = (idx, tab = 'messages') => {
+        window._mqb_pending_consumer_restore = { idx, tab };
+        window.history.replaceState(null, null, `#consumers:${idx}`);
+        if (window.switchMain) {
+            window.switchMain('consumers');
+            window.setTimeout(() => {
+                window.restoreConsumerState?.(idx, { tab });
+            }, 0);
+            return;
+        }
         window.initConsumers(config, window.appSchema);
-        if (window.switchMain) window.switchMain('consumers');
         if (window.restoreConsumerState) {
-            window.restoreConsumerState(idx);
+            window.restoreConsumerState(idx, { tab });
         }
     };
 
     const openRouteAt = (routeName) => {
-        window.initRoutes(config, window.appSchema);
-        if (window.switchMain) window.switchMain('routes');
         const routeIdx = Object.keys(config.routes || {}).indexOf(routeName);
-        if (routeIdx !== -1 && window.restoreRouteState) {
+        if (routeIdx === -1) return;
+        window._mqb_pending_route_restore = { idx: routeIdx };
+        window.history.replaceState(null, null, `#routes:${routeIdx}`);
+        if (window.switchMain) {
+            window.switchMain('routes');
+            window.setTimeout(() => {
+                window.restoreRouteState?.(routeIdx);
+            }, 0);
+            return;
+        }
+        window.initRoutes(config, window.appSchema);
+        if (window.restoreRouteState) {
             window.restoreRouteState(routeIdx);
         }
     };
@@ -286,6 +330,7 @@ function initPublishers(config, schema) {
         if (!choice) return;
 
         if (choice === 'route_output') {
+            config.routes ||= {};
             const routeName = await window.mqbPrompt(
                 "Choose a name for the new route. The input stays null until you review it.",
                 "Copy to Route",
@@ -307,6 +352,7 @@ function initPublishers(config, schema) {
         }
 
         if (choice === 'consumer') {
+            config.consumers ||= [];
             const consumerName = await window.mqbPrompt(
                 "Choose a name for the new consumer. Publisher-specific fields may need adjustment after copying.",
                 "Copy to Consumer",
@@ -317,7 +363,7 @@ function initPublishers(config, schema) {
                 },
             );
             if (!consumerName) return;
-            if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
+            if (config.consumers.some((consumer) => consumer.name === consumerName)) {
                 return window.mqbAlert("Consumer already exists");
             }
 
@@ -328,7 +374,7 @@ function initPublishers(config, schema) {
                 response: null,
             });
             window.refreshDirtySection('consumers');
-            openConsumerAt(config.consumers.length - 1);
+            openConsumerAt(config.consumers.length - 1, 'definition');
             return;
         }
 
@@ -343,6 +389,7 @@ function initPublishers(config, schema) {
         );
         if (!refTarget) return;
 
+        config.routes ||= {};
         const routeName = await window.mqbPrompt(
             'Choose a name for the new route that exposes this publisher via ref.',
             'Copy to Ref Route',
@@ -407,12 +454,18 @@ function initPublishers(config, schema) {
         return publisher.endpoint[endpointType];
     };
 
+    const getExistingEndpointConfig = (publisher, endpointType = getEndpointType(publisher)) => {
+        const endpoint = publisher?.endpoint || {};
+        const config = endpoint?.[endpointType];
+        return config && typeof config === 'object' ? config : null;
+    };
+
     const getRequestBarLayout = (endpointType) => REQUEST_BAR_LAYOUTS[endpointType] || { fields: [] };
 
     const getRequestBarFieldValue = (publisher, descriptor) => {
         if (!descriptor) return '';
         const endpointType = getEndpointType(publisher);
-        const endpointConfig = ensureEndpointConfig(publisher, endpointType);
+        const endpointConfig = getExistingEndpointConfig(publisher, endpointType);
         return typeof endpointConfig?.[descriptor.field] === 'string' ? endpointConfig[descriptor.field] : '';
     };
 
@@ -630,12 +683,29 @@ function initPublishers(config, schema) {
 
     // This function will be called by index.html's switchMain
     // It should only update the UI for the publishers tab, not manage main tab state
-    const restorePublisherState = (idx) => {
+    const restorePublisherState = (idx, options = {}) => {
         if (publishers[idx]) {
             if (currentIdx !== idx) {
                 setActiveItem(idx);
             }
             updateUIFromState();
+            const targetTab = options.tab || 'payload';
+            const tabId = targetTab === 'definition'
+                ? 'ctab-config'
+                : targetTab === 'history'
+                    ? null
+                    : targetTab === 'headers'
+                        ? null
+                        : 'ctab-payload';
+            if (targetTab === 'definition') {
+                document.getElementById('ctab-config')?.click();
+            } else if (targetTab === 'history') {
+                pubSubTabs.querySelector('.content-tab[data-target="pub-history-pane"]')?.click();
+            } else if (targetTab === 'headers') {
+                pubSubTabs.querySelector('.content-tab[data-target="pub-meta-pane"]')?.click();
+            } else if (tabId) {
+                document.getElementById(tabId)?.click();
+            }
         }
     };
 
@@ -653,10 +723,12 @@ function initPublishers(config, schema) {
     const responseDiv = document.getElementById('pub-response');
     const pubSubTabs = document.getElementById('pub-sub-tabs');
     let currentIdx = 0;
+    const hadDirtyTracker = Boolean(window._mqb_dirty_sections?.publishers);
     window.registerDirtySection('publishers', {
         buttonId: 'pub-save',
         getValue: () => config.publishers,
     });
+    const hadUnsavedChangesBeforeInit = window.refreshDirtySection('publishers');
 
     const renderSidebar = () => {
         if (!pubList) return;
@@ -700,7 +772,7 @@ function initPublishers(config, schema) {
         if (payloadArea) payloadArea.value = s.payload;
         if (metaContainer) {
             metaContainer.innerHTML = '';
-            const httpConfig = getEndpointType(pub) === 'http' ? ensureHttpConfig(pub) : null;
+            const httpConfig = getEndpointType(pub) === 'http' ? getExistingEndpointConfig(pub, 'http') : null;
             sortEntries(httpConfig?.custom_headers).forEach(([k, v]) => addMetadataRow(k, v));
         }
         syncRequestBar();
@@ -1040,6 +1112,7 @@ function initPublishers(config, schema) {
             btn.style.display = name.includes(val) ? 'flex' : 'none';
         });
     };
+    ['pub-copy', 'pub-clone', 'pub-save', 'pub-delete'].forEach(preserveToolbarClick);
 
     document.getElementById('pub-add').onclick = addPublisher;
     document.getElementById('pub-copy').onclick = copyCurrentPublisher;
@@ -1061,19 +1134,38 @@ function initPublishers(config, schema) {
         // Clear state for the deleted publisher
         delete appState[config.publishers[currentIdx].name];
         config.publishers.splice(currentIdx, 1);
-        if (config.publishers.length === 0) {
-            await window.saveConfigSection('publishers', config.publishers, false);
-        }
+        const nextIdx = Math.max(0, currentIdx - 1);
+        const saved = await window.saveConfigSection('publishers', config.publishers, false, document.getElementById('pub-save'));
+        if (!saved) return;
+
+        const refreshedConfig = await window.fetchConfigFromServer();
+        window.appConfig.publishers = refreshedConfig.publishers;
         // Re-initialize publishers tab to refresh the list
-        window.initPublishers(config, schema);
-        if (config.publishers.length > 0) {
-            setActiveItem(Math.max(0, currentIdx - 1));
-            updateUIFromState();
+        window._mqb_pending_publisher_restore = {
+            idx: nextIdx,
+            tab: 'definition',
+        };
+        window.initPublishers(window.appConfig, window.appSchema);
+        if (window.appConfig.publishers.length > 0) {
+            window.restorePublisherState(nextIdx, { tab: 'definition' });
         }
     };
 
-    document.getElementById('pub-save').onclick = (e) =>
-        window.saveConfigSection('publishers', config.publishers, false, e.currentTarget);
+    document.getElementById('pub-save').onclick = async (e) => {
+        const selectedName = config.publishers[currentIdx]?.name || null;
+        const saved = await window.saveConfigSection('publishers', config.publishers, false, e.currentTarget);
+        if (!saved) return;
+
+        const refreshedConfig = await window.fetchConfigFromServer();
+        window.appConfig.publishers = refreshedConfig.publishers;
+        window.initPublishers(window.appConfig, window.appSchema);
+
+        const refreshedIdx = (window.appConfig.publishers || [])
+            .findIndex((publisher) => publisher.name === selectedName);
+        if (refreshedIdx !== -1) {
+            window.restorePublisherState(refreshedIdx, { tab: 'definition' });
+        }
+    };
     document.getElementById('add-meta').onclick = () => addMetadataRow();
     ['pub-url', 'pub-extra-1', 'pub-extra-2'].forEach((id) => {
         const input = document.getElementById(id);
@@ -1205,10 +1297,30 @@ function initPublishers(config, schema) {
     // Initial Load
     // Check if publishers exist before trying to set active item or update UI
     if (publishers.length > 0) {
-        setActiveItem(0);
-        updateUIFromState();
-        document.getElementById('ctab-payload').click();
+        const pendingRestore = window._mqb_pending_publisher_restore || null;
+        window._mqb_pending_publisher_restore = null;
+        const initialIdx = pendingRestore?.idx ?? 0;
+        const initialTab = pendingRestore?.tab || 'payload';
+
+        setActiveItem(initialIdx);
+        updateUIFromState().then(() => {
+            if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
+                window.markSectionSaved('publishers', config.publishers);
+            }
+        });
+        if (initialTab === 'definition') {
+            document.getElementById('ctab-config')?.click();
+        } else if (initialTab === 'history') {
+            pubSubTabs.querySelector('.content-tab[data-target="pub-history-pane"]')?.click();
+        } else if (initialTab === 'headers') {
+            pubSubTabs.querySelector('.content-tab[data-target="pub-meta-pane"]')?.click();
+        } else {
+            document.getElementById('ctab-payload').click();
+        }
     } else {
+        if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
+            window.markSectionSaved('publishers', config.publishers);
+        }
         // If no publishers, ensure the "No publishers configured" message is visible
         // and the main content area is empty or shows the message.
         // This is handled by the initial container.innerHTML check.
