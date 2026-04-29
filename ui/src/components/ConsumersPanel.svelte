@@ -216,6 +216,7 @@
               </div>
             </div>
             <div class="form-scroll-wrapper">
+              <div class="section-label">Definition</div>
               <div id="cons-config-form" class="field-grid"></div>
             </div>
           </div>

@@ -19,6 +19,7 @@ export interface RoutesPanelState {
   hasRoutes: boolean;
   items: RouteSidebarItem[];
   selectedIndex: number;
+  currentRouteName: string;
   toggleVisible: boolean;
   toggleLabel: string;
   toggleVariant: "danger" | "success";
@@ -29,6 +30,7 @@ export const routesPanelState = writable<RoutesPanelState>({
   hasRoutes: false,
   items: [],
   selectedIndex: 0,
+  currentRouteName: "",
   toggleVisible: false,
   toggleLabel: "Disable",
   toggleVariant: "danger",
@@ -102,6 +104,14 @@ export interface PublisherHistoryRow {
   statusLabel: string;
   statusClass: string;
   payloadPreview: string;
+  pinned: boolean;
+}
+
+export interface PublisherPresetRow {
+  presetIndex: number;
+  name: string;
+  method: string;
+  url: string;
 }
 
 export interface PublisherRequestFieldState {
@@ -122,7 +132,7 @@ export interface PublishersPanelState {
   hasPublishers: boolean;
   items: PublisherSidebarItem[];
   selectedIndex: number;
-  activeSubtab: "payload" | "headers" | "history" | "definition";
+  activeSubtab: "payload" | "headers" | "history" | "presets" | "definition";
   endpointType: string;
   methodVisible: boolean;
   methodValue: string;
@@ -143,6 +153,7 @@ export interface PublishersPanelState {
   responseHeaders: Array<[string, string]>;
   responsePayload: string;
   historyRows: PublisherHistoryRow[];
+  presetRows: PublisherPresetRow[];
 }
 
 export const publishersPanelState = writable<PublishersPanelState>({
@@ -170,4 +181,5 @@ export const publishersPanelState = writable<PublishersPanelState>({
   responseHeaders: [],
   responsePayload: "",
   historyRows: [],
+  presetRows: [],
 });

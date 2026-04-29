@@ -40,6 +40,11 @@ body {
     --text-muted: #4e5f7b;
     --text-dim: #7c8aa3;
     --text-payload: #1f5f3a;
+    --json-key: #0b5cab;
+    --json-string: #7a2e00;
+    --json-number: #6d28d9;
+    --json-bool: #b42318;
+    --json-null: #8f3f71;
     --accent-http: #3fb950;
     --accent-kafka: #f78166;
     --accent-mqtt: #8250df;
@@ -66,6 +71,11 @@ body {
     --text-muted: #7d8590;
     --text-dim: #7d8590;
     --text-payload: #a8d8a8;
+    --json-key: #7fb7ff;
+    --json-string: #ffd38a;
+    --json-number: #c4b5fd;
+    --json-bool: #ffb4a8;
+    --json-null: #f5a3d7;
     --accent-mqtt: #d2a8ff;
 }
 @font-face {
@@ -528,6 +538,18 @@ button.content-tab {
     background: var(--accent-blue);
 }
 
+.gutter.gutter-vertical {
+    height: 4px;
+    cursor: row-resize;
+    background: var(--border);
+    flex-shrink: 0;
+    transition: background 0.1s;
+}
+
+.gutter.gutter-vertical:hover {
+    background: var(--accent-blue);
+}
+
 .pane-bottom {
     height: 200px;
     display: flex;
@@ -881,7 +903,7 @@ textarea.field-input {
     font-family: var(--font);
     font-size: 11px;
     line-height: 1.6;
-    color: color-mix(in srgb, var(--accent-http) 80%, var(--text-primary));
+    color: var(--text-primary);
     white-space: normal;
 }
 
@@ -894,6 +916,9 @@ textarea.field-input {
     gap: 6px;
     background: var(--bg-panel);
     flex-shrink: 0;
+}
+.routes-name-input {
+    width: 250px;
 }
 
 .form-actions-row {
@@ -1350,7 +1375,7 @@ wa-button[variant="neutral"]::part(base) {
 .section-toolbar.editor-action-bar {
     float: none;
     border-left: 0;
-    width: 100%;
+    width: 400px;
 }
 
 .editor-action-bar--compact {
@@ -1412,7 +1437,7 @@ wa-button[variant="neutral"]::part(base) {
 }
 
 .editor-action-bar--compact .toolbar-divider {
-    height: 16px;
+    height: 28px;
 }
 
 .editor-action-bar--compact + .section-label {
@@ -1462,6 +1487,7 @@ wa-button.is-dirty::part(base) {
 
 .code-editor .cm-content {
     padding: 10px 12px;
+    color: var(--text-primary);
 }
 
 .code-editor .cm-gutters {
@@ -1472,6 +1498,26 @@ wa-button.is-dirty::part(base) {
 .code-editor .cm-activeLine,
 .code-editor .cm-activeLineGutter {
     background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
+}
+
+.code-editor .cm-keyword {
+    color: var(--json-bool);
+}
+
+.code-editor .cm-string {
+    color: var(--json-string);
+}
+
+.code-editor .cm-number {
+    color: var(--json-number);
+}
+
+.code-editor .cm-atom {
+    color: var(--json-null);
+}
+
+.code-editor .cm-property {
+    color: var(--json-key);
 }
 
 .kv-table {

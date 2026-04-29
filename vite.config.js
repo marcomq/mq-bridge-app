@@ -19,7 +19,9 @@ const proxiedPaths = [
 ];
 
 module.exports = defineConfig({
-  plugins: [svelte()],
+  root: resolve(__dirname, "ui"),
+  publicDir: resolve(__dirname, "static"),
+  plugins: [svelte({ configFile: resolve(__dirname, "svelte.config.js") })],
   server: {
     host: "127.0.0.1",
     port: 39092,
@@ -43,11 +45,9 @@ module.exports = defineConfig({
   build: {
     emptyOutDir: false,
     outDir: resolve(__dirname, "static"),
+    copyPublicDir: false,
     rollupOptions: {
-      input: {
-        app: resolve(__dirname, "ui/src/main.ts"),
-        legacy: resolve(__dirname, "ui/src/legacy-runtime.ts"),
-      },
+      input: resolve(__dirname, "ui/index.html"),
       output: {
         entryFileNames: "[name].js",
         assetFileNames: "assets/[name][extname]",
@@ -56,6 +56,6 @@ module.exports = defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/unit/**/*.test.ts"],
+    include: ["../tests/unit/**/*.test.ts"],
   },
 });

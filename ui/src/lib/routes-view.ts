@@ -20,6 +20,7 @@ export let cloneCurrentRouteAction: () => void | Promise<void> = () => {};
 export let saveCurrentRouteAction: (button?: HTMLElement | null) => void | Promise<void> = () => {};
 export let toggleCurrentRouteAction: (button?: HTMLElement | null) => void | Promise<void> = () => {};
 export let deleteCurrentRouteAction: (button?: HTMLElement | null) => void | Promise<void> = () => {};
+export let renameCurrentRouteAction: (nextName: string) => void | Promise<void> = () => {};
 
 type RouteConfigMap = Record<string, RouteDefinition>;
 
@@ -185,6 +186,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
       hasRoutes: routesArray.length > 0,
       items: routesArray.map((route, index) => createRouteSidebarItem(route, throughputMap, index)),
       selectedIndex: currentIdx,
+      currentRouteName: currentRoute?.name || "",
       toggleVisible: routesArray.length > 0,
       toggleLabel: enabled ? "Disable" : "Enable",
       toggleVariant: enabled ? "danger" : "success",
@@ -550,6 +552,28 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
       await updateUI();
       settleRouteSavedState();
     }
+  };
+  renameCurrentRouteAction = async (rawNextName: string) => {
+    const currentRoute = getCurrentRouteEntry();
+    if (!currentRoute) return;
+    const nextName = String(rawNextName || "").trim();
+    if (!nextName || nextName === currentRoute.name) {
+      syncRoutesPanelState();
+      return;
+    }
+    if (config.routes[nextName]) {
+      await window.mqbAlert("Route already exists");
+      syncRoutesPanelState();
+      return;
+    }
+    const routeData = cloneJson(config.routes[currentRoute.name]);
+    delete config.routes[currentRoute.name];
+    config.routes[nextName] = routeData;
+    syncRoutesArrayFromConfig(config.routes);
+    currentIdx = Object.keys(config.routes).indexOf(nextName);
+    window.refreshDirtySection("routes");
+    renderSidebar();
+    await updateUI();
   };
 
   renderSidebar();

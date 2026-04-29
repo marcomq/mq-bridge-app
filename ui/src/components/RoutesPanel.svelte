@@ -6,12 +6,15 @@
     cloneCurrentRouteAction,
     copyCurrentRouteAction,
     deleteCurrentRouteAction,
+    renameCurrentRouteAction,
     restoreRouteStateFromView,
     saveCurrentRouteAction,
     toggleCurrentRouteAction,
   } from "../lib/routes-view";
 
   let filterText = $state("");
+  let routeNameDraft = $state("");
+  let lastSyncedRouteName = $state("");
 
   const visibleItems = $derived(
     $routesPanelState.items.filter((item) => item.name.toLowerCase().includes(filterText.trim().toLowerCase())),
@@ -19,6 +22,19 @@
 
   function openRoute(index: number) {
     restoreRouteStateFromView(index);
+  }
+
+  $effect(() => {
+    const currentName = $routesPanelState.currentRouteName || "";
+    if (currentName !== lastSyncedRouteName) {
+      routeNameDraft = currentName;
+      lastSyncedRouteName = currentName;
+    }
+  });
+
+  function commitRouteName() {
+    lastSyncedRouteName = routeNameDraft.trim();
+    void renameCurrentRouteAction(routeNameDraft);
   }
 
   function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {
@@ -120,8 +136,26 @@
               </div>
             </div>
           </div>
-          <div class="section-label">Definition</div>
           <div class="form-scroll-wrapper">
+            <div class="section-label">Definition</div>
+            <div class="wa-form-row field-grid">
+              <label class="wa-form-label" for="root.name">Name</label>
+              <div class="wa-form-col">
+                <input
+                  id="root.name"
+                  name="root.name"
+                  class="field-input"
+                  value={routeNameDraft}
+                  oninput={(event) => (routeNameDraft = (event.currentTarget as HTMLInputElement).value)}
+                  onblur={commitRouteName}
+                  onkeydown={(event: KeyboardEvent) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    commitRouteName();
+                  }}
+                />
+              </div>
+            </div>
             <div id="route-config-form" class="field-grid"></div>
           </div>
         </div>

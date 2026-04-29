@@ -9,7 +9,15 @@
     clearActivePublisherHistory,
     cloneCurrentPublisherAction,
     copyPublisherResponse,
+    copyPublisherResponseJson,
+    copyPublisherAsCurl,
     copyCurrentPublisherAction,
+    savePublisherPresetAction,
+    savePublisherHistoryAsPresetAction,
+    editEnvironmentVarsAction,
+    applyPublisherPresetAction,
+    deletePublisherPresetAction,
+    resendPublisherHistoryAction,
     deleteCurrentPublisherAction,
     removePublisherMetadataRow,
     restorePublisherStateFromView,
@@ -25,6 +33,12 @@
   } from "../lib/publishers-view";
 
   let filterText = $state("");
+  let historyFilterText = $state("");
+  let presetFilterText = $state("");
+  let copyFeedback = $state("");
+  let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let showRequestMeta = $state(true);
+  let showResponseMeta = $state(true);
 
   const visibleItems = $derived(
     $publishersPanelState.items.filter((item) =>
@@ -46,6 +60,26 @@
 
   function copyResponse() {
     copyPublisherResponse();
+    showCopyFeedback("Copied");
+  }
+
+  function copyResponseJson() {
+    copyPublisherResponseJson();
+    showCopyFeedback("Copied JSON");
+  }
+
+  function copyAsCurl() {
+    copyPublisherAsCurl();
+    showCopyFeedback("Copied curl");
+  }
+
+  function showCopyFeedback(text: string) {
+    copyFeedback = text;
+    if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = setTimeout(() => {
+      copyFeedback = "";
+      copyFeedbackTimer = null;
+    }, 1200);
   }
 
   function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {
@@ -54,7 +88,30 @@
     action();
   }
 
-  function openSubtab(tab: "payload" | "headers" | "history" | "definition") {
+  const filteredHistoryRows = $derived(
+    $publishersPanelState.historyRows.filter((row) => {
+      const q = historyFilterText.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        row.timeLabel.toLowerCase().includes(q) ||
+        row.statusLabel.toLowerCase().includes(q) ||
+        row.payloadPreview.toLowerCase().includes(q)
+      );
+    }),
+  );
+  const filteredPresetRows = $derived(
+    $publishersPanelState.presetRows.filter((row) => {
+      const q = presetFilterText.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        row.name.toLowerCase().includes(q) ||
+        row.method.toLowerCase().includes(q) ||
+        row.url.toLowerCase().includes(q)
+      );
+    }),
+  );
+
+  function openSubtab(tab: "payload" | "headers" | "history" | "presets" | "definition") {
     selectPublisherSubtab(tab);
   }
 </script>
@@ -146,12 +203,16 @@
           <wa-button variant="brand" size="small" id="pub-send" role="button" tabindex="0" onclick={sendPublisherAction}
             onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void sendPublisherAction())}>Send</wa-button
           >
+          <wa-button variant="neutral" appearance="outlined" size="small" id="pub-env" role="button" tabindex="0" onclick={editEnvironmentVarsAction}
+            onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void editEnvironmentVarsAction())}>Env</wa-button
+          >
         </div>
         <div class="content-tabs" id="pub-sub-tabs">
           <button type="button" class:active={$publishersPanelState.activeSubtab === "definition"} class="content-tab" data-target="pub-config-pane" id="ctab-config" onclick={() => openSubtab("definition")}>Definition</button>
           <button type="button" class:active={$publishersPanelState.activeSubtab === "payload"} class="content-tab" data-target="pub-payload-pane" id="ctab-payload" onclick={() => openSubtab("payload")}>Body</button>
           <button type="button" class:active={$publishersPanelState.activeSubtab === "headers"} class="content-tab" data-target="pub-meta-pane" onclick={() => openSubtab("headers")}>Headers</button>
           <button type="button" class:active={$publishersPanelState.activeSubtab === "history"} class="content-tab" data-target="pub-history-pane" onclick={() => openSubtab("history")}>History</button>
+          <button type="button" class:active={$publishersPanelState.activeSubtab === "presets"} class="content-tab" data-target="pub-presets-pane" onclick={() => openSubtab("presets")}>Presets</button>
           <div style="flex:1"></div>
           <div
             class="content-tab"
@@ -215,6 +276,7 @@
             >
               <div class="section-toolbar">
                 <span class="section-label">Execution History</span>
+                <input class="sidebar-search" style="max-width:220px;" placeholder="Filter history..." bind:value={historyFilterText} />
                 <wa-button variant="neutral" appearance="outlined" size="small" class="ghost-action" id="pub-clear-history"
                   role="button"
                   tabindex="0"
@@ -233,18 +295,113 @@
                     </tr>
                   </thead>
                   <tbody>
-                    {#if $publishersPanelState.historyRows.length === 0}
+                    {#if filteredHistoryRows.length === 0}
                       <tr>
                         <td colspan="3" style="text-align:center;padding:20px;color:var(--text-dim);">
                           No history for this publisher.
                         </td>
                       </tr>
                     {:else}
-                      {#each $publishersPanelState.historyRows as row (row.historyIndex)}
+                      {#each filteredHistoryRows as row (row.historyIndex)}
                         <tr class="history-row" style="cursor:zoom-in;" onclick={() => openHistoryRow(row.historyIndex)}>
                           <td class="ts">{row.timeLabel}</td>
-                          <td><span class={`${row.statusClass} small fw-bold`}>{row.statusLabel}</span></td>
-                          <td class="preview">{row.payloadPreview}</td>
+                          <td>
+                            <span class={`${row.statusClass} small fw-bold`}>{row.statusLabel}</span>
+                          </td>
+                          <td class="preview">
+                            {row.payloadPreview}
+                            <span style="margin-left:8px; float:right; display:inline-flex; gap:4px;">
+                              <wa-button
+                                size="small"
+                                appearance="outlined"
+                                variant="neutral"
+                                role="button"
+                                tabindex="0"
+                                onclick={(event: MouseEvent) => { event.stopPropagation(); void savePublisherHistoryAsPresetAction(row.historyIndex); }}
+                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void savePublisherHistoryAsPresetAction(row.historyIndex))}
+                              >Save Preset</wa-button>
+                              <wa-button
+                                size="small"
+                                appearance="outlined"
+                                variant="neutral"
+                                role="button"
+                                tabindex="0"
+                                onclick={(event: MouseEvent) => { event.stopPropagation(); void resendPublisherHistoryAction(row.historyIndex); }}
+                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void resendPublisherHistoryAction(row.historyIndex))}
+                              >Resend</wa-button>
+                            </span>
+                          </td>
+                        </tr>
+                      {/each}
+                    {/if}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div
+              class="pane-top"
+              id="pub-presets-pane"
+              style="flex-direction:column;"
+              style:display={$publishersPanelState.activeSubtab === "presets" ? "flex" : "none"}
+            >
+              <div class="section-toolbar">
+                <span class="section-label">Request Presets</span>
+                <input class="sidebar-search" style="max-width:220px;" placeholder="Filter presets..." bind:value={presetFilterText} />
+                <wa-button
+                  variant="neutral"
+                  appearance="outlined"
+                  size="small"
+                  role="button"
+                  tabindex="0"
+                  onclick={savePublisherPresetAction}
+                  onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void savePublisherPresetAction())}
+                >Save Current</wa-button>
+              </div>
+              <div style="overflow:auto;flex:1;">
+                <table class="msg-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 160px;">Name</th>
+                      <th style="width: 80px;">Method</th>
+                      <th>URL</th>
+                      <th style="width: 160px;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#if filteredPresetRows.length === 0}
+                      <tr>
+                        <td colspan="4" style="text-align:center;padding:20px;color:var(--text-dim);">
+                          No presets saved.
+                        </td>
+                      </tr>
+                    {:else}
+                      {#each filteredPresetRows as preset (preset.presetIndex)}
+                        <tr>
+                          <td>{preset.name}</td>
+                          <td>{preset.method}</td>
+                          <td class="preview">{preset.url}</td>
+                          <td>
+                            <div style="display:flex; gap:6px;">
+                              <wa-button
+                                size="small"
+                                appearance="outlined"
+                                variant="neutral"
+                                role="button"
+                                tabindex="0"
+                                onclick={() => applyPublisherPresetAction(preset.presetIndex)}
+                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => applyPublisherPresetAction(preset.presetIndex))}
+                              >Apply</wa-button>
+                              <wa-button
+                                size="small"
+                                appearance="outlined"
+                                variant="danger"
+                                role="button"
+                                tabindex="0"
+                                onclick={() => deletePublisherPresetAction(preset.presetIndex)}
+                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => deletePublisherPresetAction(preset.presetIndex))}
+                              >Delete</wa-button>
+                            </div>
+                          </td>
                         </tr>
                       {/each}
                     {/if}
@@ -286,11 +443,11 @@
                 </div>
               </div>
               <div class="form-scroll-wrapper">
+                <div class="section-label">Definition</div>
                 <div id="pub-config-form" class="field-grid"></div>
               </div>
             </div>
           </div>
-          <div class="pane-divider" id="pub-pane-divider" style:display={$publishersPanelState.activeSubtab !== "definition" && $publishersPanelState.responseVisible ? "block" : "none"}></div>
           <div class="pane-bottom" id="pub-response-container" style:display={$publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition" ? "flex" : "none"}>
             <div class="detail-header">
               <span id="pub-response-status">
@@ -319,9 +476,44 @@
                 onkeydown={(event: KeyboardEvent) => handleActionKey(event, copyResponse)}
                 >⊕ copy</span
               >
+              {#if copyFeedback}
+                <span style="margin-left:10px;color:var(--accent-http);font-weight:600;">{copyFeedback}</span>
+              {/if}
+              <span
+                style="margin-left:10px; cursor:pointer; color:var(--text-dim)"
+                role="button"
+                tabindex="0"
+                onclick={copyResponseJson}
+                onkeydown={(event: KeyboardEvent) => handleActionKey(event, copyResponseJson)}
+                >json</span
+              >
+              <span
+                style="margin-left:10px; cursor:pointer; color:var(--text-dim)"
+                role="button"
+                tabindex="0"
+                onclick={copyAsCurl}
+                onkeydown={(event: KeyboardEvent) => handleActionKey(event, copyAsCurl)}
+                >curl</span
+              >
+              <span
+                style="margin-left:10px; cursor:pointer; color:var(--text-dim)"
+                role="button"
+                tabindex="0"
+                onclick={() => (showRequestMeta = !showRequestMeta)}
+                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => { showRequestMeta = !showRequestMeta; })}
+                >{showRequestMeta ? "hide req" : "show req"}</span
+              >
+              <span
+                style="margin-left:10px; cursor:pointer; color:var(--text-dim)"
+                role="button"
+                tabindex="0"
+                onclick={() => (showResponseMeta = !showResponseMeta)}
+                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => { showResponseMeta = !showResponseMeta; })}
+                >{showResponseMeta ? "hide resp hdrs" : "show resp hdrs"}</span
+              >
             </div>
             <div class="detail-body" id="pub-response">
-              {#if $publishersPanelState.requestRows.length > 0 || $publishersPanelState.requestHeaders.length > 0}
+              {#if showRequestMeta && ($publishersPanelState.requestRows.length > 0 || $publishersPanelState.requestHeaders.length > 0)}
                 <div class="response-meta-block">
                   <div class="section-label">Request</div>
                   {#each $publishersPanelState.requestRows as [key, value] (`req:${key}:${value}`)}
@@ -341,7 +533,7 @@
                   {/if}
                 </div>
               {/if}
-              {#if $publishersPanelState.responseHeaders.length > 0}
+              {#if showResponseMeta && $publishersPanelState.responseHeaders.length > 0}
                 <div class="response-meta-block">
                   <div class="section-label">Response Headers</div>
                   {#each $publishersPanelState.responseHeaders as [key, value] (`resp:${key}:${value}`)}

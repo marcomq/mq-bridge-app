@@ -3,7 +3,9 @@
   import { EditorState, Compartment } from "@codemirror/state";
   import { EditorView, keymap, placeholder as cmPlaceholder } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+  import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
   import { json } from "@codemirror/lang-json";
+  import { tags } from "@lezer/highlight";
   import { onDestroy } from "svelte";
 
   type EditorLanguage = "text" | "json-auto";
@@ -27,6 +29,13 @@
   let applyingExternalUpdate = false;
 
   const languageCompartment = new Compartment();
+  const highlightStyle = HighlightStyle.define([
+    { tag: tags.propertyName, color: "var(--json-key)" },
+    { tag: tags.string, color: "var(--json-string)" },
+    { tag: tags.number, color: "var(--json-number)" },
+    { tag: [tags.bool, tags.keyword], color: "var(--json-bool)" },
+    { tag: tags.null, color: "var(--json-null)" },
+  ]);
 
   function shouldUseJsonLanguage(text: string) {
     const trimmed = text.trim();
@@ -54,6 +63,7 @@
           keymap.of([...defaultKeymap, ...historyKeymap]),
           EditorView.lineWrapping,
           cmPlaceholder(placeholder),
+          syntaxHighlighting(highlightStyle),
           languageCompartment.of(languageExtension),
           EditorView.updateListener.of((update) => {
             if (!update.docChanged || applyingExternalUpdate) return;

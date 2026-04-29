@@ -6,7 +6,7 @@ module.exports = mergeConfig(
   defineConfig({
     test: {
       environment: "node",
-      include: ["tests/unit/**/*.test.ts"],
+      include: ["../tests/unit/**/*.test.ts"],
       coverage: {
         enabled: true,
         reporter: ["text", "html"],
