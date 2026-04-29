@@ -26,9 +26,14 @@
 
     <script src="/vendor/split/split.min.js"></script>
     <script src="/vanilla-schema-forms.js"></script>
+    <script src="/custom-form.js"></script>
 </head>
 <body>
     <div id="app"></div>
+    <template id="legacy-test-shape">
+      <wa-button id="route-toggle"></wa-button>
+      <span id="pub-proto-label">Type</span>
+    </template>
     <script type="module" src="/src/legacy-runtime.ts"></script>
     <script type="module" src="/src/main.ts"></script>
 </body>

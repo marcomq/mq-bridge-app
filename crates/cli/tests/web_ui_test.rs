@@ -176,19 +176,13 @@ async fn test_web_ui_serves_custom_static_assets() {
     let config_file = unique_config_path(port);
     let server = start_test_server(port, AppConfig::default(), &config_file).await;
 
-    let routes_js = http_get(port, "/routes.js").await;
-    assert!(routes_js.contains("200 OK"));
-    assert!(routes_js.contains("route-toggle"));
-    assert!(routes_js.contains("syncRouteToggleButton"));
-
-    let publishers_js = http_get(port, "/publishers.js").await;
-    assert!(publishers_js.contains("200 OK"));
-    assert!(publishers_js.contains("REQUEST_BAR_LAYOUTS"));
-    assert!(publishers_js.contains("getPublishStatusInfo"));
-
-    let consumers_js = http_get(port, "/consumers.js").await;
-    assert!(consumers_js.contains("200 OK"));
-    assert!(consumers_js.contains("defaultMetricsMiddleware"));
+    let app_bundle = http_get(port, "/index.js").await;
+    assert!(app_bundle.contains("200 OK"));
+    assert!(app_bundle.contains("route-toggle"));
+    assert!(app_bundle.contains("No routes configured. Click \"+\" to create one."));
+    assert!(app_bundle.contains("Request Presets"));
+    assert!(app_bundle.contains("Custom Response"));
+    assert!(app_bundle.contains("Execution History"));
 
     let style_css = http_get(port, "/style.css").await;
     assert!(style_css.contains("200 OK"));

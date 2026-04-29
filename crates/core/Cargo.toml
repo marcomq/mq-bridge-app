@@ -16,8 +16,7 @@ name = "mq_bridge_app"
 path = "src/lib.rs"
 
 [dependencies]
-mq-bridge = { path = "../../../mq-bridge", features = ["schema"] }
-# mq-bridge = { version="0.2.12", features = ["schema"] }
+mq-bridge = { version = "0.2.13", features = ["schema"] }
 
 config = { version = "0.15.22", features = ["yaml"] }
 dotenvy = "0.15.7"
