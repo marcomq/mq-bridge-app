@@ -112,6 +112,7 @@ export interface PublisherPresetRow {
   name: string;
   method: string;
   url: string;
+  bodyPreview: string;
 }
 
 export interface PublisherRequestFieldState {

@@ -106,7 +106,8 @@
       return (
         row.name.toLowerCase().includes(q) ||
         row.method.toLowerCase().includes(q) ||
-        row.url.toLowerCase().includes(q)
+        row.url.toLowerCase().includes(q) ||
+        row.bodyPreview.toLowerCase().includes(q)
       );
     }),
   );
@@ -309,8 +310,9 @@
                             <span class={`${row.statusClass} small fw-bold`}>{row.statusLabel}</span>
                           </td>
                           <td class="preview">
-                            {row.payloadPreview}
-                            <span style="margin-left:8px; float:right; display:inline-flex; gap:4px;">
+                            <div class="history-preview-row">
+                              <span class="history-preview-text">{row.payloadPreview}</span>
+                              <span class="history-preview-actions">
                               <wa-button
                                 size="small"
                                 appearance="outlined"
@@ -329,7 +331,8 @@
                                 onclick={(event: MouseEvent) => { event.stopPropagation(); void resendPublisherHistoryAction(row.historyIndex); }}
                                 onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void resendPublisherHistoryAction(row.historyIndex))}
                               >Resend</wa-button>
-                            </span>
+                              </span>
+                            </div>
                           </td>
                         </tr>
                       {/each}
@@ -363,14 +366,15 @@
                     <tr>
                       <th style="width: 160px;">Name</th>
                       <th style="width: 80px;">Method</th>
-                      <th>URL</th>
+                      <th style="width: 34%;">URL</th>
+                      <th>Body Preview</th>
                       <th style="width: 160px;">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {#if filteredPresetRows.length === 0}
                       <tr>
-                        <td colspan="4" style="text-align:center;padding:20px;color:var(--text-dim);">
+                        <td colspan="5" style="text-align:center;padding:20px;color:var(--text-dim);">
                           No presets saved.
                         </td>
                       </tr>
@@ -380,6 +384,7 @@
                           <td>{preset.name}</td>
                           <td>{preset.method}</td>
                           <td class="preview">{preset.url}</td>
+                          <td class="preview">{preset.bodyPreview}</td>
                           <td>
                             <div style="display:flex; gap:6px;">
                               <wa-button

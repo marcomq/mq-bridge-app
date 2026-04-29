@@ -2,6 +2,8 @@
 
 This directory is reserved for a future Tauri desktop application.
 
+You can build it by running `cargo run -p mq-bridge-app-desktop`
+
 Planned shape:
 
 - `crates/core`: shared backend logic and transport-agnostic application services

@@ -644,6 +644,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
           name: preset.name,
           method: preset.method || "POST",
           url: preset.url || "",
+          bodyPreview: (preset.payload || "").replace(/\s+/g, " ").trim().substring(0, 80),
         }))
       : [];
     const requestPayload = activeName ? getPublisherState(activeName).payload : "";
@@ -1457,6 +1458,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       persistConfigState();
     }
 
+    activeSubtab = "payload";
     syncPublishersPanelState();
   };
 

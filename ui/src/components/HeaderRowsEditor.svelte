@@ -33,6 +33,14 @@
     event.preventDefault();
     action();
   }
+
+  function handleFieldInput(
+    event: Event,
+    index: number,
+    field: "key" | "value",
+  ) {
+    onUpdate(index, field, (event.currentTarget as HTMLInputElement).value);
+  }
 </script>
 
 <div class="response-editor-grid">
@@ -52,15 +60,25 @@
           class="field-input"
           type="text"
           placeholder={keyPlaceholder}
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
           value={row.key}
-          oninput={(event) => onUpdate(index, "key", (event.currentTarget as HTMLInputElement).value)}
+          onkeydown={(event) => event.stopPropagation()}
+          oninput={(event) => handleFieldInput(event, index, "key")}
+          onchange={(event) => handleFieldInput(event, index, "key")}
         />
         <input
           class="field-input"
           type="text"
           placeholder={valuePlaceholder}
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
           value={row.value}
-          oninput={(event) => onUpdate(index, "value", (event.currentTarget as HTMLInputElement).value)}
+          onkeydown={(event) => event.stopPropagation()}
+          oninput={(event) => handleFieldInput(event, index, "value")}
+          onchange={(event) => handleFieldInput(event, index, "value")}
         />
         <wa-button
           class="cons-response-header-delete"

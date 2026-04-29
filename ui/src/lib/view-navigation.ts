@@ -1,5 +1,5 @@
 type ConsumerTab = "definition" | "response" | "messages";
-type PublisherTab = "payload" | "headers" | "history" | "definition";
+type PublisherTab = "payload" | "headers" | "history" | "definition" | "presets";
 
 function switchOrRun(mainTab: "routes" | "consumers" | "publishers", callback: () => void, fallback?: () => void) {
   if (window.switchMain) {

@@ -875,6 +875,27 @@ textarea.field-input {
     white-space: nowrap;
 }
 
+.history-preview-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.history-preview-text {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-preview-actions {
+    flex: 0 0 auto;
+    display: inline-flex;
+    gap: 4px;
+}
+
 /* ── MESSAGE DETAIL ── */
 .detail-pane {
     flex: 1;
