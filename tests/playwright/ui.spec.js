@@ -256,3 +256,39 @@ test("route delete is persisted immediately", async ({ page }) => {
   await expect(page.locator("#route-list .route-item .item-name").filter({ hasText: "ingest_http" })).toHaveCount(0);
   await expectSaveButtonClean(page, "#route-save");
 });
+
+test("app config shows existing routes in the routes map", async ({ page }) => {
+  await page.goto("/#config");
+  await expect(page.locator("#form-container")).toBeVisible();
+  await expect(page.locator("#form-container .ap-key").first()).toHaveValue("ingest_http");
+});
+
+test("active tabs stretch to the full viewport height", async ({ page }) => {
+  for (const hash of ["/#consumers:0", "/#publishers:0", "/#routes:0", "/#config"]) {
+    await page.goto(hash);
+    const metrics = await page.evaluate(() => {
+      const activePanel = document.querySelector(".tab-content-panel.active");
+      const appBody = document.querySelector(".app-body");
+      const app = document.getElementById("app");
+      if (!activePanel || !appBody || !app) {
+        return null;
+      }
+
+      const panelRect = activePanel.getBoundingClientRect();
+      const appBodyRect = appBody.getBoundingClientRect();
+      const appRect = app.getBoundingClientRect();
+
+      return {
+        viewportHeight: window.innerHeight,
+        appBottom: appRect.bottom,
+        appBodyBottom: appBodyRect.bottom,
+        panelBottom: panelRect.bottom,
+      };
+    });
+
+    expect(metrics).not.toBeNull();
+    expect(Math.abs(metrics.appBottom - metrics.viewportHeight)).toBeLessThanOrEqual(2);
+    expect(Math.abs(metrics.appBodyBottom - metrics.viewportHeight)).toBeLessThanOrEqual(2);
+    expect(Math.abs(metrics.panelBottom - metrics.viewportHeight)).toBeLessThanOrEqual(2);
+  }
+});

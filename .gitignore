@@ -31,4 +31,5 @@ db
 /node_modules
 /target
 /crates/desktop/gen
+/coverage
 config.yml

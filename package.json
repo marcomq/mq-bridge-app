@@ -2,10 +2,21 @@
   "name": "mq-bridge-app",
   "dependencies": {
     "@awesome.me/webawesome": "^3.5.0",
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.41.1",
+    "codemirror": "^6.0.2",
     "split.js": "^1.6.5",
     "vanilla-schema-forms": "^0.1.7"
   },
   "scripts": {
+    "build:ui": "vite build",
+    "dev": "concurrently -k -n backend,ui -c yellow,cyan \"npm:dev:backend\" \"npm:dev:ui\"",
+    "dev:backend": "node scripts/dev-backend.mjs",
+    "dev:ui": "vite --host 127.0.0.1 --port 39092",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
     "vendor:js": "cp node_modules/vanilla-schema-forms/dist/vanilla-schema-forms.umd.js static/vanilla-schema-forms.js",
@@ -16,6 +27,16 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
-    "esbuild": "^0.28.0"
+    "@sveltejs/vite-plugin-svelte": "^6.2.4",
+    "@types/node": "^25.6.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "chokidar": "^4.0.3",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.28.0",
+    "jsdom": "^29.1.0",
+    "svelte": "^5.51.2",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
   }
 }

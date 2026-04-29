@@ -691,24 +691,26 @@ const routesRenderer = {
     );
 
     // 3. Render existing routes from data manually
+    const currentRoutes = context.store.getPath(dataPath) ?? node.defaultValue;
+
     if (
       itemsContainer &&
       node.additionalProperties &&
-      node.defaultValue &&
-      typeof node.defaultValue === "object"
+      currentRoutes &&
+      typeof currentRoutes === "object"
     ) {
       const definedProps = new Set(
         node.properties ? Object.keys(node.properties) : [],
       );
       let apIndex = 0;
 
-      Object.keys(node.defaultValue).forEach((key) => {
+      Object.keys(currentRoutes).forEach((key) => {
         if (definedProps.has(key)) return;
 
         const valueSchema = node.additionalProperties;
         const valueNode = hydrateNodeWithData(
           valueSchema,
-          node.defaultValue[key],
+          currentRoutes[key],
         );
 
         const routePath = `${elementId}.__ap_${apIndex}`;

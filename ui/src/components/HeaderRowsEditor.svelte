@@ -1,0 +1,93 @@
+<script lang="ts">
+  type HeaderRow = {
+    id: number;
+    key: string;
+    value: string;
+    enabled?: boolean;
+  };
+
+  let {
+    rows,
+    addLabel = "Add Header",
+    keyPlaceholder = "Header name",
+    valuePlaceholder = "Header value",
+    showEnabled = false,
+    onAdd,
+    onUpdate,
+    onToggle = () => {},
+    onRemove,
+  }: {
+    rows: HeaderRow[];
+    addLabel?: string;
+    keyPlaceholder?: string;
+    valuePlaceholder?: string;
+    showEnabled?: boolean;
+    onAdd: () => void;
+    onUpdate: (index: number, field: "key" | "value", value: string) => void;
+    onToggle?: (index: number, enabled: boolean) => void;
+    onRemove: (index: number) => void;
+  } = $props();
+
+  function handleActionKey(event: KeyboardEvent, action: () => void) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    action();
+  }
+</script>
+
+<div class="response-editor-grid">
+  <div>
+    {#each rows as row, index (row.id)}
+      <div class:response-header-row--toggle={showEnabled} class="response-header-row">
+        {#if showEnabled}
+          <label class="response-header-toggle" title="Enable header">
+            <input
+              type="checkbox"
+              checked={row.enabled ?? true}
+              onchange={(event) => onToggle(index, (event.currentTarget as HTMLInputElement).checked)}
+            />
+          </label>
+        {/if}
+        <input
+          class="field-input"
+          type="text"
+          placeholder={keyPlaceholder}
+          value={row.key}
+          oninput={(event) => onUpdate(index, "key", (event.currentTarget as HTMLInputElement).value)}
+        />
+        <input
+          class="field-input"
+          type="text"
+          placeholder={valuePlaceholder}
+          value={row.value}
+          oninput={(event) => onUpdate(index, "value", (event.currentTarget as HTMLInputElement).value)}
+        />
+        <wa-button
+          class="cons-response-header-delete"
+          variant="neutral"
+          appearance="outlined"
+          size="small"
+          role="button"
+          tabindex="0"
+          onclick={() => onRemove(index)}
+          onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => onRemove(index))}
+        >
+          Delete
+        </wa-button>
+      </div>
+    {/each}
+  </div>
+  <div class="response-editor-actions">
+    <wa-button
+      variant="neutral"
+      appearance="outlined"
+      size="small"
+      role="button"
+      tabindex="0"
+      onclick={onAdd}
+      onkeydown={(event: KeyboardEvent) => handleActionKey(event, onAdd)}
+    >
+      {addLabel}
+    </wa-button>
+  </div>
+</div>

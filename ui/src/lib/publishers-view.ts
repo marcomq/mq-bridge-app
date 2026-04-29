@@ -1,0 +1,1322 @@
+import {
+  applyEndpointSchemaDefaults,
+  defaultMetricsMiddleware,
+  nextUniqueName,
+} from "./routes";
+import { cloneJson } from "./utils";
+import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
+import { publishersPanelState } from "./stores";
+
+export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
+export let showPublisherHistoryEntry: (historyIndex: number) => void | Promise<void> = () => {};
+export let clearActivePublisherHistory: () => void = () => {};
+export let copyPublisherResponse: () => void = () => {};
+export let selectPublisherSubtab: (tab: "payload" | "headers" | "history" | "definition") => void = () => {};
+export let addPublisherAction: () => void | Promise<void> = () => {};
+export let copyCurrentPublisherAction: () => void | Promise<void> = () => {};
+export let cloneCurrentPublisherAction: () => void = () => {};
+export let deleteCurrentPublisherAction: (button?: HTMLElement | null) => void | Promise<void> = () => {};
+export let saveCurrentPublisherAction: (button?: HTMLElement | null) => void | Promise<void> = () => {};
+export let beautifyPublisherPayloadAction: () => void | Promise<void> = () => {};
+export let sendPublisherAction: () => void | Promise<void> = () => {};
+export let addPublisherMetadataRow: () => void = () => {};
+export let updatePublisherMetadataRow: (index: number, field: "key" | "value", value: string) => void = () => {};
+export let togglePublisherMetadataRow: (index: number, enabled: boolean) => void = () => {};
+export let removePublisherMetadataRow: (index: number) => void = () => {};
+export let updatePublisherPayload: (value: string) => void = () => {};
+export let updatePublisherMethod: (value: string) => void = () => {};
+export let updatePublisherRequestField: (fieldId: "pub-extra-1" | "pub-extra-2" | "pub-url", value: string) => void = () => {};
+
+type PublisherConfig = {
+  name: string;
+  endpoint: Record<string, any>;
+  comment?: string;
+};
+
+type ConsumerConfig = {
+  name: string;
+  endpoint: Record<string, any>;
+  comment?: string;
+  response?: unknown;
+};
+
+type RouteConfig = {
+  enabled?: boolean;
+  input?: Record<string, any>;
+  output?: Record<string, any>;
+};
+
+type PublisherHistoryItem = {
+  name: string;
+  payload: string;
+  metadata?: Array<{ k: string; v: string }>;
+  requestMetadata?: Record<string, string>;
+  targetLabel?: string;
+  url?: string;
+  responseData?: unknown;
+  ok?: boolean;
+  status: number;
+  statusText?: string;
+  displayStatus?: string;
+  displayStatusText?: string;
+  duration: number;
+  time: number;
+};
+
+type PublishersAppConfig = {
+  publishers: PublisherConfig[];
+  consumers?: ConsumerConfig[];
+  routes: Record<string, RouteConfig>;
+};
+
+type PublishersSchemaRoot = {
+  properties?: {
+    publishers?: {
+      items?: Record<string, any>;
+    };
+  };
+  $defs?: Record<string, any>;
+};
+
+type PublisherState = {
+  payload: string;
+  headers?: Array<{
+    id: number;
+    key: string;
+    value: string;
+    enabled: boolean;
+  }>;
+};
+
+type PublisherResponseState = {
+  responseVisible?: boolean;
+  responseTabLabel?: string;
+  responseStatusLabel?: string;
+  responseStatusText?: string;
+  responseStatusColor?: string;
+  responseDurationLabel?: string;
+  responseSizeLabel?: string;
+  requestRows?: Array<[string, string]>;
+  requestHeaders?: Array<[string, string]>;
+  responseHeaders?: Array<[string, string]>;
+  responsePayload?: string;
+};
+
+type RequestBarFieldDescriptor = {
+  inputId: "pub-extra-1" | "pub-extra-2" | "pub-url";
+  field: string;
+  label: string;
+  placeholder?: string;
+};
+
+type RequestBarLayout = {
+  showMethod?: boolean;
+  fields: RequestBarFieldDescriptor[];
+};
+
+const STORAGE_KEY = "mqb_publisher_state";
+const HISTORY_KEY = "mqb_publisher_history";
+const PUBLISHER_TYPE_OPTIONS = [
+  "http",
+  "grpc",
+  "nats",
+  "memory",
+  "amqp",
+  "kafka",
+  "mqtt",
+  "mongodb",
+  "zeromq",
+  "file",
+  "sled",
+  "ibmmq",
+];
+
+const HTTP_METHOD_OPTIONS = ["POST", "GET", "PUT", "DELETE"];
+
+const ENDPOINT_TYPE_KEYS = [
+  "http",
+  "kafka",
+  "mqtt",
+  "grpc",
+  "amqp",
+  "ibmmq",
+  "nats",
+  "aws",
+  "file",
+  "static",
+  "memory",
+  "mongodb",
+  "sled",
+  "htmx",
+  "ref",
+  "zeromq",
+  "switch",
+  "response",
+  "custom",
+  "null",
+];
+
+const REQUEST_BAR_LAYOUTS: Record<string, RequestBarLayout> = {
+  http: {
+    showMethod: true,
+    fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "https://example.com/api" }],
+  },
+  kafka: {
+    fields: [
+      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events" },
+      { inputId: "pub-url", field: "url", label: "BROKERS", placeholder: "kafka:9092" },
+    ],
+  },
+  mqtt: {
+    fields: [
+      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events/updates" },
+      { inputId: "pub-url", field: "url", label: "BROKER", placeholder: "tcp://localhost:1883" },
+    ],
+  },
+  grpc: {
+    fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "http://localhost:50051" }],
+  },
+  amqp: {
+    fields: [
+      { inputId: "pub-extra-1", field: "queue", label: "QUEUE", placeholder: "jobs" },
+      { inputId: "pub-url", field: "url", label: "URL", placeholder: "amqp://guest:guest@localhost:5672/%2f" },
+    ],
+  },
+  ibmmq: {
+    fields: [
+      { inputId: "pub-extra-1", field: "queue", label: "QUEUE", placeholder: "DEV.QUEUE.1" },
+      { inputId: "pub-extra-2", field: "topic", label: "TOPIC", placeholder: "topic://events" },
+      { inputId: "pub-url", field: "url", label: "HOST", placeholder: "mq-host(1414)" },
+    ],
+  },
+  nats: {
+    fields: [
+      { inputId: "pub-extra-1", field: "subject", label: "SUBJECT", placeholder: "events.created" },
+      { inputId: "pub-url", field: "url", label: "SERVERS", placeholder: "nats://localhost:4222" },
+    ],
+  },
+  mongodb: {
+    fields: [
+      { inputId: "pub-extra-1", field: "database", label: "DATABASE", placeholder: "app" },
+      { inputId: "pub-extra-2", field: "collection", label: "COLLECTION", placeholder: "messages" },
+      { inputId: "pub-url", field: "url", label: "URL", placeholder: "mongodb://localhost:27017" },
+    ],
+  },
+  zeromq: {
+    fields: [
+      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events" },
+      { inputId: "pub-url", field: "url", label: "URL", placeholder: "tcp://127.0.0.1:5555" },
+    ],
+  },
+  file: {
+    fields: [{ inputId: "pub-url", field: "path", label: "PATH", placeholder: "/tmp/messages.jsonl" }],
+  },
+  memory: {
+    fields: [{ inputId: "pub-url", field: "topic", label: "TOPIC", placeholder: "events" }],
+  },
+  sled: {
+    fields: [
+      { inputId: "pub-extra-1", field: "tree", label: "TREE", placeholder: "default" },
+      { inputId: "pub-url", field: "path", label: "PATH", placeholder: "./data/sled" },
+    ],
+  },
+};
+
+const SCHEMA_REQUEST_BAR_FIELDS = {
+  HttpConfig: ["url", "custom_headers"],
+  KafkaConfig: ["url", "topic"],
+  MqttConfig: ["url", "topic"],
+  GrpcConfig: ["url"],
+  AmqpConfig: ["url", "queue"],
+  IbmMqConfig: ["url", "queue", "topic"],
+  NatsConfig: ["url", "subject"],
+  MongoDbConfig: ["url", "database", "collection"],
+  ZeroMqConfig: ["url", "topic"],
+  FileConfig: ["path"],
+  MemoryConfig: ["topic"],
+  SledConfig: ["path", "tree"],
+} satisfies Record<string, string[]>;
+
+export function createConsumerEndpointFromPublisherEndpoint(endpoint: Record<string, any>) {
+  const nextEndpoint = cloneJson(endpoint || {});
+  const http = nextEndpoint.http;
+  if (!http || typeof http !== "object" || typeof http.url !== "string") {
+    return nextEndpoint;
+  }
+
+  try {
+    const parsedUrl = new URL(http.url);
+    const defaultPort = parsedUrl.protocol === "https:" ? "443" : "80";
+    const port = parsedUrl.port || defaultPort;
+    http.url = `0.0.0.0:${port}`;
+
+    const nextPath = `${parsedUrl.pathname || "/"}${parsedUrl.search || ""}`;
+    if (nextPath && nextPath !== "/") {
+      http.path = nextPath;
+    } else {
+      delete http.path;
+    }
+  } catch {
+    // Leave non-URL values unchanged; the user can adjust them manually after copying.
+  }
+
+  return nextEndpoint;
+}
+
+function sortEntries(obj: Record<string, any> | undefined | null) {
+  return Object.entries(obj || {}).sort(([a], [b]) => a.localeCompare(b));
+}
+
+function defaultHttpConfig() {
+  return {
+    url: "",
+    tls: {
+      required: false,
+      accept_invalid_certs: false,
+    },
+    fire_and_forget: false,
+    compression_enabled: false,
+    basic_auth: ["", ""],
+    custom_headers: {},
+  };
+}
+
+function createEmptyRouteConfig(): RouteConfig {
+  return {
+    enabled: true,
+    input: { middlewares: defaultMetricsMiddleware(), null: null },
+    output: { middlewares: defaultMetricsMiddleware(), null: null },
+  };
+}
+
+function createRefInputEndpoint(refName: string) {
+  return {
+    middlewares: defaultMetricsMiddleware(),
+    ref: refName,
+  };
+}
+
+function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined): string {
+  const endpoint = publisher?.endpoint || {};
+  return ENDPOINT_TYPE_KEYS.find((key) => key in endpoint) || "null";
+}
+
+function createDefaultPublisherEndpoint(endpointType: string) {
+  return { [endpointType]: {} };
+}
+
+export function initPublishers(config: PublishersAppConfig, schema: PublishersSchemaRoot) {
+  const container = document.getElementById("publishers-container") as HTMLElement | null;
+  const publishers = config.publishers || [];
+  let appState = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, PublisherState>;
+  let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") as PublisherHistoryItem[];
+
+  const emptyAlert = document.getElementById("pub-empty-alert") as HTMLElement | null;
+  const mainUi = document.getElementById("pub-main-ui") as HTMLElement | null;
+  if (!container || !emptyAlert || !mainUi) {
+    return;
+  }
+
+  container.style.display = "contents";
+  let currentIdx = 0;
+  let activeSubtab: "payload" | "headers" | "history" | "definition" = "payload";
+  let pubSplit: unknown;
+  let currentResponsePayload = "";
+  let currentMethodValue = "POST";
+  let nextPublisherHeaderId = 1;
+  const hadDirtyTracker = Boolean(window._mqb_dirty_sections?.publishers);
+
+  window.registerDirtySection("publishers", {
+    buttonId: "pub-save",
+    getValue: () => config.publishers,
+  });
+  const hadUnsavedChangesBeforeInit = window.refreshDirtySection("publishers");
+
+  const updateUrlHash = () => {
+    window.history.replaceState(null, "", `#publishers:${currentIdx || 0}`);
+  };
+
+  const saveAppState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+  const saveHistory = () => {
+    history = history.slice(0, 1000);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  };
+
+  const openPublisherAt = (idx: number, tab = "definition") => {
+    openPublisherByIndex(
+      idx,
+      tab as "payload" | "headers" | "history" | "definition",
+      restorePublisherStateFromView,
+      () => {
+        void initPublishers(config, schema);
+      },
+    );
+  };
+
+  const openConsumerAt = (idx: number, tab = "messages") => {
+    openConsumerByIndex(
+      idx,
+      tab as "messages" | "definition" | "response",
+      (consumerIdx, options) => window.restoreConsumerState?.(consumerIdx, options),
+      () => window.initConsumers?.(config, window.appSchema),
+    );
+  };
+
+  const openRouteAt = (routeName: string) => {
+    openRouteByName(
+      config.routes,
+      routeName,
+      (routeIdx) => window.restoreRouteState?.(routeIdx),
+      () => window.initRoutes?.(config, window.appSchema),
+    );
+  };
+
+  const ensureHttpConfig = (publisher: PublisherConfig) => {
+    publisher.endpoint ||= {};
+    if (!publisher.endpoint.http || typeof publisher.endpoint.http !== "object") {
+      publisher.endpoint.http = defaultHttpConfig();
+    }
+    publisher.endpoint.http.custom_headers ||= {};
+    return publisher.endpoint.http as Record<string, any>;
+  };
+
+  const ensureEndpointConfig = (publisher: PublisherConfig, endpointType: string) => {
+    if (endpointType === "http") return ensureHttpConfig(publisher);
+    publisher.endpoint ||= {};
+    if (!publisher.endpoint[endpointType] || typeof publisher.endpoint[endpointType] !== "object") {
+      publisher.endpoint[endpointType] = {};
+    }
+    return publisher.endpoint[endpointType] as Record<string, any>;
+  };
+
+  const getExistingEndpointConfig = (publisher: PublisherConfig, endpointType = getEndpointType(publisher)) => {
+    const endpoint = publisher?.endpoint || {};
+    const endpointConfig = endpoint?.[endpointType];
+    return endpointConfig && typeof endpointConfig === "object" ? endpointConfig : null;
+  };
+
+  const getRequestBarLayout = (endpointType: string): RequestBarLayout =>
+    REQUEST_BAR_LAYOUTS[endpointType] || { fields: [] };
+
+  const getRequestBarFieldValue = (publisher: PublisherConfig, descriptor: { field: string } | undefined) => {
+    if (!descriptor) return "";
+    const endpointType = getEndpointType(publisher);
+    const endpointConfig = getExistingEndpointConfig(publisher, endpointType);
+
+    if (endpointType === "http" && descriptor.field === "url") {
+      const rawUrl = typeof endpointConfig?.url === "string" ? endpointConfig.url.trim() : "";
+      const rawPath = typeof endpointConfig?.path === "string" ? endpointConfig.path.trim() : "";
+      if (!rawUrl) return rawPath || "";
+      if (!rawPath || rawPath === "/") return rawUrl;
+      try {
+        const parsed = new URL(rawUrl);
+        const [pathOnly, query = ""] = rawPath.split("?");
+        const normalizedPath = (pathOnly || "/").startsWith("/") ? (pathOnly || "/") : `/${pathOnly || "/"}`;
+        parsed.pathname = normalizedPath;
+        parsed.search = query ? `?${query}` : "";
+        return parsed.toString();
+      } catch {
+        return `${rawUrl.replace(/\/+$/, "")}/${rawPath.replace(/^\/+/, "")}`;
+      }
+    }
+
+    return typeof endpointConfig?.[descriptor.field] === "string" ? endpointConfig[descriptor.field] : "";
+  };
+
+  const setRequestBarFieldValue = (publisher: PublisherConfig, descriptor: { field: string } | undefined, rawValue: string) => {
+    if (!descriptor) return;
+    const endpointType = getEndpointType(publisher);
+    const endpointConfig = ensureEndpointConfig(publisher, endpointType);
+
+    if (endpointType === "http" && descriptor.field === "url") {
+      const trimmedValue = rawValue.trim();
+      if (!trimmedValue) {
+        endpointConfig.url = "";
+        endpointConfig.path = "/";
+        return;
+      }
+
+      try {
+        const parsed = new URL(trimmedValue);
+        endpointConfig.url = parsed.origin;
+        endpointConfig.path = `${parsed.pathname || "/"}${parsed.search || ""}`;
+        return;
+      } catch {
+        // Accept host/path-like input without protocol.
+        const match = trimmedValue.match(/^([^/]+)(\/.*)?$/);
+        if (match) {
+          endpointConfig.url = match[1];
+          endpointConfig.path = match[2] || "/";
+          return;
+        }
+      }
+    }
+
+    endpointConfig[descriptor.field] = rawValue;
+  };
+
+  const copyRequestBarFieldValues = (fromPublisher: PublisherConfig, toPublisher: PublisherConfig) => {
+    const endpointType = getEndpointType(toPublisher);
+    const layout = getRequestBarLayout(endpointType);
+    layout.fields.forEach((descriptor) => {
+      const sourceValue = getRequestBarFieldValue(fromPublisher, descriptor);
+      setRequestBarFieldValue(toPublisher, descriptor, sourceValue);
+    });
+  };
+
+  const getPublishStatusInfo = (endpointType: string, response: Response, responseData: any) => {
+    if (!response.ok) {
+      return {
+        ok: false,
+        code: response.status,
+        label: String(response.status),
+        text: response.statusText || "Error",
+      };
+    }
+    if (endpointType === "http") {
+      return {
+        ok: true,
+        code: response.status,
+        label: String(response.status),
+        text: response.statusText || "OK",
+      };
+    }
+    if (responseData && typeof responseData === "object") {
+      if (responseData.status === "Ack") {
+        return { ok: true, code: response.status, label: "ACK", text: `${endpointType.toUpperCase()} accepted` };
+      }
+      if (responseData.status === "Response") {
+        return { ok: true, code: response.status, label: "RESP", text: `${endpointType.toUpperCase()} replied` };
+      }
+    }
+    return { ok: true, code: response.status, label: "OK", text: `${endpointType.toUpperCase()} sent` };
+  };
+
+  const setMethodSelectMode = (endpointType: string) => {
+    if (endpointType === "http") {
+      currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
+      return;
+    }
+    currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
+  };
+
+  const getPublisherState = (name: string) => {
+    if (!appState[name]) {
+      appState[name] = { payload: '{\n  "hello": "world"\n}' };
+    }
+    return appState[name];
+  };
+
+  const normalizePublisherHeaderRows = (
+    rows: Array<{ id?: number; key?: unknown; value?: unknown; enabled?: unknown }> | undefined,
+  ) => {
+    if (!Array.isArray(rows)) return { rows: [], changed: false };
+
+    const seenIds = new Set<number>();
+    const claimNextId = () => {
+      while (seenIds.has(nextPublisherHeaderId) || nextPublisherHeaderId <= 0) {
+        nextPublisherHeaderId += 1;
+      }
+      return nextPublisherHeaderId++;
+    };
+    let changed = false;
+    const normalizedRows = rows.map((row) => {
+      const candidateId = Number(row?.id);
+      const nextRow = {
+        id: Number.isInteger(candidateId) && candidateId > 0 ? candidateId : claimNextId(),
+        key: String(row?.key ?? ""),
+        value: String(row?.value ?? ""),
+        enabled: row?.enabled !== false,
+      };
+
+      if (seenIds.has(nextRow.id)) {
+        nextRow.id = claimNextId();
+        changed = true;
+      }
+
+      if (
+        !row ||
+        Number(row.id) !== nextRow.id ||
+        String(row.key ?? "") !== nextRow.key ||
+        String(row.value ?? "") !== nextRow.value ||
+        (row.enabled !== false) !== nextRow.enabled
+      ) {
+        changed = true;
+      }
+
+      seenIds.add(nextRow.id);
+      return nextRow;
+    });
+
+    return { rows: normalizedRows, changed };
+  };
+
+  const syncNextPublisherHeaderId = () => {
+    const maxId = Object.values(appState).reduce((currentMax, state) => {
+      const headerMax = Array.isArray(state.headers)
+        ? state.headers.reduce((rowMax, row) => Math.max(rowMax, Number(row.id) || 0), 0)
+        : 0;
+      return Math.max(currentMax, headerMax);
+    }, 0);
+    nextPublisherHeaderId = Math.max(nextPublisherHeaderId, maxId + 1);
+  };
+
+  const getPublisherHeaderRows = (publisher: PublisherConfig | undefined) => {
+    if (!publisher) return [];
+    const state = getPublisherState(publisher.name);
+    if (!Array.isArray(state.headers)) {
+      const httpConfig = getEndpointType(publisher) === "http" ? ensureHttpConfig(publisher) : null;
+      state.headers = sortEntries(httpConfig?.custom_headers).map(([key, value]) => ({
+        id: nextPublisherHeaderId++,
+        key: String(key),
+        value: String(value),
+        enabled: true,
+      }));
+      saveAppState();
+    } else {
+      const normalized = normalizePublisherHeaderRows(state.headers);
+      state.headers = normalized.rows;
+      if (normalized.changed) {
+        saveAppState();
+      }
+    }
+    syncNextPublisherHeaderId();
+    return state.headers;
+  };
+
+  const syncPublishersPanelState = (responseState?: PublisherResponseState) => {
+    const activePublisher = publishers[currentIdx];
+    const activeName = activePublisher?.name;
+    const filteredHistory = history.filter((item) => item.name === activeName);
+    const endpointType = activePublisher ? getEndpointType(activePublisher) : "";
+    const layout = getRequestBarLayout(endpointType);
+    const getFieldState = (inputId: "pub-extra-1" | "pub-extra-2" | "pub-url", fallbackLabel: string) => {
+      const descriptor = layout.fields.find((field) => field.inputId === inputId);
+      return {
+        label: descriptor?.label || fallbackLabel,
+        placeholder: descriptor?.placeholder || "",
+        value: activePublisher ? getRequestBarFieldValue(activePublisher, descriptor) : "",
+        visible: Boolean(descriptor),
+      };
+    };
+    const metadataRows = endpointType === "http" && activePublisher ? getPublisherHeaderRows(activePublisher) : [];
+    const requestPayload = activeName ? getPublisherState(activeName).payload : "";
+
+    publishersPanelState.update((current) => ({
+      hasPublishers: publishers.length > 0,
+      items: publishers.map((publisher, index) => ({
+        name: publisher.name,
+        endpointType: getEndpointType(publisher).toUpperCase(),
+        originalIndex: index,
+      })),
+      selectedIndex: currentIdx,
+      activeSubtab,
+      endpointType: endpointType === "ibmmq" ? "MQ" : endpointType.toUpperCase(),
+      methodVisible: endpointType === "http" && !!layout.showMethod,
+      methodValue: currentMethodValue,
+      extraFieldOne: getFieldState("pub-extra-1", "Target"),
+      extraFieldTwo: getFieldState("pub-extra-2", "Target"),
+      urlField: getFieldState("pub-url", "URL"),
+      requestPayload,
+      metadataRows,
+      responseVisible: responseState?.responseVisible ?? current.responseVisible,
+      responseTabLabel: responseState?.responseTabLabel ?? current.responseTabLabel,
+      responseStatusLabel: responseState?.responseStatusLabel ?? current.responseStatusLabel,
+      responseStatusText: responseState?.responseStatusText ?? current.responseStatusText,
+      responseStatusColor: responseState?.responseStatusColor ?? current.responseStatusColor,
+      responseDurationLabel: responseState?.responseDurationLabel ?? current.responseDurationLabel,
+      responseSizeLabel: responseState?.responseSizeLabel ?? current.responseSizeLabel,
+      requestRows: responseState?.requestRows ?? current.requestRows,
+      requestHeaders: responseState?.requestHeaders ?? current.requestHeaders,
+      responseHeaders: responseState?.responseHeaders ?? current.responseHeaders,
+      responsePayload: responseState?.responsePayload ?? current.responsePayload,
+      historyRows: filteredHistory.map((item) => {
+        const isOk = typeof item.ok === "boolean" ? item.ok : item.status < 300;
+        return {
+          historyIndex: history.indexOf(item),
+          timeLabel: new Date(item.time).toLocaleTimeString(),
+          statusLabel: String(item.displayStatus || item.status),
+          statusClass: isOk ? "status-ok" : "status-err",
+          payloadPreview: item.payload.substring(0, 100).replace(/\n/g, " "),
+        };
+      }),
+    }));
+  };
+
+  const renderSidebar = () => {
+    syncPublishersPanelState();
+    const hasPublishers = publishers.length > 0;
+    emptyAlert.style.display = hasPublishers ? "none" : "block";
+    mainUi.style.display = hasPublishers ? "contents" : "none";
+  };
+
+  const setActiveItem = (idx: number) => {
+    currentIdx = idx;
+    activeSubtab = "payload";
+    syncPublishersPanelState();
+  };
+
+  const clearPublisherResponse = () => {
+    currentResponsePayload = "";
+    syncPublishersPanelState({
+      responseVisible: false,
+      responseTabLabel: "Response",
+      responseStatusLabel: "Ready",
+      responseStatusText: "",
+      responseStatusColor: "var(--text-primary)",
+      responseDurationLabel: "",
+      responseSizeLabel: "",
+      requestRows: [],
+      requestHeaders: [],
+      responseHeaders: [],
+      responsePayload: "",
+    });
+  };
+
+  const buildHttpRequestMetadata = () => {
+    const publisher = publishers[currentIdx];
+    if (!publisher || getEndpointType(publisher) !== "http") return {};
+
+    const rawUrl = getRequestBarFieldValue(
+      publisher,
+      getRequestBarLayout("http").fields.find((field) => field.inputId === "pub-url"),
+    ).trim();
+    const metadata: Record<string, string> = {};
+    if (currentMethodValue) {
+      metadata.http_method = currentMethodValue;
+    }
+    if (!rawUrl) return metadata;
+
+    try {
+      const parsed = new URL(rawUrl);
+      metadata.http_path = parsed.pathname || "/";
+      if (parsed.search.length > 1) {
+        metadata.http_query = parsed.search.slice(1);
+      }
+    } catch {
+      const slashIndex = rawUrl.indexOf("/", rawUrl.indexOf("//") + 2);
+      if (slashIndex >= 0) {
+        const pathWithQuery = rawUrl.slice(slashIndex);
+        const [path, query] = pathWithQuery.split("?");
+        metadata.http_path = path || "/";
+        if (query) metadata.http_query = query;
+      }
+    }
+
+    return metadata;
+  };
+
+  const applyHistoryRequestToPublisher = (publisher: PublisherConfig | undefined, item: PublisherHistoryItem) => {
+    if (!publisher || getEndpointType(publisher) !== "http") return;
+    const httpConfig = ensureHttpConfig(publisher);
+    httpConfig.custom_headers = Object.fromEntries((item.metadata || []).map(({ k, v }) => [k, v]));
+
+    if (typeof item.url === "string") {
+      httpConfig.url = item.url;
+      return;
+    }
+
+    const existingUrl = httpConfig.url || "";
+    const requestMetadata = item.requestMetadata || {};
+    if (requestMetadata.http_method) {
+      currentMethodValue = requestMetadata.http_method;
+    }
+    if (!requestMetadata.http_path && !requestMetadata.http_query) return;
+
+    try {
+      const parsed = new URL(existingUrl);
+      parsed.pathname = requestMetadata.http_path || "/";
+      parsed.search = requestMetadata.http_query ? `?${requestMetadata.http_query}` : "";
+      httpConfig.url = parsed.toString();
+    } catch {
+      const path = requestMetadata.http_path || "/";
+      const query = requestMetadata.http_query ? `?${requestMetadata.http_query}` : "";
+      httpConfig.url = `${path}${query}`;
+    }
+  };
+
+  const restorePublisherState = (idx: number, options: { tab?: string } = {}) => {
+    if (!publishers[idx]) return;
+    if (currentIdx !== idx) setActiveItem(idx);
+    void updateUIFromState();
+    const targetTab = options.tab || "payload";
+    activeSubtab =
+      targetTab === "definition" || targetTab === "history" || targetTab === "headers" ? targetTab : "payload";
+    syncPublishersPanelState();
+  };
+
+  const formatResponseDetails = (
+    statusInfo: { ok: boolean; label: string; text?: string },
+    duration: number,
+    data: any,
+    requestInfo: {
+      headers?: Array<{ k: string; v: string }>;
+      method?: string;
+      path?: string;
+      query?: string;
+      targetLabel?: string;
+      url?: string;
+    } = {},
+  ) => {
+    const statusColor = statusInfo?.ok ? "var(--accent-http)" : "var(--accent-kafka)";
+    const statusLabel = statusInfo?.label || "OK";
+    const statusText = statusInfo?.text || "";
+    const payloadString = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    const size = new TextEncoder().encode(payloadString).length;
+    const sizeString = size > 1024 ? `${(size / 1024).toFixed(2)} KB` : `${size} B`;
+    let payloadContent = "";
+    const requestHeaders = Array.isArray(requestInfo.headers) ? requestInfo.headers : [];
+    const requestRows: Array<[string, string]> = [];
+    if (requestInfo.method) requestRows.push(["Method", requestInfo.method]);
+    if (requestInfo.url) requestRows.push([requestInfo.targetLabel || "URL", requestInfo.url]);
+    if (requestInfo.path) requestRows.push(["Path", requestInfo.path]);
+    if (requestInfo.query) requestRows.push(["Query", requestInfo.query]);
+    let responseHeaders: Array<[string, string]> = [];
+
+    if (data && typeof data === "object") {
+      const isResponse = data.status === "Response" || (data.metadata && data.payload);
+      if (isResponse) {
+        responseHeaders = sortEntries(data.metadata) as Array<[string, string]>;
+        payloadContent = typeof data.payload === "string" ? data.payload : JSON.stringify(data.payload, null, 2);
+      } else if (data.status === "Ack") {
+        payloadContent = "// ACKNOWLEDGED: The backend processed the message successfully.";
+      } else {
+        payloadContent = JSON.stringify(data, null, 2);
+      }
+    } else {
+      payloadContent = String(data || "");
+    }
+    currentResponsePayload = payloadContent;
+
+    syncPublishersPanelState({
+      responseVisible: true,
+      responseTabLabel: `Response ✓ ${statusLabel}`,
+      responseStatusLabel: statusLabel,
+      responseStatusText: statusText,
+      responseStatusColor: statusColor,
+      responseDurationLabel: `${duration}ms`,
+      responseSizeLabel: sizeString,
+      requestRows,
+      requestHeaders: requestHeaders.map(({ k, v }) => [k, v]),
+      responseHeaders,
+      responsePayload: payloadContent,
+    });
+
+    if (!pubSplit && window.Split) {
+      pubSplit = window.Split(["#pub-top-content-wrapper", "#pub-response-container"], {
+        direction: "vertical",
+        sizes: [60, 40],
+        minSize: 100,
+        gutterSize: 4,
+        elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
+          "flex-basis": `calc(${size}% - ${gutterSize}px)`,
+        }),
+        gutterStyle: (_dimension: string, gutterSize: number) => ({
+          "flex-basis": `${gutterSize}px`,
+        }),
+      });
+    }
+  };
+
+  const renderHistory = () => {
+    syncPublishersPanelState();
+  };
+
+  const persistConfigState = () => {
+    saveAppState();
+    window.refreshDirtySection("publishers");
+    syncPublishersPanelState();
+  };
+
+  const updatePublisherConfigFromMetadataRows = (
+    rows: Array<{
+      id: number;
+      key: string;
+      value: string;
+      enabled: boolean;
+    }>,
+  ) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher || getEndpointType(publisher) !== "http") return;
+    const state = getPublisherState(publisher.name);
+    state.headers = rows;
+    const httpConfig = ensureHttpConfig(publisher);
+    httpConfig.custom_headers = Object.fromEntries(
+      rows
+        .filter((row) => row.enabled)
+        .map((row) => [row.key.trim(), row.value] as [string, string])
+        .filter(([key]) => key),
+    );
+    persistConfigState();
+  };
+
+  const updateStateFromUI = () => {
+    if (publishers.length === 0) return;
+    const publisher = publishers[currentIdx];
+    const endpointType = getEndpointType(publisher);
+    setMethodSelectMode(endpointType);
+    syncPublishersPanelState();
+  };
+
+  const updateUIFromState = async () => {
+    if (publishers.length === 0) return;
+    const idx = currentIdx;
+
+    clearPublisherResponse();
+
+    const publisher = publishers[idx];
+    setMethodSelectMode(getEndpointType(publisher));
+    renderHistory();
+    updateUrlHash();
+    syncPublishersPanelState();
+
+    const configFormContainer = document.getElementById("pub-config-form") as HTMLElement | null;
+    if (!configFormContainer) return;
+    configFormContainer.innerHTML = "";
+
+    const itemSchema = cloneJson({
+      ...(schema.properties?.publishers?.items || {}),
+      $defs: schema.$defs,
+    });
+    applyEndpointSchemaDefaults(itemSchema);
+    Object.entries(SCHEMA_REQUEST_BAR_FIELDS).forEach(([defName, fields]) => {
+      const endpointSchema = itemSchema.$defs?.[defName];
+      if (!endpointSchema?.properties) return;
+      fields.forEach((fieldName) => {
+        if (endpointSchema.properties[fieldName]) {
+          endpointSchema.properties[fieldName].hidden = true;
+        }
+        if (Array.isArray(endpointSchema.required)) {
+          endpointSchema.required = endpointSchema.required.filter((key: string) => key !== fieldName);
+        }
+      });
+    });
+    const httpConfigSchema = itemSchema.$defs?.HttpConfig;
+    if (httpConfigSchema?.properties?.custom_headers) {
+      httpConfigSchema.properties.custom_headers.hidden = true;
+    }
+
+    window._mqb_form_mode = "publisher";
+    try {
+      await window.VanillaSchemaForms.init(configFormContainer, itemSchema, publishers[idx], (updated) => {
+        const previousPublisher = publishers[idx];
+        const nextPublisher = updated as PublisherConfig;
+        copyRequestBarFieldValues(previousPublisher, nextPublisher);
+        publishers[idx] = nextPublisher;
+        setMethodSelectMode(getEndpointType(publishers[idx]));
+        syncPublishersPanelState();
+        window.refreshDirtySection("publishers");
+      });
+    } finally {
+      window._mqb_form_mode = null;
+    }
+  };
+
+  const copyCurrentPublisher = async () => {
+    const current = config.publishers[currentIdx];
+    if (!current) return;
+    const currentEndpoint = cloneJson(current.endpoint || { null: null });
+    const choice = await window.mqbChoose("Choose where to copy this publisher definition.", "Copy Publisher", {
+      confirmLabel: "Continue",
+      choices: [
+        { value: "route_output", label: "New Route Output", description: "Creates a route with this publisher as output." },
+        { value: "consumer", label: "New Consumer", description: "Copies the endpoint into a consumer. Review after copying." },
+        { value: "ref", label: "New Ref Route", description: "Creates a route with a ref input and this publisher as output." },
+      ],
+    });
+    if (!choice) return;
+
+    if (choice === "route_output") {
+      config.routes ||= {};
+      const routeName = await window.mqbPrompt(
+        "Choose a name for the new route. The input stays null until you review it.",
+        "Copy to Route",
+        {
+          confirmLabel: "Create",
+          value: nextUniqueName(`${current.name}_route`, Object.keys(config.routes || {})),
+          placeholder: "publisher_route",
+        },
+      );
+      if (!routeName) return;
+      if (config.routes[routeName]) {
+        await window.mqbAlert("Route already exists");
+        return;
+      }
+      const routeConfig = createEmptyRouteConfig();
+      routeConfig.output = currentEndpoint;
+      config.routes[routeName] = routeConfig;
+      window.refreshDirtySection("routes");
+      openRouteAt(routeName);
+      return;
+    }
+
+    if (choice === "consumer") {
+      config.consumers ||= [];
+      const consumerName = await window.mqbPrompt(
+        "Choose a name for the new consumer. Publisher-specific fields may need adjustment after copying.",
+        "Copy to Consumer",
+        {
+          confirmLabel: "Create",
+          value: nextUniqueName(getEndpointType(current), (config.consumers || []).map((consumer) => consumer.name)),
+          placeholder: "publisher_consumer",
+        },
+      );
+      if (!consumerName) return;
+      if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
+        await window.mqbAlert("Consumer already exists");
+        return;
+      }
+      config.consumers.push({
+        name: consumerName,
+        endpoint: createConsumerEndpointFromPublisherEndpoint(currentEndpoint),
+        comment: current.comment || "",
+        response: null,
+      });
+      window.refreshDirtySection("consumers");
+      openConsumerAt(config.consumers.length - 1, "definition");
+      return;
+    }
+
+    const refTarget = await window.mqbPrompt(
+      "Choose the ref input name. Other endpoints can reference this publisher through that name after the route is saved and running.",
+      "Copy to Ref Route",
+      {
+        confirmLabel: "Next",
+        value: current.name,
+        placeholder: "publisher_ref",
+      },
+    );
+    if (!refTarget) return;
+    config.routes ||= {};
+    const routeName = await window.mqbPrompt(
+      "Choose a name for the new route that exposes this publisher via ref.",
+      "Copy to Ref Route",
+      {
+        confirmLabel: "Create",
+        value: nextUniqueName(`${current.name}_ref_route`, Object.keys(config.routes || {})),
+        placeholder: "publisher_ref_route",
+      },
+    );
+    if (!routeName) return;
+    if (config.routes[routeName]) {
+      await window.mqbAlert("Route already exists");
+      return;
+    }
+    const routeConfig = createEmptyRouteConfig();
+    routeConfig.input = createRefInputEndpoint(refTarget);
+    routeConfig.output = currentEndpoint;
+    config.routes[routeName] = routeConfig;
+    window.refreshDirtySection("routes");
+    openRouteAt(routeName);
+  };
+
+  const addPublisher = async () => {
+    const endpointType = await window.mqbChoose("Choose the endpoint type for the new publisher.", "Add Publisher", {
+      confirmLabel: "Create",
+      choices: PUBLISHER_TYPE_OPTIONS.map((type) => ({ value: type, label: type.toUpperCase() })),
+    });
+    if (!endpointType) return;
+    config.publishers.push({
+      name: nextUniqueName(endpointType, (config.publishers || []).map((publisher) => publisher.name)),
+      endpoint: createDefaultPublisherEndpoint(endpointType),
+      comment: "",
+    });
+    initPublishers(config, schema);
+    setActiveItem(config.publishers.length - 1);
+    void updateUIFromState();
+  };
+
+  addPublisherAction = addPublisher;
+  copyCurrentPublisherAction = copyCurrentPublisher;
+
+  cloneCurrentPublisherAction = () => {
+    const current = config.publishers[currentIdx];
+    const cloned = cloneJson(current);
+    cloned.name += "_copy";
+    if (config.publishers.some((publisher) => publisher.name === cloned.name)) {
+      void window.mqbAlert("Cloned publisher name already exists. Please choose a different name.");
+      return;
+    }
+    config.publishers.push(cloned);
+    initPublishers(config, schema);
+    setActiveItem(config.publishers.length - 1);
+    void updateUIFromState();
+  };
+
+  deleteCurrentPublisherAction = async (button = document.getElementById("pub-save")) => {
+    if (!(await window.mqbConfirm("Delete this publisher?", "Delete Publisher"))) return;
+    delete appState[config.publishers[currentIdx].name];
+    config.publishers.splice(currentIdx, 1);
+    const nextIdx = Math.max(0, currentIdx - 1);
+    const saved = await window.saveConfigSection("publishers", config.publishers, false, button);
+    if (!saved) return;
+
+    const refreshedConfig = await window.fetchConfigFromServer<PublishersAppConfig>();
+    window.appConfig.publishers = refreshedConfig.publishers;
+    window._mqb_pending_publisher_restore = { idx: nextIdx, tab: "definition" };
+    initPublishers(window.appConfig as PublishersAppConfig, window.appSchema as PublishersSchemaRoot);
+    if ((window.appConfig.publishers || []).length > 0) {
+      restorePublisherStateFromView(nextIdx, { tab: "definition" });
+    }
+  };
+
+  saveCurrentPublisherAction = async (button = null) => {
+    const selectedName = config.publishers[currentIdx]?.name || null;
+    const saved = await window.saveConfigSection("publishers", config.publishers, false, button);
+    if (!saved) return;
+
+    const refreshedConfig = await window.fetchConfigFromServer<PublishersAppConfig>();
+    window.appConfig.publishers = refreshedConfig.publishers;
+    initPublishers(window.appConfig as PublishersAppConfig, window.appSchema as PublishersSchemaRoot);
+    const refreshedIdx = (window.appConfig.publishers || []).findIndex((publisher: PublisherConfig) => publisher.name === selectedName);
+    if (refreshedIdx !== -1) {
+      restorePublisherStateFromView(refreshedIdx, { tab: "definition" });
+    }
+  };
+
+  addPublisherMetadataRow = () => {
+    const publisher = publishers[currentIdx];
+    if (!publisher || getEndpointType(publisher) !== "http") return;
+    const currentRows = getPublisherHeaderRows(publisher);
+    updatePublisherConfigFromMetadataRows([
+      ...currentRows,
+      { id: nextPublisherHeaderId++, key: "", value: "", enabled: true },
+    ]);
+  };
+  updatePublisherMetadataRow = (index, field, value) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher || getEndpointType(publisher) !== "http") return;
+    const currentRows = getPublisherHeaderRows(publisher);
+    const nextRows = currentRows.map((entry, currentIndex) =>
+      currentIndex === index ? { ...entry, [field]: value } : entry,
+    );
+    updatePublisherConfigFromMetadataRows(nextRows);
+  };
+  togglePublisherMetadataRow = (index: number, enabled: boolean) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher || getEndpointType(publisher) !== "http") return;
+    const currentRows = getPublisherHeaderRows(publisher);
+    const nextRows = currentRows.map((entry, currentIndex) =>
+      currentIndex === index ? { ...entry, enabled } : entry,
+    );
+    updatePublisherConfigFromMetadataRows(nextRows);
+  };
+  removePublisherMetadataRow = (index) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher || getEndpointType(publisher) !== "http") return;
+    const currentRows = getPublisherHeaderRows(publisher);
+    updatePublisherConfigFromMetadataRows(currentRows.filter((_, currentIndex) => currentIndex !== index));
+  };
+  updatePublisherPayload = (value) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher) return;
+    getPublisherState(publisher.name).payload = value;
+    saveAppState();
+    syncPublishersPanelState();
+  };
+  updatePublisherMethod = (value) => {
+    currentMethodValue = value;
+    syncPublishersPanelState();
+  };
+  updatePublisherRequestField = (fieldId, value) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher) return;
+    const endpointType = getEndpointType(publisher);
+    const layout = getRequestBarLayout(endpointType);
+    setRequestBarFieldValue(publisher, layout.fields.find((field) => field.inputId === fieldId), value.trim());
+    persistConfigState();
+  };
+  beautifyPublisherPayloadAction = () => {
+    const publisher = publishers[currentIdx];
+    if (!publisher) return;
+    const state = getPublisherState(publisher.name);
+    try {
+      updatePublisherPayload(JSON.stringify(JSON.parse(state.payload), null, 2));
+    } catch {
+      void window.mqbAlert("Invalid JSON");
+    }
+  };
+  selectPublisherSubtab = (tab) => {
+    activeSubtab = tab;
+    syncPublishersPanelState();
+  };
+
+  sendPublisherAction = async () => {
+    updateStateFromUI();
+    const saved = await window.saveConfigSection("publishers", config.publishers, true);
+    if (!saved) return;
+
+    const publisher = publishers[currentIdx];
+    const name = publisher.name;
+    const payload = getPublisherState(name).payload;
+    const metaArray =
+      getEndpointType(publisher) === "http"
+        ? sortEntries(ensureHttpConfig(publisher).custom_headers).map(([key, value]) => ({ k: key, v: value }))
+        : [];
+    const metadata = buildHttpRequestMetadata();
+    const requestUrl = getRequestBarFieldValue(
+      publisher,
+      getRequestBarLayout(getEndpointType(publisher)).fields.find((field) => field.inputId === "pub-url"),
+    ).trim();
+    const layout = getRequestBarLayout(getEndpointType(publisher));
+    const requestBinding = layout.fields.find((field) => field.inputId === "pub-url") || layout.fields[0] || null;
+
+    syncPublishersPanelState({
+      responseVisible: true,
+      responseTabLabel: "Response",
+      responseStatusLabel: "Sending",
+      responseStatusText: "",
+      responseStatusColor: "var(--text-primary)",
+      responseDurationLabel: "",
+      responseSizeLabel: "",
+      requestRows: [],
+      requestHeaders: [],
+      responseHeaders: [],
+      responsePayload: "Sending...",
+    });
+
+    try {
+      const startTime = Date.now();
+      const endpointType = getEndpointType(publisher);
+      const response = await fetch("/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, payload, metadata }),
+      });
+      const duration = Date.now() - startTime;
+      const text = await response.text();
+      let responseData: any = text;
+      try {
+        responseData = JSON.parse(text);
+      } catch {}
+
+      const statusInfo = getPublishStatusInfo(endpointType, response, responseData);
+      formatResponseDetails(statusInfo, duration, responseData, {
+        headers: metaArray,
+        method: metadata.http_method,
+        path: metadata.http_path,
+        query: metadata.http_query,
+        targetLabel: requestBinding?.label,
+        url: requestUrl,
+      });
+
+      history.unshift({
+        name,
+        payload,
+        metadata: [...metaArray],
+        requestMetadata: { ...metadata },
+        targetLabel: requestBinding?.label,
+        url: requestUrl,
+        responseData,
+        ok: statusInfo.ok,
+        status: response.status,
+        statusText: response.statusText,
+        displayStatus: statusInfo.label,
+        displayStatusText: statusInfo.text,
+        duration,
+        time: Date.now(),
+      });
+      saveHistory();
+      renderHistory();
+    } catch (error) {
+      currentResponsePayload = `Error: ${(error as Error).message}`;
+      syncPublishersPanelState({
+        responseVisible: true,
+        responseTabLabel: "Response ✓ Error",
+        responseStatusLabel: "Error",
+        responseStatusText: "",
+        responseStatusColor: "var(--accent-kafka)",
+        responseDurationLabel: "",
+        responseSizeLabel: "",
+        requestRows: [],
+        requestHeaders: [],
+        responseHeaders: [],
+        responsePayload: currentResponsePayload,
+      });
+    }
+  };
+
+  if (document.getElementById("tab-publishers")?.classList.contains("active") && !pubSplit && window.Split) {
+    pubSplit = window.Split(["#pub-top-content-wrapper", "#pub-response-container"], {
+      direction: "vertical",
+      sizes: [60, 40],
+      minSize: 100,
+      gutterSize: 4,
+      elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
+        "flex-basis": `calc(${size}% - ${gutterSize}px)`,
+      }),
+      gutterStyle: (_dimension: string, gutterSize: number) => ({
+        "flex-basis": `${gutterSize}px`,
+      }),
+    });
+  }
+
+  renderSidebar();
+
+  clearActivePublisherHistory = () => {
+    const name = publishers[currentIdx]?.name;
+    if (!name) return;
+    history = history.filter((item) => item.name !== name);
+    saveHistory();
+    renderHistory();
+    clearPublisherResponse();
+  };
+
+  copyPublisherResponse = () => {
+    if (!currentResponsePayload) return;
+    void navigator.clipboard.writeText(currentResponsePayload);
+  };
+
+  showPublisherHistoryEntry = async (historyIndex: number) => {
+    const item = history[historyIndex];
+    if (!item) return;
+    const publisherIdx = publishers.findIndex((candidate) => candidate.name === item.name);
+    if (publisherIdx === -1) return;
+
+    const state = getPublisherState(item.name);
+    state.payload = item.payload;
+    applyHistoryRequestToPublisher(publishers[publisherIdx], item);
+    saveAppState();
+    setActiveItem(publisherIdx);
+    await updateUIFromState();
+    formatResponseDetails(
+      {
+        ok: typeof item.ok === "boolean" ? item.ok : item.status < 300,
+        label: item.displayStatus || String(item.status),
+        text: item.displayStatusText || item.statusText,
+      },
+      item.duration,
+      item.responseData,
+      {
+        headers: item.metadata || [],
+        method: item.requestMetadata?.http_method,
+        path: item.requestMetadata?.http_path,
+        query: item.requestMetadata?.http_query,
+        targetLabel: item.targetLabel,
+        url: item.url,
+      },
+    );
+  };
+
+  if (publishers.length > 0) {
+    const pendingRestore = window._mqb_pending_publisher_restore || null;
+    window._mqb_pending_publisher_restore = null;
+    const initialIdx = pendingRestore?.idx ?? 0;
+    const initialTab = pendingRestore?.tab || "payload";
+    setActiveItem(initialIdx);
+    void updateUIFromState().then(() => {
+      if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
+        window.markSectionSaved("publishers", config.publishers);
+      }
+    });
+    activeSubtab =
+      initialTab === "definition" || initialTab === "history" || initialTab === "headers" ? initialTab : "payload";
+    syncPublishersPanelState();
+  } else if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
+    window.markSectionSaved("publishers", config.publishers);
+  }
+
+  window._mqb_publishers_initialized = true;
+  window.restorePublisherState = restorePublisherState;
+  restorePublisherStateFromView = restorePublisherState;
+}
