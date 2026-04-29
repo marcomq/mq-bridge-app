@@ -649,7 +649,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       : [];
     const requestPayload = activeName ? getPublisherState(activeName).payload : "";
 
-    publishersPanelState.update((current) => ({
+    publishersPanelState.update((current: any) => ({
       hasPublishers: publishers.length > 0,
       items: publishers.map((publisher, index) => ({
         name: publisher.name,
