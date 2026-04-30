@@ -17,6 +17,5 @@ fn main() {
         let lib_path = format!("{}/{}", mq_home, lib_dir);
 
         println!("cargo:rustc-link-search=native={}", lib_path);
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_path);
     }
 }

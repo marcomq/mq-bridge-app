@@ -3,14 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "../../ui/src/lib/view-navigation";
 
 describe("view-navigation", () => {
-  it("opens route by name and schedules restore via switchMain", () => {
+  it("opens route by name and delegates restore to switchMain", () => {
     const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
     const restoreRouteState = vi.fn();
     const switchMain = vi.fn();
-    const setTimeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation((fn: any) => {
-      fn();
-      return 1 as any;
-    });
 
     window.switchMain = switchMain;
     const didOpen = openRouteByName({ alpha: {}, beta: {} }, "beta", restoreRouteState);
@@ -19,9 +15,8 @@ describe("view-navigation", () => {
     expect(window._mqb_pending_route_restore).toEqual({ idx: 1 });
     expect(replaceState).toHaveBeenCalledWith(null, "", "#routes:1");
     expect(switchMain).toHaveBeenCalledWith("routes");
-    expect(restoreRouteState).toHaveBeenCalledWith(1);
+    expect(restoreRouteState).not.toHaveBeenCalled();
 
-    setTimeoutSpy.mockRestore();
     replaceState.mockRestore();
   });
 
@@ -52,10 +47,6 @@ describe("view-navigation", () => {
     const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
     const restoreConsumerState = vi.fn();
     const switchMain = vi.fn();
-    const setTimeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation((fn: any) => {
-      fn();
-      return 1 as any;
-    });
 
     window.switchMain = switchMain;
     openConsumerByIndex(4, "messages", restoreConsumerState);
@@ -63,9 +54,8 @@ describe("view-navigation", () => {
     expect(window._mqb_pending_consumer_restore).toEqual({ idx: 4, tab: "messages" });
     expect(replaceState).toHaveBeenCalledWith(null, "", "#consumers:4");
     expect(switchMain).toHaveBeenCalledWith("consumers");
-    expect(restoreConsumerState).toHaveBeenCalledWith(4, { tab: "messages" });
+    expect(restoreConsumerState).not.toHaveBeenCalled();
 
-    setTimeoutSpy.mockRestore();
     replaceState.mockRestore();
   });
 });

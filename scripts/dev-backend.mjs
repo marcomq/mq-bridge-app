@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -16,6 +16,13 @@ function syncTempConfig() {
   copyFileSync(templateConfig, tempConfig);
 }
 
+function shouldSyncTempConfig(force = false) {
+  if (force) return true;
+  if (!existsSync(tempConfig)) return true;
+  if (!existsSync(templateConfig)) return false;
+  return statSync(templateConfig).mtimeMs > statSync(tempConfig).mtimeMs;
+}
+
 const watchPaths = [
   "Cargo.toml",
   "Cargo.lock",
@@ -30,6 +37,7 @@ let child = null;
 let restartTimer = null;
 let stopping = false;
 let pendingRestartReason = null;
+let pendingForceSync = process.argv.includes("--init-config");
 
 function parseUiAddress(configContent) {
   const match = configContent.match(/^\s*ui_addr:\s*["']?([^"'#\n]+)["']?\s*$/m);
@@ -73,7 +81,10 @@ function isPortInUse(host, port) {
 }
 
 async function startBackend() {
-  syncTempConfig();
+  if (shouldSyncTempConfig(pendingForceSync)) {
+    syncTempConfig();
+  }
+  pendingForceSync = false;
   const uiAddress = parseUiAddress(readFileSync(tempConfig, "utf8"));
   if (uiAddress && (await isPortInUse(uiAddress.host, uiAddress.port))) {
     console.log(
@@ -112,6 +123,9 @@ async function startBackend() {
 
 function requestRestart(reason) {
   pendingRestartReason = reason;
+  if (reason === "config/dev-ui.yml") {
+    pendingForceSync = true;
+  }
   if (restartTimer) {
     clearTimeout(restartTimer);
   }

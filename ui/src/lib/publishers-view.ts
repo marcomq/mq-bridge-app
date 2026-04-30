@@ -1530,7 +1530,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       }
     });
     activeSubtab =
-      initialTab === "definition" || initialTab === "history" || initialTab === "headers" ? initialTab : "payload";
+      initialTab === "definition" ||
+      initialTab === "history" ||
+      initialTab === "headers" ||
+      initialTab === "presets"
+        ? initialTab
+        : "payload";
     syncPublishersPanelState();
   } else if (!hadUnsavedChangesBeforeInit) {
     mqbRuntime.markSectionSaved("publishers", config.publishers);

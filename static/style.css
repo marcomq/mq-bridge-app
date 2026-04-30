@@ -653,6 +653,7 @@ button.content-tab:focus-visible {
     --form-label-col: 210px;
     --form-row-gap: 14px;
     --form-col-gap: 22px;
+
     display: flex;
     flex-direction: column;
     gap: var(--form-row-gap);
@@ -1394,7 +1395,7 @@ wa-button[variant="neutral"]::part(base) {
     margin: -12px -12px 12px;
     padding: 10px 12px;
     border-bottom: 1px solid var(--border);
-    /* background: color-mix(in srgb, var(--bg-panel) 94%, var(--bg-base));*/
+    /* background: color-mix(in srgb, var(--bg-panel) 94%, var(--bg-base)); */
     backdrop-filter: blur(8px);
 }
 
@@ -1582,12 +1583,12 @@ wa-button.is-dirty::part(base) {
 
 .response-meta-key {
     color: var(--accent-blue);
-    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .response-meta-value {
     color: var(--text-primary);
-    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 #cons-response-editor {

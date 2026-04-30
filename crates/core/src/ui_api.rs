@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::ui_app::{
     ConsumerStatusResponse, PublishRequest, PublishResponse, RuntimeStatusResponse, UiApp,
+    UpdateConfigError,
 };
 use anyhow::{Result, anyhow};
 use schemars::schema_for;
@@ -69,16 +70,15 @@ impl std::fmt::Display for UiCommandError {
 impl std::error::Error for UiCommandError {}
 
 impl UiApp {
-    fn map_update_config_error(error: anyhow::Error) -> UiCommandError {
-        let message = error.to_string();
-        if message.contains("validation failed")
-            || message.contains("custom responses are not supported")
-            || message.contains("register_output_endpoint")
-            || message.contains("Failed to deploy route")
-        {
-            UiCommandError::InvalidInput(anyhow!(message))
-        } else {
-            UiCommandError::Failed(error)
+    fn map_update_config_error(error: UpdateConfigError) -> UiCommandError {
+        match error {
+            UpdateConfigError::Validation(message)
+            | UpdateConfigError::UnsupportedCustomResponses(message)
+            | UpdateConfigError::RegisterOutputEndpoint(message)
+            | UpdateConfigError::DeployRouteFailed(message) => {
+                UiCommandError::InvalidInput(anyhow!(message))
+            }
+            UpdateConfigError::Other(error) => UiCommandError::Failed(error),
         }
     }
 

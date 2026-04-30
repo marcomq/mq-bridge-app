@@ -304,7 +304,14 @@
                       </tr>
                     {:else}
                       {#each filteredHistoryRows as row (row.historyIndex)}
-                        <tr class="history-row" style="cursor:zoom-in;" onclick={() => openHistoryRow(row.historyIndex)}>
+                        <tr
+                          class="history-row"
+                          style="cursor:zoom-in;"
+                          role="button"
+                          tabindex="0"
+                          onclick={() => openHistoryRow(row.historyIndex)}
+                          onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => openHistoryRow(row.historyIndex))}
+                        >
                           <td class="ts">{row.timeLabel}</td>
                           <td>
                             <span class={`${row.statusClass} small fw-bold`}>{row.statusLabel}</span>
@@ -320,7 +327,7 @@
                                 role="button"
                                 tabindex="0"
                                 onclick={(event: MouseEvent) => { event.stopPropagation(); void savePublisherHistoryAsPresetAction(row.historyIndex); }}
-                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void savePublisherHistoryAsPresetAction(row.historyIndex))}
+                                onkeydown={(event: KeyboardEvent) => { event.stopPropagation(); handleActionKey(event, () => void savePublisherHistoryAsPresetAction(row.historyIndex)); }}
                               >Save Preset</wa-button>
                               <wa-button
                                 size="small"
@@ -329,7 +336,7 @@
                                 role="button"
                                 tabindex="0"
                                 onclick={(event: MouseEvent) => { event.stopPropagation(); void resendPublisherHistoryAction(row.historyIndex); }}
-                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void resendPublisherHistoryAction(row.historyIndex))}
+                                onkeydown={(event: KeyboardEvent) => { event.stopPropagation(); handleActionKey(event, () => void resendPublisherHistoryAction(row.historyIndex)); }}
                               >Resend</wa-button>
                               </span>
                             </div>

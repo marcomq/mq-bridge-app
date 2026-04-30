@@ -727,9 +727,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       if (!(await mqbDialogs.confirm("Delete this consumer?", "Delete Consumer"))) return;
 
       config.consumers.splice(currentIdx, 1);
-      if (config.consumers.length === 0) {
-        await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
-      }
+      await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
       void initConsumers(config, schema);
       if (config.consumers.length > 0) {
         setActiveItem(Math.max(0, currentIdx - 1));

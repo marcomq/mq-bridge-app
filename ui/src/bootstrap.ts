@@ -41,6 +41,7 @@ function restoreTabState(name: MainTab) {
   if (name === "routes") {
     const pending = state.pending_route_restore || null;
     state.pending_route_restore = null;
+    window._mqb_pending_route_restore = null;
     const match = window.location.hash.match(/^#routes:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
     restoreRouteStateFromView(idx);
@@ -50,6 +51,7 @@ function restoreTabState(name: MainTab) {
   if (name === "consumers") {
     const pending = state.pending_consumer_restore || null;
     state.pending_consumer_restore = null;
+    window._mqb_pending_consumer_restore = null;
     const match = window.location.hash.match(/^#consumers:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
     restoreConsumerStateFromView(idx, { tab: pending?.tab });
@@ -59,6 +61,7 @@ function restoreTabState(name: MainTab) {
   if (name === "publishers") {
     const pending = state.pending_publisher_restore || null;
     state.pending_publisher_restore = null;
+    window._mqb_pending_publisher_restore = null;
     const match = window.location.hash.match(/^#publishers:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
     restorePublisherStateFromView(idx, { tab: pending?.tab });

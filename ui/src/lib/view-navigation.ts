@@ -5,7 +5,6 @@ import { getMqbState } from "./runtime-window";
 function switchOrRun(mainTab: "routes" | "consumers" | "publishers", callback: () => void, fallback?: () => void) {
   if (window.switchMain) {
     window.switchMain(mainTab);
-    window.setTimeout(callback, 0);
     return;
   }
 

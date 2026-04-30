@@ -314,19 +314,17 @@ async fn deploy_routes(config: &mut AppConfig) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let routes = std::mem::take(&mut config.routes);
-
-    for route in routes.values() {
+    for route in config.routes.values() {
         if route.enabled && route.route.is_ref() {
             route.route.register_output_endpoint(None)?;
         }
     }
 
-    for (name, route) in routes {
+    for (name, route) in &config.routes {
         if !route.enabled {
             continue;
         }
-        route.route.deploy(&name).await?;
+        route.route.deploy(name).await?;
     }
 
     Ok(())

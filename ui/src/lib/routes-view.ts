@@ -445,7 +445,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   };
   addRouteAction = handleAddRoute;
   copyCurrentRouteAction = copyCurrentRoute;
-  cloneCurrentRouteAction = () => {
+  cloneCurrentRouteAction = async () => {
     const currentRoute = getCurrentRouteEntry();
     if (!currentRoute) return;
 
@@ -457,9 +457,13 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     }
 
     config.routes[newName] = cloneJson(config.routes[currentName]);
-    void initRoutes(config, schema);
-    setActiveItem(Object.keys(config.routes).length - 1);
-    void updateUI();
+    await initRoutes(config, schema);
+    const keys = Object.keys(config.routes);
+    const newIndex = keys.indexOf(newName);
+    if (newIndex !== -1) {
+      setActiveItem(newIndex);
+      await updateUI();
+    }
   };
   deleteCurrentRouteAction = async (button = document.getElementById("route-save")) => {
     if (!(await window.mqbConfirm("Delete this route?", "Delete Route"))) {

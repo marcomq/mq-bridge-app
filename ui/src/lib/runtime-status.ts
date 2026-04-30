@@ -55,6 +55,7 @@ export function createRuntimeStatusPoller({
   onStatus,
 }: RuntimeStatusPollerOptions = {}): RuntimeStatusPoller {
   let timer: ReturnType<typeof setInterval> | null = null;
+  let inFlight = false;
 
   const publish = (status: RuntimeStatus) => {
     onStatus?.(status);
@@ -79,7 +80,11 @@ export function createRuntimeStatusPoller({
       if (timer !== null) return;
 
       timer = setInterval(() => {
-        void this.poll();
+        if (inFlight) return;
+        inFlight = true;
+        void this.poll().finally(() => {
+          inFlight = false;
+        });
       }, intervalMs);
     },
     stop() {

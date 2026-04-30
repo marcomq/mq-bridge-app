@@ -38,8 +38,11 @@ export function normalizeConsumerNames<T extends { name: string }>(consumers: T[
 export function normalizeConsumerResponse(response: unknown): { headers: Record<string, string>; payload: string } | null {
   if (!response || typeof response !== "object") return null;
 
+  const rawHeaders = (response as { headers?: unknown }).headers;
+  const isPlainHeadersObject =
+    rawHeaders !== null && typeof rawHeaders === "object" && !Array.isArray(rawHeaders);
   const headers = Object.fromEntries(
-    Object.entries((response as { headers?: Record<string, unknown> }).headers || {})
+    Object.entries(isPlainHeadersObject ? (rawHeaders as Record<string, unknown>) : {})
       .map(([key, value]) => [String(key).trim(), String(value).trim()])
       .filter(([key, value]) => key && value),
   );

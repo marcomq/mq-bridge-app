@@ -588,7 +588,10 @@ impl UiApp {
         }
     }
 
-    pub async fn update_config(&self, mut new_config: AppConfig) -> Result<()> {
+    pub async fn update_config(
+        &self,
+        mut new_config: AppConfig,
+    ) -> std::result::Result<(), UpdateConfigError> {
         tracing::info!("Received new configuration via Web UI. Reloading...");
 
         let routes: HashMap<String, RouteConfig> = new_config
@@ -610,25 +613,27 @@ impl UiApp {
             if !route.enabled {
                 continue;
             }
-            route
-                .route
-                .check(name, None)
-                .map_err(|e| anyhow!("Route {name}: validation failed: {e}"))?;
+            route.route.check(name, None).map_err(|e| {
+                UpdateConfigError::Validation(format!("Route {name}: validation failed: {e}"))
+            })?;
         }
         for consumer in &consumers {
             if consumer.response.is_some()
                 && !endpoint_supports_consumer_response(&consumer.endpoint)
             {
-                return Err(anyhow!(
+                return Err(UpdateConfigError::UnsupportedCustomResponses(format!(
                     "Consumer {}: custom responses are not supported for endpoint type {}",
                     consumer.name,
                     consumer.endpoint.endpoint_type.name()
-                ));
+                )));
             }
             let temp_route = Route::new(consumer.endpoint.clone(), Endpoint::null());
-            temp_route
-                .check(&consumer.name, None)
-                .map_err(|e| anyhow!("Consumer {}: validation failed: {}", consumer.name, e))?;
+            temp_route.check(&consumer.name, None).map_err(|e| {
+                UpdateConfigError::Validation(format!(
+                    "Consumer {}: validation failed: {}",
+                    consumer.name, e
+                ))
+            })?;
         }
 
         let old_config = self.config.read().await.clone();
@@ -690,7 +695,7 @@ impl UiApp {
                 .save_with_secret_store(config_file, self.secret_store.as_ref())
                 .map_err(|e| {
                     tracing::error!("Failed to save config to '{}': {}", config_file, e);
-                    anyhow!("Failed to save configuration: {e}")
+                    UpdateConfigError::Other(anyhow!("Failed to save configuration: {e}"))
                 })?;
             tracing::info!("Configuration saved to {}", config_file);
 
@@ -699,13 +704,21 @@ impl UiApp {
 
         for route in routes.values() {
             if route.enabled && route.route.is_ref() {
-                route.route.register_output_endpoint(None)?;
+                route.route.register_output_endpoint(None).map_err(|e| {
+                    UpdateConfigError::RegisterOutputEndpoint(format!(
+                        "register_output_endpoint failed: {e}"
+                    ))
+                })?;
             }
         }
         for consumer in &consumers {
             let route = Route::new(consumer.endpoint.clone(), Endpoint::null());
             if route.is_ref() {
-                route.register_output_endpoint(None)?;
+                route.register_output_endpoint(None).map_err(|e| {
+                    UpdateConfigError::RegisterOutputEndpoint(format!(
+                        "register_output_endpoint failed: {e}"
+                    ))
+                })?;
             }
         }
 
@@ -721,11 +734,11 @@ impl UiApp {
             };
 
             if should_deploy {
-                route
-                    .route
-                    .deploy(name)
-                    .await
-                    .map_err(|e| anyhow!("Failed to deploy route {name}: {e}"))?;
+                route.route.deploy(name).await.map_err(|e| {
+                    UpdateConfigError::DeployRouteFailed(format!(
+                        "Failed to deploy route {name}: {e}"
+                    ))
+                })?;
             }
         }
 
@@ -906,3 +919,25 @@ impl UiApp {
         Ok(())
     }
 }
+#[derive(Debug)]
+pub enum UpdateConfigError {
+    Validation(String),
+    UnsupportedCustomResponses(String),
+    RegisterOutputEndpoint(String),
+    DeployRouteFailed(String),
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for UpdateConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Validation(message)
+            | Self::UnsupportedCustomResponses(message)
+            | Self::RegisterOutputEndpoint(message)
+            | Self::DeployRouteFailed(message) => write!(f, "{message}"),
+            Self::Other(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for UpdateConfigError {}
