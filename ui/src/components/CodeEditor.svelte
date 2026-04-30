@@ -2,7 +2,7 @@
   import { basicSetup } from "codemirror";
   import { EditorState, Compartment } from "@codemirror/state";
   import { EditorView, keymap, placeholder as cmPlaceholder } from "@codemirror/view";
-  import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+  import { historyKeymap } from "@codemirror/commands";
   import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
   import { json } from "@codemirror/lang-json";
   import { tags } from "@lezer/highlight";
@@ -59,8 +59,7 @@
         doc: initialValue,
         extensions: [
           basicSetup,
-          history(),
-          keymap.of([...defaultKeymap, ...historyKeymap]),
+          keymap.of([...historyKeymap]),
           EditorView.lineWrapping,
           cmPlaceholder(placeholder),
           syntaxHighlighting(highlightStyle),

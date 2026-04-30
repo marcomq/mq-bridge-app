@@ -46,9 +46,7 @@ pub async fn start_web_server(
     });
     web_route.options.concurrency = 100;
 
-    let handle = web_route.run("web_ui").await;
-    let handle = handle.expect("Failed to start Web UI");
-    std::future::pending::<()>().await;
+    let handle = web_route.run("web_ui").await?;
     let _ = handle.join().await;
 
     Ok(())

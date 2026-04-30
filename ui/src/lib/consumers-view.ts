@@ -232,7 +232,13 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     window.history.replaceState(null, "", `#consumers:${currentIdx || 0}`);
   };
 
-  let consumerMessages = JSON.parse(localStorage.getItem(MSG_STORAGE_KEY) || "{}") as Record<string, ConsumerMessage[]>;
+  let consumerMessages: Record<string, ConsumerMessage[]> = {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MSG_STORAGE_KEY) || "{}");
+    consumerMessages = parsed && typeof parsed === "object" ? (parsed as Record<string, ConsumerMessage[]>) : {};
+  } catch {
+    consumerMessages = {};
+  }
   const saveMessages = () => localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
 
   const consumerStatus: Record<string, ConsumerStatus> = {};
@@ -385,9 +391,19 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       } else if (response.status === 404) {
         savedConsumerNames.delete(name);
         consumerStatus[name] = { running: false, status: { healthy: false }, unsaved: true };
+      } else {
+        const message = (await response.text()) || "Unable to fetch consumer status";
+        consumerStatus[name] = {
+          running: false,
+          status: { healthy: false, error: message.replace(/^Internal Server Error:\s*/i, "") },
+        };
       }
     } catch (error) {
       console.error("Error fetching status:", error);
+      consumerStatus[name] = {
+        running: false,
+        status: { healthy: false, error: "Unable to fetch consumer status" },
+      };
     }
   };
 
@@ -399,7 +415,13 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   const setActiveItem = (idx: number) => {
-    currentIdx = idx;
+    if (consumers.length === 0) {
+      currentIdx = 0;
+      selectedMessageIndex = null;
+      syncConsumersPanelState();
+      return;
+    }
+    currentIdx = Math.min(Math.max(0, idx), consumers.length - 1);
     selectedMessageIndex = null;
     syncConsumersPanelState();
   };
@@ -715,14 +737,14 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
     setActiveItem(idx);
     await updateUI();
-    const activeConsumer = consumers[idx];
+    const activeConsumer = consumers[currentIdx];
     if (activeConsumer && isSavedConsumer(activeConsumer.name)) {
       startPolling();
     }
 
     const requestedTab = (options.tab || "messages") as "definition" | "response" | "messages";
     activeSubtab =
-      requestedTab === "response" && !consumerSupportsCustomResponse(consumers[idx]) ? "definition" : requestedTab;
+      requestedTab === "response" && !consumerSupportsCustomResponse(consumers[currentIdx]) ? "definition" : requestedTab;
     syncConsumersPanelState();
   };
 
@@ -910,7 +932,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       settleInitialDirtyBaseline();
     }
 
-    const initialConsumer = consumers[initialIdx];
+    const initialConsumer = consumers[currentIdx];
     if (initialConsumer && isSavedConsumer(initialConsumer.name)) {
       startPolling();
     }

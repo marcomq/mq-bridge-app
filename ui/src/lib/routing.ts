@@ -1,4 +1,4 @@
-import type { MainTab } from "./types";
+import type { MainTab } from "./runtime-status";
 
 export function resolveTabFromHash(hash: string): MainTab | null {
   if (!hash) return null;

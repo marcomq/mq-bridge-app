@@ -7,7 +7,9 @@ fn main() {
             .or_else(|_| std::env::var("MQ_HOME"))
             .unwrap_or_else(|_| "/opt/mqm".to_string());
 
-        let lib_dir = if cfg!(target_pointer_width = "64") {
+        let target_pointer_width =
+            std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_else(|_| "64".to_string());
+        let lib_dir = if target_pointer_width == "64" {
             "lib64"
         } else {
             "lib"

@@ -1,4 +1,10 @@
-import type { RuntimeStatus } from "./types";
+export type MainTab = "publishers" | "consumers" | "routes" | "config";
+
+export interface RuntimeStatus {
+  active_consumers: string[];
+  active_routes: string[];
+  route_throughput: Record<string, number>;
+}
 
 export const EMPTY_RUNTIME_STATUS: RuntimeStatus = {
   active_consumers: [],

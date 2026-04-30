@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,7 +11,8 @@ const templateConfig = join(rootDir, "config", "dev-ui.yml");
 const tempConfig = join(tmpdir(), "mqb-dev-ui-config.yml");
 
 mkdirSync(dirname(tempConfig), { recursive: true });
-if (!existsSync(tempConfig)) {
+
+function syncTempConfig() {
   copyFileSync(templateConfig, tempConfig);
 }
 
@@ -72,6 +73,7 @@ function isPortInUse(host, port) {
 }
 
 async function startBackend() {
+  syncTempConfig();
   const uiAddress = parseUiAddress(readFileSync(tempConfig, "utf8"));
   if (uiAddress && (await isPortInUse(uiAddress.host, uiAddress.port))) {
     console.log(

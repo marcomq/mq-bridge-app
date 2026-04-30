@@ -42,7 +42,7 @@ publishers:
       middlewares:
         - metrics: {}
       amqp:
-        url: amqp://guest:guest@localhost:5672/%2f
+        url: amqp://localhost:5672/%2f
         queue: jobs
   - name: kafka_publisher
     comment: Topic publisher comment

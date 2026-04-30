@@ -317,7 +317,9 @@
                       <tr
                         class:selected={message.selected}
                         style="cursor:zoom-in;"
+                        tabindex="0"
                         onclick={() => openMessage(message.messageIndex)}
+                        onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => openMessage(message.messageIndex))}
                       >
                         <td class="text-muted small">{message.timeLabel}</td>
                         <td class="font-monospace small text-break text-truncate" style="max-width: 400px;">

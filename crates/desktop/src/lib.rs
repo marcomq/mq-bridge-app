@@ -193,10 +193,6 @@ fn write_desktop_secret_metadata<'a>(
     Ok(())
 }
 
-fn clear_desktop_secret_metadata(metadata_path: &Path) -> anyhow::Result<()> {
-    write_desktop_secret_metadata(metadata_path, std::iter::empty::<&String>())
-}
-
 fn summarize_desktop_secret_status(
     summary: SecretReferenceSummary,
     extracted_keys: &HashSet<String>,
@@ -395,6 +391,7 @@ fn delete_desktop_secrets_for_metadata(
     service: &str,
 ) -> anyhow::Result<usize> {
     let mut deleted = 0usize;
+    let mut remaining_keys = Vec::new();
     for key in read_desktop_secret_metadata(metadata_path) {
         let entry = keyring::Entry::new(service, &key)
             .with_context(|| format!("Failed to open desktop keyring entry for '{key}'"))?;
@@ -404,11 +401,21 @@ fn delete_desktop_secrets_for_metadata(
             Err(keyring::Error::NoEntry) => {}
             Err(error) => {
                 warn!("failed to delete secret '{key}' from desktop keyring: {error}");
+                remaining_keys.push(key);
+            }
+        }
+
+        // Keep process env consistent with keyring deletions.
+        if !remaining_keys.iter().any(|existing| existing == &key) {
+            // Desktop secret cleanup is triggered via user action and this app context
+            // controls subsequent config loads, so clearing env vars here is expected.
+            unsafe {
+                std::env::remove_var(&key);
             }
         }
     }
 
-    clear_desktop_secret_metadata(metadata_path)?;
+    write_desktop_secret_metadata(metadata_path, remaining_keys.iter())?;
     Ok(deleted)
 }
 

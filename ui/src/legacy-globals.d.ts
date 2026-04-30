@@ -1,4 +1,4 @@
-import type { MainTab, RuntimeStatus } from "./lib/types";
+import type { MainTab, RuntimeStatus } from "./lib/runtime-status";
 
 type AppConfigShape = any;
 type AppSchemaShape = any;

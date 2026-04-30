@@ -185,7 +185,6 @@ body {
     background: transparent;
     transition: color 0.1s, background 0.1s;
     user-select: none;
-    outline: none;
 }
 
 .main-tab:hover {
@@ -492,6 +491,12 @@ button.content-tab {
     text-align: left;
     appearance: none;
     -webkit-appearance: none;
+}
+
+.main-tab:focus-visible,
+button.content-tab:focus-visible {
+    outline: 1px solid var(--accent-blue);
+    outline-offset: 1px;
 }
 
 .content-tab:hover {

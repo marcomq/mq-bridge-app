@@ -1,5 +1,5 @@
 import { writable } from "svelte/store";
-import type { MainTab, RuntimeStatus } from "./types";
+import type { MainTab, RuntimeStatus } from "./runtime-status";
 import { EMPTY_RUNTIME_STATUS } from "./runtime-status";
 
 export const activeMainTab = writable<MainTab>("publishers");

@@ -69,6 +69,19 @@ impl std::fmt::Display for UiCommandError {
 impl std::error::Error for UiCommandError {}
 
 impl UiApp {
+    fn map_update_config_error(error: anyhow::Error) -> UiCommandError {
+        let message = error.to_string();
+        if message.contains("validation failed")
+            || message.contains("custom responses are not supported")
+            || message.contains("register_output_endpoint")
+            || message.contains("Failed to deploy route")
+        {
+            UiCommandError::InvalidInput(anyhow!(message))
+        } else {
+            UiCommandError::Failed(error)
+        }
+    }
+
     pub async fn execute(&self, command: UiCommand) -> Result<UiResponse, UiCommandError> {
         match command {
             UiCommand::GetConfig => Ok(UiResponse::Config(self.get_config().await)),
@@ -84,7 +97,7 @@ impl UiApp {
                 .map(|()| UiResponse::Ack {
                     message: "Configuration updated".to_string(),
                 })
-                .map_err(UiCommandError::Failed),
+                .map_err(Self::map_update_config_error),
             UiCommand::ConsumerStatus { name } => self
                 .consumer_status(&name)
                 .await

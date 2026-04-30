@@ -45,14 +45,39 @@ async fn start_test_server(port: u16, config: AppConfig, config_file: &PathBuf) 
         .unwrap();
     });
 
-    sleep(Duration::from_millis(200)).await;
+    let timeout = Duration::from_secs(8);
+    let started_at = std::time::Instant::now();
+    loop {
+        let response = http_get(port, "/health").await;
+        if response.contains("200 OK") {
+            break;
+        }
+        if started_at.elapsed() > timeout {
+            panic!("web UI did not become healthy within {:?}", timeout);
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
     server
 }
 
 async fn send_http_request(port: u16, request: &str) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
-        .await
-        .unwrap();
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(8);
+    let mut stream = loop {
+        match TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+            Ok(stream) => break stream,
+            Err(_error) => {
+                if start.elapsed() > timeout {
+                    panic!(
+                        "failed to connect to test server on 127.0.0.1:{} within {:?}",
+                        port, timeout
+                    );
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+        }
+    };
+
     stream.write_all(request.as_bytes()).await.unwrap();
 
     let mut buffer = Vec::new();

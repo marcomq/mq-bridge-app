@@ -19,10 +19,10 @@
     "test:unit:watch": "vitest",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
-    "vendor:js": "cp node_modules/vanilla-schema-forms/dist/vanilla-schema-forms.umd.js static/vanilla-schema-forms.js",
-    "vendor:webawesome": "rm -rf static/vendor/webawesome && mkdir -p static/vendor/webawesome && npx esbuild static/webawesome-init.js --bundle --format=esm --minify --outfile=static/vendor/webawesome/webawesome.bundle.js && npx esbuild node_modules/@awesome.me/webawesome/dist/styles/webawesome.css --bundle --minify --outfile=static/vendor/webawesome/webawesome.bundle.css",
-    "vendor:split": "mkdir -p static/vendor/split && cp node_modules/split.js/dist/split.min.js static/vendor/split/split.min.js",
-    "vendor": "mkdir -p static && npm run vendor:js && npm run vendor:webawesome && npm run vendor:split",
+    "vendor:js": "node scripts/vendor.mjs js",
+    "vendor:webawesome": "node scripts/vendor.mjs webawesome",
+    "vendor:split": "node scripts/vendor.mjs split",
+    "vendor": "node scripts/vendor.mjs all",
     "update:ui-vendor": "npm update @awesome.me/webawesome split.js && npm run vendor"
   },
   "devDependencies": {

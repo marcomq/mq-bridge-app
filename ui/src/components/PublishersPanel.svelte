@@ -163,7 +163,7 @@
               class="method-select"
               id="pub-method"
               value={$publishersPanelState.methodValue}
-              onchange={(event) => updatePublisherMethod((event.currentTarget as HTMLSelectElement).value)}
+              onchange={(event: any) => updatePublisherMethod((event.currentTarget as HTMLSelectElement).value)}
             >
               <option>POST</option>
               <option>GET</option>
@@ -178,7 +178,7 @@
               id="pub-extra-1"
               value={$publishersPanelState.extraFieldOne.value}
               placeholder={$publishersPanelState.extraFieldOne.placeholder}
-              oninput={(event) => updatePublisherRequestField("pub-extra-1", (event.currentTarget as HTMLInputElement).value)}
+              oninput={(event: any) => updatePublisherRequestField("pub-extra-1", (event.currentTarget as HTMLInputElement).value)}
             />
           </div>
           <div class="request-field" id="pub-extra-2-wrap" style:display={$publishersPanelState.extraFieldTwo.visible ? "flex" : "none"}>

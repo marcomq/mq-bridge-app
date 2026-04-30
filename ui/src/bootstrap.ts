@@ -8,7 +8,7 @@ import { nextHashForTab, pickDefaultTab, resolveTabFromHash } from "./lib/routin
 import { initRoutes, restoreRouteStateFromView } from "./lib/routes-view";
 import { initSettings } from "./lib/settings";
 import { installDialogs } from "./lib/dialogs";
-import type { MainTab } from "./lib/types";
+import type { MainTab } from "./lib/runtime-status";
 
 function setActiveTab(name: MainTab) {
   activeMainTab.set(name);

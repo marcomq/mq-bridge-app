@@ -3,6 +3,7 @@ FROM --platform=$BUILDPLATFORM rust:1.92-bookworm AS builder
 ARG TARGETARCH
 ARG BUILDPLATFORM
 ARG ENABLE_IBM_MQ=false
+ARG IBM_MQ_SHA256
 # Bump DOCKER_CACHE_VERSION in release.yml to invalidate this cache
 ARG CACHE_BUST=1
 
@@ -94,9 +95,11 @@ ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
 # IBM MQ — only available for AMD64 when explicitly enabled
 WORKDIR /opt/mqm
 RUN if [ "$TARGETARCH" = "amd64" ] && [ "$ENABLE_IBM_MQ" = "true" ]; then \
-        curl -LO https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqdev/redist/9.4.5.0-IBM-MQC-Redist-LinuxX64.tar.gz \
-        && tar -xzf *.tar.gz \
-        && rm *.tar.gz; \
+        test -n "$IBM_MQ_SHA256" \
+        && curl -Lo /tmp/ibm-mq.tgz https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqdev/redist/9.4.5.0-IBM-MQC-Redist-LinuxX64.tar.gz \
+        && echo "${IBM_MQ_SHA256}  /tmp/ibm-mq.tgz" | sha256sum -c - \
+        && tar -xzf /tmp/ibm-mq.tgz \
+        && rm /tmp/ibm-mq.tgz; \
     else \
         echo "Skipping IBM MQ installation for $TARGETARCH (enabled=$ENABLE_IBM_MQ)" \
         && mkdir -p /opt/mqm/lib64 /opt/mqm/licenses; \
@@ -108,7 +111,7 @@ ENV RUSTFLAGS="-L native=/opt/mqm/lib64"
 # Copy project files
 WORKDIR /usr/src/mq-bridge-app
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY crates ./crates
 COPY static ./static
 
 # DEBUG: run cmake standalone so the full error is visible in GHA logs
@@ -131,7 +134,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     fi && \
     CARGO_PROFILE_RELEASE_LTO=thin \
     CMAKE_BUILD_PARALLEL_LEVEL=1 \
-    cargo build -vv --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 1 && \
+    cargo build -vv --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 1 -p mq-bridge-app && \
     cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app
 
 # Identify and copy only the necessary MQ libraries for the final stage
