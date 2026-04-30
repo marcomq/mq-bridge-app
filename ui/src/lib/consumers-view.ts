@@ -527,9 +527,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       comment: "",
       response: null,
     });
-    void initConsumers(config, schema);
-    setActiveItem(config.consumers.length - 1);
-    void updateUI();
+    const nextIdx = config.consumers.length - 1;
+    await initConsumers(config, schema);
+    await restoreConsumerStateFromView(nextIdx);
   };
 
   const syncCurrentConsumerResponse = (response: { headers: Record<string, string>; payload: string } | null) => {
@@ -719,15 +719,22 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         (config.consumers || []).map((consumer) => consumer.name),
       );
       config.consumers.push(cloned);
-      void initConsumers(config, schema);
-      setActiveItem(config.consumers.length - 1);
-      void updateUI();
+      const nextIdx = config.consumers.length - 1;
+      void initConsumers(config, schema).then(() => restoreConsumerStateFromView(nextIdx));
     };
   deleteCurrentConsumerAction = async () => {
       if (!(await mqbDialogs.confirm("Delete this consumer?", "Delete Consumer"))) return;
 
-      config.consumers.splice(currentIdx, 1);
-      await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
+      const newConsumers = config.consumers.slice();
+      newConsumers.splice(currentIdx, 1);
+      const saved = await mqbRuntime.saveConfigSection("consumers", newConsumers, false);
+      if (!saved?.consumers) {
+        await mqbDialogs.alert("Failed to save consumer deletion.");
+        return;
+      }
+      config.consumers = saved.consumers;
+      window.appConfig.consumers = saved.consumers;
+      syncSavedConsumerNames(saved.consumers || []);
       void initConsumers(config, schema);
       if (config.consumers.length > 0) {
         setActiveItem(Math.max(0, currentIdx - 1));
@@ -741,14 +748,15 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       if (!saved) return;
 
       window.appConfig.consumers = saved.consumers;
+      config.consumers = saved.consumers;
       syncSavedConsumerNames(saved.consumers || []);
-      void initConsumers(window.appConfig as ConsumersAppConfig, window.appSchema as ConsumersSchemaRoot);
+      await initConsumers(window.appConfig as ConsumersAppConfig, window.appSchema as ConsumersSchemaRoot);
 
       const refreshedIdx = (window.appConfig.consumers || []).findIndex(
         (consumer: ConsumerConfig) => consumer.name === selectedName,
       );
       if (refreshedIdx !== -1) {
-        void restoreConsumerStateFromView(refreshedIdx);
+        await restoreConsumerStateFromView(refreshedIdx);
       }
     };
   selectConsumerSubtab = (tab) => {

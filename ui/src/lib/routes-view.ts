@@ -58,6 +58,10 @@ const ROUTE_VALIDATION_NOISE = [
   "Schema: must have required property 'endpoint'",
 ];
 
+function normalizeRouteName(name: string): string {
+  return String(name || "").trim().replace(/\s+/g, "_").toLowerCase();
+}
+
 function buildRoutesArray(routes: RouteConfigMap | undefined): RouteEntry[] {
   return Object.entries(routes || {}).map(([name, details]) => ({ name, ...details }));
 }
@@ -329,11 +333,12 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     );
     if (!refTarget) return;
 
-    const routeName = await window.mqbPrompt("Choose a name for the new route.", "Copy Route Output as Ref", {
+    const routeNameInput = await window.mqbPrompt("Choose a name for the new route.", "Copy Route Output as Ref", {
       confirmLabel: "Create",
       value: nextUniqueName(`${current.name}_ref_route`, Object.keys(config.routes || {})),
       placeholder: "ref_route",
     });
+    const routeName = normalizeRouteName(routeNameInput || "");
     if (!routeName) return;
     if (config.routes[routeName]) {
       await window.mqbAlert("Route already exists");
@@ -386,7 +391,8 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
         { name: routeName, ...config.routes[routeName] },
         (updated: Record<string, unknown>) => {
           const oldName = routeName;
-          const { nextName: newName, routeData } = splitRouteFormData(oldName, updated);
+          const { nextName, routeData } = splitRouteFormData(oldName, updated);
+          const newName = normalizeRouteName(nextName);
 
           if (newName !== oldName) {
             delete config.routes[oldName];
@@ -429,9 +435,10 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   };
 
   const handleAddRoute = async () => {
-    const name = await window.mqbPrompt("Choose a name for the new route.", "Add Route", {
+    const nameInput = await window.mqbPrompt("Choose a name for the new route.", "Add Route", {
       placeholder: "my_route",
     });
+    const name = normalizeRouteName(nameInput || "");
     if (!name) return;
     if (config.routes[name]) {
       await window.mqbAlert("Route already exists");
@@ -561,7 +568,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   renameCurrentRouteAction = async (rawNextName: string) => {
     const currentRoute = getCurrentRouteEntry();
     if (!currentRoute) return;
-    const nextName = String(rawNextName || "").trim();
+    const nextName = normalizeRouteName(rawNextName || "");
     if (!nextName || nextName === currentRoute.name) {
       syncRoutesPanelState();
       return;

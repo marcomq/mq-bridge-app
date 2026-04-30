@@ -314,13 +314,23 @@ function createDefaultPublisherEndpoint(endpointType: string) {
   return { [endpointType]: {} };
 }
 
+function parseJsonSafe<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return (parsed ?? fallback) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export function initPublishers(config: PublishersAppConfig, schema: PublishersSchemaRoot) {
   const container = document.getElementById("publishers-container") as HTMLElement | null;
   const publishers = config.publishers || [];
-  let appState = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as Record<string, PublisherState>;
-  let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") as PublisherHistoryItem[];
-  let presets = JSON.parse(localStorage.getItem(PRESETS_KEY) || "{}") as Record<string, PublisherPreset[]>;
-  let envVars = JSON.parse(localStorage.getItem(ENV_VARS_KEY) || "{}") as Record<string, string>;
+  let appState = parseJsonSafe<Record<string, PublisherState>>(localStorage.getItem(STORAGE_KEY), {});
+  let history = parseJsonSafe<PublisherHistoryItem[]>(localStorage.getItem(HISTORY_KEY), []);
+  let presets = parseJsonSafe<Record<string, PublisherPreset[]>>(localStorage.getItem(PRESETS_KEY), {});
+  let envVars = parseJsonSafe<Record<string, string>>(localStorage.getItem(ENV_VARS_KEY), {});
 
   const emptyAlert = document.getElementById("pub-empty-alert") as HTMLElement | null;
   const mainUi = document.getElementById("pub-main-ui") as HTMLElement | null;

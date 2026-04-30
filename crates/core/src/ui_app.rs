@@ -116,7 +116,12 @@ fn query_param(msg: &CanonicalMessage, key: &str) -> Option<String> {
     query
         .split('&')
         .find_map(|pair| pair.strip_prefix(&format!("{key}=")))
-        .map(ToString::to_string)
+        .and_then(|raw| {
+            url::form_urlencoded::parse(format!("{key}={raw}").as_bytes())
+                .into_owned()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v)
+        })
 }
 
 fn header_value<'a>(msg: &'a CanonicalMessage, key: &str) -> Option<&'a str> {
@@ -685,23 +690,6 @@ impl UiApp {
             }
         }
 
-        {
-            let mut config_guard = self.config.write().await;
-            new_config.routes = routes.clone();
-            new_config.consumers = consumers.clone();
-
-            let config_file = &*self.config_file_path;
-            new_config
-                .save_with_secret_store(config_file, self.secret_store.as_ref())
-                .map_err(|e| {
-                    tracing::error!("Failed to save config to '{}': {}", config_file, e);
-                    UpdateConfigError::Other(anyhow!("Failed to save configuration: {e}"))
-                })?;
-            tracing::info!("Configuration saved to {}", config_file);
-
-            *config_guard = new_config;
-        }
-
         for route in routes.values() {
             if route.enabled && route.route.is_ref() {
                 route.route.register_output_endpoint(None).map_err(|e| {
@@ -740,6 +728,23 @@ impl UiApp {
                     ))
                 })?;
             }
+        }
+
+        new_config.routes = routes.clone();
+        new_config.consumers = consumers.clone();
+
+        let config_file = &*self.config_file_path;
+        new_config
+            .save_with_secret_store(config_file, self.secret_store.as_ref())
+            .map_err(|e| {
+                tracing::error!("Failed to save config to '{}': {}", config_file, e);
+                UpdateConfigError::Other(anyhow!("Failed to save configuration: {e}"))
+            })?;
+        tracing::info!("Configuration saved to {}", config_file);
+
+        {
+            let mut config_guard = self.config.write().await;
+            *config_guard = new_config;
         }
 
         Ok(())

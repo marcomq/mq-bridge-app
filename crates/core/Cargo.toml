@@ -36,6 +36,7 @@ futures = "0.3.32"
 uuid = { version = "1.23", features = ["v4"] }
 rustls = "0.23.38"
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
+url = "2.5.7"
 
 [features]
 default = ["full"]

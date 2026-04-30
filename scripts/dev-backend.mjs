@@ -51,7 +51,7 @@ function parseUiAddress(configContent) {
 
   const host = raw.slice(0, lastColon) || "127.0.0.1";
   const port = Number(raw.slice(lastColon + 1));
-  if (!Number.isInteger(port) || port <= 0) return null;
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
 
   return {
     host: host === "0.0.0.0" ? "127.0.0.1" : host,
@@ -118,6 +118,24 @@ async function startBackend() {
     if (code !== 0) {
       console.log(`[backend] cargo exited with code ${code ?? "null"} signal ${signal ?? "none"}`);
     }
+  });
+
+  child.on("error", (error) => {
+    console.error(`[backend] failed to spawn cargo: ${error.message}`);
+    child = null;
+    if (stopping) {
+      return;
+    }
+
+    if (pendingRestartReason) {
+      const reason = pendingRestartReason;
+      pendingRestartReason = null;
+      console.log(`[backend] restarted after ${reason}`);
+      void startBackend();
+      return;
+    }
+
+    console.error("[backend] backend process failed to start");
   });
 }
 
