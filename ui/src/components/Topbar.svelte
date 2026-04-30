@@ -8,8 +8,7 @@
     <pre>
       ┌────── mq-bridge-configuration ──────┐
 ──────┴─────────────────────────────────────┴──────
-</pre
-    >
+</pre>
   </div>
   <div class="topbar-spacer"></div>
   <div

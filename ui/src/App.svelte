@@ -5,13 +5,14 @@
   import RoutesPanel from "./components/RoutesPanel.svelte";
   import SettingsPanel from "./components/SettingsPanel.svelte";
   import Topbar from "./components/Topbar.svelte";
+  import { mqbApp } from "./lib/runtime-window";
 
   function showJsonModal() {
     const output = document.getElementById("json-output");
     const dialog = document.getElementById("jsonPreviewModal") as { open?: boolean } | null;
 
     if (output) {
-      output.textContent = JSON.stringify(window.appConfig, null, 2);
+      output.textContent = JSON.stringify(mqbApp.config(), null, 2);
     }
     if (dialog) {
       dialog.open = true;

@@ -1,6 +1,7 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { bootstrapApp } from "./bootstrap";
+import { appWindow, mqbDialogs } from "./lib/runtime-window";
 
 const target = document.getElementById("app");
 
@@ -12,7 +13,7 @@ mount(App, { target });
 
 bootstrapApp().catch(async (error) => {
   console.error(error);
-  if (window.mqbAlert) {
-    await window.mqbAlert(`Failed to start UI: ${(error as Error).message}`);
+  if (appWindow().mqbAlert) {
+    await mqbDialogs.alert(`Failed to start UI: ${(error as Error).message}`);
   }
 });

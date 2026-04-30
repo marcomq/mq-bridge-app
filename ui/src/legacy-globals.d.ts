@@ -7,15 +7,11 @@ declare global {
   interface Window {
     __MQB_DESKTOP__?: boolean;
     __mqb_state?: MqbState;
+
     appConfig: Record<string, any>;
     appSchema: Record<string, any>;
-    initRoutes?: (config: Record<string, any>, schema: Record<string, any>) => void;
-    initConsumers?: (config: Record<string, any>, schema: Record<string, any>) => void;
-    initPublishers?: (config: Record<string, any>, schema: Record<string, any>) => void;
-    restoreRouteState?: (idx: number) => void;
-    restoreConsumerState?: (idx: number, options?: { tab?: string }) => void;
-    restorePublisherState?: (idx: number, options?: { tab?: string }) => void;
-    renderRoutesRuntimeMetrics?: () => void;
+
+    // Dialog bridge API
     mqbAlert: (message: string, title?: string) => Promise<void>;
     mqbConfirm: (message: string, title?: string) => Promise<boolean>;
     mqbPrompt: (
@@ -37,9 +33,28 @@ declare global {
         choices?: DialogChoice[];
       },
     ) => Promise<string | null>;
-    // Transitional compatibility while migration removes remaining legacy test/setup assignments.
-    [key: `_mqb_${string}`]: any;
-    _consSplit?: unknown;
+
+    // Runtime helpers bridged from bootstrap
+    switchMain: (name: MainTab) => void;
+    showJsonModal: () => void;
+    syncSaveButtonLabel: (button: HTMLElement | null) => void;
+    registerDirtySection: (
+      sectionName: string,
+      options: { buttonId: string; getValue: () => unknown },
+    ) => void;
+    refreshDirtySection: (sectionName: string) => boolean;
+    markSectionSaved: (sectionName: string, savedValue?: unknown) => void;
+    pollRuntimeStatus: () => Promise<unknown>;
+    fetchConfigFromServer: <T>() => Promise<T>;
+    saveConfig: (silent?: boolean, button?: (HTMLElement & { loading?: boolean }) | null) => Promise<boolean>;
+    saveConfigSection: (
+      sectionName: string,
+      sectionValue: unknown,
+      silent?: boolean,
+      button?: (HTMLElement & { loading?: boolean }) | null,
+    ) => Promise<any>;
+
+    // Legacy libs and migration compatibility
     Split?: (...args: any[]) => unknown;
     VanillaSchemaForms: {
       h: (tag: string, props?: Record<string, unknown>, ...children: unknown[]) => HTMLElement;
@@ -50,26 +65,19 @@ declare global {
         onChange?: (updated: Record<string, unknown>) => void,
       ) => Promise<unknown>;
     };
-    syncSaveButtonLabel: (button: HTMLElement | null) => void;
-    registerDirtySection: (
-      sectionName: string,
-      options: { buttonId: string; getValue: () => unknown },
-    ) => void;
-    refreshDirtySection: (sectionName: string) => boolean;
-    markSectionSaved: (sectionName: string, savedValue?: unknown) => void;
-    renderRuntimeStatus: () => void;
-    pollRuntimeStatus: () => Promise<unknown>;
-    runSaveButtonAction: <T>(button: (HTMLElement & { loading?: boolean }) | null, action: () => Promise<T>) => Promise<T | null>;
-    fetchConfigFromServer: <T>() => Promise<T>;
-    saveConfig: (silent?: boolean, button?: (HTMLElement & { loading?: boolean }) | null) => Promise<boolean>;
-    saveConfigSection: (
-      sectionName: string,
-      sectionValue: unknown,
-      silent?: boolean,
-      button?: (HTMLElement & { loading?: boolean }) | null,
-    ) => Promise<any>;
-    switchMain: (name: MainTab) => void;
-    showJsonModal: () => void;
+    renderRoutesRuntimeMetrics?: () => void;
+    initRoutes?: (config: Record<string, any>, schema: Record<string, any>) => void;
+    initConsumers?: (config: Record<string, any>, schema: Record<string, any>) => void;
+    initPublishers?: (config: Record<string, any>, schema: Record<string, any>) => void;
+    restoreRouteState?: (idx: number) => void;
+    restoreConsumerState?: (idx: number, options?: { tab?: string }) => void;
+    restorePublisherState?: (idx: number, options?: { tab?: string }) => void;
+
+    // Transitional compatibility while migration removes remaining legacy test/setup assignments.
+    [key: `_mqb_${string}`]: any;
+    [key: `init${string}`]: any;
+    [key: `restore${string}`]: any;
+    [key: string]: any;
   }
 }
 

@@ -525,7 +525,19 @@ impl UiApp {
     }
 
     pub async fn runtime_status(&self) -> RuntimeStatusResponse {
-        let active_consumers: Vec<String> = self.ui_handles.read().await.keys().cloned().collect();
+        let mut active_consumers: Vec<String> =
+            self.ui_handles.read().await.keys().cloned().collect();
+
+        // Consumers may run as internal collector routes even when ui_handles does not currently
+        // track them (for example after restarts). Surface those as active consumers too.
+        let consumer_route_names: Vec<String> = mq_bridge::list_routes()
+            .into_iter()
+            .filter_map(|name| {
+                name.strip_prefix("ui_collector_route_")
+                    .map(|consumer_name| consumer_name.to_string())
+            })
+            .collect();
+        active_consumers.extend(consumer_route_names);
 
         let active_routes: Vec<String> = mq_bridge::list_routes()
             .into_iter()
@@ -583,6 +595,7 @@ impl UiApp {
 
         let mut active_consumers = active_consumers;
         active_consumers.sort();
+        active_consumers.dedup();
         let mut active_routes = active_routes;
         active_routes.sort();
 

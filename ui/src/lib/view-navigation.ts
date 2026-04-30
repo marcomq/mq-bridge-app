@@ -1,10 +1,10 @@
 type ConsumerTab = "definition" | "response" | "messages";
 type PublisherTab = "payload" | "headers" | "history" | "definition" | "presets";
-import { getMqbState } from "./runtime-window";
+import { appWindow, getMqbState, replaceHash } from "./runtime-window";
 
 function switchOrRun(mainTab: "routes" | "consumers" | "publishers", callback: () => void, fallback?: () => void) {
-  if (window.switchMain) {
-    window.switchMain(mainTab);
+  if (appWindow().switchMain) {
+    appWindow().switchMain(mainTab);
     return;
   }
 
@@ -23,8 +23,8 @@ export function openRouteByName(
 
   const state = getMqbState();
   state.pending_route_restore = { idx: routeIdx };
-  (window as any)._mqb_pending_route_restore = state.pending_route_restore;
-  window.history.replaceState(null, "", `#routes:${routeIdx}`);
+  (appWindow() as any)._mqb_pending_route_restore = state.pending_route_restore;
+  replaceHash(`#routes:${routeIdx}`);
   switchOrRun("routes", () => restoreRouteState(routeIdx), fallback);
   return true;
 }
@@ -37,8 +37,8 @@ export function openConsumerByIndex(
 ) {
   const state = getMqbState();
   state.pending_consumer_restore = { idx, tab };
-  (window as any)._mqb_pending_consumer_restore = state.pending_consumer_restore;
-  window.history.replaceState(null, "", `#consumers:${idx}`);
+  (appWindow() as any)._mqb_pending_consumer_restore = state.pending_consumer_restore;
+  replaceHash(`#consumers:${idx}`);
   switchOrRun("consumers", () => restoreConsumerState(idx, { tab }), fallback);
 }
 
@@ -50,7 +50,7 @@ export function openPublisherByIndex(
 ) {
   const state = getMqbState();
   state.pending_publisher_restore = { idx, tab };
-  (window as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
-  window.history.replaceState(null, "", `#publishers:${idx}`);
+  (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
+  replaceHash(`#publishers:${idx}`);
   switchOrRun("publishers", () => restorePublisherState(idx, { tab }), fallback);
 }

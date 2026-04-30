@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { get } from "svelte/store";
   import { activeMainTab, publishersPanelState } from "../lib/stores";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
   import CodeEditor from "./CodeEditor.svelte";
@@ -13,8 +14,15 @@
     copyPublisherAsCurl,
     copyCurrentPublisherAction,
     savePublisherPresetAction,
+    renamePublisherPresetAction,
     savePublisherHistoryAsPresetAction,
     editEnvironmentVarsAction,
+    exportPublisherPresetsAction,
+    importAsyncApiToPublisherAction,
+    importMqbToPublisherAction,
+    importOpenApiToPublisherAction,
+    importPostmanToPublisherAction,
+    presetToPublisherAction,
     applyPublisherPresetAction,
     deletePublisherPresetAction,
     resendPublisherHistoryAction,
@@ -31,6 +39,7 @@
     updatePublisherPayload,
     updatePublisherRequestField,
   } from "../lib/publishers-view";
+  import { mqbDialogs } from "../lib/runtime-window";
 
   let filterText = $state("");
   let historyFilterText = $state("");
@@ -39,6 +48,8 @@
   let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   let showRequestMeta = $state(true);
   let showResponseMeta = $state(true);
+  let importInputEl: HTMLInputElement | null = null;
+  let selectedImportKind = $state<"postman" | "openapi" | "asyncapi" | "mqb">("postman");
 
   const visibleItems = $derived(
     $publishersPanelState.items.filter((item) =>
@@ -115,6 +126,40 @@
   function openSubtab(tab: "payload" | "headers" | "history" | "presets" | "definition") {
     selectPublisherSubtab(tab);
   }
+
+  function openImportPicker(kind: "postman" | "openapi" | "asyncapi" | "mqb") {
+    selectedImportKind = kind;
+    importInputEl?.click();
+  }
+
+  async function handleImportSelected(event: Event) {
+    const target = event.currentTarget as HTMLInputElement | null;
+    const file = target?.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (selectedImportKind === "postman") {
+        await importPostmanToPublisherAction(text);
+      } else if (selectedImportKind === "openapi") {
+        await importOpenApiToPublisherAction(text);
+      } else if (selectedImportKind === "asyncapi") {
+        await importAsyncApiToPublisherAction(text);
+      } else {
+        await importMqbToPublisherAction(text);
+      }
+
+      // Force a fresh restore pass so sidebar + detail always reflect imported state.
+      const selectedIndex = get(publishersPanelState).selectedIndex || 0;
+      void restorePublisherStateFromView(selectedIndex, { tab: "presets" });
+
+      await mqbDialogs.alert("✅ Import completed successfully.", "Import Success");
+      openSubtab("presets");
+    } catch (error) {
+      await mqbDialogs.alert(`Import failed: ${(error as Error).message}`, "Import");
+    } finally {
+      if (target) target.value = "";
+    }
+  }
 </script>
 
 <div class:active={$activeMainTab === "publishers"} class="tab-content-panel" id="tab-publishers">
@@ -145,6 +190,27 @@
             <span class="item-status status-off"></span>
           </button>
         {/each}
+      </div>
+      <div class="sidebar-import-actions">
+        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("postman")}>
+          Import Postman
+        </button>
+        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("openapi")}>
+          Import OpenAPI
+        </button>
+        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("asyncapi")}>
+          Import AsyncAPI
+        </button>
+        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("mqb")}>
+          Import mq-bridge
+        </button>
+        <input
+          bind:this={importInputEl}
+          type="file"
+          accept=".json,application/json"
+          style="display:none"
+          onchange={handleImportSelected}
+        />
       </div>
     </div>
     <div class="main-content">
@@ -363,6 +429,15 @@
                   size="small"
                   role="button"
                   tabindex="0"
+                  onclick={exportPublisherPresetsAction}
+                  onkeydown={(event: KeyboardEvent) => handleActionKey(event, exportPublisherPresetsAction)}
+                >Export Presets</wa-button>
+                <wa-button
+                  variant="neutral"
+                  appearance="outlined"
+                  size="small"
+                  role="button"
+                  tabindex="0"
                   onclick={savePublisherPresetAction}
                   onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void savePublisherPresetAction())}
                 >Save Current</wa-button>
@@ -375,7 +450,7 @@
                       <th style="width: 80px;">Method</th>
                       <th style="width: 34%;">URL</th>
                       <th>Body Preview</th>
-                      <th style="width: 160px;">Actions</th>
+                      <th style="width: 340px;">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -403,6 +478,24 @@
                                 onclick={() => applyPublisherPresetAction(preset.presetIndex)}
                                 onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => applyPublisherPresetAction(preset.presetIndex))}
                               >Apply</wa-button>
+                              <wa-button
+                                size="small"
+                                appearance="outlined"
+                                variant="neutral"
+                                role="button"
+                                tabindex="0"
+                                onclick={() => void renamePublisherPresetAction(preset.presetIndex)}
+                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void renamePublisherPresetAction(preset.presetIndex))}
+                              >Rename</wa-button>
+                              <wa-button
+                                size="small"
+                                appearance="outlined"
+                                variant="neutral"
+                                role="button"
+                                tabindex="0"
+                                onclick={() => void presetToPublisherAction(preset.presetIndex)}
+                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void presetToPublisherAction(preset.presetIndex))}
+                              >To Publisher</wa-button>
                               <wa-button
                                 size="small"
                                 appearance="outlined"

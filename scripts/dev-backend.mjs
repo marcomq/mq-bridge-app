@@ -13,7 +13,11 @@ const tempConfig = join(tmpdir(), "mqb-dev-ui-config.yml");
 mkdirSync(dirname(tempConfig), { recursive: true });
 
 function syncTempConfig() {
-  copyFileSync(templateConfig, tempConfig);
+  try {
+    copyFileSync(templateConfig, tempConfig);
+  } catch (error) {
+    console.warn(`[backend] warning: unable to sync temp config: ${error.message}`);
+  }
 }
 
 function shouldSyncTempConfig(force = false) {
@@ -85,7 +89,13 @@ async function startBackend() {
     syncTempConfig();
   }
   pendingForceSync = false;
-  const uiAddress = parseUiAddress(readFileSync(tempConfig, "utf8"));
+  let configContent = null;
+  try {
+    configContent = readFileSync(tempConfig, "utf8");
+  } catch (error) {
+    console.warn(`[backend] warning: unable to read temp config: ${error.message}`);
+  }
+  const uiAddress = configContent ? parseUiAddress(configContent) : null;
   if (uiAddress && (await isPortInUse(uiAddress.host, uiAddress.port))) {
     console.log(
       `[backend] cannot start because ${uiAddress.raw} is already in use. ` +
@@ -150,15 +160,19 @@ function requestRestart(reason) {
 
   restartTimer = setTimeout(() => {
     restartTimer = null;
+    const queuedReason = pendingRestartReason;
+    if (queuedReason == null) {
+      return;
+    }
+
     if (!child) {
-      const queuedReason = pendingRestartReason;
       pendingRestartReason = null;
       console.log(`[backend] starting after ${queuedReason}`);
       void startBackend();
       return;
     }
 
-    console.log(`[backend] change detected in ${reason}, restarting...`);
+    console.log(`[backend] change detected in ${queuedReason}, restarting...`);
     const activeChild = child;
     activeChild.once("exit", () => {
       if (!stopping && pendingRestartReason) {

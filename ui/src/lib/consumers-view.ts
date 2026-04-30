@@ -12,7 +12,7 @@ import {
 } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
 import { consumersPanelState } from "./stores";
-import { getMqbState, mqbDialogs, mqbRuntime } from "./runtime-window";
+import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 
 export let restoreConsumerStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showConsumerMessageDetails: (name: string, msgIdx: number) => void = () => {};
@@ -166,7 +166,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   );
   const initialConsumersSnapshot = cloneJson(config.consumers);
   const settleInitialDirtyBaseline = () => {
-    window.setTimeout(() => {
+    appWindow().setTimeout(() => {
       mqbRuntime.markSectionSaved("consumers", initialConsumersSnapshot);
     }, 0);
   };
@@ -178,7 +178,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const hadUnsavedChangesBeforeInit = mqbRuntime.refreshDirtySection("consumers");
 
   const updateUrlHash = () => {
-    window.history.replaceState(null, "", `#consumers:${currentIdx || 0}`);
+    appWindow().history.replaceState(null, "", `#consumers:${currentIdx || 0}`);
   };
 
   let consumerMessages: Record<string, ConsumerMessage[]> = {};
@@ -324,7 +324,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const schedulePoll = (delayMs: number) => {
     if (state.consumer_poll_nonce !== pollNonce) return;
     if (state.consumer_poll_timer) clearTimeout(state.consumer_poll_timer);
-    state.consumer_poll_timer = window.setTimeout(pollLoop, delayMs);
+    state.consumer_poll_timer = appWindow().setTimeout(pollLoop, delayMs);
   };
 
   const fetchConsumerStatus = async (name: string) => {
@@ -396,8 +396,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     openPublisherByIndex(
       idx,
       tab as "payload" | "headers" | "history" | "definition",
-      (publisherIdx, options) => window.restorePublisherState?.(publisherIdx, options),
-      () => window.initPublishers?.(config, window.appSchema),
+      (publisherIdx, options) => mqbApp.restore.publisher(publisherIdx, options),
+      () => mqbApp.init.publishers(config, mqbApp.schema()),
     );
   };
 
@@ -405,8 +405,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     openRouteByName(
       config.routes,
       routeName,
-      (routeIdx) => window.restoreRouteState?.(routeIdx),
-      () => window.initRoutes?.(config, window.appSchema),
+      (routeIdx) => mqbApp.restore.route(routeIdx),
+      () => mqbApp.init.routes(config, mqbApp.schema()),
     );
   };
 
@@ -593,7 +593,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
       consumers.splice(0, consumers.length, ...saved.consumers);
       config.consumers = consumers;
-      window.appConfig.consumers = consumers;
+      mqbApp.config<ConsumersAppConfig>().consumers = consumers;
       syncSavedConsumerNames(consumers);
 
       const refreshedIdx = consumers.findIndex((consumer) => consumer.name === targetName);
@@ -666,7 +666,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
     state.form_mode = "consumer";
     try {
-      await window.VanillaSchemaForms.init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated) => {
+      await mqbApp.forms().init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated) => {
         (updated as Record<string, unknown>).response = config.consumers[currentIdx]?.response || null;
         config.consumers[currentIdx] = updated as ConsumerConfig;
         syncConsumersPanelState();
@@ -711,7 +711,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
   addConsumerAction = addConsumer;
   copyCurrentConsumerAction = copyCurrentConsumer;
-  cloneCurrentConsumerAction = () => {
+  cloneCurrentConsumerAction = async () => {
       const current = config.consumers[currentIdx];
       const cloned = cloneJson(current);
       cloned.name = nextUniqueName(
@@ -720,7 +720,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       );
       config.consumers.push(cloned);
       const nextIdx = config.consumers.length - 1;
-      void initConsumers(config, schema).then(() => restoreConsumerStateFromView(nextIdx));
+      await initConsumers(config, schema);
+      await restoreConsumerStateFromView(nextIdx);
     };
   deleteCurrentConsumerAction = async () => {
       if (!(await mqbDialogs.confirm("Delete this consumer?", "Delete Consumer"))) return;
@@ -733,12 +734,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         return;
       }
       config.consumers = saved.consumers;
-      window.appConfig.consumers = saved.consumers;
+      mqbApp.config<ConsumersAppConfig>().consumers = saved.consumers;
       syncSavedConsumerNames(saved.consumers || []);
-      void initConsumers(config, schema);
+      await initConsumers(config, schema);
       if (config.consumers.length > 0) {
-        setActiveItem(Math.max(0, currentIdx - 1));
-        await updateUI();
+        const nextIdx = Math.max(0, currentIdx - 1);
+        await restoreConsumerStateFromView(nextIdx, { tab: activeSubtab });
       }
     };
   saveCurrentConsumerAction = async () => {
@@ -747,23 +748,24 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
       if (!saved) return;
 
-      window.appConfig.consumers = saved.consumers;
+      mqbApp.config<ConsumersAppConfig>().consumers = saved.consumers;
       config.consumers = saved.consumers;
       syncSavedConsumerNames(saved.consumers || []);
-      await initConsumers(window.appConfig as ConsumersAppConfig, window.appSchema as ConsumersSchemaRoot);
+      mqbRuntime.markSectionSaved("consumers", saved.consumers);
+      await initConsumers(mqbApp.config<ConsumersAppConfig>(), mqbApp.schema<ConsumersSchemaRoot>());
 
-      const refreshedIdx = (window.appConfig.consumers || []).findIndex(
+      const refreshedIdx = (mqbApp.config<ConsumersAppConfig>().consumers || []).findIndex(
         (consumer: ConsumerConfig) => consumer.name === selectedName,
       );
       if (refreshedIdx !== -1) {
-        await restoreConsumerStateFromView(refreshedIdx);
+        await restoreConsumerStateFromView(refreshedIdx, { tab: activeSubtab });
       }
     };
   selectConsumerSubtab = (tab) => {
     activeSubtab = tab === "response" && !consumerSupportsCustomResponse(consumers[currentIdx]) ? "definition" : tab;
     syncConsumersPanelState();
-    if (activeSubtab === "messages" && !window._consSplit && window.Split) {
-      window._consSplit = window.Split(["#cons-list-pane", "#cons-detail-pane"], {
+    if (activeSubtab === "messages" && !state.cons_split && mqbApp.split()) {
+      state.cons_split = mqbApp.split()?.(["#cons-list-pane", "#cons-detail-pane"], {
         direction: "vertical",
         sizes: [60, 40],
         minSize: 100,
@@ -870,7 +872,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   state.consumers_initialized = true;
-  window.restoreConsumerState = restoreConsumerState;
+  appWindow().restoreConsumerState = restoreConsumerState;
   restoreConsumerStateFromView = restoreConsumerState;
 
   renderSidebar();

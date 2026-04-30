@@ -7,7 +7,12 @@ import {
 import { cloneJson } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
 import { publishersPanelState } from "./stores";
-import { getMqbState, mqbDialogs, mqbRuntime } from "./runtime-window";
+import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
+import {
+  extractImportedRequests,
+  exportPresetsForPublisher,
+  importFromJsonText,
+} from "./import-export";
 
 export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showPublisherHistoryEntry: (historyIndex: number) => void | Promise<void> = () => {};
@@ -18,8 +23,15 @@ export let copyPublisherAsCurl: () => void = () => {};
 export let savePublisherHistoryAsPresetAction: (historyIndex: number) => void | Promise<void> = () => {};
 export let resendPublisherHistoryAction: (historyIndex: number) => void | Promise<void> = () => {};
 export let savePublisherPresetAction: () => void | Promise<void> = () => {};
+export let exportPublisherPresetsAction: () => void = () => {};
+export let renamePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
 export let applyPublisherPresetAction: (presetIndex: number) => void = () => {};
 export let deletePublisherPresetAction: (presetIndex: number) => void = () => {};
+export let importPostmanToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
+export let importOpenApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
+export let importAsyncApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
+export let importMqbToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
+export let presetToPublisherAction: (presetIndex: number) => void | Promise<void> = () => {};
 export let selectPublisherSubtab: (tab: "payload" | "headers" | "history" | "presets" | "definition") => void = () => {};
 export let addPublisherAction: () => void | Promise<void> = () => {};
 export let copyCurrentPublisherAction: () => void | Promise<void> = () => {};
@@ -354,7 +366,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const hadUnsavedChangesBeforeInit = mqbRuntime.refreshDirtySection("publishers");
 
   const updateUrlHash = () => {
-    window.history.replaceState(null, "", `#publishers:${currentIdx || 0}`);
+    appWindow().history.replaceState(null, "", `#publishers:${currentIdx || 0}`);
   };
 
   const saveAppState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
@@ -388,8 +400,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     openConsumerByIndex(
       idx,
       tab as "messages" | "definition" | "response",
-      (consumerIdx, options) => window.restoreConsumerState?.(consumerIdx, options),
-      () => window.initConsumers?.(config, window.appSchema),
+      (consumerIdx, options) => mqbApp.restore.consumer(consumerIdx, options),
+      () => mqbApp.init.consumers(config, mqbApp.schema()),
     );
   };
 
@@ -397,8 +409,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     openRouteByName(
       config.routes,
       routeName,
-      (routeIdx) => window.restoreRouteState?.(routeIdx),
-      () => window.initRoutes?.(config, window.appSchema),
+      (routeIdx) => mqbApp.restore.route(routeIdx),
+      () => mqbApp.init.routes(config, mqbApp.schema()),
     );
   };
 
@@ -622,6 +634,185 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     return presets[publisherName];
   };
 
+  const getCurrentPublisherUrl = (publisher: PublisherConfig) => {
+    const endpointType = getEndpointType(publisher);
+    const layout = getRequestBarLayout(endpointType);
+    return getRequestBarFieldValue(
+      publisher,
+      layout.fields.find((field) => field.inputId === "pub-url"),
+    ).trim();
+  };
+
+  const splitHttpUrl = (rawUrl: string) => {
+    const value = String(rawUrl || "").trim();
+    if (!value) return { base: "", path: "" };
+    try {
+      const parsed = new URL(value);
+      const base = `${parsed.protocol}//${parsed.host}`;
+      const path = `${parsed.pathname || "/"}${parsed.search || ""}`;
+      return { base, path: path === "/" ? "" : path };
+    } catch {
+      return { base: value, path: "" };
+    }
+  };
+
+  const requestToPreset = (request: {
+    name: string;
+    method: string;
+    url: string;
+    payload: string;
+    headers: Array<{ key: string; value: string; enabled: boolean }>;
+  }) => ({
+    name: request.name,
+    method: request.method || "POST",
+    url: request.url || "",
+    payload: request.payload || "",
+    headers: (request.headers || []).map((row) => ({
+      key: String(row.key || ""),
+      value: String(row.value || ""),
+      enabled: row.enabled !== false,
+    })),
+  });
+
+  const requestToPublisher = (request: {
+    name: string;
+    method: string;
+    url: string;
+    payload: string;
+    headers: Array<{ key: string; value: string; enabled: boolean }>;
+  }) => {
+    const currentNames = (config.publishers || []).map((publisher) => publisher.name);
+    const baseName = String(request.name || "http").trim().replace(/\s+/g, "_").toLowerCase() || "http";
+    const name = nextUniqueName(baseName, currentNames);
+    const split = splitHttpUrl(request.url || "");
+    const customHeaders = Object.fromEntries(
+      (request.headers || [])
+        .filter((row) => row.enabled !== false && String(row.key || "").trim())
+        .map((row) => [String(row.key).trim(), String(row.value || "")]),
+    );
+    const endpoint = createDefaultPublisherEndpoint("http") as Record<string, any>;
+    endpoint.http = endpoint.http || {};
+    endpoint.http.url = split.base || (request.url || "");
+    endpoint.http.method = request.method || "POST";
+    endpoint.http.custom_headers = customHeaders;
+    if (split.path) {
+      endpoint.http.path = split.path;
+    }
+    const publisher: PublisherConfig = {
+      name,
+      endpoint,
+      comment: "",
+    };
+    const headerRows = (request.headers || []).map((row) => ({
+      id: nextPublisherHeaderId++,
+      key: String(row.key || ""),
+      value: String(row.value || ""),
+      enabled: row.enabled !== false,
+    }));
+    appState[name] = {
+      payload: request.payload || "",
+      headers: headerRows,
+    };
+    return publisher;
+  };
+
+  const importRequestsIntoPublishers = async (
+    jsonText: string,
+    expectedKind: "postman" | "openapi" | "asyncapi",
+  ) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher) return;
+    const imported = extractImportedRequests(jsonText);
+    if (imported.kind !== expectedKind) {
+      throw new Error(`Selected file is not a valid ${expectedKind.toUpperCase()} JSON file.`);
+    }
+
+    const activePublisherName = publisher.name;
+    const activeUrl = getCurrentPublisherUrl(publisher);
+    const activePublisherPresets = getPublisherPresets(activePublisherName);
+    let importedAsPresets = 0;
+    let importedAsPublishers = 0;
+
+    if (expectedKind === "postman") {
+      const grouped = new Map<string, typeof imported.requests>();
+      for (const request of imported.requests) {
+        const reqUrl = (request.url || "").trim();
+        if (reqUrl && reqUrl === activeUrl) {
+          const preset = requestToPreset(request);
+          const existingIndex = activePublisherPresets.findIndex((row) => row.name === preset.name);
+          if (existingIndex >= 0) {
+            activePublisherPresets[existingIndex] = preset;
+          } else {
+            activePublisherPresets.push(preset);
+          }
+          importedAsPresets += 1;
+          continue;
+        }
+        const groupKey = String(request.group || request.name || "Imported Postman Group");
+        if (!grouped.has(groupKey)) grouped.set(groupKey, []);
+        grouped.get(groupKey)!.push(request);
+      }
+
+      for (const [groupName, requests] of grouped.entries()) {
+        const first = requests[0];
+        if (!first) continue;
+        const publisher = requestToPublisher({
+          ...first,
+          name: groupName,
+        });
+        config.publishers.push(publisher);
+        const publisherPresets = getPublisherPresets(publisher.name);
+        for (const request of requests) {
+          const preset = requestToPreset(request);
+          const existingIndex = publisherPresets.findIndex((row) => row.name === preset.name);
+          if (existingIndex >= 0) {
+            publisherPresets[existingIndex] = preset;
+          } else {
+            publisherPresets.push(preset);
+          }
+        }
+        importedAsPublishers += 1;
+      }
+    } else {
+      for (const request of imported.requests) {
+        if ((request.url || "").trim() && (request.url || "").trim() === activeUrl) {
+          const preset = requestToPreset(request);
+          const existingIndex = activePublisherPresets.findIndex((row) => row.name === preset.name);
+          if (existingIndex >= 0) {
+            activePublisherPresets[existingIndex] = preset;
+          } else {
+            activePublisherPresets.push(preset);
+          }
+          importedAsPresets += 1;
+        } else {
+          config.publishers.push(requestToPublisher(request));
+          importedAsPublishers += 1;
+        }
+      }
+    }
+
+    envVars = { ...envVars, ...(imported.envVars || {}) };
+    saveEnvVars();
+    savePresets();
+    saveAppState();
+
+    if (importedAsPublishers > 0) {
+      const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
+      if (saved) {
+        const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
+        mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
+      }
+    }
+
+    initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
+    const activeIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex((item) => item.name === activePublisherName);
+    if (activeIdx >= 0) {
+      restorePublisherStateFromView(activeIdx, { tab: "presets" });
+    }
+
+    return { importedAsPresets, importedAsPublishers };
+  };
+
   const syncPublishersPanelState = (responseState?: PublisherResponseState) => {
     const activePublisher = publishers[currentIdx];
     const activeName = activePublisher?.name;
@@ -763,7 +954,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     httpConfig.custom_headers = Object.fromEntries((item.metadata || []).map(({ k, v }) => [k, v]));
 
     if (typeof item.url === "string") {
-      httpConfig.url = item.url;
+      const parsed = splitHttpUrl(item.url);
+      httpConfig.url = parsed.base || item.url;
+      if (parsed.path) {
+        httpConfig.path = parsed.path;
+      } else {
+        delete httpConfig.path;
+      }
       return;
     }
 
@@ -855,8 +1052,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       responsePayload: payloadContent,
     });
 
-    if (!pubSplit && window.Split) {
-      pubSplit = window.Split(["#pub-top-content-wrapper", "#pub-response-container"], {
+    if (!pubSplit && mqbApp.split()) {
+      pubSplit = mqbApp.split()?.(["#pub-top-content-wrapper", "#pub-response-container"], {
         direction: "vertical",
         sizes: [60, 40],
         minSize: 100,
@@ -951,7 +1148,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
     state.form_mode = "publisher";
     try {
-      await window.VanillaSchemaForms.init(configFormContainer, itemSchema, publishers[idx], (updated) => {
+      await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], (updated) => {
         const previousPublisher = publishers[idx];
         const nextPublisher = updated as PublisherConfig;
         copyRequestBarFieldValues(previousPublisher, nextPublisher);
@@ -1105,10 +1302,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!saved) return;
 
     const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
-    window.appConfig.publishers = refreshedConfig.publishers;
+    mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
     state.pending_publisher_restore = { idx: nextIdx, tab: "definition" };
-    initPublishers(window.appConfig as PublishersAppConfig, window.appSchema as PublishersSchemaRoot);
-    if ((window.appConfig.publishers || []).length > 0) {
+    initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>());
+    if ((mqbApp.config<PublishersAppConfig>().publishers || []).length > 0) {
       restorePublisherStateFromView(nextIdx, { tab: "definition" });
     }
   };
@@ -1119,9 +1316,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!saved) return;
 
     const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
-    window.appConfig.publishers = refreshedConfig.publishers;
-    initPublishers(window.appConfig as PublishersAppConfig, window.appSchema as PublishersSchemaRoot);
-    const refreshedIdx = (window.appConfig.publishers || []).findIndex((publisher: PublisherConfig) => publisher.name === selectedName);
+    mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
+    initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>());
+    const refreshedIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex((publisher: PublisherConfig) => publisher.name === selectedName);
     if (refreshedIdx !== -1) {
       restorePublisherStateFromView(refreshedIdx, { tab: "definition" });
     }
@@ -1238,11 +1435,19 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     try {
       const startTime = Date.now();
       const endpointType = getEndpointType(publisher);
-      const response = await fetch("/publish", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, payload, metadata }),
-      });
+      const controller = new AbortController();
+      const timeoutId = appWindow().setTimeout(() => controller.abort(), 10000);
+      let response: Response;
+      try {
+        response = await fetch("/publish", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, payload, metadata }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
       const duration = Date.now() - startTime;
       const text = await response.text();
       let responseData: any = text;
@@ -1279,7 +1484,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       saveHistory();
       renderHistory();
     } catch (error) {
-      currentResponsePayload = `Error: ${(error as Error).message}`;
+      const isTimeout = error instanceof DOMException && error.name === "AbortError";
+      currentResponsePayload = isTimeout
+        ? "Error: Publish request timed out after 10s"
+        : `Error: ${(error as Error).message}`;
       syncPublishersPanelState({
         responseVisible: true,
         responseTabLabel: "Response ✓ Error",
@@ -1296,8 +1504,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
   };
 
-  if (document.getElementById("tab-publishers")?.classList.contains("active") && !pubSplit && window.Split) {
-    pubSplit = window.Split(["#pub-top-content-wrapper", "#pub-response-container"], {
+  if (document.getElementById("tab-publishers")?.classList.contains("active") && !pubSplit && mqbApp.split()) {
+    pubSplit = mqbApp.split()?.(["#pub-top-content-wrapper", "#pub-response-container"], {
       direction: "vertical",
       sizes: [60, 40],
       minSize: 100,
@@ -1351,12 +1559,19 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!url) return;
 
     const payload = applyEnvVars(getPublisherState(publisher.name).payload || "");
-    const headers = sortEntries(ensureHttpConfig(publisher).custom_headers)
-      .map(([key, value]) => `-H ${JSON.stringify(`${applyEnvVars(String(key))}: ${applyEnvVars(String(value))}`)}`)
-      .join(" ");
+    const headerParts = sortEntries(ensureHttpConfig(publisher).custom_headers)
+      .map(([key, value]) => `-H ${JSON.stringify(`${applyEnvVars(String(key))}: ${applyEnvVars(String(value))}`)}`);
     const method = currentMethodValue || "POST";
-    const data = payload ? ` --data ${JSON.stringify(payload)}` : "";
-    const curlCommand = `curl -X ${method} ${headers}${data} ${JSON.stringify(url)}`.replace(/\s+/g, " ").trim();
+    const dataPart = payload ? `--data ${JSON.stringify(payload)}` : "";
+    const curlCommand = [
+      "curl",
+      `-X ${method}`,
+      ...headerParts,
+      dataPart,
+      JSON.stringify(url),
+    ]
+      .filter((part) => String(part).trim().length > 0)
+      .join(" ");
     void navigator.clipboard.writeText(curlCommand);
   };
 
@@ -1432,6 +1647,43 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     syncPublishersPanelState();
   };
 
+  exportPublisherPresetsAction = () => {
+    const publisher = publishers[currentIdx];
+    if (!publisher) return;
+    exportPresetsForPublisher(publisher.name);
+  };
+
+  renamePublisherPresetAction = async (presetIndex: number) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher) return;
+    const publisherPresets = getPublisherPresets(publisher.name);
+    const preset = publisherPresets[presetIndex];
+    if (!preset) return;
+
+    const nextName = await mqbDialogs.prompt("Rename preset", "Rename Preset", {
+      confirmLabel: "Rename",
+      value: preset.name,
+      placeholder: "preset_name",
+    });
+    if (!nextName) return;
+    const trimmed = nextName.trim();
+    if (!trimmed || trimmed === preset.name) return;
+
+    const existingIndex = publisherPresets.findIndex((row, idx) => idx !== presetIndex && row.name === trimmed);
+    if (existingIndex >= 0) {
+      const confirmed = await mqbDialogs.confirm(
+        `A preset named "${trimmed}" already exists. Overwrite it?`,
+        "Overwrite Preset",
+      );
+      if (!confirmed) return;
+      publisherPresets.splice(existingIndex, 1);
+    }
+
+    preset.name = trimmed;
+    savePresets();
+    syncPublishersPanelState();
+  };
+
   applyPublisherPresetAction = (presetIndex: number) => {
     const publisher = publishers[currentIdx];
     if (!publisher) return;
@@ -1469,6 +1721,64 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     publisherPresets.splice(presetIndex, 1);
     savePresets();
     syncPublishersPanelState();
+  };
+
+  importPostmanToPublisherAction = async (jsonText: string) => {
+    await importRequestsIntoPublishers(jsonText, "postman");
+  };
+
+  importOpenApiToPublisherAction = async (jsonText: string) => {
+    await importRequestsIntoPublishers(jsonText, "openapi");
+  };
+
+  importAsyncApiToPublisherAction = async (jsonText: string) => {
+    await importRequestsIntoPublishers(jsonText, "asyncapi");
+  };
+
+  importMqbToPublisherAction = async (jsonText: string) => {
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+    const type = String(parsed?.type || "");
+    if (type !== "mqb-export" && type !== "mqb-presets") {
+      throw new Error("Selected file is not a valid mq-bridge export/presets file.");
+    }
+
+    const publisher = publishers[currentIdx];
+    const targetPublisherName = publisher?.name || "";
+    const result = await importFromJsonText(jsonText, {
+      includeConfig: type === "mqb-export",
+      includePresets: true,
+      targetPublisherName,
+    });
+    if (type === "mqb-export") {
+      initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
+    } else {
+      syncPublishersPanelState();
+    }
+    return result;
+  };
+
+  presetToPublisherAction = async (presetIndex: number) => {
+    const publisher = publishers[currentIdx];
+    if (!publisher) return;
+    const publisherPresets = getPublisherPresets(publisher.name);
+    const preset = publisherPresets[presetIndex];
+    if (!preset) return;
+
+    config.publishers.push(requestToPublisher({
+      name: preset.name,
+      method: preset.method,
+      url: preset.url,
+      payload: preset.payload,
+      headers: preset.headers || [],
+    }));
+    saveAppState();
+    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
+    if (!saved) return;
+
+    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
+    mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
+    initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
+    restorePublisherStateFromView(mqbApp.config<PublishersAppConfig>().publishers.length - 1, { tab: "definition" });
   };
 
   showPublisherHistoryEntry = async (historyIndex: number) => {
@@ -1552,6 +1862,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   }
 
   state.publishers_initialized = true;
-  window.restorePublisherState = restorePublisherState;
+  appWindow().restorePublisherState = restorePublisherState;
   restorePublisherStateFromView = restorePublisherState;
 }

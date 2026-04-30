@@ -2,6 +2,25 @@ export function appWindow() {
   return window;
 }
 
+export function currentHash() {
+  return appWindow().location.hash;
+}
+
+export function replaceHash(nextHash: string) {
+  appWindow().history.replaceState(null, "", nextHash);
+}
+
+export function onHashChange(listener: () => void) {
+  appWindow().addEventListener("hashchange", listener);
+}
+
+export function clearLegacyPendingRestoreGlobals() {
+  const w = appWindow() as any;
+  w._mqb_pending_route_restore = null;
+  w._mqb_pending_consumer_restore = null;
+  w._mqb_pending_publisher_restore = null;
+}
+
 export type MqbState = {
   active_tab?: "publishers" | "consumers" | "routes" | "config";
   routes_initialized?: boolean;
@@ -11,6 +30,9 @@ export type MqbState = {
   pending_route_restore?: { idx: number } | null;
   pending_consumer_restore?: { idx: number; tab?: string } | null;
   pending_publisher_restore?: { idx: number; tab?: string } | null;
+  last_route_idx?: number;
+  last_consumer_idx?: number;
+  last_publisher_idx?: number;
   runtime_status: {
     active_consumers: string[];
     active_routes: string[];
@@ -37,6 +59,9 @@ export function getMqbState(): MqbState {
       pending_route_restore: w._mqb_pending_route_restore ?? null,
       pending_consumer_restore: w._mqb_pending_consumer_restore ?? null,
       pending_publisher_restore: w._mqb_pending_publisher_restore ?? null,
+      last_route_idx: Number.isFinite(w._mqb_last_route_idx) ? w._mqb_last_route_idx : 0,
+      last_consumer_idx: Number.isFinite(w._mqb_last_consumer_idx) ? w._mqb_last_consumer_idx : 0,
+      last_publisher_idx: Number.isFinite(w._mqb_last_publisher_idx) ? w._mqb_last_publisher_idx : 0,
       runtime_status: w._mqb_runtime_status ?? {
         active_consumers: [],
         active_routes: [],
@@ -62,6 +87,9 @@ export function getMqbState(): MqbState {
   if (w._mqb_pending_route_restore !== undefined) state.pending_route_restore = w._mqb_pending_route_restore;
   if (w._mqb_pending_consumer_restore !== undefined) state.pending_consumer_restore = w._mqb_pending_consumer_restore;
   if (w._mqb_pending_publisher_restore !== undefined) state.pending_publisher_restore = w._mqb_pending_publisher_restore;
+  if (w._mqb_last_route_idx !== undefined) state.last_route_idx = w._mqb_last_route_idx;
+  if (w._mqb_last_consumer_idx !== undefined) state.last_consumer_idx = w._mqb_last_consumer_idx;
+  if (w._mqb_last_publisher_idx !== undefined) state.last_publisher_idx = w._mqb_last_publisher_idx;
   if (w._mqb_runtime_status !== undefined) state.runtime_status = w._mqb_runtime_status;
   if (w._mqb_dirty_sections !== undefined) state.dirty_sections = w._mqb_dirty_sections;
   if (w._mqb_saved_sections !== undefined) state.saved_sections = w._mqb_saved_sections;
@@ -79,6 +107,9 @@ export function getMqbState(): MqbState {
   w._mqb_pending_route_restore = state.pending_route_restore;
   w._mqb_pending_consumer_restore = state.pending_consumer_restore;
   w._mqb_pending_publisher_restore = state.pending_publisher_restore;
+  w._mqb_last_route_idx = state.last_route_idx;
+  w._mqb_last_consumer_idx = state.last_consumer_idx;
+  w._mqb_last_publisher_idx = state.last_publisher_idx;
   w._mqb_runtime_status = state.runtime_status;
   w._mqb_dirty_sections = state.dirty_sections;
   w._mqb_saved_sections = state.saved_sections;
@@ -145,5 +176,51 @@ export const mqbRuntime = {
   },
   fetchConfigFromServer<T>() {
     return appWindow().fetchConfigFromServer<T>();
+  },
+};
+
+export const mqbApp = {
+  config<T extends Record<string, any>>() {
+    return appWindow().appConfig as T;
+  },
+  setConfig(value: Record<string, any>) {
+    appWindow().appConfig = value;
+  },
+  schema<T extends Record<string, any>>() {
+    return appWindow().appSchema as T;
+  },
+  setSchema(value: Record<string, any>) {
+    appWindow().appSchema = value;
+  },
+  init: {
+    routes(config: Record<string, any>, schema: Record<string, any>) {
+      appWindow().initRoutes?.(config, schema);
+    },
+    consumers(config: Record<string, any>, schema: Record<string, any>) {
+      appWindow().initConsumers?.(config, schema);
+    },
+    publishers(config: Record<string, any>, schema: Record<string, any>) {
+      appWindow().initPublishers?.(config, schema);
+    },
+  },
+  restore: {
+    route(idx: number) {
+      appWindow().restoreRouteState?.(idx);
+    },
+    consumer(idx: number, options?: { tab?: string }) {
+      appWindow().restoreConsumerState?.(idx, options);
+    },
+    publisher(idx: number, options?: { tab?: string }) {
+      appWindow().restorePublisherState?.(idx, options);
+    },
+  },
+  split() {
+    return appWindow().Split;
+  },
+  forms() {
+    return appWindow().VanillaSchemaForms;
+  },
+  isDesktop() {
+    return Boolean(appWindow().__MQB_DESKTOP__);
   },
 };

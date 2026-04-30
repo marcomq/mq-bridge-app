@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import {
+  applyPublisherPresetAction,
   addPublisherMetadataRow,
   createConsumerEndpointFromPublisherEndpoint,
   initPublishers,
@@ -334,6 +335,57 @@ describe("initPublishers", () => {
     expect(config.publishers[0].endpoint.http.url).toBe("https://api.example.test");
     expect(config.publishers[0].endpoint.http.path).toBe("/new/orders?mode=fast");
     expect(get(publishersPanelState).urlField.value).toBe("https://api.example.test/new/orders?mode=fast");
+  });
+
+  test("applies preset and switches back to payload tab", async () => {
+    window.localStorage.setItem(
+      "mqb_publisher_presets",
+      JSON.stringify({
+        orders_http: [
+          {
+            name: "preset_a",
+            method: "PUT",
+            url: "https://api.example.test/orders/42",
+            payload: "{\"id\":42}",
+            headers: [{ key: "x-test", value: "yes", enabled: true }],
+          },
+        ],
+      }),
+    );
+
+    const config = {
+      publishers: [
+        {
+          name: "orders_http",
+          endpoint: {
+            http: {
+              url: "https://example.test/orders",
+              custom_headers: {},
+            },
+          },
+        },
+      ],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    selectPublisherSubtab("presets");
+    applyPublisherPresetAction(0);
+
+    const state = get(publishersPanelState);
+    expect(state.activeSubtab).toBe("payload");
+    expect(state.methodValue).toBe("PUT");
+    expect(state.urlField.value).toBe("https://api.example.test/orders/42");
+    expect(state.requestPayload).toBe("{\"id\":42}");
+    expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
   });
 });
 

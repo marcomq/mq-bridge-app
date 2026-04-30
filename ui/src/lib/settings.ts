@@ -4,7 +4,7 @@ interface DesktopSecretEntry {
   stored?: boolean;
   error?: string;
 }
-import { getMqbState } from "./runtime-window";
+import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 
 interface DesktopSecretSummary {
   routes?: Record<string, DesktopSecretEntry[]>;
@@ -21,7 +21,7 @@ function createActionButton(
   id: string,
   variant: "neutral" | "danger",
 ) {
-  const button = window.VanillaSchemaForms.h("wa-button", { id }, label) as HTMLElement & {
+  const button = mqbApp.forms().h("wa-button", { id }, label) as HTMLElement & {
     setAttribute: (name: string, value: string) => void;
     onclick?: (event: Event) => void | Promise<void>;
   };
@@ -67,15 +67,15 @@ export function formatDesktopSecretsSummary(summary: DesktopSecretSummary): stri
 }
 
 export async function initSettings(config: Record<string, unknown>, schema: Record<string, unknown>) {
-  const lib = window.VanillaSchemaForms;
+  const lib = mqbApp.forms();
   const container = document.getElementById("form-container");
   if (!container) {
     return;
   }
 
-  window.registerDirtySection("config", {
+  mqbRuntime.registerDirtySection("config", {
     buttonId: "js-submit",
-    getValue: () => window.appConfig,
+    getValue: () => mqbApp.config(),
   });
 
   getMqbState().form_mode = "settings";
@@ -95,11 +95,11 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   }) | null;
   if (submitButton) {
     submitButton.onclick = async (event) => {
-      await window.saveConfig(false, event.currentTarget as HTMLElement | null);
+      await appWindow().saveConfig(false, event.currentTarget as HTMLElement | null);
     };
   }
 
-  const scheduleDirtyRefresh = () => window.setTimeout(() => window.refreshDirtySection("config"), 0);
+  const scheduleDirtyRefresh = () => appWindow().setTimeout(() => mqbRuntime.refreshDirtySection("config"), 0);
   container.oninput = scheduleDirtyRefresh;
   container.onchange = scheduleDirtyRefresh;
 
@@ -110,7 +110,7 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
     onclick?: (event: Event) => void | Promise<void>;
   }) | null;
 
-  if (window.__MQB_DESKTOP__ && formActions && !desktopSecretsDeleteButton) {
+  if (mqbApp.isDesktop() && formActions && !desktopSecretsDeleteButton) {
     desktopSecretsCheckButton = createActionButton(
       "Check Stored Secrets",
       "js-check-desktop-secrets",
@@ -129,7 +129,7 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   if (desktopSecretsDeleteButton) {
     desktopSecretsDeleteButton.onclick = async () => {
       try {
-        const confirmed = await window.mqbConfirm(
+        const confirmed = await mqbDialogs.confirm(
           "Delete all securely stored secrets referenced by the current desktop config?",
           "Delete Stored Secrets",
         );
@@ -145,14 +145,14 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
 
         const result = await response.json().catch(() => ({ deleted: 0 }));
         const deleted = Number(result?.deleted || 0);
-        await window.mqbAlert(
+        await mqbDialogs.alert(
           deleted > 0
             ? `Deleted ${deleted} stored secret${deleted === 1 ? "" : "s"}.`
             : "No stored secrets were found for the current desktop config.",
           "Stored Secrets",
         );
       } catch (error) {
-        await window.mqbAlert(`Failed to delete stored secrets: ${(error as Error).message}`, "Stored Secrets");
+        await mqbDialogs.alert(`Failed to delete stored secrets: ${(error as Error).message}`, "Stored Secrets");
       }
     };
   }
@@ -167,9 +167,9 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
         }
 
         const summary = (await response.json()) as DesktopSecretSummary;
-        await window.mqbAlert(formatDesktopSecretsSummary(summary), "Stored Secrets");
+        await mqbDialogs.alert(formatDesktopSecretsSummary(summary), "Stored Secrets");
       } catch (error) {
-        await window.mqbAlert(`Failed to inspect stored secrets: ${(error as Error).message}`, "Stored Secrets");
+        await mqbDialogs.alert(`Failed to inspect stored secrets: ${(error as Error).message}`, "Stored Secrets");
       }
     };
   }

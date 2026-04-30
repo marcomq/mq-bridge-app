@@ -11,7 +11,7 @@ import {
 } from "./routes";
 import { cloneJson } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
-import { getMqbState } from "./runtime-window";
+import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 import { routesPanelState, type RouteSidebarItem } from "./stores";
 
 export let restoreRouteStateFromView: (idx: number) => void | Promise<void> = () => {};
@@ -113,7 +113,7 @@ function watchRouteValidationNoise(root: ValidationObserverRoot | null) {
 }
 
 export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot) {
-  const lib = window.VanillaSchemaForms;
+  const lib = mqbApp.forms();
   const container = document.getElementById("routes-container") as HTMLElement | null;
   const routeToggleButton = document.getElementById("route-toggle") as (HyperscriptElement & {
     title?: string;
@@ -131,7 +131,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   const routesArray = buildRoutesArray(config.routes);
   let currentIdx = 0;
 
-  window.registerDirtySection("routes", {
+  mqbRuntime.registerDirtySection("routes", {
     buttonId: "route-save",
     getValue: () => config.routes,
   });
@@ -141,12 +141,12 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   };
 
   const settleRouteSavedState = () => {
-    window.setTimeout(() => {
-      window.markSectionSaved("routes");
+    appWindow().setTimeout(() => {
+      mqbRuntime.markSectionSaved("routes");
       const saveButton = document.getElementById("route-save");
       if (saveButton) {
         saveButton.dataset.dirty = "false";
-        window.syncSaveButtonLabel(saveButton);
+        appWindow().syncSaveButtonLabel(saveButton);
       }
     }, 0);
   };
@@ -230,8 +230,8 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     openConsumerByIndex(
       idx,
       tab as "messages" | "definition" | "response",
-      (consumerIdx, options) => window.restoreConsumerState?.(consumerIdx, options),
-      () => window.initConsumers?.(config, window.appSchema),
+      (consumerIdx, options) => mqbApp.restore.consumer(consumerIdx, options),
+      () => mqbApp.init.consumers(config, mqbApp.schema()),
     );
   };
 
@@ -239,8 +239,8 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     openPublisherByIndex(
       idx,
       tab as "payload" | "headers" | "history" | "definition",
-      (publisherIdx, options) => window.restorePublisherState?.(publisherIdx, options),
-      () => window.initPublishers?.(config, window.appSchema),
+      (publisherIdx, options) => mqbApp.restore.publisher(publisherIdx, options),
+      () => mqbApp.init.publishers(config, mqbApp.schema()),
     );
   };
 
@@ -248,7 +248,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     const current = getCurrentRouteEntry();
     if (!current) return;
 
-    const choice = await window.mqbChoose("Choose what to create from this route.", "Copy Route", {
+    const choice = await mqbDialogs.choose("Choose what to create from this route.", "Copy Route", {
       choices: [
         {
           value: "input_consumer",
@@ -270,7 +270,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     if (!choice) return;
 
     if (choice === "input_consumer") {
-      const consumerName = await window.mqbPrompt("Choose a name for the new consumer.", "Copy Route Input", {
+      const consumerName = await mqbDialogs.prompt("Choose a name for the new consumer.", "Copy Route Input", {
         confirmLabel: "Create",
         value: nextUniqueName(
           `${current.name}_consumer`,
@@ -280,7 +280,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
       });
       if (!consumerName) return;
       if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
-        await window.mqbAlert("Consumer already exists");
+        await mqbDialogs.alert("Consumer already exists");
         return;
       }
 
@@ -291,13 +291,13 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
         comment: "",
         response: null,
       });
-      window.refreshDirtySection("consumers");
+      mqbRuntime.refreshDirtySection("consumers");
       openConsumerAt(config.consumers.length - 1, "definition");
       return;
     }
 
     if (choice === "output_publisher") {
-      const publisherName = await window.mqbPrompt("Choose a name for the new publisher.", "Copy Route Output", {
+      const publisherName = await mqbDialogs.prompt("Choose a name for the new publisher.", "Copy Route Output", {
         confirmLabel: "Create",
         value: nextUniqueName(
           `${current.name}_publisher`,
@@ -307,7 +307,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
       });
       if (!publisherName) return;
       if ((config.publishers || []).some((publisher) => publisher.name === publisherName)) {
-        await window.mqbAlert("Publisher already exists");
+        await mqbDialogs.alert("Publisher already exists");
         return;
       }
 
@@ -317,12 +317,12 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
         endpoint: cloneJson(current.output),
         comment: "",
       });
-      window.refreshDirtySection("publishers");
+      mqbRuntime.refreshDirtySection("publishers");
       openPublisherAt(config.publishers.length - 1, "definition");
       return;
     }
 
-    const refTarget = await window.mqbPrompt(
+    const refTarget = await mqbDialogs.prompt(
       "Choose the ref input name for the new route.",
       "Copy Route Output as Ref",
       {
@@ -333,7 +333,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     );
     if (!refTarget) return;
 
-    const routeNameInput = await window.mqbPrompt("Choose a name for the new route.", "Copy Route Output as Ref", {
+    const routeNameInput = await mqbDialogs.prompt("Choose a name for the new route.", "Copy Route Output as Ref", {
       confirmLabel: "Create",
       value: nextUniqueName(`${current.name}_ref_route`, Object.keys(config.routes || {})),
       placeholder: "ref_route",
@@ -341,7 +341,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     const routeName = normalizeRouteName(routeNameInput || "");
     if (!routeName) return;
     if (config.routes[routeName]) {
-      await window.mqbAlert("Route already exists");
+      await mqbDialogs.alert("Route already exists");
       return;
     }
 
@@ -350,7 +350,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
       input: createRefInputEndpoint(refTarget),
       output: cloneJson(current.output),
     };
-    window.refreshDirtySection("routes");
+    mqbRuntime.refreshDirtySection("routes");
     openRouteAt(routeName);
   };
 
@@ -395,9 +395,17 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
           const newName = normalizeRouteName(nextName);
 
           if (newName !== oldName) {
+            if (!newName.trim()) {
+              void mqbDialogs.alert("Route name cannot be empty");
+              return;
+            }
+            if (config.routes[newName]) {
+              void mqbDialogs.alert("Route already exists");
+              return;
+            }
             delete config.routes[oldName];
             config.routes[newName] = routeData as RouteDefinition;
-            window.refreshDirtySection("routes");
+            mqbRuntime.refreshDirtySection("routes");
             void initRoutes(config, schema);
             const newIdx = Object.keys(config.routes).indexOf(newName);
             if (newIdx !== -1) {
@@ -412,7 +420,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
           renderRuntimeMetrics();
           setActiveItem(idx);
           syncRouteToggleButton();
-          window.refreshDirtySection("routes");
+          mqbRuntime.refreshDirtySection("routes");
         },
       );
     } finally {
@@ -435,20 +443,22 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   };
 
   const handleAddRoute = async () => {
-    const nameInput = await window.mqbPrompt("Choose a name for the new route.", "Add Route", {
+    const nameInput = await mqbDialogs.prompt("Choose a name for the new route.", "Add Route", {
       placeholder: "my_route",
     });
     const name = normalizeRouteName(nameInput || "");
     if (!name) return;
     if (config.routes[name]) {
-      await window.mqbAlert("Route already exists");
+      await mqbDialogs.alert("Route already exists");
       return;
     }
 
     config.routes[name] = createDefaultRoute();
-    void initRoutes(config, schema);
-    setActiveItem(Object.keys(config.routes).length - 1);
-    await updateUI();
+    await initRoutes(config, schema);
+    const newIdx = Object.keys(config.routes).indexOf(name);
+    if (newIdx !== -1) {
+      await restoreRouteStateFromView(newIdx);
+    }
   };
   addRouteAction = handleAddRoute;
   copyCurrentRouteAction = copyCurrentRoute;
@@ -459,7 +469,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     const currentName = currentRoute.name;
     const newName = `${currentName}_copy`;
     if (config.routes[newName]) {
-      void window.mqbAlert("Cloned route name already exists. Please choose a different name.");
+      void mqbDialogs.alert("Cloned route name already exists. Please choose a different name.");
       return;
     }
 
@@ -468,33 +478,39 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     const keys = Object.keys(config.routes);
     const newIndex = keys.indexOf(newName);
     if (newIndex !== -1) {
-      setActiveItem(newIndex);
-      await updateUI();
+      await restoreRouteStateFromView(newIndex);
     }
   };
   deleteCurrentRouteAction = async (button = document.getElementById("route-save")) => {
-    if (!(await window.mqbConfirm("Delete this route?", "Delete Route"))) {
+    if (!(await mqbDialogs.confirm("Delete this route?", "Delete Route"))) {
       return;
     }
 
     const currentRoute = getCurrentRouteEntry();
     if (!currentRoute) return;
 
+    const removedRoute = cloneJson(config.routes[currentRoute.name]);
     delete config.routes[currentRoute.name];
     const nextIdx = Math.max(0, currentIdx - 1);
-    const saved = await window.saveConfigSection("routes", config.routes, false, button);
-    if (!saved) return;
+    const saved = await mqbRuntime.saveConfigSection("routes", config.routes, false, button);
+    if (!saved) {
+      config.routes[currentRoute.name] = removedRoute;
+      syncRoutesArrayFromConfig(config.routes);
+      renderSidebar();
+      renderRuntimeMetrics();
+      return;
+    }
 
-    const refreshedConfig = await window.fetchConfigFromServer<RouteAppConfig>();
-    window.appConfig.routes = refreshedConfig.routes;
+    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<RouteAppConfig>();
+    mqbApp.config<RouteAppConfig>().routes = refreshedConfig.routes;
     config.routes = refreshedConfig.routes;
     syncRoutesArrayFromConfig(refreshedConfig.routes);
-    window.markSectionSaved("routes", refreshedConfig.routes);
-    await window.pollRuntimeStatus();
+    mqbRuntime.markSectionSaved("routes", refreshedConfig.routes);
+    await appWindow().pollRuntimeStatus();
     renderSidebar();
     renderRuntimeMetrics();
 
-    if (Object.keys(window.appConfig.routes || {}).length > 0) {
+    if (Object.keys(mqbApp.config<RouteAppConfig>().routes || {}).length > 0) {
       setActiveItem(nextIdx);
       await updateUI();
     } else {
@@ -519,7 +535,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     setActiveItem(currentIdx);
     syncRouteToggleButton();
 
-    const saved = await window.saveConfigSection("routes", config.routes, false, button);
+    const saved = await mqbRuntime.saveConfigSection("routes", config.routes, false, button);
 
     if (!saved) {
       currentRoute.enabled = previousEnabled;
@@ -531,11 +547,11 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
       return;
     }
 
-    const refreshedConfig = await window.fetchConfigFromServer<RouteAppConfig>();
-    window.appConfig.routes = refreshedConfig.routes;
-    await window.pollRuntimeStatus();
-    void initRoutes(window.appConfig as RouteAppConfig, window.appSchema as RouteSchemaRoot);
-    const refreshedIdx = Object.keys(window.appConfig.routes || {}).indexOf(routeName);
+    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<RouteAppConfig>();
+    mqbApp.config<RouteAppConfig>().routes = refreshedConfig.routes;
+    await appWindow().pollRuntimeStatus();
+    void initRoutes(mqbApp.config<RouteAppConfig>(), mqbApp.schema<RouteSchemaRoot>());
+    const refreshedIdx = Object.keys(mqbApp.config<RouteAppConfig>().routes || {}).indexOf(routeName);
     if (refreshedIdx !== -1) {
       void restoreRouteStateFromView(refreshedIdx);
     }
@@ -543,18 +559,18 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   saveCurrentRouteAction = async (button = null) => {
     const currentRoute = getCurrentRouteEntry();
     const selectedName = currentRoute?.name || null;
-    const saved = await window.saveConfigSection("routes", config.routes, false, button);
+    const saved = await mqbRuntime.saveConfigSection("routes", config.routes, false, button);
     if (!saved) return;
 
-    const refreshedConfig = await window.fetchConfigFromServer<RouteAppConfig>();
-    window.appConfig.routes = refreshedConfig.routes;
+    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<RouteAppConfig>();
+    mqbApp.config<RouteAppConfig>().routes = refreshedConfig.routes;
     config.routes = refreshedConfig.routes;
     syncRoutesArrayFromConfig(refreshedConfig.routes);
-    window.markSectionSaved("routes", refreshedConfig.routes);
-    await window.pollRuntimeStatus();
+    mqbRuntime.markSectionSaved("routes", refreshedConfig.routes);
+    await appWindow().pollRuntimeStatus();
 
     const refreshedIdx = selectedName
-      ? Object.keys(window.appConfig.routes || {}).indexOf(selectedName)
+      ? Object.keys(mqbApp.config<RouteAppConfig>().routes || {}).indexOf(selectedName)
       : 0;
 
     if (refreshedIdx !== -1) {
@@ -574,7 +590,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
       return;
     }
     if (config.routes[nextName]) {
-      await window.mqbAlert("Route already exists");
+      await mqbDialogs.alert("Route already exists");
       syncRoutesPanelState();
       return;
     }
@@ -583,16 +599,16 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     config.routes[nextName] = routeData;
     syncRoutesArrayFromConfig(config.routes);
     currentIdx = Object.keys(config.routes).indexOf(nextName);
-    window.refreshDirtySection("routes");
+    mqbRuntime.refreshDirtySection("routes");
     renderSidebar();
     await updateUI();
   };
 
   renderSidebar();
   renderRuntimeMetrics();
-  window.renderRoutesRuntimeMetrics = renderRuntimeMetrics;
+  appWindow().renderRoutesRuntimeMetrics = renderRuntimeMetrics;
   getMqbState().routes_initialized = true;
-  window.restoreRouteState = restoreRouteState;
+  appWindow().restoreRouteState = restoreRouteState;
   restoreRouteStateFromView = restoreRouteState;
 
   if (routesArray.length > 0) {
