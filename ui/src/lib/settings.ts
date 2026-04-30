@@ -4,6 +4,7 @@ interface DesktopSecretEntry {
   stored?: boolean;
   error?: string;
 }
+import { getMqbState } from "./runtime-window";
 
 interface DesktopSecretSummary {
   routes?: Record<string, DesktopSecretEntry[]>;
@@ -77,9 +78,9 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
     getValue: () => window.appConfig,
   });
 
-  window._mqb_form_mode = "settings";
+  getMqbState().form_mode = "settings";
   await lib.init(container, cloneSchema(schema), config);
-  window._mqb_form_mode = null;
+  getMqbState().form_mode = null;
 
   const formActions = document.getElementById("form-actions");
   if (formActions) {

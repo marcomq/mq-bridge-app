@@ -98,6 +98,14 @@ export function createRefInputEndpoint(refName: string): RouteEndpoint {
   };
 }
 
+export function createEmptyRouteConfig(): RouteDefinition {
+  return {
+    enabled: true,
+    input: { middlewares: defaultMetricsMiddleware(), null: null },
+    output: { middlewares: defaultMetricsMiddleware(), null: null },
+  };
+}
+
 export function splitRouteFormData(
   routeName: string,
   updated: { name?: unknown } | null | undefined,

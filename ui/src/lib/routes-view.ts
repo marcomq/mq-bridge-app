@@ -11,6 +11,7 @@ import {
 } from "./routes";
 import { cloneJson } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
+import { getMqbState } from "./runtime-window";
 import { routesPanelState, type RouteSidebarItem } from "./stores";
 
 export let restoreRouteStateFromView: (idx: number) => void | Promise<void> = () => {};
@@ -178,7 +179,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   };
 
   const syncRoutesPanelState = () => {
-    const runtimeStatus = window._mqb_runtime_status || {};
+    const runtimeStatus = getMqbState().runtime_status || {};
     const throughputMap = runtimeStatus.route_throughput || {};
     const currentRoute = routesArray[currentIdx];
     const enabled = currentRoute ? isRouteEnabled(currentRoute) : true;
@@ -376,7 +377,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     }
     applyEndpointSchemaDefaults(routeSchema);
     syncRouteToggleButton();
-    window._mqb_form_mode = "route";
+    getMqbState().form_mode = "route";
 
     try {
       await lib.init(
@@ -409,7 +410,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
         },
       );
     } finally {
-      window._mqb_form_mode = null;
+      getMqbState().form_mode = null;
     }
 
     watchRouteValidationNoise(configFormContainer);
@@ -579,7 +580,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   renderSidebar();
   renderRuntimeMetrics();
   window.renderRoutesRuntimeMetrics = renderRuntimeMetrics;
-  window._mqb_routes_initialized = true;
+  getMqbState().routes_initialized = true;
   window.restoreRouteState = restoreRouteState;
   restoreRouteStateFromView = restoreRouteState;
 

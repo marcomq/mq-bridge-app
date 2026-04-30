@@ -1,11 +1,13 @@
 import {
   applyEndpointSchemaDefaults,
+  createEmptyRouteConfig,
   defaultMetricsMiddleware,
   nextUniqueName,
 } from "./routes";
 import { cloneJson } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
 import { publishersPanelState } from "./stores";
+import { getMqbState, mqbDialogs, mqbRuntime } from "./runtime-window";
 
 export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showPublisherHistoryEntry: (historyIndex: number) => void | Promise<void> = () => {};
@@ -48,11 +50,7 @@ type ConsumerConfig = {
   response?: unknown;
 };
 
-type RouteConfig = {
-  enabled?: boolean;
-  input?: Record<string, any>;
-  output?: Record<string, any>;
-};
+type RouteConfig = ReturnType<typeof createEmptyRouteConfig>;
 
 type PublisherHistoryItem = {
   name: string;
@@ -300,14 +298,6 @@ function defaultHttpConfig() {
   };
 }
 
-function createEmptyRouteConfig(): RouteConfig {
-  return {
-    enabled: true,
-    input: { middlewares: defaultMetricsMiddleware(), null: null },
-    output: { middlewares: defaultMetricsMiddleware(), null: null },
-  };
-}
-
 function createRefInputEndpoint(refName: string) {
   return {
     middlewares: defaultMetricsMiddleware(),
@@ -345,13 +335,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   let currentResponsePayload = "";
   let currentMethodValue = "POST";
   let nextPublisherHeaderId = 1;
-  const hadDirtyTracker = Boolean(window._mqb_dirty_sections?.publishers);
+  const state = getMqbState();
 
-  window.registerDirtySection("publishers", {
+  mqbRuntime.registerDirtySection("publishers", {
     buttonId: "pub-save",
     getValue: () => config.publishers,
   });
-  const hadUnsavedChangesBeforeInit = window.refreshDirtySection("publishers");
+  const hadUnsavedChangesBeforeInit = mqbRuntime.refreshDirtySection("publishers");
 
   const updateUrlHash = () => {
     window.history.replaceState(null, "", `#publishers:${currentIdx || 0}`);
@@ -877,7 +867,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   const persistConfigState = () => {
     saveAppState();
-    window.refreshDirtySection("publishers");
+    mqbRuntime.refreshDirtySection("publishers");
     syncPublishersPanelState();
   };
 
@@ -949,7 +939,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       httpConfigSchema.properties.custom_headers.hidden = true;
     }
 
-    window._mqb_form_mode = "publisher";
+    state.form_mode = "publisher";
     try {
       await window.VanillaSchemaForms.init(configFormContainer, itemSchema, publishers[idx], (updated) => {
         const previousPublisher = publishers[idx];
@@ -958,10 +948,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         publishers[idx] = nextPublisher;
         setMethodSelectMode(getEndpointType(publishers[idx]));
         syncPublishersPanelState();
-        window.refreshDirtySection("publishers");
+        mqbRuntime.refreshDirtySection("publishers");
       });
     } finally {
-      window._mqb_form_mode = null;
+      state.form_mode = null;
     }
   };
 
@@ -969,7 +959,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const current = config.publishers[currentIdx];
     if (!current) return;
     const currentEndpoint = cloneJson(current.endpoint || { null: null });
-    const choice = await window.mqbChoose("Choose where to copy this publisher definition.", "Copy Publisher", {
+    const choice = await mqbDialogs.choose("Choose where to copy this publisher definition.", "Copy Publisher", {
       confirmLabel: "Continue",
       choices: [
         { value: "route_output", label: "New Route Output", description: "Creates a route with this publisher as output." },
@@ -981,7 +971,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
     if (choice === "route_output") {
       config.routes ||= {};
-      const routeName = await window.mqbPrompt(
+      const routeName = await mqbDialogs.prompt(
         "Choose a name for the new route. The input stays null until you review it.",
         "Copy to Route",
         {
@@ -992,20 +982,20 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       );
       if (!routeName) return;
       if (config.routes[routeName]) {
-        await window.mqbAlert("Route already exists");
+        await mqbDialogs.alert("Route already exists");
         return;
       }
       const routeConfig = createEmptyRouteConfig();
       routeConfig.output = currentEndpoint;
       config.routes[routeName] = routeConfig;
-      window.refreshDirtySection("routes");
+      mqbRuntime.refreshDirtySection("routes");
       openRouteAt(routeName);
       return;
     }
 
     if (choice === "consumer") {
       config.consumers ||= [];
-      const consumerName = await window.mqbPrompt(
+      const consumerName = await mqbDialogs.prompt(
         "Choose a name for the new consumer. Publisher-specific fields may need adjustment after copying.",
         "Copy to Consumer",
         {
@@ -1016,7 +1006,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       );
       if (!consumerName) return;
       if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
-        await window.mqbAlert("Consumer already exists");
+        await mqbDialogs.alert("Consumer already exists");
         return;
       }
       config.consumers.push({
@@ -1025,12 +1015,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         comment: current.comment || "",
         response: null,
       });
-      window.refreshDirtySection("consumers");
+      mqbRuntime.refreshDirtySection("consumers");
       openConsumerAt(config.consumers.length - 1, "definition");
       return;
     }
 
-    const refTarget = await window.mqbPrompt(
+    const refTarget = await mqbDialogs.prompt(
       "Choose the ref input name. Other endpoints can reference this publisher through that name after the route is saved and running.",
       "Copy to Ref Route",
       {
@@ -1041,7 +1031,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     );
     if (!refTarget) return;
     config.routes ||= {};
-    const routeName = await window.mqbPrompt(
+    const routeName = await mqbDialogs.prompt(
       "Choose a name for the new route that exposes this publisher via ref.",
       "Copy to Ref Route",
       {
@@ -1052,19 +1042,19 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     );
     if (!routeName) return;
     if (config.routes[routeName]) {
-      await window.mqbAlert("Route already exists");
+      await mqbDialogs.alert("Route already exists");
       return;
     }
     const routeConfig = createEmptyRouteConfig();
     routeConfig.input = createRefInputEndpoint(refTarget);
     routeConfig.output = currentEndpoint;
     config.routes[routeName] = routeConfig;
-    window.refreshDirtySection("routes");
+    mqbRuntime.refreshDirtySection("routes");
     openRouteAt(routeName);
   };
 
   const addPublisher = async () => {
-    const endpointType = await window.mqbChoose("Choose the endpoint type for the new publisher.", "Add Publisher", {
+    const endpointType = await mqbDialogs.choose("Choose the endpoint type for the new publisher.", "Add Publisher", {
       confirmLabel: "Create",
       choices: PUBLISHER_TYPE_OPTIONS.map((type) => ({ value: type, label: type.toUpperCase() })),
     });
@@ -1087,7 +1077,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const cloned = cloneJson(current);
     cloned.name += "_copy";
     if (config.publishers.some((publisher) => publisher.name === cloned.name)) {
-      void window.mqbAlert("Cloned publisher name already exists. Please choose a different name.");
+      void mqbDialogs.alert("Cloned publisher name already exists. Please choose a different name.");
       return;
     }
     config.publishers.push(cloned);
@@ -1097,16 +1087,16 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
 
   deleteCurrentPublisherAction = async (button = document.getElementById("pub-save")) => {
-    if (!(await window.mqbConfirm("Delete this publisher?", "Delete Publisher"))) return;
+    if (!(await mqbDialogs.confirm("Delete this publisher?", "Delete Publisher"))) return;
     delete appState[config.publishers[currentIdx].name];
     config.publishers.splice(currentIdx, 1);
     const nextIdx = Math.max(0, currentIdx - 1);
-    const saved = await window.saveConfigSection("publishers", config.publishers, false, button);
+    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
     if (!saved) return;
 
-    const refreshedConfig = await window.fetchConfigFromServer<PublishersAppConfig>();
+    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
     window.appConfig.publishers = refreshedConfig.publishers;
-    window._mqb_pending_publisher_restore = { idx: nextIdx, tab: "definition" };
+    state.pending_publisher_restore = { idx: nextIdx, tab: "definition" };
     initPublishers(window.appConfig as PublishersAppConfig, window.appSchema as PublishersSchemaRoot);
     if ((window.appConfig.publishers || []).length > 0) {
       restorePublisherStateFromView(nextIdx, { tab: "definition" });
@@ -1115,10 +1105,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   saveCurrentPublisherAction = async (button = null) => {
     const selectedName = config.publishers[currentIdx]?.name || null;
-    const saved = await window.saveConfigSection("publishers", config.publishers, false, button);
+    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
     if (!saved) return;
 
-    const refreshedConfig = await window.fetchConfigFromServer<PublishersAppConfig>();
+    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
     window.appConfig.publishers = refreshedConfig.publishers;
     initPublishers(window.appConfig as PublishersAppConfig, window.appSchema as PublishersSchemaRoot);
     const refreshedIdx = (window.appConfig.publishers || []).findIndex((publisher: PublisherConfig) => publisher.name === selectedName);
@@ -1186,7 +1176,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     try {
       updatePublisherPayload(JSON.stringify(JSON.parse(state.payload), null, 2));
     } catch {
-      void window.mqbAlert("Invalid JSON");
+      void mqbDialogs.alert("Invalid JSON");
     }
   };
   selectPublisherSubtab = (tab) => {
@@ -1196,7 +1186,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   sendPublisherAction = async () => {
     updateStateFromUI();
-    const saved = await window.saveConfigSection("publishers", config.publishers, true);
+    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
     if (!saved) return;
 
     const publisher = publishers[currentIdx];
@@ -1372,7 +1362,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       publisherPresets.map((preset) => preset.name),
     );
 
-    const presetName = await window.mqbPrompt("Choose a name for this request preset.", "Save Preset", {
+    const presetName = await mqbDialogs.prompt("Choose a name for this request preset.", "Save Preset", {
       confirmLabel: "Save",
       value: suggestedName,
       placeholder: "preset_name",
@@ -1404,7 +1394,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const publisher = publishers[currentIdx];
     if (!publisher) return;
 
-    const presetName = await window.mqbPrompt("Choose a name for this request preset.", "Save Preset", {
+    const presetName = await mqbDialogs.prompt("Choose a name for this request preset.", "Save Preset", {
       confirmLabel: "Save",
       value: nextUniqueName(`${publisher.name}_preset`, getPublisherPresets(publisher.name).map((preset) => preset.name)),
       placeholder: "preset_name",
@@ -1504,7 +1494,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   editEnvironmentVarsAction = async () => {
     const current = JSON.stringify(envVars, null, 2);
-    const input = await window.mqbPrompt(
+    const input = await mqbDialogs.prompt(
       "Define environment variables as JSON. Example: {\"baseUrl\":\"https://api.local\",\"token\":\"abc\"}",
       "Environment Variables",
       {
@@ -1522,31 +1512,31 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         Object.entries(parsed).map(([key, value]) => [String(key), typeof value === "string" ? value : JSON.stringify(value)]),
       );
       saveEnvVars();
-      await window.mqbAlert("Environment variables saved. You can now use ${varName} in URL, headers and body.");
+      await mqbDialogs.alert("Environment variables saved. You can now use ${varName} in URL, headers and body.");
     } catch (error) {
-      await window.mqbAlert(`Invalid JSON: ${(error as Error).message}`);
+      await mqbDialogs.alert(`Invalid JSON: ${(error as Error).message}`);
     }
   };
 
   if (publishers.length > 0) {
-    const pendingRestore = window._mqb_pending_publisher_restore || null;
-    window._mqb_pending_publisher_restore = null;
+    const pendingRestore = state.pending_publisher_restore || null;
+    state.pending_publisher_restore = null;
     const initialIdx = pendingRestore?.idx ?? 0;
     const initialTab = pendingRestore?.tab || "payload";
     setActiveItem(initialIdx);
     void updateUIFromState().then(() => {
-      if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
-        window.markSectionSaved("publishers", config.publishers);
+      if (!hadUnsavedChangesBeforeInit) {
+        mqbRuntime.markSectionSaved("publishers", config.publishers);
       }
     });
     activeSubtab =
       initialTab === "definition" || initialTab === "history" || initialTab === "headers" ? initialTab : "payload";
     syncPublishersPanelState();
-  } else if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
-    window.markSectionSaved("publishers", config.publishers);
+  } else if (!hadUnsavedChangesBeforeInit) {
+    mqbRuntime.markSectionSaved("publishers", config.publishers);
   }
 
-  window._mqb_publishers_initialized = true;
+  state.publishers_initialized = true;
   window.restorePublisherState = restorePublisherState;
   restorePublisherStateFromView = restorePublisherState;
 }

@@ -393,6 +393,7 @@ fn delete_desktop_secrets_for_metadata(
     let mut deleted = 0usize;
     let mut remaining_keys = Vec::new();
     for key in read_desktop_secret_metadata(metadata_path) {
+        let mut keep_key = false;
         let entry = keyring::Entry::new(service, &key)
             .with_context(|| format!("Failed to open desktop keyring entry for '{key}'"))?;
 
@@ -401,12 +402,13 @@ fn delete_desktop_secrets_for_metadata(
             Err(keyring::Error::NoEntry) => {}
             Err(error) => {
                 warn!("failed to delete secret '{key}' from desktop keyring: {error}");
-                remaining_keys.push(key);
+                remaining_keys.push(key.clone());
+                keep_key = true;
             }
         }
 
         // Keep process env consistent with keyring deletions.
-        if !remaining_keys.iter().any(|existing| existing == &key) {
+        if !keep_key {
             // Desktop secret cleanup is triggered via user action and this app context
             // controls subsequent config loads, so clearing env vars here is expected.
             unsafe {

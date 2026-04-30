@@ -1,11 +1,18 @@
 import {
   applyEndpointSchemaDefaults,
+  createEmptyRouteConfig,
   defaultMetricsMiddleware,
-  nextUniqueName,
+  nextUniqueName
 } from "./routes";
-import { cloneJson } from "./utils";
+import {
+  cloneJson,
+  normalizeConsumerNames,
+  normalizeConsumerResponse,
+  sanitizeConsumerName,
+} from "./utils";
 import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
 import { consumersPanelState } from "./stores";
+import { getMqbState, mqbDialogs, mqbRuntime } from "./runtime-window";
 
 export let restoreConsumerStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showConsumerMessageDetails: (name: string, msgIdx: number) => void = () => {};
@@ -58,11 +65,7 @@ type PublisherConfig = {
   comment?: string;
 };
 
-type RouteConfig = {
-  enabled?: boolean;
-  input?: Record<string, unknown>;
-  output?: Record<string, unknown>;
-};
+type RouteConfig = ReturnType<typeof createEmptyRouteConfig>;
 
 type ConsumersAppConfig = {
   consumers: ConsumerConfig[];
@@ -105,37 +108,7 @@ const RESPONSE_CAPABLE_CONSUMER_TYPES = new Set([
   "kafka",
 ]);
 
-export function sanitizeConsumerName(name: string): string {
-  const asciiName = String(name || "")
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "");
-  const normalized = asciiName
-    .replace(/\s+/g, "_")
-    .replace(/[^A-Za-z0-9._-]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^[_\-.]+|[_\-.]+$/g, "");
-
-  return normalized || "consumer";
-}
-
-export function normalizeConsumerNames(consumers: ConsumerConfig[], selectedIndex: number | null = null) {
-  const usedNames = new Set<string>();
-  let changed = false;
-
-  for (const consumer of consumers) {
-    const nextName = nextUniqueName(sanitizeConsumerName(consumer.name), usedNames);
-    if (consumer.name !== nextName) {
-      consumer.name = nextName;
-      changed = true;
-    }
-    usedNames.add(nextName);
-  }
-
-  return {
-    changed,
-    selectedName: selectedIndex === null ? null : consumers[selectedIndex]?.name || null,
-  };
-}
+export { sanitizeConsumerName, normalizeConsumerNames };
 
 function extractUuidV7Timestamp(idStr: string): string | null {
   try {
@@ -159,31 +132,8 @@ function createDefaultConsumerEndpoint(endpointType: string): Record<string, unk
   };
 }
 
-function createEmptyRouteConfig(): RouteConfig {
-  return {
-    enabled: true,
-    input: { middlewares: defaultMetricsMiddleware(), null: null },
-    output: { middlewares: defaultMetricsMiddleware(), null: null },
-  };
-}
-
 function consumerSupportsCustomResponse(consumer: Partial<ConsumerConfig> | null | undefined): boolean {
   return RESPONSE_CAPABLE_CONSUMER_TYPES.has(getConsumerInputType(consumer).toLowerCase());
-}
-
-function normalizeConsumerResponse(response: unknown): { headers: Record<string, string>; payload: string } | null {
-  if (!response || typeof response !== "object") return null;
-
-  const headers = Object.fromEntries(
-    Object.entries((response as { headers?: Record<string, unknown> }).headers || {})
-      .map(([key, value]) => [String(key).trim(), String(value).trim()])
-      .filter(([key, value]) => key && value),
-  );
-  const payload = typeof (response as { payload?: unknown }).payload === "string"
-    ? (response as { payload: string }).payload
-    : "";
-
-  return Object.keys(headers).length > 0 || payload.trim() ? { headers, payload } : null;
 }
 
 export async function initConsumers(config: ConsumersAppConfig, schema: ConsumersSchemaRoot) {
@@ -197,12 +147,13 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     return;
   }
 
-  if (window._mqb_consumer_poll_timer) {
-    clearTimeout(window._mqb_consumer_poll_timer);
+  const state = getMqbState();
+  if (state.consumer_poll_timer) {
+    clearTimeout(state.consumer_poll_timer);
   }
-  window._mqb_consumer_poll_timer = null;
-  window._mqb_consumer_poll_nonce = (window._mqb_consumer_poll_nonce || 0) + 1;
-  const pollNonce = window._mqb_consumer_poll_nonce;
+  state.consumer_poll_timer = null;
+  state.consumer_poll_nonce = (state.consumer_poll_nonce || 0) + 1;
+  const pollNonce = state.consumer_poll_nonce;
 
   let currentIdx = 0;
   let activeSubtab: "definition" | "response" | "messages" = "messages";
@@ -210,23 +161,21 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   let pendingToggle: { name: string; action: "start" | "stop" } | null = null;
   let nextResponseHeaderId = 1;
   let savedConsumerNames = new Set(
-    ((Array.isArray(window._mqb_saved_sections?.consumers) ? window._mqb_saved_sections.consumers : consumers) || [])
+    ((Array.isArray(state.saved_sections?.consumers) ? state.saved_sections.consumers : consumers) || [])
       .map((consumer: ConsumerConfig) => consumer.name),
   );
-  const hadDirtyTracker = Boolean(window._mqb_dirty_sections?.consumers);
-
   const initialConsumersSnapshot = cloneJson(config.consumers);
   const settleInitialDirtyBaseline = () => {
     window.setTimeout(() => {
-      window.markSectionSaved("consumers", initialConsumersSnapshot);
+      mqbRuntime.markSectionSaved("consumers", initialConsumersSnapshot);
     }, 0);
   };
 
-  window.registerDirtySection("consumers", {
+  mqbRuntime.registerDirtySection("consumers", {
     buttonId: "cons-save",
     getValue: () => config.consumers,
   });
-  const hadUnsavedChangesBeforeInit = window.refreshDirtySection("consumers");
+  const hadUnsavedChangesBeforeInit = mqbRuntime.refreshDirtySection("consumers");
 
   const updateUrlHash = () => {
     window.history.replaceState(null, "", `#consumers:${currentIdx || 0}`);
@@ -247,7 +196,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     savedConsumerNames = new Set((source || []).map((consumer) => consumer.name));
   };
   syncSavedConsumerNames(
-    Array.isArray(window._mqb_saved_sections?.consumers) ? window._mqb_saved_sections.consumers : consumers,
+    Array.isArray(state.saved_sections?.consumers) ? state.saved_sections.consumers : consumers,
   );
   const isSavedConsumer = (name: string) => savedConsumerNames.has(name);
 
@@ -373,9 +322,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   const schedulePoll = (delayMs: number) => {
-    if (window._mqb_consumer_poll_nonce !== pollNonce) return;
-    if (window._mqb_consumer_poll_timer) clearTimeout(window._mqb_consumer_poll_timer);
-    window._mqb_consumer_poll_timer = window.setTimeout(pollLoop, delayMs);
+    if (state.consumer_poll_nonce !== pollNonce) return;
+    if (state.consumer_poll_timer) clearTimeout(state.consumer_poll_timer);
+    state.consumer_poll_timer = window.setTimeout(pollLoop, delayMs);
   };
 
   const fetchConsumerStatus = async (name: string) => {
@@ -465,7 +414,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const current = config.consumers[currentIdx];
     if (!current) return;
 
-    const choice = await window.mqbChoose("Choose where to copy this consumer definition.", "Copy Consumer", {
+    const choice = await mqbDialogs.choose("Choose where to copy this consumer definition.", "Copy Consumer", {
       confirmLabel: "Continue",
       choices: [
         { value: "route_input", label: "New Route Input" },
@@ -476,7 +425,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     if (!choice) return;
 
     if (choice === "route_input") {
-      const routeName = await window.mqbPrompt(
+      const routeName = await mqbDialogs.prompt(
         "Choose a name for the new route. The output stays null until you review it.",
         "Copy to Route",
         {
@@ -487,20 +436,20 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       );
       if (!routeName) return;
       if (config.routes[routeName]) {
-        await window.mqbAlert("Route already exists");
+        await mqbDialogs.alert("Route already exists");
         return;
       }
 
       const routeConfig = createEmptyRouteConfig();
       routeConfig.input = cloneJson(current.endpoint);
       config.routes[routeName] = routeConfig;
-      window.refreshDirtySection("routes");
+      mqbRuntime.refreshDirtySection("routes");
       openRouteAt(routeName);
       return;
     }
 
     if (choice === "publisher") {
-      const publisherName = await window.mqbPrompt(
+      const publisherName = await mqbDialogs.prompt(
         "Choose a name for the new publisher. Consumer-specific fields may need adjustment after copying.",
         "Copy to Publisher",
         {
@@ -514,7 +463,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       );
       if (!publisherName) return;
       if ((config.publishers || []).some((publisher) => publisher.name === publisherName)) {
-        await window.mqbAlert("Publisher already exists");
+        await mqbDialogs.alert("Publisher already exists");
         return;
       }
 
@@ -524,12 +473,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         endpoint: cloneJson(current.endpoint),
         comment: current.comment || "",
       });
-      window.refreshDirtySection("publishers");
+      mqbRuntime.refreshDirtySection("publishers");
       openPublisherAt(config.publishers.length - 1, "definition");
       return;
     }
 
-    const refTarget = await window.mqbPrompt(
+    const refTarget = await mqbDialogs.prompt(
       "Enter the ref target name. This must match a registered endpoint name at runtime.",
       "Copy as Ref Consumer",
       {
@@ -540,7 +489,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     );
     if (!refTarget) return;
 
-    const consumerName = await window.mqbPrompt("Choose a name for the new ref consumer.", "Copy as Ref Consumer", {
+    const consumerName = await mqbDialogs.prompt("Choose a name for the new ref consumer.", "Copy as Ref Consumer", {
       confirmLabel: "Create",
       value: nextUniqueName("ref", (config.consumers || []).map((consumer) => consumer.name)),
       placeholder: "ref_consumer",
@@ -551,7 +500,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       (config.consumers || []).map((consumer) => consumer.name),
     );
     if ((config.consumers || []).some((consumer) => consumer.name === normalizedConsumerName)) {
-      await window.mqbAlert("Consumer already exists");
+      await mqbDialogs.alert("Consumer already exists");
       return;
     }
 
@@ -561,12 +510,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       comment: current.comment || "",
       response: null,
     });
-    window.refreshDirtySection("consumers");
+    mqbRuntime.refreshDirtySection("consumers");
     openConsumerAt(config.consumers.length - 1);
   };
 
   const addConsumer = async () => {
-    const endpointType = await window.mqbChoose("Choose the endpoint type for the new consumer.", "Add Consumer", {
+    const endpointType = await mqbDialogs.choose("Choose the endpoint type for the new consumer.", "Add Consumer", {
       confirmLabel: "Create",
       choices: CONSUMER_TYPE_OPTIONS.map((type) => ({ value: type, label: type.toUpperCase() })),
     });
@@ -586,7 +535,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const syncCurrentConsumerResponse = (response: { headers: Record<string, string>; payload: string } | null) => {
     if (!config.consumers[currentIdx]) return;
     config.consumers[currentIdx].response = response;
-    window.refreshDirtySection("consumers");
+    mqbRuntime.refreshDirtySection("consumers");
     syncConsumersPanelState();
   };
 
@@ -636,10 +585,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     if (
       action === "start" &&
       (!isSavedConsumer(targetName) ||
-        window.refreshDirtySection("consumers") ||
+        mqbRuntime.refreshDirtySection("consumers") ||
         normalizedNamesChanged)
     ) {
-      const saved = await window.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
+      const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
       if (!saved?.consumers) return;
 
       consumers.splice(0, consumers.length, ...saved.consumers);
@@ -649,7 +598,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
       const refreshedIdx = consumers.findIndex((consumer) => consumer.name === targetName);
       if (refreshedIdx === -1) {
-        await window.mqbAlert("Save completed, but the selected consumer no longer exists.");
+        await mqbDialogs.alert("Save completed, but the selected consumer no longer exists.");
         return;
       }
 
@@ -675,11 +624,11 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           },
         };
         syncConsumersPanelState();
-        await window.mqbAlert(errorMessage);
+        await mqbDialogs.alert(errorMessage);
       }
     } catch (error) {
       console.error(`Error during ${action}:`, error);
-      await window.mqbAlert(`Failed to ${action} consumer`);
+      await mqbDialogs.alert(`Failed to ${action} consumer`);
     } finally {
       pendingToggle = null;
       syncConsumersPanelState();
@@ -715,16 +664,16 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       await refreshConsumerStatuses();
     }
 
-    window._mqb_form_mode = "consumer";
+    state.form_mode = "consumer";
     try {
       await window.VanillaSchemaForms.init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated) => {
         (updated as Record<string, unknown>).response = config.consumers[currentIdx]?.response || null;
         config.consumers[currentIdx] = updated as ConsumerConfig;
         syncConsumersPanelState();
-        window.refreshDirtySection("consumers");
+        mqbRuntime.refreshDirtySection("consumers");
       });
     } finally {
-      window._mqb_form_mode = null;
+      state.form_mode = null;
     }
 
     renderLiveLog();
@@ -775,11 +724,11 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       void updateUI();
     };
   deleteCurrentConsumerAction = async () => {
-      if (!(await window.mqbConfirm("Delete this consumer?", "Delete Consumer"))) return;
+      if (!(await mqbDialogs.confirm("Delete this consumer?", "Delete Consumer"))) return;
 
       config.consumers.splice(currentIdx, 1);
       if (config.consumers.length === 0) {
-        await window.saveConfigSection("consumers", config.consumers, false);
+        await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
       }
       void initConsumers(config, schema);
       if (config.consumers.length > 0) {
@@ -790,7 +739,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   saveCurrentConsumerAction = async () => {
       const normalized = normalizeConsumerNames(config.consumers, currentIdx);
       const selectedName = normalized.selectedName;
-      const saved = await window.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
+      const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
       if (!saved) return;
 
       window.appConfig.consumers = saved.consumers;
@@ -869,8 +818,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   const pollLoop = async () => {
-    if (window._mqb_consumer_poll_nonce !== pollNonce) return;
-    if (window._mqb_active_tab !== "consumers") return;
+    if (state.consumer_poll_nonce !== pollNonce) return;
+    if (state.active_tab !== "consumers") return;
 
     try {
       const activeConsumer = (config.consumers || [])[currentIdx];
@@ -914,21 +863,21 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     schedulePoll(0);
   };
 
-  window._mqb_consumers_initialized = true;
+  state.consumers_initialized = true;
   window.restoreConsumerState = restoreConsumerState;
   restoreConsumerStateFromView = restoreConsumerState;
 
   renderSidebar();
 
   if (consumers.length > 0) {
-    const pendingRestore = window._mqb_pending_consumer_restore || null;
-    window._mqb_pending_consumer_restore = null;
+    const pendingRestore = state.pending_consumer_restore || null;
+    state.pending_consumer_restore = null;
     const initialIdx = pendingRestore?.idx ?? 0;
     const initialTab = pendingRestore?.tab || "messages";
 
     setActiveItem(initialIdx);
     await updateUI();
-    if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
+    if (!hadUnsavedChangesBeforeInit) {
       settleInitialDirtyBaseline();
     }
 
@@ -939,7 +888,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
     selectConsumerSubtab(initialTab as "definition" | "response" | "messages");
   } else {
-    if (!hadDirtyTracker && !hadUnsavedChangesBeforeInit) {
+    if (!hadUnsavedChangesBeforeInit) {
       settleInitialDirtyBaseline();
     }
   }

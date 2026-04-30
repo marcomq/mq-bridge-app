@@ -8,36 +8,39 @@ import { nextHashForTab, pickDefaultTab, resolveTabFromHash } from "./lib/routin
 import { initRoutes, restoreRouteStateFromView } from "./lib/routes-view";
 import { initSettings } from "./lib/settings";
 import { installDialogs } from "./lib/dialogs";
+import { getMqbState } from "./lib/runtime-window";
 import type { MainTab } from "./lib/runtime-status";
 
 function setActiveTab(name: MainTab) {
   activeMainTab.set(name);
-  window._mqb_active_tab = name;
+  getMqbState().active_tab = name;
 }
 
 function initTabIfNeeded(name: MainTab) {
-  if (name === "routes" && window.initRoutes && !window._mqb_routes_initialized) {
+  const state = getMqbState();
+  if (name === "routes" && window.initRoutes && !state.routes_initialized) {
     window.initRoutes(window.appConfig, window.appSchema);
-    window._mqb_routes_initialized = true;
+    state.routes_initialized = true;
   }
-  if (name === "consumers" && window.initConsumers && !window._mqb_consumers_initialized) {
+  if (name === "consumers" && window.initConsumers && !state.consumers_initialized) {
     window.initConsumers(window.appConfig, window.appSchema);
-    window._mqb_consumers_initialized = true;
+    state.consumers_initialized = true;
   }
-  if (name === "publishers" && window.initPublishers && !window._mqb_publishers_initialized) {
+  if (name === "publishers" && window.initPublishers && !state.publishers_initialized) {
     window.initPublishers(window.appConfig, window.appSchema);
-    window._mqb_publishers_initialized = true;
+    state.publishers_initialized = true;
   }
-  if (name === "config" && !window._mqb_config_initialized) {
+  if (name === "config" && !state.config_initialized) {
     initSettings(window.appConfig, window.appSchema);
-    window._mqb_config_initialized = true;
+    state.config_initialized = true;
   }
 }
 
 function restoreTabState(name: MainTab) {
+  const state = getMqbState();
   if (name === "routes") {
-    const pending = window._mqb_pending_route_restore || null;
-    window._mqb_pending_route_restore = null;
+    const pending = state.pending_route_restore || null;
+    state.pending_route_restore = null;
     const match = window.location.hash.match(/^#routes:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
     restoreRouteStateFromView(idx);
@@ -45,8 +48,8 @@ function restoreTabState(name: MainTab) {
   }
 
   if (name === "consumers") {
-    const pending = window._mqb_pending_consumer_restore || null;
-    window._mqb_pending_consumer_restore = null;
+    const pending = state.pending_consumer_restore || null;
+    state.pending_consumer_restore = null;
     const match = window.location.hash.match(/^#consumers:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
     restoreConsumerStateFromView(idx, { tab: pending?.tab });
@@ -54,8 +57,8 @@ function restoreTabState(name: MainTab) {
   }
 
   if (name === "publishers") {
-    const pending = window._mqb_pending_publisher_restore || null;
-    window._mqb_pending_publisher_restore = null;
+    const pending = state.pending_publisher_restore || null;
+    state.pending_publisher_restore = null;
     const match = window.location.hash.match(/^#publishers:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : 0);
     restorePublisherStateFromView(idx, { tab: pending?.tab });
@@ -95,7 +98,7 @@ function syncSaveButtonLabel(button: HTMLElement | null) {
 }
 
 function refreshDirtySection(sectionName: string): boolean {
-  const tracker = window._mqb_dirty_sections?.[sectionName];
+  const tracker = getMqbState().dirty_sections?.[sectionName];
   if (!tracker) return false;
 
   const button = document.getElementById(tracker.buttonId);
@@ -108,12 +111,12 @@ function refreshDirtySection(sectionName: string): boolean {
 }
 
 function renderRuntimeStatus() {
-  runtimeStatusStore.set(window._mqb_runtime_status || EMPTY_RUNTIME_STATUS);
+  runtimeStatusStore.set(getMqbState().runtime_status || EMPTY_RUNTIME_STATUS);
 }
 
 const runtimeStatusPoller = createRuntimeStatusPoller({
   onStatus: (status) => {
-    window._mqb_runtime_status = status;
+    getMqbState().runtime_status = status;
     renderRuntimeStatus();
     if (window.renderRoutesRuntimeMetrics) {
       window.renderRoutesRuntimeMetrics();
@@ -163,9 +166,10 @@ async function runSaveButtonAction<T>(button: any, action: () => Promise<T>): Pr
 
 function installGlobals() {
   installDialogs();
-  window._mqb_runtime_status = { ...EMPTY_RUNTIME_STATUS };
-  window._mqb_dirty_sections = {};
-  window._mqb_saved_sections = {};
+  const state = getMqbState();
+  state.runtime_status = { ...EMPTY_RUNTIME_STATUS };
+  state.dirty_sections = {};
+  state.saved_sections = {};
   window.switchMain = switchMain;
   window.initRoutes = initRoutes;
   window.initConsumers = initConsumers;
@@ -184,20 +188,20 @@ function installGlobals() {
       sectionName,
       options.buttonId,
       options.getValue,
-      window._mqb_dirty_sections[sectionName],
-      window._mqb_saved_sections,
+      state.dirty_sections[sectionName],
+      state.saved_sections,
     );
-    window._mqb_dirty_sections[key] = tracker;
+    state.dirty_sections[key] = tracker;
     refreshDirtySection(sectionName);
   };
 
   window.markSectionSaved = (sectionName, savedValue = undefined) => {
-    const tracker = window._mqb_dirty_sections?.[sectionName];
+    const tracker = state.dirty_sections?.[sectionName];
     const nextSavedValue = savedValue === undefined ? tracker?.getValue?.() : savedValue;
-    window._mqb_saved_sections[sectionName] = cloneSectionState(nextSavedValue);
+    state.saved_sections[sectionName] = cloneSectionState(nextSavedValue);
     if (!tracker) return;
 
-    tracker.baseline = JSON.stringify(window._mqb_saved_sections[sectionName]);
+    tracker.baseline = JSON.stringify(state.saved_sections[sectionName]);
     refreshDirtySection(sectionName);
   };
 
@@ -268,7 +272,8 @@ export async function bootstrapApp() {
 
   window.appConfig = config;
   window.appSchema = schema;
-  window._mqb_saved_sections = {
+  const state = getMqbState();
+  state.saved_sections = {
     routes: cloneSectionState(config.routes),
     consumers: cloneSectionState(config.consumers),
     publishers: cloneSectionState(config.publishers),
@@ -287,12 +292,12 @@ export async function bootstrapApp() {
 
   const defaultTab = pickDefaultTab(
     window.location.hash,
-    window._mqb_runtime_status.active_routes || [],
+    state.runtime_status.active_routes || [],
     config.default_tab,
   );
   switchMain(defaultTab);
 
   runtimeStatusPoller.stop();
   runtimeStatusPoller.start();
-  window._mqb_runtime_poll_timer = 1;
+  state.runtime_poll_timer = 1;
 }
