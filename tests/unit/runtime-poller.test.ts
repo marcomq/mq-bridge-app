@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { createRuntimeStatusPoller, EMPTY_RUNTIME_STATUS } from "../../ui/src/lib/runtime-status";
+import {
+  createRuntimeStatusPoller,
+  EMPTY_RUNTIME_STATUS,
+} from "../../ui/src/lib/runtime-status";
 
 describe("runtime-poller", () => {
   beforeEach(() => {
@@ -19,6 +22,13 @@ describe("runtime-poller", () => {
           active_consumers: ["consumer-a"],
           active_routes: ["route-a"],
           route_throughput: { "route-a": 5 },
+          consumers: {
+            "consumer-a": {
+              running: true,
+              status: { healthy: true },
+              message_sequence: 4,
+            },
+          },
         }),
       }) as unknown as typeof fetch,
       onStatus,
@@ -28,11 +38,25 @@ describe("runtime-poller", () => {
       active_consumers: ["consumer-a"],
       active_routes: ["route-a"],
       route_throughput: { "route-a": 5 },
+      consumers: {
+        "consumer-a": {
+          running: true,
+          status: { healthy: true },
+          message_sequence: 4,
+        },
+      },
     });
     expect(onStatus).toHaveBeenCalledWith({
       active_consumers: ["consumer-a"],
       active_routes: ["route-a"],
       route_throughput: { "route-a": 5 },
+      consumers: {
+        "consumer-a": {
+          running: true,
+          status: { healthy: true },
+          message_sequence: 4,
+        },
+      },
     });
   });
 
@@ -54,6 +78,7 @@ describe("runtime-poller", () => {
         active_consumers: [],
         active_routes: ["route-a"],
         route_throughput: {},
+        consumers: {},
       }),
     });
     const poller = createRuntimeStatusPoller({
@@ -72,40 +97,6 @@ describe("runtime-poller", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  test("detects running consumers when runtime-status is empty", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockImplementation(async (url: string) => {
-        if (url === "/runtime-status") {
-          return { ok: true, json: async () => EMPTY_RUNTIME_STATUS };
-        }
-        if (url === "/config") {
-          return { ok: true, json: async () => ({ consumers: [{ name: "c1" }, { name: "c2" }] }) };
-        }
-        if (url.startsWith("/consumer-status?consumer=c1")) {
-          return { ok: true, json: async () => ({ running: true }) };
-        }
-        if (url.startsWith("/consumer-status?consumer=c2")) {
-          return { ok: true, json: async () => ({ running: false }) };
-        }
-        return { ok: false, json: async () => ({}) };
-      });
-
-    const onStatus = vi.fn();
-    const poller = createRuntimeStatusPoller({
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      onStatus,
-    });
-
-    const status = await poller.poll();
-    expect(status.active_consumers).toEqual(["c1"]);
-    expect(onStatus).toHaveBeenCalledWith({
-      active_consumers: ["c1"],
-      active_routes: [],
-      route_throughput: {},
-    });
-  });
-
   test("handles wrapped runtime status payload shape", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
@@ -114,6 +105,10 @@ describe("runtime-poller", () => {
           active_consumers: ["c1", "c2"],
           active_routes: [],
           route_throughput: {},
+          consumers: {
+            c1: { running: true, status: { healthy: true }, message_sequence: 1 },
+            c2: { running: false, status: { healthy: false, error: "down" }, message_sequence: 0 },
+          },
         },
       }),
     });
@@ -127,6 +122,10 @@ describe("runtime-poller", () => {
       active_consumers: ["c1", "c2"],
       active_routes: [],
       route_throughput: {},
+      consumers: {
+        c1: { running: true, status: { healthy: true }, message_sequence: 1 },
+        c2: { running: false, status: { healthy: false, error: "down" }, message_sequence: 0 },
+      },
     });
   });
 });

@@ -183,7 +183,6 @@ async fn test_web_ui_schema_and_index_expose_custom_ui_shape() {
 
     let index_response = http_get(port, "/").await;
     assert!(index_response.contains("200 OK"));
-    assert!(index_response.contains("<script src=\"/custom-form.js\"></script>"));
     assert!(index_response.contains("id=\"route-toggle\""));
     assert!(index_response.contains("id=\"pub-proto-label\">Type</span>"));
 
@@ -309,6 +308,82 @@ async fn test_consumer_custom_response_is_returned_for_http_consumer() {
     assert!(consumer_response_lower.contains("x-test-reply: configured"));
     assert!(consumer_response_lower.contains("content-type: application/json"));
     assert!(consumer_response.contains("{\"ok\":true}"));
+
+    server.abort();
+    stop_all_routes().await;
+    let _ = std::fs::remove_file(config_file);
+}
+
+#[tokio::test]
+async fn test_web_ui_collects_http_consumer_messages_and_updates_runtime_status() {
+    let _guard = test_mutex().lock().await;
+    stop_all_routes().await;
+
+    let ui_port = get_free_port();
+    let consumer_port = get_free_port();
+    let config_file = unique_config_path(ui_port);
+    let server = start_test_server(ui_port, AppConfig::default(), &config_file).await;
+
+    let consumer_name = format!("message_consumer_{}", uuid::Uuid::new_v4().simple());
+    let json_payload = format!(
+        r#"{{
+            "log_level":"debug",
+            "logger":"plain",
+            "consumers":[{{
+                "name":"{consumer_name}",
+                "endpoint":{{"http":{{"url":"127.0.0.1:{consumer_port}","path":"/ui-test","method":"POST"}}}},
+                "comment":"",
+                "response":null
+            }}],
+            "publishers":[]
+        }}"#
+    );
+    let response = http_post_json(ui_port, "/config", &json_payload).await;
+    assert!(
+        response.contains("200 OK"),
+        "unexpected response: {}",
+        response
+    );
+
+    let start_response = http_post(
+        ui_port,
+        &format!("/consumer-start?consumer={consumer_name}"),
+    )
+    .await;
+    assert!(
+        start_response.contains("200 OK"),
+        "unexpected response: {}",
+        start_response
+    );
+
+    sleep(Duration::from_millis(200)).await;
+
+    let consumer_response = send_http_request(
+        consumer_port,
+        "POST /ui-test HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+    )
+    .await;
+    assert!(
+        consumer_response.contains("202 Accepted"),
+        "unexpected consumer response: {}",
+        consumer_response
+    );
+
+    let runtime = read_json_response(ui_port, "/runtime-status").await;
+    assert_eq!(
+        runtime["consumers"][&consumer_name]["message_sequence"]
+            .as_u64()
+            .unwrap_or_default(),
+        1
+    );
+
+    let messages = read_json_response(
+        ui_port,
+        &format!("/messages?consumer={consumer_name}"),
+    )
+    .await;
+    let payload = messages[&consumer_name][0]["payload"].as_str().unwrap_or_default();
+    assert_eq!(payload, "hello");
 
     server.abort();
     stop_all_routes().await;

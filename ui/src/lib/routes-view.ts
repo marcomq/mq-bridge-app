@@ -153,8 +153,14 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
 
   const getCurrentRouteEntry = () => routesArray[currentIdx] || null;
 
+  const updateUrlHash = () => {
+    appWindow().history.replaceState(null, "", `#routes:${currentIdx || 0}`);
+  };
+
   const setActiveItem = (idx: number) => {
-    currentIdx = idx;
+    currentIdx = Math.min(Math.max(0, idx), Math.max(routesArray.length - 1, 0));
+    getMqbState().last_route_idx = currentIdx;
+    (appWindow() as any)._mqb_last_route_idx = currentIdx;
     syncRoutesPanelState();
   };
 
@@ -361,6 +367,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     const routeName = routesArray[idx]?.name;
     if (!routeName) return;
 
+    updateUrlHash();
     configFormContainer.innerHTML = "";
     const routeSchema = cloneJson({
       ...(schema.properties?.routes?.additionalProperties || {}),
@@ -608,6 +615,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   renderRuntimeMetrics();
   appWindow().renderRoutesRuntimeMetrics = renderRuntimeMetrics;
   getMqbState().routes_initialized = true;
+  (appWindow() as any)._mqb_routes_initialized = true;
   appWindow().restoreRouteState = restoreRouteState;
   restoreRouteStateFromView = restoreRouteState;
 

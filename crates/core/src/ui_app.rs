@@ -24,6 +24,7 @@ pub struct UiApp {
     secret_store: Arc<dyn SecretStore>,
     ui_handles: Arc<RwLock<HashMap<String, RouteHandle>>>,
     throughput_samples: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
+    consumer_message_sequences: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +38,14 @@ pub struct RuntimeStatusResponse {
     pub active_consumers: Vec<String>,
     pub active_routes: Vec<String>,
     pub route_throughput: HashMap<String, f64>,
+    pub consumers: HashMap<String, ConsumerStatusSnapshot>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConsumerStatusSnapshot {
+    pub running: bool,
+    pub status: mq_bridge::traits::EndpointStatus,
+    pub message_sequence: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -288,6 +297,7 @@ impl UiApp {
             secret_store,
             ui_handles: Arc::new(RwLock::new(HashMap::new())),
             throughput_samples: Arc::new(RwLock::new(HashMap::new())),
+            consumer_message_sequences: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -389,45 +399,16 @@ impl UiApp {
     }
 
     pub async fn consumer_status(&self, name: &str) -> Option<ConsumerStatusResponse> {
-        let is_running = self.ui_handles.read().await.contains_key(name);
         let config = self.config.read().await;
         let consumer_config = config.consumers.iter().find(|c| c.name == name);
 
         consumer_config
-            .map(|c| {
-                let name = name.to_string();
-                async move {
-                    let status = if is_running {
-                        mq_bridge::traits::EndpointStatus {
-                            healthy: true,
-                            target: name.clone(),
-                            ..Default::default()
-                        }
-                    } else if matches!(c.endpoint.endpoint_type, EndpointType::Http(_)) {
-                        mq_bridge::traits::EndpointStatus {
-                            healthy: false,
-                            target: name.clone(),
-                            ..Default::default()
-                        }
-                    } else {
-                        match c.endpoint.create_consumer(&name).await {
-                            Ok(consumer) => consumer.status().await,
-                            Err(e) => mq_bridge::traits::EndpointStatus {
-                                healthy: false,
-                                target: name.clone(),
-                                error: Some(e.to_string()),
-                                ..Default::default()
-                            },
-                        }
-                    };
-
-                    ConsumerStatusResponse {
-                        running: is_running,
-                        status,
-                    }
-                }
-            })?
+            .map(|c| async move { self.consumer_status_snapshot(c).await })?
             .await
+            .map(|snapshot| ConsumerStatusResponse {
+                running: snapshot.running,
+                status: snapshot.status,
+            })
             .into()
     }
 
@@ -599,11 +580,65 @@ impl UiApp {
         let mut active_routes = active_routes;
         active_routes.sort();
 
+        let consumer_sequences = self.consumer_message_sequences.read().await.clone();
+        let config = self.config.read().await;
+        let mut consumers = HashMap::new();
+        for consumer in &config.consumers {
+            if let Some(snapshot) = self.consumer_status_snapshot(consumer).await {
+                let message_sequence = consumer_sequences.get(&consumer.name).copied().unwrap_or(0);
+                consumers.insert(
+                    consumer.name.clone(),
+                    ConsumerStatusSnapshot {
+                        message_sequence,
+                        ..snapshot
+                    },
+                );
+            }
+        }
+
         RuntimeStatusResponse {
             active_consumers,
             active_routes,
             route_throughput,
+            consumers,
         }
+    }
+
+    async fn consumer_status_snapshot(
+        &self,
+        consumer: &ConsumerConfig,
+    ) -> Option<ConsumerStatusSnapshot> {
+        let name = consumer.name.clone();
+        let running = self.ui_handles.read().await.contains_key(&name);
+        let status = if running {
+            mq_bridge::traits::EndpointStatus {
+                healthy: true,
+                target: name.clone(),
+                ..Default::default()
+            }
+        } else if matches!(consumer.endpoint.endpoint_type, EndpointType::Http(_)) {
+            mq_bridge::traits::EndpointStatus {
+                healthy: false,
+                target: name.clone(),
+                ..Default::default()
+            }
+        } else {
+            match consumer.endpoint.create_consumer(&name).await {
+                Ok(endpoint) => endpoint.status().await,
+                Err(e) => mq_bridge::traits::EndpointStatus {
+                    healthy: false,
+                    target: name.clone(),
+                    error: Some(e.to_string()),
+                    ..Default::default()
+                },
+            }
+        };
+
+        Some(ConsumerStatusSnapshot {
+            running,
+            status,
+            message_sequence: 0,
+        })
     }
 
     pub async fn update_config(
@@ -892,6 +927,7 @@ impl UiApp {
             let topic = format!("ui_collector_{name}");
             let log_channel =
                 mq_bridge::get_or_create_channel(&MemoryConfig::new(&topic, Some(1000)));
+            let message_sequences = self.consumer_message_sequences.clone();
             let response_config = normalize_consumer_response(consumer.response.clone());
             let output = if endpoint_supports_consumer_response(&consumer.endpoint) {
                 Endpoint::new_response()
@@ -904,6 +940,7 @@ impl UiApp {
                 move |msg: CanonicalMessage| {
                     let name = closure_name.clone();
                     let log_channel = log_channel.clone();
+                    let message_sequences = message_sequences.clone();
                     let response_config = response_config.clone();
                     async move {
                         let val = serde_json::json!({
@@ -913,12 +950,19 @@ impl UiApp {
                         });
                         let mut enriched = CanonicalMessage::from_type(&val)
                             .unwrap_or_else(|_| CanonicalMessage::from(""));
-                        enriched.metadata.insert("ui_source".into(), name);
+                        enriched
+                            .metadata
+                            .insert("ui_source".into(), name.clone());
                         log_channel
                             .sender
                             .send(vec![enriched])
                             .await
                             .map_err(|e| HandlerError::NonRetryable(anyhow!(e.to_string())))?;
+                        {
+                            let mut sequences = message_sequences.write().await;
+                            let next = sequences.entry(name.clone()).or_insert(0);
+                            *next += 1;
+                        }
 
                         if let Some(response_config) = response_config.clone() {
                             let mut response = CanonicalMessage::from(response_config.payload);

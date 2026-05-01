@@ -9,6 +9,8 @@
     cloneCurrentConsumerAction,
     copyCurrentConsumerAction,
     deleteCurrentConsumerAction,
+    importAsyncApiToConsumerAction,
+    importMqbToConsumerAction,
     restoreConsumerStateFromView,
     saveCurrentConsumerAction,
     selectConsumerSubtab,
@@ -19,8 +21,11 @@
     updateConsumerResponseHeader,
     updateConsumerResponsePayload,
   } from "../lib/consumers-view";
+  import { getMqbState } from "../lib/runtime-window";
 
   let filterText = $state("");
+  let importInputEl = $state<HTMLInputElement | null>(null);
+  let selectedImportKind = $state<"asyncapi" | "mqb">("asyncapi");
 
   const visibleItems = $derived(
     $consumersPanelState.items.filter((item) =>
@@ -29,6 +34,9 @@
   );
 
   function openConsumer(originalIndex: number) {
+    getMqbState().last_consumer_idx = originalIndex;
+    (window as any)._mqb_last_consumer_idx = originalIndex;
+    window.history.replaceState(null, "", `#consumers:${originalIndex}`);
     restoreConsumerStateFromView(originalIndex);
   }
 
@@ -80,6 +88,29 @@
   function openSubtab(tab: "definition" | "response" | "messages") {
     selectConsumerSubtab(tab);
   }
+
+  function openImportPicker(kind: "asyncapi" | "mqb") {
+    selectedImportKind = kind;
+    importInputEl?.click();
+  }
+
+  async function handleImportSelected(event: Event) {
+    const target = event.currentTarget as HTMLInputElement;
+    const file = target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (selectedImportKind === "asyncapi") {
+        await importAsyncApiToConsumerAction(text);
+      } else {
+        await importMqbToConsumerAction(text);
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      target.value = "";
+    }
+  }
 </script>
 
 <div
@@ -117,10 +148,27 @@
           >
             <span class={`proto-badge proto-${item.inputProto.toLowerCase()}`}>{item.inputProto}</span>
             <span class="item-name">{item.name}</span>
-            <span class="msg-count" style="margin-left:auto;">{item.messageCount}</span>
+            <span class="msg-count" style="margin-left:auto;" title={`${item.messageCount} total messages`}>
+              {item.throughputLabel}
+            </span>
             <span class={`item-status ${item.statusClass}`}></span>
           </button>
         {/each}
+      </div>
+      <div class="sidebar-import-actions">
+        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("asyncapi")}>
+          Import AsyncAPI
+        </button>
+        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("mqb")}>
+          Import mq-bridge
+        </button>
+        <input
+          bind:this={importInputEl}
+          type="file"
+          accept=".json,application/json"
+          style="display:none"
+          onchange={handleImportSelected}
+        />
       </div>
     </div>
     <div class="main-content">

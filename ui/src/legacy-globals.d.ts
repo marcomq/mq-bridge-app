@@ -35,7 +35,7 @@ declare global {
     ) => Promise<string | null>;
 
     // Runtime helpers bridged from bootstrap
-    switchMain: (name: MainTab) => void;
+    switchMain: (name: MainTab) => void | Promise<void>;
     showJsonModal: () => void;
     syncSaveButtonLabel: (button: HTMLElement | null) => void;
     registerDirtySection: (
@@ -66,6 +66,7 @@ declare global {
       ) => Promise<unknown>;
     };
     renderRoutesRuntimeMetrics?: () => void;
+    renderConsumersRuntimeStatus?: () => void;
     initRoutes?: (config: Record<string, any>, schema: Record<string, any>) => void;
     initConsumers?: (config: Record<string, any>, schema: Record<string, any>) => void;
     initPublishers?: (config: Record<string, any>, schema: Record<string, any>) => void;

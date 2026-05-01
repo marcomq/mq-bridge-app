@@ -25,27 +25,57 @@ function setActiveTab(name: MainTab) {
   getMqbState().active_tab = name;
 }
 
-function initTabIfNeeded(name: MainTab) {
+function rememberedIndexForTab(name: MainTab): number | undefined {
   const state = getMqbState();
-  if (name === "routes" && !state.routes_initialized) {
-    mqbApp.init.routes(mqbApp.config(), mqbApp.schema());
-    state.routes_initialized = true;
+  if (name === "routes") return state.last_route_idx ?? 0;
+  if (name === "consumers") return state.last_consumer_idx ?? 0;
+  if (name === "publishers") return state.last_publisher_idx ?? 0;
+  return undefined;
+}
+
+function rememberSelectionFromHash(hash: string) {
+  const state = getMqbState();
+  const publisherMatch = hash.match(/^#publishers:(\d+)$/);
+  const consumerMatch = hash.match(/^#consumers:(\d+)$/);
+  const routeMatch = hash.match(/^#routes:(\d+)$/);
+
+  if (publisherMatch) {
+    state.last_publisher_idx = parseInt(publisherMatch[1], 10);
   }
-  if (name === "consumers" && !state.consumers_initialized) {
-    mqbApp.init.consumers(mqbApp.config(), mqbApp.schema());
-    state.consumers_initialized = true;
+  if (consumerMatch) {
+    state.last_consumer_idx = parseInt(consumerMatch[1], 10);
   }
-  if (name === "publishers" && !state.publishers_initialized) {
-    mqbApp.init.publishers(mqbApp.config(), mqbApp.schema());
-    state.publishers_initialized = true;
-  }
-  if (name === "config" && !state.config_initialized) {
-    initSettings(mqbApp.config(), mqbApp.schema());
-    state.config_initialized = true;
+  if (routeMatch) {
+    state.last_route_idx = parseInt(routeMatch[1], 10);
   }
 }
 
-function restoreTabState(name: MainTab) {
+async function initTabIfNeeded(name: MainTab) {
+  const state = getMqbState();
+  const win = appWindow() as any;
+  if (name === "routes" && !state.routes_initialized) {
+    await mqbApp.init.routes(mqbApp.config(), mqbApp.schema());
+    state.routes_initialized = true;
+    win._mqb_routes_initialized = true;
+  }
+  if (name === "consumers" && !state.consumers_initialized) {
+    await mqbApp.init.consumers(mqbApp.config(), mqbApp.schema());
+    state.consumers_initialized = true;
+    win._mqb_consumers_initialized = true;
+  }
+  if (name === "publishers" && !state.publishers_initialized) {
+    await mqbApp.init.publishers(mqbApp.config(), mqbApp.schema());
+    state.publishers_initialized = true;
+    win._mqb_publishers_initialized = true;
+  }
+  if (name === "config" && !state.config_initialized) {
+    await initSettings(mqbApp.config(), mqbApp.schema());
+    state.config_initialized = true;
+    win._mqb_config_initialized = true;
+  }
+}
+
+async function restoreTabState(name: MainTab) {
   const state = getMqbState();
   if (name === "routes") {
     const pending = state.pending_route_restore || null;
@@ -54,7 +84,7 @@ function restoreTabState(name: MainTab) {
     const match = currentHash().match(/^#routes:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : (state.last_route_idx ?? 0));
     state.last_route_idx = idx;
-    restoreRouteStateFromView(idx);
+    await restoreRouteStateFromView(idx);
     return;
   }
 
@@ -65,7 +95,7 @@ function restoreTabState(name: MainTab) {
     const match = currentHash().match(/^#consumers:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : (state.last_consumer_idx ?? 0));
     state.last_consumer_idx = idx;
-    restoreConsumerStateFromView(idx, { tab: pending?.tab });
+    await restoreConsumerStateFromView(idx, { tab: pending?.tab });
     return;
   }
 
@@ -76,15 +106,16 @@ function restoreTabState(name: MainTab) {
     const match = currentHash().match(/^#publishers:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : (state.last_publisher_idx ?? 0));
     state.last_publisher_idx = idx;
-    restorePublisherStateFromView(idx, { tab: pending?.tab });
+    await restorePublisherStateFromView(idx, { tab: pending?.tab });
   }
 }
 
-export function switchMain(name: MainTab) {
+export async function switchMain(name: MainTab) {
+  rememberSelectionFromHash(currentHash());
   setActiveTab(name);
-  initTabIfNeeded(name);
-  restoreTabState(name);
-  replaceHash(nextHashForTab(currentHash(), name));
+  await initTabIfNeeded(name);
+  await restoreTabState(name);
+  replaceHash(nextHashForTab(currentHash(), name, rememberedIndexForTab(name)));
 }
 
 function showJsonModal() {
@@ -138,6 +169,9 @@ const runtimeStatusPoller = createRuntimeStatusPoller({
     renderRuntimeStatus(status);
     if (appWindow().renderRoutesRuntimeMetrics) {
       appWindow().renderRoutesRuntimeMetrics();
+    }
+    if (appWindow().renderConsumersRuntimeStatus) {
+      appWindow().renderConsumersRuntimeStatus();
     }
   },
 });
@@ -302,7 +336,7 @@ export async function bootstrapApp() {
   onHashChange(() => {
     const targetTab = resolveTabFromHash(currentHash());
     if (targetTab) {
-      switchMain(targetTab);
+      void switchMain(targetTab);
     }
   });
 
@@ -314,7 +348,7 @@ export async function bootstrapApp() {
     state.runtime_status.active_routes || [],
     config.default_tab,
   );
-  switchMain(defaultTab);
+  await switchMain(defaultTab);
 
   runtimeStatusPoller.stop();
   runtimeStatusPoller.start();

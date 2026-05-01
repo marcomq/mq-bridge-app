@@ -39,7 +39,7 @@
     updatePublisherPayload,
     updatePublisherRequestField,
   } from "../lib/publishers-view";
-  import { mqbDialogs } from "../lib/runtime-window";
+  import { getMqbState, mqbDialogs } from "../lib/runtime-window";
 
   let filterText = $state("");
   let historyFilterText = $state("");
@@ -58,6 +58,9 @@
   );
 
   function openPublisher(originalIndex: number) {
+    getMqbState().last_publisher_idx = originalIndex;
+    (window as any)._mqb_last_publisher_idx = originalIndex;
+    window.history.replaceState(null, "", `#publishers:${originalIndex}`);
     restorePublisherStateFromView(originalIndex);
   }
 

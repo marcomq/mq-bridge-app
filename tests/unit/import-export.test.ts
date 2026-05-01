@@ -3,7 +3,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { exportFullBundle, importFromJsonText } from "../../ui/src/lib/import-export";
+import {
+  exportFullBundle,
+  importAppConfigFromJsonText,
+  importFromJsonText,
+  resetAppConfigToDefaults,
+} from "../../ui/src/lib/import-export";
 
 function installStorage() {
   const storage = new Map<string, string>();
@@ -24,13 +29,22 @@ describe("import-export", () => {
   beforeEach(() => {
     installStorage();
     window.appConfig = { publishers: [{ name: "orders_http" }], routes: {}, consumers: [] };
+    let serverConfig: any = { publishers: [{ name: "saved_pub" }], routes: { r1: {} }, consumers: [] };
     globalThis.fetch = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
       if (String(input) === "/config" && init?.method === "POST") {
+        try {
+          const parsedBody = JSON.parse(String(init.body || "{}"));
+          if (parsedBody && typeof parsedBody === "object") {
+            serverConfig = parsedBody;
+          }
+        } catch {
+          // ignore test mock parse failures
+        }
         return Promise.resolve({ ok: true, text: async () => "" });
       }
       if (String(input) === "/config") {
         return Promise.resolve({
-          json: async () => ({ publishers: [{ name: "saved_pub" }], routes: { r1: {} }, consumers: [] }),
+          json: async () => serverConfig,
         });
       }
       return Promise.resolve({ ok: true, json: async () => ({}) });
@@ -123,7 +137,7 @@ describe("import-export", () => {
       targetPublisherName: "orders_http",
     });
 
-    expect(window.appConfig.publishers[0].name).toBe("saved_pub");
+    expect(window.appConfig.publishers[0].name).toBe("incoming");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "/config",
       expect.objectContaining({ method: "POST" }),
@@ -154,5 +168,49 @@ describe("import-export", () => {
     expect(click).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
     createElementSpy.mockRestore();
+  });
+
+  test("app config import merges entries and keeps existing data", async () => {
+    window.appConfig = {
+      publishers: [{ name: "existing_pub" }],
+      consumers: [{ name: "existing_cons", endpoint: { http: {} } }],
+      routes: { existing_route: {} },
+    };
+    const bundle = JSON.stringify({
+      type: "mqb-export",
+      config: {
+        publishers: [{ name: "existing_pub" }, { name: "new_pub" }],
+        consumers: [{ name: "existing_cons", endpoint: { memory: {} } }, { name: "new_cons", endpoint: { http: {} } }],
+        routes: { existing_route: {}, imported_route: {} },
+      },
+      presets: { existing_pub: [{ name: "p1", method: "GET", url: "http://x", payload: "", headers: [] }] },
+      envVars: { baseUrl: "http://x" },
+    });
+
+    const result = await importAppConfigFromJsonText(bundle);
+
+    expect(result.importedPublishers).toBe(2);
+    expect(result.importedConsumers).toBe(2);
+    expect(result.importedRoutes).toBe(2);
+    expect(window.appConfig.publishers.length).toBeGreaterThanOrEqual(3);
+    expect(window.appConfig.consumers.length).toBeGreaterThanOrEqual(3);
+    expect(Object.keys(window.appConfig.routes).length).toBeGreaterThanOrEqual(3);
+    expect(JSON.parse(window.localStorage.getItem("mqb_env_vars") || "{}").baseUrl).toBe("http://x");
+  });
+
+  test("reset app config clears publishers, consumers and routes", async () => {
+    window.appConfig = {
+      publishers: [{ name: "p1" }],
+      consumers: [{ name: "c1", endpoint: { http: {} } }],
+      routes: { r1: {} },
+      default_tab: "consumers",
+    };
+
+    await resetAppConfigToDefaults();
+
+    expect(window.appConfig.publishers).toEqual([]);
+    expect(window.appConfig.consumers).toEqual([]);
+    expect(window.appConfig.routes).toEqual({});
+    expect(window.appConfig.default_tab).toBe("publishers");
   });
 });

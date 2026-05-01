@@ -9,10 +9,14 @@ export function resolveTabFromHash(hash: string): MainTab | null {
   return null;
 }
 
-export function nextHashForTab(currentHash: string, tab: MainTab): string {
+export function nextHashForTab(currentHash: string, tab: MainTab, rememberedIndex?: number): string {
   return currentHash === `#${tab}` || currentHash.startsWith(`#${tab}:`)
     ? currentHash
-    : `#${tab}`;
+    : tab === "config"
+      ? "#config"
+      : typeof rememberedIndex === "number" && Number.isInteger(rememberedIndex) && rememberedIndex >= 0
+        ? `#${tab}:${rememberedIndex}`
+        : `#${tab}`;
 }
 
 export function pickDefaultTab(

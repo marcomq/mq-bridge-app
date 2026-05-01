@@ -42,6 +42,7 @@ export interface ConsumerSidebarItem {
   inputProto: string;
   statusClass: string;
   messageCount: number;
+  throughputLabel: string;
   originalIndex: number;
 }
 

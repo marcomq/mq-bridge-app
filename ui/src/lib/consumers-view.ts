@@ -10,9 +10,10 @@ import {
   normalizeConsumerResponse,
   sanitizeConsumerName,
 } from "./utils";
+import { extractImportedRequests } from "./import-export";
 import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
 import { consumersPanelState } from "./stores";
-import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
+import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 
 export let restoreConsumerStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showConsumerMessageDetails: (name: string, msgIdx: number) => void = () => {};
@@ -29,12 +30,17 @@ export let updateConsumerResponseHeader: (index: number, field: "key" | "value",
 export let toggleConsumerResponseHeader: (index: number, enabled: boolean) => void = () => {};
 export let removeConsumerResponseHeader: (index: number) => void = () => {};
 export let updateConsumerResponsePayload: (value: string) => void = () => {};
+export let importAsyncApiToConsumerAction: (jsonText: string) => void | Promise<void> = () => {};
+export let importMqbToConsumerAction: (jsonText: string) => void | Promise<void> = () => {};
 
 type ConsumerMessage = {
   payload: unknown;
   metadata?: Record<string, string>;
   time?: string;
 };
+
+const MAX_FILTERED_CONSUMER_MESSAGES = 1000;
+const MAX_UNFILTERED_CONSUMER_MESSAGES = 100;
 
 type ConsumerStatus = {
   running: boolean;
@@ -110,6 +116,36 @@ const RESPONSE_CAPABLE_CONSUMER_TYPES = new Set([
 
 export { sanitizeConsumerName, normalizeConsumerNames };
 
+export function normalizeConsumerMessage(raw: unknown, fallbackTime = new Date().toISOString()): ConsumerMessage {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    const looksWrapped =
+      Object.prototype.hasOwnProperty.call(record, "payload") ||
+      Object.prototype.hasOwnProperty.call(record, "metadata") ||
+      Object.prototype.hasOwnProperty.call(record, "time");
+
+    if (looksWrapped) {
+      const metadata =
+        record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
+          ? Object.fromEntries(
+              Object.entries(record.metadata as Record<string, unknown>).map(([key, value]) => [key, String(value)]),
+            )
+          : undefined;
+
+      return {
+        payload: Object.prototype.hasOwnProperty.call(record, "payload") ? record.payload : raw,
+        metadata,
+        time: typeof record.time === "string" ? record.time : fallbackTime,
+      };
+    }
+  }
+
+  return {
+    payload: raw,
+    time: fallbackTime,
+  };
+}
+
 function extractUuidV7Timestamp(idStr: string): string | null {
   try {
     const hex = idStr.replace(/-/g, "");
@@ -130,6 +166,47 @@ function createDefaultConsumerEndpoint(endpointType: string): Record<string, unk
     middlewares: defaultMetricsMiddleware(),
     [endpointType]: {},
   };
+}
+
+function ensureConsumerEndpointDefaults(endpoint: unknown): Record<string, unknown> {
+  if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
+    return createDefaultConsumerEndpoint("http");
+  }
+  const endpointRecord = endpoint as Record<string, unknown>;
+  const endpointType = Object.keys(endpointRecord).find((key) => key !== "middlewares") || "http";
+  const normalized = {
+    ...createDefaultConsumerEndpoint(endpointType),
+    ...endpointRecord,
+  };
+  if (!("middlewares" in normalized)) {
+    normalized.middlewares = defaultMetricsMiddleware();
+  }
+  return normalized;
+}
+
+function splitConsumerListenAddress(rawUrl: string): { url: string; path?: string } {
+  const value = String(rawUrl || "").trim();
+  if (!value) return { url: "0.0.0.0:8080" };
+  const fromTemplate = value.match(/^\$\{[^}]+\}(\/.*)?$/);
+  if (fromTemplate) {
+    const templatePath = (fromTemplate[1] || "").trim();
+    return {
+      url: "0.0.0.0:8080",
+      path: templatePath || undefined,
+    };
+  }
+  try {
+    const parsed = new URL(value);
+    const protocolDefaultPort = parsed.protocol === "https:" ? "443" : "80";
+    const port = parsed.port || protocolDefaultPort;
+    const path = `${parsed.pathname || "/"}${parsed.search || ""}`;
+    return {
+      url: `0.0.0.0:${port}`,
+      path: path && path !== "/" ? path : undefined,
+    };
+  } catch {
+    return { url: value };
+  }
 }
 
 function consumerSupportsCustomResponse(consumer: Partial<ConsumerConfig> | null | undefined): boolean {
@@ -153,6 +230,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   }
   state.consumer_poll_timer = null;
   state.consumer_poll_nonce = (state.consumer_poll_nonce || 0) + 1;
+  (appWindow() as any)._mqb_consumer_poll_timer = null;
+  (appWindow() as any)._mqb_consumer_poll_nonce = state.consumer_poll_nonce;
   const pollNonce = state.consumer_poll_nonce;
 
   let currentIdx = 0;
@@ -184,13 +263,23 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   let consumerMessages: Record<string, ConsumerMessage[]> = {};
   try {
     const parsed = JSON.parse(localStorage.getItem(MSG_STORAGE_KEY) || "{}");
-    consumerMessages = parsed && typeof parsed === "object" ? (parsed as Record<string, ConsumerMessage[]>) : {};
+    consumerMessages = parsed && typeof parsed === "object"
+      ? Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>).map(([name, messages]) => [
+            name,
+            Array.isArray(messages) ? messages.map((message) => normalizeConsumerMessage(message)) : [],
+          ]),
+        )
+      : {};
   } catch {
     consumerMessages = {};
   }
   const saveMessages = () => localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
 
   const consumerStatus: Record<string, ConsumerStatus> = {};
+  const consumerThroughput: Record<string, number> = {};
+  const consumerRateSamples: Record<string, { timestampMs: number; total: number }> = {};
+  const consumerMessageSequences: Record<string, number> = {};
   const consumerViewState: Record<number, { responseHeaders: ConsumerResponseHeaderRow[] }> = {};
   const syncSavedConsumerNames = (source: ConsumerConfig[]) => {
     savedConsumerNames = new Set((source || []).map((consumer) => consumer.name));
@@ -293,6 +382,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           inputProto: getConsumerInputType(consumer).toUpperCase(),
           statusClass,
           messageCount: consumerMessages[consumer.name]?.length || 0,
+          throughputLabel: status?.running
+            ? `${(consumerThroughput[consumer.name] || 0).toFixed(1)} msg/s`
+            : "",
           originalIndex: index,
         };
       }),
@@ -325,33 +417,39 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     if (state.consumer_poll_nonce !== pollNonce) return;
     if (state.consumer_poll_timer) clearTimeout(state.consumer_poll_timer);
     state.consumer_poll_timer = appWindow().setTimeout(pollLoop, delayMs);
+    (appWindow() as any)._mqb_consumer_poll_timer = state.consumer_poll_timer;
   };
 
-  const fetchConsumerStatus = async (name: string) => {
-    if (!isSavedConsumer(name)) {
-      consumerStatus[name] = { running: false, status: { healthy: false }, unsaved: true };
-      return;
+  const syncRuntimeConsumerStatuses = () => {
+    const runtimeConsumers =
+      (getMqbState().runtime_status?.consumers || {}) as Record<
+        string,
+        { running?: boolean; status?: { healthy?: boolean; error?: string }; message_sequence?: number }
+      >;
+
+    for (const existingName of Object.keys(consumerStatus)) {
+      if (!(config.consumers || []).some((consumer) => consumer.name === existingName)) {
+        delete consumerStatus[existingName];
+        delete consumerThroughput[existingName];
+        delete consumerRateSamples[existingName];
+        delete consumerMessageSequences[existingName];
+      }
     }
 
-    try {
-      const response = await fetch(`/consumer-status?consumer=${encodeURIComponent(name)}`);
-      if (response.ok) {
-        consumerStatus[name] = (await response.json()) as ConsumerStatus;
-      } else if (response.status === 404) {
-        savedConsumerNames.delete(name);
+    for (const consumer of config.consumers || []) {
+      const name = consumer.name;
+      if (!isSavedConsumer(name)) {
         consumerStatus[name] = { running: false, status: { healthy: false }, unsaved: true };
-      } else {
-        const message = (await response.text()) || "Unable to fetch consumer status";
-        consumerStatus[name] = {
-          running: false,
-          status: { healthy: false, error: message.replace(/^Internal Server Error:\s*/i, "") },
-        };
+        continue;
       }
-    } catch (error) {
-      console.error("Error fetching status:", error);
+
+      const runtimeConsumer = runtimeConsumers[name];
       consumerStatus[name] = {
-        running: false,
-        status: { healthy: false, error: "Unable to fetch consumer status" },
+        running: Boolean(runtimeConsumer?.running),
+        status: {
+          healthy: Boolean(runtimeConsumer?.status?.healthy),
+          ...(runtimeConsumer?.status?.error ? { error: runtimeConsumer.status.error } : {}),
+        },
       };
     }
   };
@@ -367,16 +465,20 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     if (consumers.length === 0) {
       currentIdx = 0;
       selectedMessageIndex = null;
+      getMqbState().last_consumer_idx = 0;
+      (appWindow() as any)._mqb_last_consumer_idx = 0;
       syncConsumersPanelState();
       return;
     }
     currentIdx = Math.min(Math.max(0, idx), consumers.length - 1);
+    getMqbState().last_consumer_idx = currentIdx;
+    (appWindow() as any)._mqb_last_consumer_idx = currentIdx;
     selectedMessageIndex = null;
     syncConsumersPanelState();
   };
 
   const refreshConsumerStatuses = async () => {
-    await Promise.all((config.consumers || []).map((consumer) => fetchConsumerStatus(consumer.name)));
+    syncRuntimeConsumerStatuses();
     syncConsumersPanelState();
     renderLiveLog();
   };
@@ -532,6 +634,69 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     await restoreConsumerStateFromView(nextIdx);
   };
 
+  const requestToHttpConsumer = (request: {
+    name: string;
+    method: string;
+    url: string;
+  }) => {
+    const currentNames = (config.consumers || []).map((consumer) => consumer.name);
+    const baseName = String(request.name || "http")
+      .trim()
+      .replace(/\s+/g, "_")
+      .toLowerCase() || "http";
+    const name = nextUniqueName(
+      sanitizeConsumerName(baseName),
+      currentNames,
+    );
+    const listen = splitConsumerListenAddress(request.url || "");
+    const httpConfig: Record<string, unknown> = {
+      url: listen.url,
+      method: request.method || "POST",
+    };
+    if (listen.path) {
+      httpConfig.path = listen.path;
+    }
+    return {
+      name,
+      endpoint: ensureConsumerEndpointDefaults({
+        middlewares: defaultMetricsMiddleware(),
+        http: httpConfig,
+      }),
+      comment: "",
+      response: null,
+    } as ConsumerConfig;
+  };
+
+  const persistImportedConsumers = async (importedConsumers: ConsumerConfig[]) => {
+    if (importedConsumers.length === 0) {
+      throw new Error("No consumers found in import file.");
+    }
+
+    const firstImportedName = importedConsumers[0]?.name || "";
+    config.consumers.push(
+      ...importedConsumers.map((consumer) => ({
+        ...consumer,
+        endpoint: ensureConsumerEndpointDefaults(consumer.endpoint),
+      })),
+    );
+    const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
+    if (!saved?.consumers) {
+      throw new Error("Failed to save imported consumers.");
+    }
+
+    config.consumers = saved.consumers;
+    mqbApp.config<ConsumersAppConfig>().consumers = saved.consumers;
+    syncSavedConsumerNames(saved.consumers || []);
+    await initConsumers(config, schema);
+
+    const nextIdx = config.consumers.findIndex((consumer) => consumer.name === firstImportedName);
+    if (nextIdx >= 0) {
+      await restoreConsumerStateFromView(nextIdx, { tab: "definition" });
+    } else if (config.consumers.length > 0) {
+      await restoreConsumerStateFromView(config.consumers.length - 1, { tab: "definition" });
+    }
+  };
+
   const syncCurrentConsumerResponse = (response: { headers: Record<string, string>; payload: string } | null) => {
     if (!config.consumers[currentIdx]) return;
     config.consumers[currentIdx].response = response;
@@ -612,7 +777,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     try {
       const response = await fetch(`/consumer-${action}?consumer=${encodeURIComponent(targetName)}`, { method: "POST" });
       if (response.ok) {
-        await fetchConsumerStatus(targetName);
+        await appWindow().pollRuntimeStatus();
+        syncRuntimeConsumerStatuses();
         renderLiveLog();
       } else {
         const errorMessage = (await response.text()) || `Failed to ${action} consumer`;
@@ -685,11 +851,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     }
 
     setActiveItem(idx);
+    startPolling();
     await updateUI();
-    const activeConsumer = consumers[currentIdx];
-    if (activeConsumer && isSavedConsumer(activeConsumer.name)) {
-      startPolling();
-    }
 
     const requestedTab = (options.tab || "messages") as "definition" | "response" | "messages";
     activeSubtab =
@@ -718,6 +881,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         sanitizeConsumerName(`${cloned.name}_copy`),
         (config.consumers || []).map((consumer) => consumer.name),
       );
+      cloned.endpoint = ensureConsumerEndpointDefaults(cloned.endpoint);
       config.consumers.push(cloned);
       const nextIdx = config.consumers.length - 1;
       await initConsumers(config, schema);
@@ -743,23 +907,36 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       }
     };
   saveCurrentConsumerAction = async () => {
+      const activeElement = document.activeElement as HTMLElement | null;
+      activeElement?.blur();
       const normalized = normalizeConsumerNames(config.consumers, currentIdx);
       const selectedName = normalized.selectedName;
+      const selectedTab = activeSubtab;
+      config.consumers = (config.consumers || []).map((consumer) => ({
+        ...consumer,
+        endpoint: ensureConsumerEndpointDefaults(consumer.endpoint),
+      }));
       const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
       if (!saved) return;
 
-      mqbApp.config<ConsumersAppConfig>().consumers = saved.consumers;
-      config.consumers = saved.consumers;
+      const normalizedSavedConsumers = (saved.consumers || []).map((consumer) => ({
+        ...consumer,
+        endpoint: ensureConsumerEndpointDefaults(consumer.endpoint),
+      }));
+      mqbApp.config<ConsumersAppConfig>().consumers = normalizedSavedConsumers;
+      config.consumers = normalizedSavedConsumers;
       syncSavedConsumerNames(saved.consumers || []);
       mqbRuntime.markSectionSaved("consumers", saved.consumers);
-      await initConsumers(mqbApp.config<ConsumersAppConfig>(), mqbApp.schema<ConsumersSchemaRoot>());
-
-      const refreshedIdx = (mqbApp.config<ConsumersAppConfig>().consumers || []).findIndex(
+      const targetIdx = (mqbApp.config<ConsumersAppConfig>().consumers || []).findIndex(
         (consumer: ConsumerConfig) => consumer.name === selectedName,
       );
-      if (refreshedIdx !== -1) {
-        await restoreConsumerStateFromView(refreshedIdx, { tab: activeSubtab });
-      }
+      getMqbState().pending_consumer_restore = {
+        idx: targetIdx === -1 ? currentIdx : targetIdx,
+        tab: selectedTab,
+      };
+      await initConsumers(mqbApp.config<ConsumersAppConfig>(), mqbApp.schema<ConsumersSchemaRoot>());
+
+      syncConsumersPanelState();
     };
   selectConsumerSubtab = (tab) => {
     activeSubtab = tab === "response" && !consumerSupportsCustomResponse(consumers[currentIdx]) ? "definition" : tab;
@@ -825,9 +1002,62 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     persistCurrentConsumerResponse(getConsumerResponseRows(currentIdx), value);
   };
 
+  importAsyncApiToConsumerAction = async (jsonText: string) => {
+    const imported = extractImportedRequests(jsonText);
+    if (imported.kind !== "asyncapi") {
+      throw new Error("Selected file is not a valid AsyncAPI JSON file.");
+    }
+    const importedConsumers = imported.requests.map((request) =>
+      requestToHttpConsumer({
+        name: request.name,
+        method: request.method,
+        url: request.url,
+      }),
+    );
+    await persistImportedConsumers(importedConsumers);
+  };
+
+  importMqbToConsumerAction = async (jsonText: string) => {
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+    const type = String(parsed?.type || "");
+    if (type !== "mqb-export" && type !== "mqb-config") {
+      throw new Error("Selected file is not a valid mq-bridge export/config file.");
+    }
+
+    const importedConfig = parsed?.config && typeof parsed.config === "object"
+      ? (parsed.config as Record<string, unknown>)
+      : parsed;
+    const importedConsumersRaw = Array.isArray(importedConfig.consumers)
+      ? importedConfig.consumers
+      : [];
+    const existingNames = (config.consumers || []).map((consumer) => consumer.name);
+    const importedConsumers = importedConsumersRaw
+      .filter((row) => row && typeof row === "object")
+      .map((row) => {
+        const consumer = cloneJson(row as ConsumerConfig);
+        const fallbackName = String(consumer.name || "imported_consumer");
+        consumer.name = nextUniqueName(
+          sanitizeConsumerName(fallbackName),
+          [...existingNames, ...importedConsumersRaw.map((r: any) => String(r?.name || ""))],
+        );
+        consumer.endpoint = ensureConsumerEndpointDefaults(consumer.endpoint);
+        if (!("response" in consumer)) {
+          consumer.response = null;
+        }
+        existingNames.push(consumer.name);
+        return consumer;
+      });
+
+    await persistImportedConsumers(importedConsumers);
+  };
+
   const pollLoop = async () => {
     if (state.consumer_poll_nonce !== pollNonce) return;
-    if (state.active_tab !== "consumers") return;
+    const onConsumersTab = state.active_tab === "consumers" || currentHash().startsWith("#consumers");
+    if (!onConsumersTab) {
+      schedulePoll(2000);
+      return;
+    }
 
     try {
       const activeConsumer = (config.consumers || [])[currentIdx];
@@ -836,42 +1066,99 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         return;
       }
 
-      await refreshConsumerStatuses();
-
       const name = activeConsumer.name;
-      if (!consumerStatus[name]?.running) {
-        schedulePoll(2000);
+      syncRuntimeConsumerStatuses();
+      const runtimeConsumer = getMqbState().runtime_status?.consumers?.[name];
+      const knownSequence = consumerMessageSequences[name] || 0;
+      const nextSequence = runtimeConsumer?.message_sequence || 0;
+
+      syncConsumersPanelState();
+      renderLiveLog();
+
+      if (nextSequence <= knownSequence) {
+        schedulePoll(runtimeConsumer?.running ? 1000 : 5000);
         return;
       }
 
       const response = await fetch(`/messages?consumer=${encodeURIComponent(name)}`);
       if (response.ok) {
-        const data = (await response.json()) as Record<string, ConsumerMessage[]>;
+        const data = (await response.json()) as Record<string, unknown[]>;
         let hasNew = false;
-        for (const [sourceName, messages] of Object.entries(data)) {
+        const selectedMessages: ConsumerMessage[] = [];
+        const maxMessages =
+          Object.keys(data).length <= 1 ? MAX_FILTERED_CONSUMER_MESSAGES : MAX_UNFILTERED_CONSUMER_MESSAGES;
+        for (const [sourceName, rawMessages] of Object.entries(data)) {
+          const messages = Array.isArray(rawMessages)
+            ? rawMessages.map((message) => normalizeConsumerMessage(message))
+            : [];
           if (!consumerMessages[sourceName]) consumerMessages[sourceName] = [];
-          consumerMessages[sourceName] = [...messages, ...consumerMessages[sourceName]].slice(0, 1000);
+          consumerMessages[sourceName] = [...messages, ...consumerMessages[sourceName]].slice(0, maxMessages);
           hasNew = hasNew || messages.length > 0;
+          if (sourceName !== name && messages.length > 0) {
+            selectedMessages.push(...messages);
+          }
         }
+        if ((!data[name] || data[name].length === 0) && selectedMessages.length > 0) {
+          if (!consumerMessages[name]) consumerMessages[name] = [];
+          consumerMessages[name] = [...selectedMessages, ...consumerMessages[name]].slice(0, maxMessages);
+          hasNew = true;
+        }
+        consumerMessageSequences[name] = nextSequence;
         if (hasNew) {
           saveMessages();
         }
 
+        const nowMs = Date.now();
+        for (const [sourceName, sourceMessages] of Object.entries(data)) {
+          const prev = consumerRateSamples[sourceName];
+          const elapsedSec = Math.max((nowMs - (prev?.timestampMs || nowMs - 1000)) / 1000, 0.001);
+          consumerThroughput[sourceName] = sourceMessages.length / elapsedSec;
+          consumerRateSamples[sourceName] = {
+            timestampMs: nowMs,
+            total: (consumerMessages[sourceName]?.length || 0),
+          };
+        }
+        if (!data[name]) {
+          const total = consumerMessages[name]?.length || 0;
+          const prev = consumerRateSamples[name];
+          if (!prev) {
+            consumerRateSamples[name] = { timestampMs: nowMs, total };
+            consumerThroughput[name] = 0;
+          } else {
+            const elapsedSec = Math.max((nowMs - prev.timestampMs) / 1000, 0.001);
+            const delta = Math.max(total - prev.total, 0);
+            consumerThroughput[name] = delta / elapsedSec;
+            consumerRateSamples[name] = { timestampMs: nowMs, total };
+          }
+        }
+
         renderLiveLog();
         syncConsumersPanelState();
+        schedulePoll(hasNew ? 1000 : 5000);
+        return;
       }
     } catch (error) {
       console.error("Polling error:", error);
     }
 
-    schedulePoll(1000);
+    schedulePoll(5000);
   };
 
   const startPolling = () => {
-    schedulePoll(0);
+    void pollLoop();
+  };
+
+  appWindow().renderConsumersRuntimeStatus = () => {
+    syncRuntimeConsumerStatuses();
+    syncConsumersPanelState();
+    renderLiveLog();
+    if (state.active_tab === "consumers" || currentHash().startsWith("#consumers")) {
+      schedulePoll(0);
+    }
   };
 
   state.consumers_initialized = true;
+  (appWindow() as any)._mqb_consumers_initialized = true;
   appWindow().restoreConsumerState = restoreConsumerState;
   restoreConsumerStateFromView = restoreConsumerState;
 
@@ -884,14 +1171,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const initialTab = pendingRestore?.tab || "messages";
 
     setActiveItem(initialIdx);
+    startPolling();
     await updateUI();
     if (!hadUnsavedChangesBeforeInit) {
       settleInitialDirtyBaseline();
-    }
-
-    const initialConsumer = consumers[currentIdx];
-    if (initialConsumer && isSavedConsumer(initialConsumer.name)) {
-      startPolling();
     }
 
     selectConsumerSubtab(initialTab as "definition" | "response" | "messages");

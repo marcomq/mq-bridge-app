@@ -17,6 +17,7 @@ describe("runtime-status", () => {
         active_consumers: ["a", "b"],
         active_routes: ["r1"],
         route_throughput: {},
+        consumers: {},
       }),
     ).toBe("1 active route • 2 active consumers");
   });

@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
-import { initRoutes, toggleCurrentRouteAction } from "../../ui/src/lib/routes-view";
+import { initRoutes, restoreRouteStateFromView, toggleCurrentRouteAction } from "../../ui/src/lib/routes-view";
 import { routesPanelState } from "../../ui/src/lib/stores";
 
 function createHyperscriptNode(tag: string, props?: Record<string, unknown>, ...children: unknown[]) {
@@ -167,6 +167,44 @@ describe("initRoutes", () => {
     await toggleCurrentRouteAction(document.getElementById("route-toggle"));
 
     expect(window.saveConfigSection).toHaveBeenCalled();
+  });
+
+  test("restoring a route updates the remembered index and hash", async () => {
+    await initRoutes(
+      {
+        routes: {
+          alpha: {
+            enabled: true,
+            input: { middlewares: [{ metrics: {} }], http: {} },
+            output: { middlewares: [{ metrics: {} }], kafka: {} },
+          },
+          beta: {
+            enabled: true,
+            input: { middlewares: [{ metrics: {} }], memory: {} },
+            output: { middlewares: [{ metrics: {} }], mqtt: {} },
+          },
+        },
+      },
+      {
+        properties: {
+          routes: {
+            additionalProperties: {
+              properties: {
+                name: { type: "string" },
+                input: { type: "object" },
+                output: { type: "object" },
+              },
+            },
+          },
+        },
+      },
+    );
+
+    await restoreRouteStateFromView(1);
+
+    expect(get(routesPanelState).selectedIndex).toBe(1);
+    expect(window.location.hash).toBe("#routes:1");
+    expect((window as any)._mqb_last_route_idx).toBe(1);
   });
 
   test("injects an editable route name field when schema additionalProperties omit it", async () => {

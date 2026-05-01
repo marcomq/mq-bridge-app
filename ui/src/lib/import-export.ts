@@ -127,6 +127,135 @@ export function exportConfigOnly() {
   triggerJsonDownload(`mqb-config-${isoDateCompact()}.json`, payload);
 }
 
+function nextUniqueName(base: string, existing: Set<string>) {
+  let index = 1;
+  let candidate = base;
+  while (existing.has(candidate)) {
+    candidate = `${base}_${index++}`;
+  }
+  existing.add(candidate);
+  return candidate;
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function normalizeNamedArray<T extends { name?: unknown }>(value: unknown): Array<T & { name: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const obj = row as Record<string, unknown>;
+      return { ...(obj as T), name: String(obj.name || "") };
+    })
+    .filter((row) => row.name.trim().length > 0);
+}
+
+function mergeNamedEntries(
+  currentRows: Array<Record<string, unknown>>,
+  incomingRows: Array<Record<string, unknown>>,
+) {
+  const existingNames = new Set(currentRows.map((row) => String(row?.name || "")));
+  const merged = [...currentRows];
+  for (const raw of incomingRows) {
+    const row = asObject(raw);
+    const baseName = String(row.name || "imported");
+    const name = existingNames.has(baseName)
+      ? nextUniqueName(baseName, existingNames)
+      : (existingNames.add(baseName), baseName);
+    merged.push({ ...row, name });
+  }
+  return merged;
+}
+
+function mergeRoutes(
+  currentRoutes: Record<string, unknown>,
+  incomingRoutes: Record<string, unknown>,
+) {
+  const merged = { ...currentRoutes };
+  for (const [name, route] of Object.entries(incomingRoutes)) {
+    if (!merged[name]) {
+      merged[name] = route;
+      continue;
+    }
+    let idx = 1;
+    let nextName = `${name}_${idx}`;
+    while (merged[nextName]) {
+      idx += 1;
+      nextName = `${name}_${idx}`;
+    }
+    merged[nextName] = route;
+  }
+  return merged;
+}
+
+export async function importAppConfigFromJsonText(text: string) {
+  const parsed = JSON.parse(text) as unknown;
+  const currentConfig = asObject(structuredClone(mqbApp.config<Record<string, unknown>>()));
+  const currentPublishers = normalizeNamedArray<Record<string, unknown>>(currentConfig.publishers);
+  const currentConsumers = normalizeNamedArray<Record<string, unknown>>(currentConfig.consumers);
+  const currentRoutes = asObject(currentConfig.routes);
+
+  const obj = asObject(parsed);
+  const type = String(obj.type || "");
+  const incomingConfig =
+    type === "mqb-export" || type === "mqb-config"
+      ? asObject(obj.config)
+      : asObject(obj);
+
+  const mergedPublishers = mergeNamedEntries(
+    currentPublishers as Array<Record<string, unknown>>,
+    normalizeNamedArray<Record<string, unknown>>(incomingConfig.publishers) as Array<Record<string, unknown>>,
+  );
+  const mergedConsumers = mergeNamedEntries(
+    currentConsumers as Array<Record<string, unknown>>,
+    normalizeNamedArray<Record<string, unknown>>(incomingConfig.consumers) as Array<Record<string, unknown>>,
+  );
+  const mergedRoutes = mergeRoutes(
+    currentRoutes,
+    asObject(incomingConfig.routes),
+  );
+
+  const nextConfig = {
+    ...currentConfig,
+    ...incomingConfig,
+    publishers: mergedPublishers,
+    consumers: mergedConsumers,
+    routes: mergedRoutes,
+  };
+
+  const importedPresets = sanitizePresets(obj.presets);
+  const mergedEnvVars = { ...readEnvVarsFromStorage(), ...sanitizeEnvVars(obj.envVars) };
+  let mergedPresets = readPresetsFromStorage();
+  for (const [publisherName, rows] of Object.entries(importedPresets)) {
+    mergedPresets = mergePresets(mergedPresets, publisherName, rows);
+  }
+  writePresetsToStorage(mergedPresets);
+  writeEnvVarsToStorage(mergedEnvVars);
+
+  await saveImportedConfig(nextConfig);
+  return {
+    importedPublishers: normalizeNamedArray<Record<string, unknown>>(incomingConfig.publishers).length,
+    importedConsumers: normalizeNamedArray<Record<string, unknown>>(incomingConfig.consumers).length,
+    importedRoutes: Object.keys(asObject(incomingConfig.routes)).length,
+  };
+}
+
+export async function resetAppConfigToDefaults() {
+  const currentConfig = asObject(structuredClone(mqbApp.config<Record<string, unknown>>()));
+  const nextConfig = {
+    ...currentConfig,
+    routes: {},
+    consumers: [],
+    publishers: [],
+    default_tab: "publishers",
+  };
+  await saveImportedConfig(nextConfig);
+}
+
 export function exportPresetsOnly() {
   const payload = {
     type: "mqb-presets",

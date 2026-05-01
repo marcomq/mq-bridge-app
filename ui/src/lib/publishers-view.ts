@@ -893,7 +893,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
 
   const setActiveItem = (idx: number) => {
-    currentIdx = idx;
+    currentIdx = Math.min(Math.max(0, idx), Math.max(publishers.length - 1, 0));
+    getMqbState().last_publisher_idx = currentIdx;
+    (appWindow() as any)._mqb_last_publisher_idx = currentIdx;
     activeSubtab = "payload";
     syncPublishersPanelState();
   };
@@ -1738,23 +1740,68 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   importMqbToPublisherAction = async (jsonText: string) => {
     const parsed = JSON.parse(jsonText) as Record<string, unknown>;
     const type = String(parsed?.type || "");
-    if (type !== "mqb-export" && type !== "mqb-presets") {
+    if (type !== "mqb-export" && type !== "mqb-presets" && type !== "mqb-config") {
       throw new Error("Selected file is not a valid mq-bridge export/presets file.");
     }
 
-    const publisher = publishers[currentIdx];
-    const targetPublisherName = publisher?.name || "";
-    const result = await importFromJsonText(jsonText, {
-      includeConfig: type === "mqb-export",
-      includePresets: true,
-      targetPublisherName,
-    });
-    if (type === "mqb-export") {
-      initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
-    } else {
+    if (type === "mqb-presets") {
+      const publisher = publishers[currentIdx];
+      const targetPublisherName = publisher?.name || "";
+      const result = await importFromJsonText(jsonText, {
+        includeConfig: false,
+        includePresets: true,
+        targetPublisherName,
+      });
       syncPublishersPanelState();
+      return result;
     }
-    return result;
+
+    const incomingConfig =
+      parsed?.config && typeof parsed.config === "object"
+        ? (parsed.config as Record<string, unknown>)
+        : parsed;
+    const importedPublishersRaw = Array.isArray(incomingConfig.publishers)
+      ? incomingConfig.publishers
+      : [];
+    if (importedPublishersRaw.length === 0) {
+      throw new Error("No publishers found in import file.");
+    }
+
+    const existingNames = new Set((config.publishers || []).map((publisher) => publisher.name));
+    const importedPublishers = importedPublishersRaw
+      .filter((row) => row && typeof row === "object")
+      .map((row) => {
+        const publisher = cloneJson(row as PublisherConfig);
+        const baseName = String(publisher.name || "imported_publisher").trim() || "imported_publisher";
+        let name = baseName;
+        let idx = 1;
+        while (existingNames.has(name)) {
+          name = `${baseName}_${idx++}`;
+        }
+        existingNames.add(name);
+        publisher.name = name;
+        publisher.comment = String(publisher.comment || "");
+        publisher.endpoint = publisher.endpoint && typeof publisher.endpoint === "object"
+          ? publisher.endpoint
+          : createDefaultPublisherEndpoint("http");
+        return publisher;
+      });
+
+    config.publishers.push(...importedPublishers);
+    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false);
+    if (!saved?.publishers) {
+      throw new Error("Failed to save imported publishers.");
+    }
+
+    config.publishers = saved.publishers;
+    mqbApp.config<PublishersAppConfig>().publishers = saved.publishers;
+    initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
+    const firstImportedName = importedPublishers[0]?.name;
+    const idx = (config.publishers || []).findIndex((publisher) => publisher.name === firstImportedName);
+    if (idx >= 0) {
+      restorePublisherStateFromView(idx, { tab: "definition" });
+    }
+    return { importedKind: type, importedPublishers: importedPublishers.length };
   };
 
   presetToPublisherAction = async (presetIndex: number) => {
@@ -1862,6 +1909,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   }
 
   state.publishers_initialized = true;
+  (appWindow() as any)._mqb_publishers_initialized = true;
   appWindow().restorePublisherState = restorePublisherState;
   restorePublisherStateFromView = restorePublisherState;
 }

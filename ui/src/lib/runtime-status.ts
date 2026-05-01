@@ -1,15 +1,26 @@
 export type MainTab = "publishers" | "consumers" | "routes" | "config";
 
+export interface RuntimeConsumerState {
+  running: boolean;
+  status: {
+    healthy: boolean;
+    error?: string;
+  };
+  message_sequence: number;
+}
+
 export interface RuntimeStatus {
   active_consumers: string[];
   active_routes: string[];
   route_throughput: Record<string, number>;
+  consumers: Record<string, RuntimeConsumerState>;
 }
 
 export const EMPTY_RUNTIME_STATUS: RuntimeStatus = {
   active_consumers: [],
   active_routes: [],
   route_throughput: {},
+  consumers: {},
 };
 
 export function isRuntimeConnected(status: RuntimeStatus): boolean {
@@ -51,7 +62,7 @@ interface RuntimeStatusPollerOptions {
 export function createRuntimeStatusPoller({
   fetchImpl = fetch,
   endpoint = "/runtime-status",
-  intervalMs = 2000,
+  intervalMs = 1000,
   onStatus,
 }: RuntimeStatusPollerOptions = {}): RuntimeStatusPoller {
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -84,6 +95,37 @@ export function createRuntimeStatusPoller({
     const activeConsumersRaw = status.active_consumers ?? status.activeConsumers;
     const activeRoutesRaw = status.active_routes ?? status.activeRoutes;
     const throughputRaw = status.route_throughput ?? status.routeThroughput;
+    const consumersRaw = status.consumers ?? status.consumer_statuses ?? status.consumerStatuses;
+
+    const consumers = consumersRaw && typeof consumersRaw === "object"
+      ? Object.fromEntries(
+          Object.entries(consumersRaw as Record<string, unknown>).map(([name, value]) => {
+            const rawConsumer = value && typeof value === "object"
+              ? (value as Record<string, unknown>)
+              : {};
+            const rawStatus = rawConsumer.status && typeof rawConsumer.status === "object"
+              ? (rawConsumer.status as Record<string, unknown>)
+              : {};
+
+            return [
+              String(name),
+              {
+                running: Boolean(rawConsumer.running),
+                status: {
+                  healthy: Boolean(rawStatus.healthy),
+                  ...(typeof rawStatus.error === "string" && rawStatus.error ? { error: rawStatus.error } : {}),
+                },
+                message_sequence:
+                  typeof rawConsumer.message_sequence === "number"
+                    ? rawConsumer.message_sequence
+                    : typeof rawConsumer.messageSequence === "number"
+                      ? rawConsumer.messageSequence
+                      : 0,
+              } satisfies RuntimeConsumerState,
+            ];
+          }),
+        )
+      : {};
 
     return {
       active_consumers: Array.isArray(activeConsumersRaw)
@@ -96,47 +138,8 @@ export function createRuntimeStatusPoller({
         throughputRaw && typeof throughputRaw === "object"
           ? (throughputRaw as Record<string, number>)
           : {},
+      consumers,
     };
-  };
-
-  const detectRunningConsumers = async (): Promise<string[]> => {
-    try {
-      let consumers: Array<{ name?: string }> = [];
-
-      const configResponse = await fetchImpl("/config", { cache: "no-store" });
-      if (configResponse.ok) {
-        const config = (await configResponse.json()) as { consumers?: Array<{ name?: string }> };
-        consumers = Array.isArray(config?.consumers) ? config.consumers : [];
-      }
-
-      if (consumers.length === 0) {
-        const runtimeConfig = (window as unknown as { appConfig?: { consumers?: Array<{ name?: string }> } }).appConfig;
-        consumers = Array.isArray(runtimeConfig?.consumers) ? runtimeConfig.consumers : [];
-      }
-      if (consumers.length === 0) return [];
-
-      const checks = await Promise.all(
-        consumers
-          .map((consumer) => String(consumer?.name || "").trim())
-          .filter((name) => name.length > 0)
-          .map(async (name) => {
-            try {
-              const response = await fetchImpl(`/consumer-status?consumer=${encodeURIComponent(name)}`, {
-                cache: "no-store",
-              });
-              if (!response.ok) return null;
-              const payload = (await response.json()) as { running?: boolean };
-              return payload?.running ? name : null;
-            } catch {
-              return null;
-            }
-          }),
-      );
-
-      return checks.filter((name): name is string => Boolean(name));
-    } catch {
-      return [];
-    }
   };
 
   const publish = (status: RuntimeStatus) => {
@@ -152,23 +155,8 @@ export function createRuntimeStatusPoller({
           throw new Error(`runtime-status ${response.status}`);
         }
 
-        const status = normalizeStatus(await response.json());
-        if (status.active_consumers.length === 0 && status.active_routes.length === 0) {
-          const fallbackConsumers = await detectRunningConsumers();
-          if (fallbackConsumers.length > 0) {
-            status.active_consumers = fallbackConsumers;
-          }
-        }
-        return publish(status);
+        return publish(normalizeStatus(await response.json()));
       } catch {
-        const fallbackConsumers = await detectRunningConsumers();
-        if (fallbackConsumers.length > 0) {
-          return publish({
-            active_consumers: fallbackConsumers,
-            active_routes: [],
-            route_throughput: {},
-          });
-        }
         return publish({ ...EMPTY_RUNTIME_STATUS });
       }
     },

@@ -84,9 +84,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // --- Logic for default addresses ---
-    // If there is no config (routes are empty), enable ui on 9091 and metrics on 9090.
-    // If there is a config, use the addr of the config (empty means deactivated).
-    if config.routes.is_empty() && config.consumers.is_empty() {
+    // When no persisted config file exists (common in http/no-tauri dev mode), ensure
+    // UI + metrics are reachable with sane defaults.
+    let has_persisted_config = std::path::Path::new(&config_file_path).exists();
+    if !has_persisted_config || (config.routes.is_empty() && config.consumers.is_empty()) {
         if config.metrics_addr.is_empty() {
             config.metrics_addr = "0.0.0.0:9090".to_string();
         }

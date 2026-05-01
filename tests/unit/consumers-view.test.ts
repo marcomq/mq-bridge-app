@@ -4,8 +4,12 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import {
   addConsumerResponseHeader,
+  importAsyncApiToConsumerAction,
+  importMqbToConsumerAction,
   initConsumers,
   normalizeConsumerNames,
+  normalizeConsumerMessage,
+  restoreConsumerStateFromView,
   removeConsumerResponseHeader,
   sanitizeConsumerName,
   saveCurrentConsumerAction,
@@ -89,11 +93,23 @@ function installConsumerWindowStubs() {
   window.mqbPrompt = vi.fn().mockResolvedValue(null);
   window.mqbChoose = vi.fn().mockResolvedValue(null);
   window.switchMain = vi.fn();
+  window.pollRuntimeStatus = vi.fn().mockImplementation(async () => {
+    const current = (window._mqb_runtime_status || {
+      active_consumers: [],
+      active_routes: [],
+      route_throughput: {},
+      consumers: {},
+    }) as any;
+    window._mqb_runtime_status = current;
+    return current;
+  });
   window._mqb_active_tab = "consumers";
+  window.location.hash = "#consumers:0";
   window._mqb_runtime_status = {
     active_consumers: [],
     active_routes: [],
     route_throughput: {},
+    consumers: {},
   };
   window._mqb_saved_sections = {};
   window.appConfig = { consumers: [], routes: {} };
@@ -232,6 +248,200 @@ describe("initConsumers", () => {
     expect(get(consumersPanelState).responsePayload).toBe("{\"ok\":true}");
   });
 
+  test("polling refreshes consumer status and reschedules message polling", async () => {
+    const scheduled: Array<() => void | Promise<void>> = [];
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler) => {
+      if (typeof handler === "function") {
+        scheduled.push(handler as () => void);
+      }
+      return 1 as any;
+    }) as any);
+    window._mqb_runtime_status = {
+      active_consumers: ["orders_http"],
+      active_routes: [],
+      route_throughput: {},
+      consumers: {
+        orders_http: {
+          running: true,
+          status: { healthy: true },
+          message_sequence: 1,
+        },
+      },
+    };
+
+    globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/messages")) {
+        return {
+          ok: true,
+          json: async () => ({
+            orders_http: [{ ok: true, source: "memory" }],
+          }),
+        } as any;
+      }
+      return {
+        ok: true,
+        json: async () => ({}),
+      } as any;
+    }) as any;
+
+    try {
+      await initConsumers(
+        {
+          consumers: [
+            {
+              name: "orders_http",
+              endpoint: { middlewares: [{ metrics: {} }], http: {} },
+              response: null,
+            },
+          ],
+          routes: {},
+          publishers: [],
+        },
+        {
+          properties: {
+            consumers: {
+              items: {
+                properties: {
+                  response: {},
+                },
+              },
+            },
+          },
+          $defs: {
+            HttpConfig: {
+              properties: {
+                custom_headers: {},
+              },
+            },
+          },
+        },
+      );
+      window.renderConsumersRuntimeStatus?.();
+
+      expect(scheduled.length).toBeGreaterThan(0);
+      for (let i = 0; i < 10 && scheduled.length > 0; i += 1) {
+        const callback = scheduled.shift();
+        if (callback) {
+          await callback();
+        }
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(get(consumersPanelState).items[0]?.statusClass).toBe("status-ok");
+      expect(globalThis.fetch).not.toHaveBeenCalledWith("/consumer-status?consumer=orders_http");
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  test("normalizes raw backend message payloads into displayable consumer messages", () => {
+    expect(normalizeConsumerMessage({ ok: true, source: "memory" }, "2026-04-30T12:00:00.000Z")).toEqual({
+      payload: { ok: true, source: "memory" },
+      time: "2026-04-30T12:00:00.000Z",
+    });
+  });
+
+  test("restoring a consumer updates the remembered index and hash", async () => {
+    await initConsumers(
+      {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { middlewares: [{ metrics: {} }], http: {} },
+            response: null,
+          },
+          {
+            name: "events_memory",
+            endpoint: { middlewares: [{ metrics: {} }], memory: { topic: "events" } },
+            response: null,
+          },
+        ],
+        routes: {},
+        publishers: [],
+      },
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    await restoreConsumerStateFromView(1, { tab: "definition" });
+
+    expect(get(consumersPanelState).selectedIndex).toBe(1);
+    expect(window.location.hash).toBe("#consumers:1");
+    expect((window as any)._mqb_last_consumer_idx).toBe(1);
+  });
+
+  test("throughput label is only shown while consumer is running", async () => {
+    globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/consumer-status")) {
+        return {
+          ok: true,
+          json: async () => ({ running: false, status: { healthy: false } }),
+        } as any;
+      }
+      if (url.startsWith("/messages")) {
+        return {
+          ok: true,
+          json: async () => ({ orders_http: [] }),
+        } as any;
+      }
+      return { ok: true, json: async () => ({}) } as any;
+    }) as any;
+
+    await initConsumers(
+      {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { middlewares: [{ metrics: {} }], http: {} },
+            response: null,
+          },
+        ],
+        routes: {},
+        publishers: [],
+      },
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    const state = get(consumersPanelState);
+    expect(state.items[0]?.throughputLabel).toBe("");
+  });
+
   test("keeps editable response header rows in local state and persists filtered headers", async () => {
     const config = {
       consumers: [
@@ -295,23 +505,105 @@ describe("initConsumers", () => {
     expect(config.consumers[0].response).toEqual({ payload: "ready", headers: {} });
   });
 
+  test("imports AsyncAPI requests as http consumers", async () => {
+    const config = {
+      consumers: [],
+      routes: {},
+      publishers: [],
+    };
+    (window.saveConfigSection as any).mockImplementation(async (_section: string, consumers: any[]) => ({ consumers }));
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: { items: {} },
+        },
+        $defs: {
+          HttpConfig: { properties: { custom_headers: {} } },
+        },
+      },
+    );
+
+    const asyncApi = JSON.stringify({
+      asyncapi: "3.0.0",
+      channels: {
+        userSignedUp: { address: "/events/user/signed-up" },
+      },
+      operations: {
+        onUserSignedUp: {
+          action: "receive",
+          channel: { $ref: "#/channels/userSignedUp" },
+          messages: [],
+          title: "User signup event",
+        },
+      },
+      servers: {
+        local: { host: "localhost:3000", protocol: "http" },
+      },
+    });
+
+    await importAsyncApiToConsumerAction(asyncApi);
+
+    expect(config.consumers.length).toBe(1);
+    expect(config.consumers[0].name).toContain("user_signup_event");
+    expect(config.consumers[0].endpoint.http.url).toBe("0.0.0.0:8080");
+    expect(config.consumers[0].endpoint.http.path).toBe("/events/user/signed-up");
+  });
+
+  test("imports mq-bridge config consumers and keeps names unique", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: { url: "0.0.0.0:3000", path: "/orders" } },
+          response: null,
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    (window.saveConfigSection as any).mockImplementation(async (_section: string, consumers: any[]) => ({ consumers }));
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: { items: {} },
+        },
+        $defs: {
+          HttpConfig: { properties: { custom_headers: {} } },
+        },
+      },
+    );
+
+    const mqbImport = JSON.stringify({
+      type: "mqb-export",
+      config: {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { http: { url: "0.0.0.0:4000", path: "/orders/new" } },
+          },
+        ],
+      },
+    });
+
+    await importMqbToConsumerAction(mqbImport);
+
+    expect(config.consumers.length).toBe(2);
+    expect(config.consumers[1].name).toMatch(/^orders_http/);
+    expect(config.consumers[1].name).not.toBe("orders_http");
+    expect(config.consumers[1].endpoint.http.url).toBe("0.0.0.0:4000");
+    expect(config.consumers[1].endpoint.http.path).toBe("/orders/new");
+  });
+
   test("shows starting state while toggling the active consumer", async () => {
     const startRequest = createDeferred<{ ok: boolean }>();
     let statusCallCount = 0;
     const fetchMock = vi.fn().mockImplementation((input: string) => {
       if (input.startsWith("/consumer-start")) {
         return startRequest.promise;
-      }
-
-      if (input.startsWith("/consumer-status")) {
-        statusCallCount += 1;
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            running: statusCallCount > 1,
-            status: { healthy: statusCallCount > 1 },
-          }),
-        });
       }
 
       return Promise.resolve({
@@ -321,6 +613,22 @@ describe("initConsumers", () => {
     });
     globalThis.fetch = fetchMock as any;
     window._mqb_active_tab = "publishers";
+    window.pollRuntimeStatus = vi.fn().mockImplementation(async () => {
+      statusCallCount += 1;
+      window._mqb_runtime_status = {
+        active_consumers: ["orders_http"],
+        active_routes: [],
+        route_throughput: {},
+        consumers: {
+          orders_http: {
+            running: statusCallCount > 0,
+            status: { healthy: statusCallCount > 0 },
+            message_sequence: 0,
+          },
+        },
+      };
+      return window._mqb_runtime_status;
+    });
 
     await initConsumers(
       {
@@ -689,14 +997,14 @@ describe("initConsumers", () => {
       },
     );
 
-    expect(fetchMock).toHaveBeenCalledWith("/consumer-status?consumer=saved_http");
-    expect(fetchMock).not.toHaveBeenCalledWith("/consumer-status?consumer=memory_consumer%202");
+    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer=memory_consumer%202");
   });
 
   test("freezes the initial saved baseline before later local edits", async () => {
     vi.useFakeTimers();
     try {
       window._mqb_active_tab = "publishers";
+      window.location.hash = "#publishers";
       const config = {
         consumers: [
           {
@@ -738,7 +1046,7 @@ describe("initConsumers", () => {
       });
 
       await initPromise;
-      await vi.runAllTimersAsync();
+      await vi.runOnlyPendingTimersAsync();
 
       expect(window.markSectionSaved).toHaveBeenCalledWith("consumers", [
         {

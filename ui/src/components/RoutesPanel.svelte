@@ -1,6 +1,7 @@
 <script lang="ts">
   import { activeMainTab } from "../lib/stores";
   import { routesPanelState } from "../lib/stores";
+  import { getMqbState } from "../lib/runtime-window";
   import {
     addRouteAction,
     cloneCurrentRouteAction,
@@ -21,6 +22,9 @@
   );
 
   function openRoute(index: number) {
+    getMqbState().last_route_idx = index;
+    (window as any)._mqb_last_route_idx = index;
+    window.history.replaceState(null, "", `#routes:${index}`);
     restoreRouteStateFromView(index);
   }
 

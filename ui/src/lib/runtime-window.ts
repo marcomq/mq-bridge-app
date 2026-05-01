@@ -37,6 +37,7 @@ export type MqbState = {
     active_consumers: string[];
     active_routes: string[];
     route_throughput: Record<string, number>;
+    consumers: Record<string, { running: boolean; status: { healthy: boolean; error?: string }; message_sequence: number }>;
   };
   dirty_sections: Record<string, { buttonId: string; getValue: () => unknown; baseline: string }>;
   saved_sections: Record<string, unknown>;
@@ -66,6 +67,7 @@ export function getMqbState(): MqbState {
         active_consumers: [],
         active_routes: [],
         route_throughput: {},
+        consumers: {},
       },
       dirty_sections: w._mqb_dirty_sections ?? {},
       saved_sections: w._mqb_saved_sections ?? {},
@@ -194,13 +196,13 @@ export const mqbApp = {
   },
   init: {
     routes(config: Record<string, any>, schema: Record<string, any>) {
-      appWindow().initRoutes?.(config, schema);
+      return appWindow().initRoutes?.(config, schema);
     },
     consumers(config: Record<string, any>, schema: Record<string, any>) {
-      appWindow().initConsumers?.(config, schema);
+      return appWindow().initConsumers?.(config, schema);
     },
     publishers(config: Record<string, any>, schema: Record<string, any>) {
-      appWindow().initPublishers?.(config, schema);
+      return appWindow().initPublishers?.(config, schema);
     },
   },
   restore: {

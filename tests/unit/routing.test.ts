@@ -13,6 +13,7 @@ describe("routing", () => {
 
   test("preserves detail hash for active tab", () => {
     expect(nextHashForTab("#publishers:5", "publishers")).toBe("#publishers:5");
+    expect(nextHashForTab("#routes:1", "consumers", 3)).toBe("#consumers:3");
     expect(nextHashForTab("#routes:1", "consumers")).toBe("#consumers");
   });
 

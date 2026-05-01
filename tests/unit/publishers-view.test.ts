@@ -5,9 +5,20 @@ import { get } from "svelte/store";
 import {
   applyPublisherPresetAction,
   addPublisherMetadataRow,
+  beautifyPublisherPayloadAction,
+  cloneCurrentPublisherAction,
+  copyCurrentPublisherAction,
   createConsumerEndpointFromPublisherEndpoint,
+  deletePublisherPresetAction,
+  exportPublisherPresetsAction,
+  importAsyncApiToPublisherAction,
+  importMqbToPublisherAction,
   initPublishers,
+  presetToPublisherAction,
+  restorePublisherStateFromView,
+  renamePublisherPresetAction,
   removePublisherMetadataRow,
+  savePublisherPresetAction,
   selectPublisherSubtab,
   togglePublisherMetadataRow,
   updatePublisherMetadataRow,
@@ -166,6 +177,31 @@ describe("initPublishers", () => {
     expect(document.getElementById("pub-main-ui")?.style.display).toBe("none");
   });
 
+  test("falls back safely when persisted publisher localStorage is corrupted", () => {
+    window.localStorage.setItem("mqb_publisher_state", "{broken-json");
+    window.localStorage.setItem("mqb_publisher_history", "{broken-json");
+    window.localStorage.setItem("mqb_publisher_presets", "{broken-json");
+    window.localStorage.setItem("mqb_env_vars", "{broken-json");
+
+    expect(() =>
+      initPublishers(
+        {
+          publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+          routes: {},
+          consumers: [],
+        },
+        {
+          properties: { publishers: { items: {} } },
+          $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+        },
+      ),
+    ).not.toThrow();
+
+    expect(get(publishersPanelState).items[0]?.name).toBe("orders_http");
+    expect(get(publishersPanelState).historyRows).toEqual([]);
+    expect(get(publishersPanelState).presetRows).toEqual([]);
+  });
+
   test("tracks active subtab and payload in publisher panel state", () => {
     initPublishers(
       {
@@ -184,6 +220,29 @@ describe("initPublishers", () => {
 
     expect(get(publishersPanelState).activeSubtab).toBe("definition");
     expect(get(publishersPanelState).requestPayload).toBe("{\"ok\":true}");
+  });
+
+  test("restoring a publisher updates the remembered index and hash", () => {
+    initPublishers(
+      {
+        publishers: [
+          { name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } },
+          { name: "events_memory", endpoint: { memory: { topic: "events" } } },
+        ],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    restorePublisherStateFromView(1, { tab: "definition" });
+
+    expect(get(publishersPanelState).selectedIndex).toBe(1);
+    expect(window.location.hash).toBe("#publishers:1");
+    expect((window as any)._mqb_last_publisher_idx).toBe(1);
   });
 
   test("edits actual custom headers and supports disable/delete", () => {
@@ -386,6 +445,315 @@ describe("initPublishers", () => {
     expect(state.urlField.value).toBe("https://api.example.test/orders/42");
     expect(state.requestPayload).toBe("{\"id\":42}");
     expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
+  });
+
+  test("rejects non-mq-bridge import payloads", async () => {
+    initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    await expect(importMqbToPublisherAction(JSON.stringify({ type: "unknown" }))).rejects.toThrow(
+      "Selected file is not a valid mq-bridge export/presets file.",
+    );
+  });
+
+  test("imports mq-bridge presets into active publisher", async () => {
+    initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    await importMqbToPublisherAction(
+      JSON.stringify({
+        type: "mqb-presets",
+        presets: {
+          orders_http: [
+            {
+              name: "imported_preset",
+              method: "POST",
+              url: "https://example.test/orders",
+              payload: "{\"source\":\"mqb\"}",
+              headers: [{ key: "x-source", value: "mqb", enabled: true }],
+            },
+          ],
+        },
+      }),
+    );
+
+    // Re-init to reload persisted presets from localStorage into in-memory view state.
+    initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    expect(get(publishersPanelState).presetRows.map((row) => row.name)).toContain("imported_preset");
+  });
+
+  test("imports AsyncAPI requests as new publishers", async () => {
+    const config = {
+      publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+      routes: {},
+      consumers: [],
+    };
+    const schema = {
+      properties: { publishers: { items: {} } },
+      $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+    };
+
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
+    window.fetchConfigFromServer = vi.fn().mockImplementation(async () => ({ publishers: config.publishers }));
+
+    initPublishers(config, schema);
+
+    await importAsyncApiToPublisherAction(
+      JSON.stringify({
+        asyncapi: "3.0.0",
+        channels: {
+          orderEvents: { address: "/events/orders" },
+        },
+        operations: {
+          publishOrderEvents: {
+            action: "send",
+            channel: { $ref: "#/channels/orderEvents" },
+            messages: [],
+            title: "Order events",
+          },
+        },
+        servers: { local: { host: "localhost:3000", protocol: "http" } },
+      }),
+    );
+
+    expect(config.publishers.length).toBe(2);
+    expect(config.publishers[1].name).toContain("order_events");
+  });
+
+  test("converts a preset into a persisted publisher", async () => {
+    window.localStorage.setItem(
+      "mqb_publisher_presets",
+      JSON.stringify({
+        orders_http: [
+          {
+            name: "new_http_target",
+            method: "POST",
+            url: "https://api.example.test/orders/new",
+            payload: "{\"ok\":true}",
+            headers: [{ key: "x-id", value: "42", enabled: true }],
+          },
+        ],
+      }),
+    );
+
+    const config = {
+      publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+      routes: {},
+      consumers: [],
+    };
+    const schema = {
+      properties: { publishers: { items: {} } },
+      $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+    };
+
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
+    window.fetchConfigFromServer = vi.fn().mockImplementation(async () => ({ publishers: config.publishers }));
+
+    initPublishers(config, schema);
+    await presetToPublisherAction(0);
+
+    expect(config.publishers.length).toBe(2);
+    expect(config.publishers[1].name).toContain("new_http_target");
+    expect(config.publishers[1].endpoint.http.url).toBe("https://api.example.test");
+    expect(config.publishers[1].endpoint.http.path).toBe("/orders/new");
+  });
+
+  test("saves current publisher request as a preset", async () => {
+    const config = {
+      publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+      routes: {},
+      consumers: [],
+    };
+    window.mqbPrompt = vi.fn().mockResolvedValue("saved_preset");
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    updatePublisherPayload("{\"hello\":true}");
+    await savePublisherPresetAction();
+
+    expect(get(publishersPanelState).presetRows.map((row) => row.name)).toContain("saved_preset");
+  });
+
+  test("renames preset and handles overwrite cancel branch", async () => {
+    window.localStorage.setItem(
+      "mqb_publisher_presets",
+      JSON.stringify({
+        orders_http: [
+          { name: "a", method: "POST", url: "https://example.test/a", payload: "", headers: [] },
+          { name: "b", method: "POST", url: "https://example.test/b", payload: "", headers: [] },
+        ],
+      }),
+    );
+
+    initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    window.mqbPrompt = vi.fn().mockResolvedValue("b");
+    window.mqbConfirm = vi.fn().mockResolvedValue(false);
+    await renamePublisherPresetAction(0);
+
+    expect(get(publishersPanelState).presetRows.map((row) => row.name)).toEqual(["a", "b"]);
+
+    window.mqbPrompt = vi.fn().mockResolvedValue("renamed");
+    await renamePublisherPresetAction(0);
+    expect(get(publishersPanelState).presetRows.map((row) => row.name)).toEqual(["renamed", "b"]);
+  });
+
+  test("deletes preset row", () => {
+    window.localStorage.setItem(
+      "mqb_publisher_presets",
+      JSON.stringify({
+        orders_http: [
+          { name: "to_delete", method: "POST", url: "https://example.test/x", payload: "", headers: [] },
+        ],
+      }),
+    );
+
+    initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    deletePublisherPresetAction(0);
+    expect(get(publishersPanelState).presetRows).toEqual([]);
+  });
+
+  test("beautify payload shows alert on invalid JSON", () => {
+    initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+    updatePublisherPayload("{invalid");
+    beautifyPublisherPayloadAction();
+    expect(window.mqbAlert).toHaveBeenCalled();
+  });
+
+  test("copy publisher as route output creates route config", async () => {
+    const config = {
+      publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+      routes: {},
+      consumers: [],
+    };
+    window.mqbChoose = vi.fn().mockResolvedValue("route_output");
+    window.mqbPrompt = vi.fn().mockResolvedValue("orders_route");
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    await copyCurrentPublisherAction();
+    expect(Object.keys(config.routes)).toContain("orders_route");
+  });
+
+  test("clone publisher duplicate name shows alert branch", () => {
+    const config = {
+      publishers: [
+        { name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } },
+        { name: "orders_http_copy", endpoint: { http: { url: "https://example.test/orders2", custom_headers: {} } } },
+      ],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    cloneCurrentPublisherAction();
+    expect(window.mqbAlert).toHaveBeenCalled();
+  });
+
+  test("exports presets for active publisher", () => {
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const createObjectUrlSpy = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:test");
+    const revokeObjectUrlSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    exportPublisherPresetsAction();
+    expect(createObjectUrlSpy).toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalled();
+    expect(revokeObjectUrlSpy).toHaveBeenCalled();
+
+    clickSpy.mockRestore();
+    createObjectUrlSpy.mockRestore();
+    revokeObjectUrlSpy.mockRestore();
   });
 });
 
