@@ -5,7 +5,7 @@
 `mq-bridge-app` is a Rust + Svelte application.
 
 - Backend/runtime: Rust (`crates/core`, `crates/cli`, `crates/desktop`)
-- UI: Svelte 5 + Vite (`ui/src`)
+- UI: Svelte 5 + Vite (`ui/src`), utilizing Runes for state management.
 - Legacy migration: mostly completed; remaining compatibility shims still exist.
 
 ## Current UI Architecture
@@ -19,6 +19,7 @@
 - State/stores:
   - `ui/src/lib/stores.ts`
   - `ui/src/lib/runtime-status.ts`
+  - Modernized state handling via Svelte 5 `$state` and `$derived` runes.
 - Runtime bridge helpers:
   - `ui/src/lib/runtime-window.ts`
 
@@ -60,7 +61,9 @@
 ## Known Active Areas
 
 - Further reduction of legacy/global `window` dependencies.
+- Completion of the transition from legacy Svelte stores to Svelte 5 `$state` and `$derived` Runes.
 - Remaining migration cleanup from `*-view.ts` controller modules into cleaner component/service boundaries.
+- Enhanced real-time monitoring features and throughput visualization.
 - Additional consumer traffic E2E coverage can still be expanded.
 
 ## Operational Notes
@@ -75,4 +78,3 @@
 2. Run app: `npm run dev`
 3. Unit tests: `npm run test:unit`
 4. UI tests: `npm run test:ui`
-

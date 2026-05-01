@@ -874,7 +874,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         const isOk = typeof item.ok === "boolean" ? item.ok : item.status < 300;
         return {
           historyIndex: history.indexOf(item),
-          timeLabel: new Date(item.time).toLocaleTimeString(),
+          timeLabel: new Date(item.time).toLocaleString(),
           statusLabel: String(item.displayStatus || item.status),
           statusClass: isOk ? "status-ok" : "status-err",
           payloadPreview: item.payload.substring(0, 100).replace(/\n/g, " "),
@@ -1057,7 +1057,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!pubSplit && mqbApp.split()) {
       pubSplit = mqbApp.split()?.(["#pub-top-content-wrapper", "#pub-response-container"], {
         direction: "vertical",
-        sizes: [60, 40],
+        sizes: [40, 60],
         minSize: 100,
         gutterSize: 4,
         elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
@@ -1395,11 +1395,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   sendPublisherAction = async () => {
     updateStateFromUI();
-    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
-    if (!saved) return;
+    if (mqbRuntime.refreshDirtySection("publishers")) {
+      const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
+      if (!saved) return;
+    }
 
     const publisher = publishers[currentIdx];
     const name = publisher.name;
+    const endpoint = publisher.endpoint;
     const payload = applyEnvVars(getPublisherState(name).payload);
     const metaArray =
       getEndpointType(publisher) === "http"
@@ -1412,6 +1415,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     Object.keys(metadata).forEach((key) => {
       metadata[key] = applyEnvVars(String(metadata[key]));
     });
+
+    // Merge custom headers into metadata for the outgoing request
+    metaArray.forEach(({ k, v }) => {
+      if (k) metadata[k] = v;
+    });
+
     const requestUrl = getRequestBarFieldValue(
       publisher,
       getRequestBarLayout(getEndpointType(publisher)).fields.find((field) => field.inputId === "pub-url"),
@@ -1444,7 +1453,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         response = await fetch("/publish", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, payload, metadata }),
+          body: JSON.stringify({ name, payload, metadata, endpoint }),
           signal: controller.signal,
         });
       } finally {
@@ -1509,7 +1518,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   if (document.getElementById("tab-publishers")?.classList.contains("active") && !pubSplit && mqbApp.split()) {
     pubSplit = mqbApp.split()?.(["#pub-top-content-wrapper", "#pub-response-container"], {
       direction: "vertical",
-      sizes: [60, 40],
+      sizes: [40, 60],
       minSize: 100,
       gutterSize: 4,
       elementStyle: (_dimension: string, size: number, gutterSize: number) => ({

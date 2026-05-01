@@ -377,12 +377,11 @@ async fn test_web_ui_collects_http_consumer_messages_and_updates_runtime_status(
         1
     );
 
-    let messages = read_json_response(
-        ui_port,
-        &format!("/messages?consumer={consumer_name}"),
-    )
-    .await;
-    let payload = messages[&consumer_name][0]["payload"].as_str().unwrap_or_default();
+    let messages =
+        read_json_response(ui_port, &format!("/messages?consumer={consumer_name}")).await;
+    let payload = messages[&consumer_name][0]["payload"]
+        .as_str()
+        .unwrap_or_default();
     assert_eq!(payload, "hello");
 
     server.abort();

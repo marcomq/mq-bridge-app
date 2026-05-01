@@ -34,6 +34,7 @@ export let importAsyncApiToConsumerAction: (jsonText: string) => void | Promise<
 export let importMqbToConsumerAction: (jsonText: string) => void | Promise<void> = () => {};
 
 type ConsumerMessage = {
+  id?: string;
   payload: unknown;
   metadata?: Record<string, string>;
   time?: string;
@@ -120,6 +121,7 @@ export function normalizeConsumerMessage(raw: unknown, fallbackTime = new Date()
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const record = raw as Record<string, unknown>;
     const looksWrapped =
+      Object.prototype.hasOwnProperty.call(record, "id") ||
       Object.prototype.hasOwnProperty.call(record, "payload") ||
       Object.prototype.hasOwnProperty.call(record, "metadata") ||
       Object.prototype.hasOwnProperty.call(record, "time");
@@ -133,6 +135,7 @@ export function normalizeConsumerMessage(raw: unknown, fallbackTime = new Date()
           : undefined;
 
       return {
+        id: typeof record.id === "string" || typeof record.id === "number" || typeof record.id === "bigint" ? String(record.id) : undefined,
         payload: Object.prototype.hasOwnProperty.call(record, "payload") ? record.payload : raw,
         metadata,
         time: typeof record.time === "string" ? record.time : fallbackTime,
@@ -149,8 +152,9 @@ export function normalizeConsumerMessage(raw: unknown, fallbackTime = new Date()
 function extractUuidV7Timestamp(idStr: string): string | null {
   try {
     const hex = idStr.replace(/-/g, "");
+    if (hex.length < 12) return null;
     const milliseconds = parseInt(hex.substring(0, 12), 16);
-    return new Date(milliseconds).toLocaleTimeString();
+    return new Date(milliseconds).toLocaleString();
   } catch {
     return null;
   }
@@ -339,10 +343,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         : JSON.stringify(selectedMessage.payload, null, 2)
       : "";
     const detailTime = selectedMessage
-      ? selectedMessage.metadata?.id
-        ? extractUuidV7Timestamp(selectedMessage.metadata.id)
+      ? selectedMessage.id
+        ? extractUuidV7Timestamp(selectedMessage.id)
         : selectedMessage.time
-          ? new Date(selectedMessage.time).toLocaleTimeString()
+          ? new Date(selectedMessage.time).toLocaleString()
           : "N/A"
       : null;
     const detailInfo = selectedMessage
@@ -400,8 +404,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       toggleBusy: isTogglePending,
       messages: messages.map((message, messageIndex) => ({
         timeLabel:
-          (message.metadata?.id ? extractUuidV7Timestamp(message.metadata.id) : null) ||
-          (message.time ? new Date(message.time).toLocaleTimeString() : "N/A"),
+          (message.id ? extractUuidV7Timestamp(message.id) : null) ||
+          (message.time ? new Date(message.time).toLocaleString() : "N/A"),
         payloadPreview:
           typeof message.payload === "string" ? message.payload : JSON.stringify(message.payload),
         messageIndex,
@@ -427,6 +431,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         { running?: boolean; status?: { healthy?: boolean; error?: string }; message_sequence?: number }
       >;
 
+    const nowMs = Date.now();
+
     for (const existingName of Object.keys(consumerStatus)) {
       if (!(config.consumers || []).some((consumer) => consumer.name === existingName)) {
         delete consumerStatus[existingName];
@@ -451,6 +457,24 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           ...(runtimeConsumer?.status?.error ? { error: runtimeConsumer.status.error } : {}),
         },
       };
+
+      if (consumerStatus[name].running) {
+        const currentSeq = runtimeConsumer?.message_sequence || 0;
+        const prevSample = consumerRateSamples[name];
+        if (prevSample) {
+          const elapsedSec = (nowMs - prevSample.timestampMs) / 1000;
+          if (elapsedSec >= 0.8) {
+            const delta = Math.max(0, currentSeq - prevSample.total);
+            consumerThroughput[name] = delta / elapsedSec;
+            consumerRateSamples[name] = { timestampMs: nowMs, total: currentSeq };
+          }
+        } else {
+          consumerRateSamples[name] = { timestampMs: nowMs, total: currentSeq };
+          consumerThroughput[name] = 0;
+        }
+      } else {
+        consumerThroughput[name] = 0;
+      }
     }
   };
 
@@ -919,7 +943,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
       if (!saved) return;
 
-      const normalizedSavedConsumers = (saved.consumers || []).map((consumer) => ({
+      const normalizedSavedConsumers = (saved.consumers || []).map((consumer: ConsumerConfig) => ({
         ...consumer,
         endpoint: ensureConsumerEndpointDefaults(consumer.endpoint),
       }));
@@ -1066,8 +1090,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         return;
       }
 
-      const name = activeConsumer.name;
       syncRuntimeConsumerStatuses();
+      const name = activeConsumer.name;
       const runtimeConsumer = getMqbState().runtime_status?.consumers?.[name];
       const knownSequence = consumerMessageSequences[name] || 0;
       const nextSequence = runtimeConsumer?.message_sequence || 0;
@@ -1091,45 +1115,36 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           const messages = Array.isArray(rawMessages)
             ? rawMessages.map((message) => normalizeConsumerMessage(message))
             : [];
-          if (!consumerMessages[sourceName]) consumerMessages[sourceName] = [];
-          consumerMessages[sourceName] = [...messages, ...consumerMessages[sourceName]].slice(0, maxMessages);
+          consumerMessages[sourceName] = [...messages, ...(consumerMessages[sourceName] || [])].slice(0, maxMessages);
+          consumerMessages[sourceName].sort((a, b) => {
+            const timeA = a.time || "";
+            const timeB = b.time || "";
+            const cmp = timeB.localeCompare(timeA);
+            if (cmp !== 0) return cmp;
+            return (b.id || "").localeCompare(a.id || "");
+          });
           hasNew = hasNew || messages.length > 0;
           if (sourceName !== name && messages.length > 0) {
+            // Collect messages from other sources to potentially add to the active consumer's log
             selectedMessages.push(...messages);
           }
         }
         if ((!data[name] || data[name].length === 0) && selectedMessages.length > 0) {
           if (!consumerMessages[name]) consumerMessages[name] = [];
           consumerMessages[name] = [...selectedMessages, ...consumerMessages[name]].slice(0, maxMessages);
+          // After merging, ensure the active consumer's messages are sorted
+          consumerMessages[name].sort((a, b) => {
+            const timeA = a.time || "";
+            const timeB = b.time || "";
+            const cmp = timeB.localeCompare(timeA);
+            if (cmp !== 0) return cmp;
+            return (b.id || "").localeCompare(a.id || "");
+          });
           hasNew = true;
         }
         consumerMessageSequences[name] = nextSequence;
         if (hasNew) {
           saveMessages();
-        }
-
-        const nowMs = Date.now();
-        for (const [sourceName, sourceMessages] of Object.entries(data)) {
-          const prev = consumerRateSamples[sourceName];
-          const elapsedSec = Math.max((nowMs - (prev?.timestampMs || nowMs - 1000)) / 1000, 0.001);
-          consumerThroughput[sourceName] = sourceMessages.length / elapsedSec;
-          consumerRateSamples[sourceName] = {
-            timestampMs: nowMs,
-            total: (consumerMessages[sourceName]?.length || 0),
-          };
-        }
-        if (!data[name]) {
-          const total = consumerMessages[name]?.length || 0;
-          const prev = consumerRateSamples[name];
-          if (!prev) {
-            consumerRateSamples[name] = { timestampMs: nowMs, total };
-            consumerThroughput[name] = 0;
-          } else {
-            const elapsedSec = Math.max((nowMs - prev.timestampMs) / 1000, 0.001);
-            const delta = Math.max(total - prev.total, 0);
-            consumerThroughput[name] = delta / elapsedSec;
-            consumerRateSamples[name] = { timestampMs: nowMs, total };
-          }
         }
 
         renderLiveLog();

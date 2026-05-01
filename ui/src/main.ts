@@ -13,7 +13,5 @@ mount(App, { target });
 
 bootstrapApp().catch(async (error) => {
   console.error(error);
-  if (appWindow().mqbAlert) {
-    await mqbDialogs.alert(`Failed to start UI: ${(error as Error).message}`);
-  }
+  await mqbDialogs.alert(`Failed to start UI: ${(error as Error).message}`);
 });

@@ -449,7 +449,7 @@
                 <table class="msg-table">
                   <thead>
                     <tr>
-                      <th style="width: 160px;">Name</th>
+                      <th style="width: 200px;">Name</th>
                       <th style="width: 80px;">Method</th>
                       <th style="width: 34%;">URL</th>
                       <th>Body Preview</th>

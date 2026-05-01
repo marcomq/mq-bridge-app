@@ -12,12 +12,12 @@ use std::collections::{HashMap, VecDeque};
 pub enum UiCommand {
     GetConfig,
     GetSchema,
-    UpdateConfig(AppConfig),
+    UpdateConfig(Box<AppConfig>),
     ConsumerStatus { name: String },
     StartConsumer { name: String },
     StopConsumer { name: String },
     GetMessages { consumer: Option<String> },
-    Publish(PublishRequest),
+    Publish(Box<PublishRequest>),
     RuntimeStatus,
     RenderMetrics,
 }
@@ -92,7 +92,7 @@ impl UiApp {
                 ))
             }
             UiCommand::UpdateConfig(config) => self
-                .update_config(config)
+                .update_config(*config)
                 .await
                 .map(|()| UiResponse::Ack {
                     message: "Configuration updated".to_string(),
@@ -133,7 +133,7 @@ impl UiApp {
             )),
             UiCommand::Publish(request) => {
                 let publisher_name = request.name.clone();
-                self.publish(request)
+                self.publish(*request)
                     .await
                     .map_err(UiCommandError::Failed)?
                     .map(UiResponse::Publish)

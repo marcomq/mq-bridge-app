@@ -3983,6 +3983,7 @@ dependencies = [
  "chrono",
  "config",
  "dotenvy",
+ "fast-uuid-v7",
  "futures",
  "hex",
  "metrics",

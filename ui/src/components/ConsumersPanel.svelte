@@ -349,7 +349,7 @@
               <table class="msg-table">
                 <thead>
                   <tr>
-                    <th style="width: 120px;">Time</th>
+                    <th style="width: 170px;">Time</th>
                     <th>Payload Preview</th>
                   </tr>
                 </thead>

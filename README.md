@@ -11,13 +11,12 @@
             crossing streams
 ```
 
-`mq-bridge-app` is a protocol bridge and traffic workbench built with Rust and a modern Svelte UI.
-It connects and translates between brokers, queues, streams, HTTP endpoints, and local resources.
+`mq-bridge-app` is a **Postman-inspired** multi-protocol bridge and traffic workbench for messaging. Built with Rust and a modern Svelte UI, it allows you to connect, test, and translate between multiple messaging systems, brokers, and APIs from a single unified interface.
 
-It now provides a full operator workflow in the UI:
+It provides a complete developer and operator workflow:
 
 - manage **publishers**, **consumers**, **routes**, and app config
-- run request/response traffic directly from the UI
+- run request/response traffic directly from the UI (similar to Postman for REST)
 - inspect message history and response payloads
 - maintain request presets and import definitions (Postman/OpenAPI/AsyncAPI/mq-bridge export)
 - run as CLI/server or desktop app (Tauri)
@@ -26,8 +25,10 @@ Supported integration types include **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **
 
 ## Screenshots
 
+Dark mode:
+![mq-bridge UI - consumers/routes](docs/images/Screen2.gif)
+Light mode:
 ![mq-bridge UI - publishers](docs/images/Screen1.jpg)
-![mq-bridge UI - consumers/routes](docs/images/Screen2.jpg)
 
 # Status
 

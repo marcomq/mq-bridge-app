@@ -25,6 +25,9 @@ module.exports = defineConfig({
   server: {
     host: "127.0.0.1",
     port: 39092,
+    watch: {
+      usePolling: true,
+    },
     proxy: Object.fromEntries(
       proxiedPaths.map((path) => [
         path,

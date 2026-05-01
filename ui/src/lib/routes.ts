@@ -10,9 +10,13 @@ export interface RouteEndpoint {
 }
 
 export interface RouteDefinition {
-  enabled?: boolean;
-  input?: RouteEndpoint;
-  output?: RouteEndpoint;
+  enabled: boolean;
+  input: RouteEndpoint;
+  output: RouteEndpoint;
+  description?: string;
+  concurrency?: number;
+  batch_size?: number;
+  commit_concurrency_limit?: number;
   [key: string]: unknown;
 }
 
@@ -37,7 +41,7 @@ export function isRouteEnabled(route: Pick<RouteDefinition, "enabled"> | null | 
 }
 
 export function hasMetricsMiddleware(
-  route: Pick<RouteDefinition, "input" | "output"> | null | undefined,
+  route: { input?: RouteEndpoint; output?: RouteEndpoint } | null | undefined,
 ): boolean {
   const hasMetrics = (endpoint: RouteEndpoint | null | undefined) =>
     (endpoint?.middlewares || []).some((middleware) =>

@@ -13,7 +13,7 @@ use mq_bridge::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -60,6 +60,8 @@ pub struct PublishRequest {
     pub payload: String,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub endpoint: Option<mq_bridge::models::Endpoint>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -409,7 +411,6 @@ impl UiApp {
                 running: snapshot.running,
                 status: snapshot.status,
             })
-            .into()
     }
 
     pub async fn start_consumer(&self, name: &str) -> Result<bool> {
@@ -463,7 +464,9 @@ impl UiApp {
     }
 
     pub async fn publish(&self, request: PublishRequest) -> Result<Option<PublishResponse>> {
-        let endpoint = {
+        let endpoint = if let Some(ep) = request.endpoint {
+            Some(ep)
+        } else {
             let config = self.config.read().await;
             config
                 .publishers
@@ -474,7 +477,11 @@ impl UiApp {
 
         let publisher = if let Some(endpoint) = endpoint {
             unregister_publisher(&request.name);
-            Publisher::new(endpoint).await.ok()
+            match tokio::time::timeout(Duration::from_secs(5), Publisher::new(endpoint)).await {
+                Ok(Ok(p)) => Some(p),
+                Ok(Err(e)) => return Err(anyhow!("Failed to initialize publisher: {e}")),
+                Err(_) => return Err(anyhow!("Publisher initialization timed out after 5s")),
+            }
         } else {
             None
         };
@@ -574,7 +581,6 @@ impl UiApp {
 
         samples.retain(|route_name, _| metrics_enabled_routes.contains(route_name));
 
-        let mut active_consumers = active_consumers;
         active_consumers.sort();
         active_consumers.dedup();
         let mut active_routes = active_routes;
@@ -623,12 +629,19 @@ impl UiApp {
                 ..Default::default()
             }
         } else {
-            match consumer.endpoint.create_consumer(&name).await {
-                Ok(endpoint) => endpoint.status().await,
-                Err(e) => mq_bridge::traits::EndpointStatus {
+            let status_future = consumer.endpoint.create_consumer(&name);
+            match tokio::time::timeout(Duration::from_secs(2), status_future).await {
+                Ok(Ok(endpoint)) => endpoint.status().await,
+                Ok(Err(e)) => mq_bridge::traits::EndpointStatus {
                     healthy: false,
                     target: name.clone(),
-                    error: Some(e.to_string()),
+                    error: Some(format!("Creation failed: {e}")),
+                    ..Default::default()
+                },
+                Err(_) => mq_bridge::traits::EndpointStatus {
+                    healthy: false,
+                    target: name.clone(),
+                    error: Some("Status check timed out".to_string()),
                     ..Default::default()
                 },
             }
@@ -762,7 +775,6 @@ impl UiApp {
             if !route_is_active(route) {
                 continue;
             }
-
             let should_deploy = if let Some(old_route) = old_config.routes.get(name) {
                 serde_json::to_value(old_route).unwrap() != serde_json::to_value(route).unwrap()
             } else {
@@ -879,7 +891,7 @@ impl UiApp {
 
     async fn handle_publish_message(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
         match serde_json::from_slice::<PublishRequest>(&msg.payload) {
-            Ok(request) => self.execute_ui_command(UiCommand::Publish(request)).await,
+            Ok(request) => self.execute_ui_command(UiCommand::Publish(Box::new(request))).await,
             Err(e) => Ok(
                 self.map_ui_command_error(UiCommandError::invalid_input(format!(
                     "Json deserialize error: {e}"
@@ -913,7 +925,7 @@ impl UiApp {
             }
         };
 
-        self.execute_ui_command(UiCommand::UpdateConfig(new_config))
+        self.execute_ui_command(UiCommand::UpdateConfig(Box::new(new_config)))
             .await
     }
 
@@ -943,16 +955,21 @@ impl UiApp {
                     let message_sequences = message_sequences.clone();
                     let response_config = response_config.clone();
                     async move {
+                        let payload_json: serde_json::Value = serde_json::from_slice(&msg.payload)
+                            .unwrap_or_else(|_| {
+                                serde_json::Value::String(msg.get_payload_str().to_string())
+                            });
+                        let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
+
                         let val = serde_json::json!({
+                            "id": id,
                             "time": chrono::Local::now().to_rfc3339(),
                             "metadata": msg.metadata.clone(),
-                            "payload": msg.get_payload_str()
+                            "payload": payload_json
                         });
                         let mut enriched = CanonicalMessage::from_type(&val)
                             .unwrap_or_else(|_| CanonicalMessage::from(""));
-                        enriched
-                            .metadata
-                            .insert("ui_source".into(), name.clone());
+                        enriched.metadata.insert("ui_source".into(), name.clone());
                         log_channel
                             .sender
                             .send(vec![enriched])

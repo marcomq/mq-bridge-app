@@ -4,6 +4,7 @@ import { appWindow, getMqbState, replaceHash } from "./runtime-window";
 
 function switchOrRun(mainTab: "routes" | "consumers" | "publishers", callback: () => void, fallback?: () => void) {
   if (appWindow().switchMain) {
+    fallback?.(); // Refresh view state before switching tabs
     appWindow().switchMain(mainTab);
     return;
   }

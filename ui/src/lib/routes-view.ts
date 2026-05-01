@@ -25,8 +25,9 @@ export let renameCurrentRouteAction: (nextName: string) => void | Promise<void> 
 
 type RouteConfigMap = Record<string, RouteDefinition>;
 
-interface RouteEntry extends RouteDefinition {
+interface RouteEntry {
   name: string;
+  [key: string]: unknown;
 }
 
 interface RouteAppConfig {
@@ -176,7 +177,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
   ): RouteSidebarItem => {
     const inputProto = getProtocolLabel(route.input as Record<string, unknown> | undefined);
     const outputProto = getProtocolLabel(route.output as Record<string, unknown> | undefined);
-    const showMetrics = isRouteEnabled(route) && hasMetricsMiddleware(route);
+    const showMetrics = route.enabled && hasMetricsMiddleware(route);
     return {
       name: route.name,
       inputProto,
@@ -422,7 +423,7 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
           }
 
           config.routes[oldName] = routeData as RouteDefinition;
-          routesArray[idx] = { name: oldName, ...(routeData as RouteDefinition) };
+          routesArray[idx] = { name: oldName, ...(routeData as any) };
           renderSidebar();
           renderRuntimeMetrics();
           setActiveItem(idx);
