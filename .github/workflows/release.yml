@@ -30,7 +30,12 @@ jobs:
         shell: bash
         run: |
           RELEASE_TAG="${{ inputs.tag_name || github.ref_name }}"
-          CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          # Extract version from Cargo.toml, handling potential indentation
+          CARGO_VERSION="$(sed -n 's/^[[:space:]]*version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          # Fallback to the release tag (without 'v' prefix) if Cargo.toml version extraction fails
+          if [ -z "$CARGO_VERSION" ]; then
+            CARGO_VERSION="${RELEASE_TAG#v}"
+          fi
           if [[ "$RELEASE_TAG" == *rc* || "$RELEASE_TAG" == *alpha* || "$RELEASE_TAG" == *beta* ]]; then
             IS_PRERELEASE=true
           else
@@ -371,14 +376,8 @@ jobs:
           const fs = require('fs');
           const path = 'crates/desktop/tauri.release.conf.json';
           const config = JSON.parse(fs.readFileSync('crates/desktop/tauri.conf.json', 'utf8'));
-          config.package = {
-            ...(config.package || {}),
-            productName: "mq-bridge-desktop"
-          };
-          config.bundle = {
-            ...(config.bundle || {}),
-            active: true
-          };
+          // In Tauri v2, productName is a top-level property
+          config.productName = "mq-bridge-desktop";
           fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
           EOF
 
@@ -405,6 +404,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Publish to crates.io
-        run: cargo publish
+        shell: bash
+        run: |
+          # Publish the core library first so the CLI can find it on crates.io
+          cargo publish -p mq-bridge-app-core
+          # Then publish the CLI crate
+          cargo publish -p mq-bridge-app
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
