@@ -1,4 +1,3 @@
-# .github/workflows/release.yml
 name: Release
 
 on:
@@ -13,20 +12,41 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository }}
-  # Cache invalidation derived from Cargo.toml `version` to avoid manual bumps.
 
 jobs:
-  test:
-    name: Cargo Test
+  metadata:
+    name: Resolve Release Metadata
     runs-on: ubuntu-latest
+    outputs:
+      cargo_version: ${{ steps.meta.outputs.cargo_version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract Cargo.toml version
-        id: get_version
+      - name: Resolve tag and version
+        id: meta
+        shell: bash
         run: |
-          echo "VERSION=$(sed -n 's/^version = "\([^\"]*\)".*/\1/p' Cargo.toml | head -n1)" >> $GITHUB_OUTPUT
+          RELEASE_TAG="${{ inputs.tag_name || github.ref_name }}"
+          CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          if [[ "$RELEASE_TAG" == *rc* || "$RELEASE_TAG" == *alpha* || "$RELEASE_TAG" == *beta* ]]; then
+            IS_PRERELEASE=true
+          else
+            IS_PRERELEASE=false
+          fi
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "cargo_version=$CARGO_VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Cargo Test
+    runs-on: ubuntu-latest
+    needs: metadata
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -41,12 +61,12 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: test
+    needs: [metadata, test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_id: ${{ steps.create_release.outputs.id }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,15 +75,15 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
-          name: Release ${{ inputs.tag_name || github.ref_name }}
+          tag_name: ${{ needs.metadata.outputs.release_tag }}
+          name: Release ${{ needs.metadata.outputs.release_tag }}
           body: See the project README for details on this release.
           draft: false
-          prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+          prerelease: ${{ needs.metadata.outputs.is_prerelease == 'true' }}
 
   build-release:
-    name: Build release assets for ${{ matrix.target }}
-    needs: release
+    name: Build CLI asset for ${{ matrix.target }}
+    needs: [metadata, release]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -120,23 +140,21 @@ jobs:
           cp LICENSE README.md staging/
           if [ "$RUNNER_OS" == "Windows" ]; then
             7z a "${ASSET_NAME}.zip" ./staging/*
-            echo "ASSET_PATH=${ASSET_NAME}.zip" >> $GITHUB_ENV
+            echo "ASSET_PATH=${ASSET_NAME}.zip" >> "$GITHUB_ENV"
           else
             tar -czf "${ASSET_NAME}.tar.gz" -C staging .
-            echo "ASSET_PATH=${ASSET_NAME}.tar.gz" >> $GITHUB_ENV
+            echo "ASSET_PATH=${ASSET_NAME}.tar.gz" >> "$GITHUB_ENV"
           fi
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          tag_name: ${{ needs.metadata.outputs.release_tag }}
           files: ${{ env.ASSET_PATH }}
 
-  # Build each platform in its own job so failures are clearly attributed
-  # in the GitHub Actions UI — no more guessing which platform broke.
   build-linux-amd64:
-    name: Build linux/amd64
-    needs: test
+    name: Build docker linux/amd64
+    needs: [metadata, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -162,16 +180,18 @@ jobs:
           platforms: linux/amd64
           target: final
           push: true
-          # Temporary per-platform tag, merged into the final manifest below
-          tags: ghcr.io/${{ env.IMAGE_NAME }}:amd64-tmp
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}:amd64
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.cargo_version }}-amd64
           build-args: |
-            CACHE_BUST=${{ steps.get_version.outputs.VERSION }}
-          cache-from: type=gha,scope=build-amd64-v${{ steps.get_version.outputs.VERSION }}
-          cache-to: type=gha,mode=max,scope=build-amd64-v${{ steps.get_version.outputs.VERSION }}
+            CACHE_BUST=${{ needs.metadata.outputs.cargo_version }}
+            ENABLE_IBM_MQ=false
+          cache-from: type=gha,scope=build-amd64-v${{ needs.metadata.outputs.cargo_version }}
+          cache-to: type=gha,mode=max,scope=build-amd64-v${{ needs.metadata.outputs.cargo_version }}
 
   build-linux-arm64:
-    name: Build linux/arm64
-    needs: test
+    name: Build docker linux/arm64
+    needs: [metadata, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -180,7 +200,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # QEMU is only needed for the arm64 job (emulation for non-native steps)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -201,16 +220,18 @@ jobs:
           platforms: linux/arm64
           target: final
           push: true
-          tags: ghcr.io/${{ env.IMAGE_NAME }}:arm64-tmp
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}:arm64
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.cargo_version }}-arm64
           build-args: |
-            CACHE_BUST=${{ steps.get_version.outputs.VERSION }}
-          cache-from: type=gha,scope=build-arm64-v${{ steps.get_version.outputs.VERSION }}
-          cache-to: type=gha,mode=max,scope=build-arm64-v${{ steps.get_version.outputs.VERSION }}
+            CACHE_BUST=${{ needs.metadata.outputs.cargo_version }}
+            ENABLE_IBM_MQ=false
+          cache-from: type=gha,scope=build-arm64-v${{ needs.metadata.outputs.cargo_version }}
+          cache-to: type=gha,mode=max,scope=build-arm64-v${{ needs.metadata.outputs.cargo_version }}
 
-  # Merge both platform images into a single multi-arch manifest
-  publish-manifest:
-    name: Push multi-arch manifest
-    needs: [build-linux-amd64, build-linux-arm64]
+  build-linux-amd64-ibm-mq:
+    name: Build docker linux/amd64 + IBM MQ
+    needs: [metadata, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -219,11 +240,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract version from Cargo.toml
-        id: get_version
-        run: |
-          echo "VERSION=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)" >> $GITHUB_OUTPUT
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push mq-bridge-app (amd64 + IBM MQ)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          target: final
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}:amd64-ibm-mq
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.cargo_version }}-amd64-ibm-mq
+          build-args: |
+            CACHE_BUST=${{ needs.metadata.outputs.cargo_version }}
+            ENABLE_IBM_MQ=true
+          cache-from: type=gha,scope=build-amd64-ibm-mq-v${{ needs.metadata.outputs.cargo_version }}
+          cache-to: type=gha,mode=max,scope=build-amd64-ibm-mq-v${{ needs.metadata.outputs.cargo_version }}
+
+  publish-manifest:
+    name: Push multi-arch manifest
+    needs: [metadata, build-linux-amd64, build-linux-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -234,10 +284,103 @@ jobs:
       - name: Create and push multi-arch manifest
         run: |
           docker buildx imagetools create \
-            --tag ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.get_version.outputs.VERSION }} \
+            --tag ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.cargo_version }} \
             --tag ghcr.io/${{ env.IMAGE_NAME }}:latest \
-            ghcr.io/${{ env.IMAGE_NAME }}:amd64-tmp \
-            ghcr.io/${{ env.IMAGE_NAME }}:arm64-tmp
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.cargo_version }}-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.cargo_version }}-arm64
+
+  publish-amd64-ibm-mq-tag:
+    name: Push amd64 IBM MQ aliases
+    needs: [metadata, build-linux-amd64-ibm-mq]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push IBM MQ image aliases
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/${{ env.IMAGE_NAME }}:ibm-mq \
+            --tag ghcr.io/${{ env.IMAGE_NAME }}:latest-ibm-mq \
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.cargo_version }}-amd64-ibm-mq
+
+  build-tauri-release:
+    name: Build Tauri bundle for ${{ matrix.name }}
+    needs: [metadata, release]
+    runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            platform: macos-latest
+            rust_targets: aarch64-apple-darwin
+            tauri_args: --target aarch64-apple-darwin --config tauri.release.conf.json
+          - name: windows
+            platform: windows-latest
+            rust_targets: ''
+            tauri_args: --config tauri.release.conf.json
+          - name: linux
+            platform: ubuntu-22.04
+            rust_targets: ''
+            tauri_args: --config tauri.release.conf.json
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Enable Tauri bundling for release builds
+        shell: bash
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+          const path = 'crates/desktop/tauri.release.conf.json';
+          const config = JSON.parse(fs.readFileSync('crates/desktop/tauri.conf.json', 'utf8'));
+          config.bundle = {
+            ...(config.bundle || {}),
+            active: true
+          };
+          fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
+          EOF
+
+      - name: Build and upload Tauri bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/desktop
+          releaseId: ${{ needs.release.outputs.release_id }}
+          tagName: ${{ needs.metadata.outputs.release_tag }}
+          uploadPlainBinary: true
+          args: ${{ matrix.tauri_args }}
 
   publish-crates-io:
     name: Publish to crates.io
@@ -246,10 +389,10 @@ jobs:
     environment: release
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-      
+
       - name: Publish to crates.io
         run: cargo publish
         env:

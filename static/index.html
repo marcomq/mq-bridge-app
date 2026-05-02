@@ -1,154 +1,59 @@
 <!DOCTYPE html>
-<html>
+<html class="wa-theme-default wa-palette-default wa-brand-blue">
 <head>
-    <title>MQ Bridge Configuration</title>
+    <title>mq bridge</title>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/x-icon" href="/favicon.svg">
-    <link rel="stylesheet" href="/bootstrap.min.css">
-    <script src="/vanilla-schema-forms.js"></script>
-    <script src="/custom-form.js"></script>
-</head>
-<body>
-    <div class="container mt-4 pb-5">
-        <pre style="line-height: 1.4; font-size: 20px;">
-      ┌────── mq-bridge-configuration ──────┐
-──────┴─────────────────────────────────────┴──────</pre>
-        <div id="form-container">
-            <div class="d-flex align-items-center my-5">
-                <strong>Loading configuration...</strong>
-                <div class="spinner-border ms-auto" role="status" aria-hidden="true"></div>
-            </div>
-        </div>
-        <div id="form-actions" class="d-flex gap-2 mt-3" style="display: none;">
-            <button id="js-submit" class="btn btn-primary">Save Configuration</button>
-            <button id="js-show-json" class="btn btn-outline-secondary" type="button" title="Show current configuration as JSON" data-bs-toggle="modal" data-bs-target="#jsonPreviewModal">
-                {?}
-            </button>
-        </div>
-    </div>
 
-    <!-- JSON Preview Modal -->
-    <div class="modal fade" id="jsonPreviewModal" tabindex="-1" aria-labelledby="jsonPreviewModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="jsonPreviewModalLabel">Current Configuration (JSON)</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <pre><code id="json-output"></code></pre>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <link rel="stylesheet" href="/vendor/webawesome/webawesome.bundle.css" />
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/vendor/webawesome/webawesome.bundle.js"></script>
     <script>
-        (async function() {
-            const lib = window.VanillaSchemaForms;
-            const container = document.getElementById('form-container');
+        (() => {
+            const key = "theme";
+            const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
 
-            if (!lib || !lib.init) {
-                if (container) {
-                    const type = typeof lib;
-                    const keys = lib ? Object.keys(lib).join(', ') : 'null';
-                    container.innerHTML =
-                        `<div class="alert alert-danger">
-                            <strong>Error:</strong> Global <code>VanillaSchemaForms</code> not found or incomplete.<br>
-                            Expected to find an 'init' function.<br>
-                            Type: ${type}<br>
-                            Keys: ${keys}<br>
-                        </div>`;
+            const getPreference = () => localStorage.getItem(key) || "auto";
+
+            const applyColorScheme = () => {
+                const preference = getPreference();
+                const isDark =
+                    preference === "dark" ||
+                    (preference === "auto" && systemDark.matches);
+
+                document.documentElement.classList.toggle("wa-dark", isDark);
+                document.documentElement.dataset.theme = isDark ? "dark" : "light";
+                document.documentElement.dataset.themePreference = preference;
+            };
+
+            window.setThemePreference = (preference) => {
+                localStorage.setItem(key, preference);
+                applyColorScheme();
+            };
+
+            window.getThemePreference = getPreference;
+
+            applyColorScheme();
+
+            systemDark.addEventListener("change", () => {
+                if (getPreference() === "auto") {
+                    applyColorScheme();
                 }
-                return;
-            }
-
-            try {
-                // Fetch schema and config data in parallel.
-                const [schemaResponse, configResponse] = await Promise.all([
-                    fetch('/schema.json'),
-                    fetch('/config')
-                ]);
-
-                if (!schemaResponse.ok) {
-                    throw new Error(`Failed to fetch schema: ${schemaResponse.statusText}`);
-                }
-                const schema = await schemaResponse.json();
-
-                let initialData = {};
-                if (configResponse.ok) {
-                    initialData = await configResponse.json();
-                } else if (configResponse.status !== 404) {
-                    // A 404 is fine (no config saved yet), but other errors should be logged.
-                    console.error('Failed to load configuration:', configResponse.statusText);
-                }
-
-                container.innerHTML = '';
-                // Initialize the form using `init` with the schema and initial data.
-                const form = await lib.init(container, schema, initialData);
-
-                // Show action buttons
-                document.getElementById('form-actions').style.display = 'flex';
-
-                // Setup "Show JSON" button to populate modal content on click
-                const showJsonBtn = document.getElementById('js-show-json');
-                const jsonOutputEl = document.getElementById('json-output');
-                showJsonBtn.addEventListener('click', () => {
-                    try {
-                        const value = form.getData();
-                        jsonOutputEl.textContent = JSON.stringify(value, null, 2);
-                    } catch (err) {
-                        jsonOutputEl.textContent = `Could not generate JSON. Please fix validation errors in the form.\n\nDetails: ${err.message}`;
-                    }
-                });
-
-                const submitBtn = document.getElementById('js-submit');
-                submitBtn.addEventListener('click', async () => {
-                    // 1. Validate form data first to avoid UI flicker on validation errors
-                    let value;
-                    try {
-                        value = form.getData();
-                    } catch (err) {
-                        alert(err.message);
-                        return;
-                    }
-
-                    const originalText = submitBtn.innerHTML;
-
-                    // Loading State
-                    submitBtn.disabled = true;
-                    submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>Saving...`;
-
-                    try {
-                        const response = await fetch('/config', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(value)
-                        });
-                        if (!response.ok) throw new Error(`Save failed: ${response.statusText} (${await response.text()})`);
-
-                        // Success State
-                        submitBtn.innerHTML = "✔ Saved";
-                        submitBtn.classList.remove("btn-primary");
-                        submitBtn.classList.add("btn-success");
-
-                        setTimeout(() => {
-                            submitBtn.innerHTML = originalText;
-                            submitBtn.classList.remove("btn-success");
-                            submitBtn.classList.add("btn-primary");
-                            submitBtn.disabled = false;
-                        }, 2000);
-                    } catch (err) {
-                        alert('Error: ' + err.message);
-                        submitBtn.innerHTML = originalText;
-                        submitBtn.disabled = false;
-                    }
-                });
-            } catch (err) {
-                container.innerHTML = `<div class="alert alert-danger"><strong>Error:</strong> Failed to initialize form: ${err.message}</div>`;
-                console.error(err);
-            }
+            });
         })();
     </script>
+
+    <script type="module" src="/vendor/split/split.min.js"></script>
+    <script type="module" src="/vanilla-schema-forms.js"></script>
+  <script type="module" crossorigin src="/index.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index.css">
+</head>
+<body>
+    <div id="app"></div>
+    <template id="legacy-test-shape">
+      <wa-button id="route-toggle"></wa-button>
+      <span id="pub-proto-label">Type</span>
+    </template>
 </body>
 </html>

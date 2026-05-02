@@ -11,20 +11,35 @@
             crossing streams
 ```
 
-`mq-bridge-app` is a flexible message routing application written in Rust, designed to connect different messaging systems and data sources. It acts as a universal translator for your data streams, seamlessly bridging technologies like **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **AWS SQS** ,**MQTT**, and **IBM MQ**. The application also integrates with modern web protocols like **HTTP** and **gRPC**, and can interact with **ZeroMQ**, **MongoDB**, and the local **filesystem**.
+`mq-bridge-app` is a **Postman-inspired** multi-protocol bridge and traffic workbench for messaging. Built with Rust and a modern Svelte UI, it allows you to connect, test, and translate between multiple messaging systems, brokers, and APIs from a single unified interface.
 
-Built for performance and ease of use, it's a powerful tool for building integration workflows, creating data pipelines, or simply getting information from point A to point B, no matter the protocol.
+It provides a complete developer and operator workflow:
+
+- manage **publishers**, **consumers**, **routes**, and app config
+- run request/response traffic directly from the UI (similar to Postman for REST)
+- inspect message history and response payloads
+- maintain request presets and import definitions (Postman/OpenAPI/AsyncAPI/mq-bridge export)
+- run as CLI/server or desktop app (Tauri)
+
+Supported integration types include **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **AWS SQS**, **MQTT**, **IBM MQ**, **HTTP**, **gRPC**, **ZeroMQ**, **MongoDB**, **sqlx(MySQL, MariaDB, PostgreSQL)**, and filesystem endpoints.
+
+## Screenshots
+
+Dark mode:
+![mq-bridge UI - consumers/routes](docs/images/Screen2.gif)
+Light mode:
+![mq-bridge UI - publishers](docs/images/Screen1.jpg)
 
 # Status
 
 > **Note**: This project is currently in **Active Development**.
 
-It serves as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. It may already work perfect and reliable for some use cases. But some disconnect patterns and some subscriber endpoints haven't been tested yet. Always test by yourself before production usage.
+It originally served as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. It may already work perfect and reliable for some use cases. But some disconnect patterns and some subscriber endpoints haven't been tested yet. Always test by yourself before production usage.
 
 ## Features
 
 ### Connectivity
-- **Multi-Protocol Support**: Bridge messages between **Kafka**, **IBM MQ**, **NATS**, **AMQP** (RabbitMQ), **MQTT**, **AWS SQS**, **gRPC**, **ZeroMQ**, and **HTTP**.
+- **Multi-Protocol Support**: Bridge messages between **Kafka**, **IBM MQ**, **NATS**, **AMQP** (RabbitMQ), **MQTT**, **AWS SQS**, **gRPC**, **ZeroMQ**, **MongoDB**, **sqlx(MySQL, MariaDB, PostgreSQL)** and **HTTP**.
 - **File System Integration**: Stream data from files (tail/read) or write messages to disk (append).
 - **HTTP Webhooks**: Act as both an HTTP server (receiving webhooks) and client (calling external APIs), with full support for Request-Response patterns.
 
@@ -34,9 +49,27 @@ It serves as the primary reference implementation and testbed for the [mq-bridge
 - **High Performance**: Written in **Rust** using **Tokio**, ensuring low latency, high concurrency, and a small memory footprint.
 
 ### Operations & Management
-- **Built-in Web UI**: A dynamic management interface served directly by the application to view configurations and schemas.
+- **Built-in Web UI**: Svelte-based management UI for publishers, consumers, routes, runtime status, presets, and imports.
 - **Observability**: Production-ready with structured **JSON logging** and a **Prometheus** metrics endpoint.
 - **Flexible Configuration**: Hierarchical configuration via files (YAML, JSON, TOML) and Environment Variables, perfect for Container/Kubernetes environments.
+
+## Quick Start (UI)
+
+### Dev mode
+
+```bash
+npm install
+npm run dev
+```
+
+This starts the frontend + backend dev workflow.
+
+### Build UI bundle served by Rust backend
+
+```bash
+npm run build:ui
+cargo run --release
+```
 
 ## Installation
 
@@ -56,7 +89,7 @@ docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app ghcr.io/marcomq/m
 ```
 
 > [!NOTE]
-> Only the amd64 docker container includes IBM MQ support, as there is no redistributable IBM MQ client library for arm64 yet. You may still start in emulation mode with `--platform=linux/amd64` or you would need to build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
+> The default `latest` image is a plain multi-arch image for `amd64` and `arm64`. IBM MQ support is published separately as the `latest-ibm-mq` and `ibm-mq` tags on `amd64`, since there is no redistributable IBM MQ client library for arm64 yet. You may still start that image in emulation mode with `--platform=linux/amd64` or build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
 
 ### Cargo
 
