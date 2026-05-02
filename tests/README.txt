@@ -11,7 +11,7 @@ ffmpeg -i test-results/showcase-Generate-showcase-video/video.webm \
 ffmpeg -i test-results/showcase-Generate-showcase-video/video.webm \
   -vf "fps=4,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
   -loop 0 \
-  docs/Screen2.gif
+  docs/images/Screen2.gif
 
 Run as normal test (fast):
 npx playwright test tests/playwright/showcase.spec.js
