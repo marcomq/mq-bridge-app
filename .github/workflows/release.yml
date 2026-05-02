@@ -92,15 +92,15 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary_name: mq-bridge-app
+            binary_name: mq-bridge-cli
             use_cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_name: mq-bridge-app
+            binary_name: mq-bridge-cli
             use_cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_name: mq-bridge-app.exe
+            binary_name: mq-bridge-cli.exe
             use_cross: false
     steps:
       - name: Checkout repository
@@ -130,11 +130,18 @@ jobs:
           else
             cargo build --release --target ${{ matrix.target }}
           fi
+          
+          # Rename binary from default mq-bridge-app to mq-bridge-cli
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            mv "target/${{ matrix.target }}/release/mq-bridge-app.exe" "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          else
+            mv "target/${{ matrix.target }}/release/mq-bridge-app" "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          fi
 
       - name: Package artifacts
         shell: bash
         run: |
-          ASSET_NAME="mq-bridge-app-${{ matrix.target }}"
+          ASSET_NAME="mq-bridge-cli-${{ matrix.target }}"
           mkdir staging
           cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" staging/
           cp LICENSE README.md staging/
@@ -364,6 +371,10 @@ jobs:
           const fs = require('fs');
           const path = 'crates/desktop/tauri.release.conf.json';
           const config = JSON.parse(fs.readFileSync('crates/desktop/tauri.conf.json', 'utf8'));
+          config.package = {
+            ...(config.package || {}),
+            productName: "mq-bridge-desktop"
+          };
           config.bundle = {
             ...(config.bundle || {}),
             active: true
