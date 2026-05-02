@@ -32,7 +32,7 @@ jobs:
         run: |
           RELEASE_TAG="${{ inputs.tag_name || github.ref_name }}"
           # Extract version from Cargo.toml, handling potential indentation
-          CARGO_VERSION="$(sed -n 's/^[[:space:]]*version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          CARGO_VERSION="$(sed -n 's/^[[:space:]]*version = "\([^"]*\)".*/\1/p' Cargo.toml | tr -d '\r' | head -n1)"
           # Fallback to the release tag (without 'v' prefix) if Cargo.toml version extraction fails
           if [ -z "$CARGO_VERSION" ]; then
             CARGO_VERSION="${RELEASE_TAG#v}"
@@ -408,8 +408,8 @@ jobs:
       - name: Publish to crates.io
         shell: bash
         run: |
-          # Publish the core library first so the CLI can find it on crates.io
-          cargo publish -p mq-bridge-app-core
+          # Attempt to publish the core library; allow it to fail (e.g. if version already exists)
+          cargo publish -p mq-bridge-app-core || echo "mq-bridge-app-core publish failed or already exists, proceeding..."
           # Then publish the CLI crate
           cargo publish -p mq-bridge-app
         env:

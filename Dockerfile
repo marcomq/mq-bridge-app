@@ -3,7 +3,7 @@ FROM --platform=$BUILDPLATFORM rust:1.92-bookworm AS builder
 ARG TARGETARCH
 ARG BUILDPLATFORM
 ARG ENABLE_IBM_MQ=false
-ARG IBM_MQ_SHA256
+ARG IBM_MQ_SHA256=2b71946894567290d23805988e727932c0d0246a39d89163013d33261a355152
 # Bump DOCKER_CACHE_VERSION in release.yml to invalidate this cache
 ARG CACHE_BUST=1
 
@@ -94,15 +94,16 @@ ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
 
 # IBM MQ — only available for AMD64 when explicitly enabled
 WORKDIR /opt/mqm
-RUN if [ "$TARGETARCH" = "amd64" ] && [ "$ENABLE_IBM_MQ" = "true" ]; then \
-        test -n "$IBM_MQ_SHA256" \
-        && curl -Lo /tmp/ibm-mq.tgz https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqdev/redist/9.4.5.0-IBM-MQC-Redist-LinuxX64.tar.gz \
+RUN set -e; \
+    if [ "$TARGETARCH" = "amd64" ] && [ "$ENABLE_IBM_MQ" = "true" ]; then \
+        if [ -z "$IBM_MQ_SHA256" ]; then echo "Error: IBM_MQ_SHA256 is required" >&2; exit 1; fi; \
+        curl -Lo /tmp/ibm-mq.tgz https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqdev/redist/9.4.5.0-IBM-MQC-Redist-LinuxX64.tar.gz \
         && echo "${IBM_MQ_SHA256}  /tmp/ibm-mq.tgz" | sha256sum -c - \
         && tar -xzf /tmp/ibm-mq.tgz \
         && rm /tmp/ibm-mq.tgz; \
     else \
-        echo "Skipping IBM MQ installation for $TARGETARCH (enabled=$ENABLE_IBM_MQ)" \
-        && mkdir -p /opt/mqm/lib64 /opt/mqm/licenses; \
+        echo "Skipping IBM MQ installation for $TARGETARCH (enabled=$ENABLE_IBM_MQ)"; \
+        mkdir -p /opt/mqm/lib64 /opt/mqm/licenses; \
     fi
 
 ENV MQ_HOME="/opt/mqm"
