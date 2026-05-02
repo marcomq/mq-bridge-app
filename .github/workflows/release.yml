@@ -391,7 +391,7 @@ jobs:
           projectPath: crates/desktop
           releaseId: ${{ needs.release.outputs.release_id }}
           tagName: ${{ needs.metadata.outputs.release_tag }}
-          uploadPlainBinary: true
+          uploadPlainBinary: false
           args: ${{ matrix.tauri_args }}
 
   publish-crates-io:

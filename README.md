@@ -73,7 +73,20 @@ cargo run --release
 
 ## Installation
 
-### Docker (Recommended)
+### MacOS Desktop App (Tauri)
+
+Because the desktop binaries are currently not notarized, macOS may report the application as "damaged" when you first try to open it. To fix this, you need to remove the quarantine attribute.
+
+If the app is in your `/Applications` folder, run:
+```bash
+sudo xattr -rd com.apple.quarantine /Applications/mq-bridge.app
+```
+If the app is in a user-owned directory (e.g., `~/Downloads`), `sudo` is not required:
+```bash
+xattr -rd com.apple.quarantine ~/Downloads/mq-bridge.app
+```
+
+### Docker CLI
 
 The easiest way to run the application is using the pre-built Docker image, which includes all necessary dependencies (like the IBM MQ client).
 
@@ -91,7 +104,7 @@ docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app ghcr.io/marcomq/m
 > [!NOTE]
 > The default `latest` image is a plain multi-arch image for `amd64` and `arm64`. IBM MQ support is published separately as the `latest-ibm-mq` and `ibm-mq` tags on `amd64`, since there is no redistributable IBM MQ client library for arm64 yet. You may still start that image in emulation mode with `--platform=linux/amd64` or build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
 
-### Cargo
+### Cargo CLI
 
 If you have Rust installed, you can install the application directly from source. This may take a some time, as it will compile all supported endpoint client libraries, except ibm-mq. For IBM MQ, you would need to install the client library first and install it with `--features=ibm-mq`.
 
