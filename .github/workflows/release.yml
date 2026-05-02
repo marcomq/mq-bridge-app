@@ -12,7 +12,7 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository }}
-  IBM_MQ_SHA256: 2b71946894567290d23805988e727932c0d0246a39d89163013d33261a355152
+  IBM_MQ_SHA256: 03f99e3271295971439268f86f727932c0d0246a39d89163013d33261a355152
 
 jobs:
   metadata:
@@ -408,8 +408,8 @@ jobs:
       - name: Publish to crates.io
         shell: bash
         run: |
-          # Attempt to publish the core library; allow it to fail (e.g. if version already exists)
-          cargo publish -p mq-bridge-app-core || echo "mq-bridge-app-core publish failed or already exists, proceeding..."
+          # Attempt to publish core; ignore errors (e.g. if 0.2.0 is already live)
+          cargo publish -p mq-bridge-app-core || true
           # Then publish the CLI crate
           cargo publish -p mq-bridge-app
         env:
