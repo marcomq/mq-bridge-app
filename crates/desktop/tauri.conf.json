@@ -1,7 +1,8 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "mq bridge app",
+  "productName": "mq-bridge",
   "version": "0.2.0",
+  "mainBinaryName": "mq-bridge",
   "identifier": "com.marcomq.mqbridgeapp",
   "build": {
     "frontendDist": "../../static"
