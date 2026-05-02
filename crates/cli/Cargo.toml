@@ -1,7 +1,7 @@
 [package]
 name = "mq-bridge-app"
-version = "0.2.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 build = "build.rs"
 authors = ["Marco Mengelkochs"]
 repository = "https://github.com/marcomq/mq-bridge-app"
@@ -16,7 +16,7 @@ name = "mq-bridge-app"
 path = "src/main.rs"
 
 [dependencies]
-mq_bridge_app = { package = "mq-bridge-app-core", path = "../core" }
+mq_bridge_app = { workspace = true }
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }
 metrics = { version = "0.24.3" }

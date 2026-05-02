@@ -12,6 +12,7 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository }}
+  IBM_MQ_SHA256: 2b71946894567290d23805988e727932c0d0246a39d89163013d33261a355152
 
 jobs:
   metadata:
@@ -275,6 +276,7 @@ jobs:
           build-args: |
             CACHE_BUST=${{ needs.metadata.outputs.cargo_version }}
             ENABLE_IBM_MQ=true
+            IBM_MQ_SHA256=${{ env.IBM_MQ_SHA256 }}
           cache-from: type=gha,scope=build-amd64-ibm-mq-v${{ needs.metadata.outputs.cargo_version }}
           cache-to: type=gha,mode=max,scope=build-amd64-ibm-mq-v${{ needs.metadata.outputs.cargo_version }}
 

@@ -8,7 +8,8 @@ version = "0.2.0"
 edition = "2021"
 
 [workspace.dependencies]
-mq-bridge-app-core = { path = "crates/core", version = "0.2.0" }
+# Define the core crate as a workspace dependency with its version for crates.io
+mq-bridge-app-core = { version = "0.2.0", path = "crates/core" }
 
 [profile.release]
 panic = "abort"
