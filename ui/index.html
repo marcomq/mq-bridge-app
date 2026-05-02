@@ -11,16 +11,36 @@
     <script type="module" src="/vendor/webawesome/webawesome.bundle.js"></script>
     <script>
         (() => {
-            const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
-            const applyColorScheme = (event = systemDark) => {
-                const isDark = event.matches;
-                document.documentElement.classList.toggle('wa-dark', isDark);
-                document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+            const key = "theme";
+            const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+
+            const getPreference = () => localStorage.getItem(key) || "auto";
+
+            const applyColorScheme = () => {
+                const preference = getPreference();
+                const isDark =
+                    preference === "dark" ||
+                    (preference === "auto" && systemDark.matches);
+
+                document.documentElement.classList.toggle("wa-dark", isDark);
+                document.documentElement.dataset.theme = isDark ? "dark" : "light";
+                document.documentElement.dataset.themePreference = preference;
             };
 
+            window.setThemePreference = (preference) => {
+                localStorage.setItem(key, preference);
+                applyColorScheme();
+            };
+
+            window.getThemePreference = getPreference;
+
             applyColorScheme();
-            systemDark.addEventListener('change', applyColorScheme);
-            window.applyColorScheme = applyColorScheme;
+
+            systemDark.addEventListener("change", () => {
+                if (getPreference() === "auto") {
+                    applyColorScheme();
+                }
+            });
         })();
     </script>
 

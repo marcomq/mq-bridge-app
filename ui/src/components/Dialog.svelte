@@ -30,7 +30,7 @@
   }>();
 
   let dialogEl: any = $state();
-  let inputValue = $state(value);
+  let inputValue = $state("");
   $effect(() => {
     // Update inputValue if the prop 'value' changes, e.g., if the dialog is reused
     inputValue = value;
@@ -43,6 +43,13 @@
       isOpen = true;
     });
   });
+
+  function handleActionKey(event: KeyboardEvent, action: () => void) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      action();
+    }
+  }
 
   function handleClose(result: any) {
     onResolve(result);
@@ -85,7 +92,15 @@
       <div class="mqb-choice-list">
         {#each choices as choice}
           <div class="mqb-choice-row">
-            <wa-button variant="neutral" appearance="outlined" size="small" role="button" tabindex="0" onclick={() => handleClose(choice.value)}>
+            <wa-button
+              variant="neutral"
+              appearance="outlined"
+              size="small"
+              role="button"
+              tabindex="0"
+              onclick={() => handleClose(choice.value)}
+              onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(choice.value))}
+            >
               {choice.label}
             </wa-button>
             {#if choice.description}
@@ -100,16 +115,40 @@
   {#if mode !== "choose"}
     <div slot="footer">
       {#if cancelLabel}
-        <wa-button variant="neutral" appearance="outlined" size="small" role="button" tabindex="0" onclick={() => handleClose(mode === "confirm" ? false : null)}>
+        <wa-button
+          variant="neutral"
+          appearance="outlined"
+          size="small"
+          role="button"
+          tabindex="0"
+          onclick={() => handleClose(mode === "confirm" ? false : null)}
+          onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(mode === "confirm" ? false : null))}
+        >
           {cancelLabel}
         </wa-button>
       {/if}
-      <wa-button variant="brand" size="small" role="button" tabindex="0" onclick={() => handleClose(mode === "prompt" ? inputValue.trim() : true)}>
+      <wa-button
+        variant="brand"
+        size="small"
+        role="button"
+        tabindex="0"
+        onclick={() => handleClose(mode === "prompt" ? inputValue.trim() : true)}
+        onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(mode === "prompt" ? inputValue.trim() : true))}
+      >
         {confirmLabel}
       </wa-button>
     </div>
   {:else if cancelLabel}
-     <wa-button slot="footer" variant="neutral" appearance="outlined" size="small" role="button" tabindex="0" onclick={() => handleClose(null)}>
+     <wa-button
+       slot="footer"
+       variant="neutral"
+       appearance="outlined"
+       size="small"
+       role="button"
+       tabindex="0"
+       onclick={() => handleClose(null)}
+       onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(null))}
+     >
        {cancelLabel}
      </wa-button>
   {/if}
