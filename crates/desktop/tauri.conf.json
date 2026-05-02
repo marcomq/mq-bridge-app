@@ -12,7 +12,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "mq bridge",
+        "title": "mq-bridge",
         "width": 1024,
         "height": 960,
         "minWidth": 800,
