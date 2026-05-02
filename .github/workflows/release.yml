@@ -12,7 +12,7 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository }}
-  IBM_MQ_SHA256: 03f99e3271295971439268f86f727932c0d0246a39d89163013d33261a355152
+  IBM_MQ_SHA256: faadc63c7a0d7ae24a85cdb0ed5f0669a61c5f70123bbd3cea3c540c77eea855
 
 jobs:
   metadata:
