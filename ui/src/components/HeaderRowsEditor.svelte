@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { handleActionKey } from "../lib/utils";
   type HeaderRow = {
     id: number;
     key: string;
@@ -27,12 +28,6 @@
     onToggle?: (index: number, enabled: boolean) => void;
     onRemove: (index: number) => void;
   } = $props();
-
-  function handleActionKey(event: KeyboardEvent, action: () => void) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    action();
-  }
 
   function handleFieldInput(
     event: Event,

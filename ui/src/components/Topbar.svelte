@@ -18,58 +18,6 @@
     themeSelectorOpen = false;
   }
 </script>
-<style>
-.theme {
-  position: relative;
-  display: inline-flex;
-}
-
-.theme-trigger {
-  width: 30px;
-  height: 30px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: #666;
-  cursor: pointer;
-}
-
-.theme-trigger:hover,
-.theme-trigger:focus-visible {
-  background: rgb(0 0 0 / 0.08);
-  outline: none;
-}
-
-.theme-menu {
-  position: absolute;
-  top: 34px;
-  right: 0;
-  z-index: 1000;
-  min-width: 90px;
-  padding: 4px;
-  border: 1px solid #ccc;
-  border-radius: 8px;
-  background: var(--wa-color-surface-default, white);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 0.14);
-}
-
-.theme-menu button {
-  display: block;
-  width: 100%;
-  border: 0;
-  border-radius: 5px;
-  padding: 6px 8px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.theme-menu button:hover,
-.theme-menu button.active {
-  background: rgb(0 0 0 / 0.08);
-}
-</style>
 
 <div class="topbar">
   <div class="topbar-logo">

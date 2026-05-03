@@ -39,6 +39,7 @@
     updatePublisherPayload,
     updatePublisherRequestField,
   } from "../lib/publishers-view";
+  import { handleActionKey } from "../lib/utils";
   import { getMqbState, mqbDialogs } from "../lib/runtime-window";
 
   let filterText = $state("");
@@ -94,12 +95,6 @@
       copyFeedback = "";
       copyFeedbackTimer = null;
     }, 1200);
-  }
-
-  function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    action();
   }
 
   const filteredHistoryRows = $derived(

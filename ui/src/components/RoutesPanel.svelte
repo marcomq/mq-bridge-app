@@ -12,6 +12,7 @@
     saveCurrentRouteAction,
     toggleCurrentRouteAction,
   } from "../lib/routes-view";
+  import { handleActionKey } from "../lib/utils";
 
   let filterText = $state("");
   let routeNameDraft = $state("");
@@ -39,12 +40,6 @@
   function commitRouteName() {
     lastSyncedRouteName = routeNameDraft.trim();
     void renameCurrentRouteAction(routeNameDraft);
-  }
-
-  function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    void action();
   }
 </script>
 

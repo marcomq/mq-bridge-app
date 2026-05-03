@@ -22,12 +22,17 @@ module.exports = defineConfig({
   root: resolve(__dirname, "ui"),
   publicDir: resolve(__dirname, "static"),
   plugins: [svelte({ configFile: resolve(__dirname, "svelte.config.js") })],
+  resolve: {
+    alias: {
+      // Map absolute paths in index.html to the physical /static folder
+      "/vendor": resolve(__dirname, "static/vendor"),
+      "/vanilla-schema-forms.js": resolve(__dirname, "static/vanilla-schema-forms.js"),
+      "/style.css": resolve(__dirname, "static/style.css"),
+    },
+  },
   server: {
     host: "127.0.0.1",
     port: 39092,
-    watch: {
-      usePolling: true,
-    },
     proxy: Object.fromEntries(
       proxiedPaths.map((path) => [
         path,
@@ -47,6 +52,7 @@ module.exports = defineConfig({
   },
   build: {
     emptyOutDir: false,
+    chunkSizeWarningLimit: 1000,
     outDir: resolve(__dirname, "static"),
     copyPublicDir: false,
     rollupOptions: {

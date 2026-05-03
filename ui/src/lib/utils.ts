@@ -2,8 +2,7 @@ import { nextUniqueName } from "./routes";
 
 export function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
-}
-
+} 
 export function sanitizeConsumerName(name: string): string {
   const asciiName = String(name || "")
     .normalize("NFKD")
@@ -51,4 +50,13 @@ export function normalizeConsumerResponse(response: unknown): { headers: Record<
     : "";
 
   return Object.keys(headers).length > 0 || payload.trim() ? { headers, payload } : null;
+}
+
+export function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {
+  // This utility function handles keyboard activation for interactive elements.
+  // It prevents the default browser action for 'Enter' or 'Space' keys and then executes the provided action.
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    void action(); // Use void to explicitly ignore the Promise return value if the action is async
+  }
 }

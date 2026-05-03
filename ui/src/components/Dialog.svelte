@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { handleActionKey } from "../lib/utils";
 
   interface DialogChoice {
     value: string;
@@ -43,13 +44,6 @@
       isOpen = true;
     });
   });
-
-  function handleActionKey(event: KeyboardEvent, action: () => void) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      action();
-    }
-  }
 
   function handleClose(result: any) {
     onResolve(result);

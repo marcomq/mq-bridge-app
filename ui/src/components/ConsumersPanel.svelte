@@ -21,6 +21,7 @@
     updateConsumerResponseHeader,
     updateConsumerResponsePayload,
   } from "../lib/consumers-view";
+  import { handleActionKey } from "../lib/utils";
   import { getMqbState } from "../lib/runtime-window";
 
   let filterText = $state("");
@@ -57,12 +58,6 @@
   async function copyMessageDetails() {
     if (!$consumersPanelState.detailPayload) return;
     await navigator.clipboard.writeText($consumersPanelState.detailPayload);
-  }
-
-  function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    void action();
   }
 
   function addConsumer() {

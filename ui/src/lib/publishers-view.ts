@@ -1149,6 +1149,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     state.form_mode = "publisher";
+    (appWindow() as any)._mqb_form_mode = "publisher";
     try {
       await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], (updated) => {
         const previousPublisher = publishers[idx];
@@ -1161,6 +1162,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       });
     } finally {
       state.form_mode = null;
+      (appWindow() as any)._mqb_form_mode = null;
     }
   };
 
