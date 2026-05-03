@@ -855,16 +855,14 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     }
 
     state.form_mode = "consumer";
-    try {
-      await mqbApp.forms().init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated) => {
-        (updated as Record<string, unknown>).response = config.consumers[currentIdx]?.response || null;
-        config.consumers[currentIdx] = updated as ConsumerConfig;
-        syncConsumersPanelState();
-        mqbRuntime.refreshDirtySection("consumers");
-      });
-    } finally {
-      state.form_mode = null;
-    }
+    (window as any)._mqb_form_mode = "consumer";
+
+    await mqbApp.forms().init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated) => {
+      (updated as Record<string, unknown>).response = config.consumers[currentIdx]?.response || null;
+      config.consumers[currentIdx] = updated as ConsumerConfig;
+      syncConsumersPanelState();
+      mqbRuntime.refreshDirtySection("consumers");
+    });
 
     renderLiveLog();
   };

@@ -1149,21 +1149,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     state.form_mode = "publisher";
-    (appWindow() as any)._mqb_form_mode = "publisher";
-    try {
-      await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], (updated) => {
-        const previousPublisher = publishers[idx];
-        const nextPublisher = updated as PublisherConfig;
-        copyRequestBarFieldValues(previousPublisher, nextPublisher);
-        publishers[idx] = nextPublisher;
-        setMethodSelectMode(getEndpointType(publishers[idx]));
-        syncPublishersPanelState();
-        mqbRuntime.refreshDirtySection("publishers");
-      });
-    } finally {
-      state.form_mode = null;
-      (appWindow() as any)._mqb_form_mode = null;
-    }
+    (window as any)._mqb_form_mode = "publisher";
+    
+    await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], (updated) => {
+      const previousPublisher = publishers[idx];
+      const nextPublisher = updated as PublisherConfig;
+      copyRequestBarFieldValues(previousPublisher, nextPublisher);
+      publishers[idx] = nextPublisher;
+      setMethodSelectMode(getEndpointType(publishers[idx]));
+      syncPublishersPanelState();
+      mqbRuntime.refreshDirtySection("publishers");
+    });
   };
 
   const copyCurrentPublisher = async () => {

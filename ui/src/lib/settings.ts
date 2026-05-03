@@ -78,12 +78,10 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
     getValue: () => mqbApp.config(),
   });
 
-  getMqbState().form_mode = "settings";
-  try {
-    await lib.init(container, cloneSchema(schema), config);
-  } finally {
-    getMqbState().form_mode = null;
-  }
+  const state = getMqbState();
+  state.form_mode = "settings";
+  (window as any)._mqb_form_mode = "settings";
+  await lib.init(container, cloneSchema(schema), config);
 
   const formActions = document.getElementById("form-actions");
   if (formActions) {

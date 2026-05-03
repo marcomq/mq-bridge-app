@@ -390,50 +390,49 @@ export async function initRoutes(config: RouteAppConfig, schema: RouteSchemaRoot
     }
     applyEndpointSchemaDefaults(routeSchema);
     syncRouteToggleButton();
-    getMqbState().form_mode = "route";
+    const state = getMqbState();
 
-    try {
-      await lib.init(
-        configFormContainer,
-        routeSchema,
-        { name: routeName, ...config.routes[routeName] },
-        (updated: Record<string, unknown>) => {
-          const oldName = routeName;
-          const { nextName, routeData } = splitRouteFormData(oldName, updated);
-          const newName = normalizeRouteName(nextName);
+    state.form_mode = "route";
+    (window as any)._mqb_form_mode = "route";
 
-          if (newName !== oldName) {
-            if (!newName.trim()) {
-              void mqbDialogs.alert("Route name cannot be empty");
-              return;
-            }
-            if (config.routes[newName]) {
-              void mqbDialogs.alert("Route already exists");
-              return;
-            }
-            delete config.routes[oldName];
-            config.routes[newName] = routeData as RouteDefinition;
-            mqbRuntime.refreshDirtySection("routes");
-            void initRoutes(config, schema);
-            const newIdx = Object.keys(config.routes).indexOf(newName);
-            if (newIdx !== -1) {
-              setActiveItem(newIdx);
-            }
+    await lib.init(
+      configFormContainer,
+      routeSchema,
+      { name: routeName, ...config.routes[routeName] },
+      (updated: Record<string, unknown>) => {
+        const oldName = routeName;
+        const { nextName, routeData } = splitRouteFormData(oldName, updated);
+        const newName = normalizeRouteName(nextName);
+
+        if (newName !== oldName) {
+          if (!newName.trim()) {
+            void mqbDialogs.alert("Route name cannot be empty");
             return;
           }
-
-          config.routes[oldName] = routeData as RouteDefinition;
-          routesArray[idx] = { name: oldName, ...(routeData as any) };
-          renderSidebar();
-          renderRuntimeMetrics();
-          setActiveItem(idx);
-          syncRouteToggleButton();
+          if (config.routes[newName]) {
+            void mqbDialogs.alert("Route already exists");
+            return;
+          }
+          delete config.routes[oldName];
+          config.routes[newName] = routeData as RouteDefinition;
           mqbRuntime.refreshDirtySection("routes");
-        },
-      );
-    } finally {
-      getMqbState().form_mode = null;
-    }
+          void initRoutes(config, schema);
+          const newIdx = Object.keys(config.routes).indexOf(newName);
+          if (newIdx !== -1) {
+            setActiveItem(newIdx);
+          }
+          return;
+        }
+
+        config.routes[oldName] = routeData as RouteDefinition;
+        routesArray[idx] = { name: oldName, ...(routeData as any) };
+        renderSidebar();
+        renderRuntimeMetrics();
+        setActiveItem(idx);
+        syncRouteToggleButton();
+        mqbRuntime.refreshDirtySection("routes");
+      },
+    );
 
     watchRouteValidationNoise(configFormContainer);
   };

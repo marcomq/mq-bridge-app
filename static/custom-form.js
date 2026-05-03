@@ -42,38 +42,29 @@ setConfig({
     customVisibility: (node, path) => {
       const description = node.description || "";
       const lowerPath = path.toLowerCase();
-      const pathSegments = lowerPath.split(".");
-      const fieldKey = pathSegments[pathSegments.length - 1] || "";
       const formMode = window._mqb_form_mode || "";
 
+      // 1. Hide transport fields ONLY in the top-level Publisher tab view
+      // because they are handled by the separate Request Bar UI.
       if (
         formMode === "publisher" &&
-        ["url", "method", "queue", "topic", "database"].includes(fieldKey)
+        ["url", "method", "queue", "topic", "database"].includes(lowerPath.split(".").pop())
       ) {
         return false;
       }
 
-      if (formMode === "publisher" && description.includes("Consumer only")) {
+      // 2. Identify context (nested objects in Routes/Settings or top-level tabs)
+      const isPubCtx = lowerPath.includes("publishers") || lowerPath.includes(".output") || formMode === "publisher";
+      const isConsCtx = lowerPath.includes("consumers") || lowerPath.includes(".input") || formMode === "consumer";
+
+      // 3. Hide cross-platform specific fields based on description markers
+      if (isPubCtx && description.includes("Consumer only")) {
         return false;
       }
-      if (formMode === "consumer" && description.includes("Publisher only")) {
+      if (isConsCtx && description.includes("Publisher only")) {
         return false;
       }
 
-      if (
-        formMode === "route" &&
-        lowerPath.includes(".input") &&
-        description.includes("Publisher only")
-      ) {
-        return false;
-      }
-      if (
-        formMode === "route" &&
-        lowerPath.includes(".output") &&
-        description.includes("Consumer only")
-      ) {
-        return false;
-      }
       return true;
     },
   },
@@ -220,13 +211,6 @@ const syncToggleTarget = (input) => {
 const installFormInteractionDelegates = () => {
   if (window._mqb_form_interactions_installed) return;
   window._mqb_form_interactions_installed = true;
-
-  document.addEventListener("click", (event) => {
-    const button = event.target.closest?.("[data-disclosure-target]");
-    if (!button) return;
-    event.preventDefault();
-    toggleDisclosure(button, button.getAttribute("data-disclosure-target"));
-  });
 
   document.addEventListener("change", (event) => {
     const input = event.target.closest?.("[data-toggle-target]");
@@ -639,6 +623,7 @@ const createCustomCollapsibleRenderer = (visibleKeys) => ({
           "aria-expanded": "false",
           onclick: (event) => {
             event.preventDefault();
+            event.stopPropagation(); // Fix double-toggle in WebKit/Tauri by stopping bubble to delegate
             toggleDisclosure(event.currentTarget, hiddenId);
           },
         },
