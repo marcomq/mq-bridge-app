@@ -4,12 +4,12 @@ default-members = ["crates/cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 
 [workspace.dependencies]
 # Define the core crate as a workspace dependency with its version for crates.io
-mq_bridge_app = { version = "0.2.1", path = "crates/core", package = "mq-bridge-app-core" }
+mq_bridge_app = { version = "0.2.2", path = "crates/core", package = "mq-bridge-app-core" }
 
 [profile.release]
 panic = "abort"

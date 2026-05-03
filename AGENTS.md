@@ -25,21 +25,10 @@
 
 ## Important Recent Behavior Decisions
 
-1. Consumer polling/messages
-   - Consumer messages are polled from `/messages?consumer=...`.
-   - Polling logic is in `ui/src/lib/consumers-view.ts`.
-   - Throughput (`msg/s`) is computed from fetched message batch size over elapsed poll time.
-   - Throughput label is only shown when consumer is running.
-
-2. Consumer tab/save behavior
+1. Consumer tab/save behavior
    - Save keeps the active consumer subtab (no definition/messages flicker).
 
-3. Config import/export
-   - App Config has import/export/reset in Settings.
-   - App import is additive/merge-oriented (does not wipe existing by default).
-   - Publisher/consumer imports are separated by panel actions.
-
-4. Runtime status indicator
+2. Runtime status indicator
    - Topbar runtime status is sourced from polled runtime state, not stale legacy globals.
 
 ## Testing Guidance
@@ -65,6 +54,27 @@
 - Remaining migration cleanup from `*-view.ts` controller modules into cleaner component/service boundaries.
 - Enhanced real-time monitoring features and throughput visualization.
 - Additional consumer traffic E2E coverage can still be expanded.
+
+
+## Working style for Codex Agents
+
+For non-trivial implementation or refactoring tasks, do not jump directly to a finished solution.
+
+Use a design-checkpoint workflow:
+
+1. Explore the relevant code.
+2. Before implementing, explain the intended solution shape:
+   - target architecture
+   - data flow
+   - files/components likely to change
+   - what will be removed or replaced
+   - known tradeoffs
+3. You may even show code or modify code as unfinished solution, so that the user knows what you want to do.
+4. Stop and wait for user feedback before writing the main implementation.
+5. After feedback, finalize implementation step. Run the smallest relevant tests/checks. Just check if the test succeeds or fails - only check the test output on test fail.
+6. Show the final diff summary.
+
+The checkpoint is about design direction, not about asking permission for every small edit.
 
 ## Operational Notes
 

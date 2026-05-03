@@ -19,6 +19,16 @@ struct DesktopState {
     app: UiApp,
 }
 
+#[derive(Debug, Deserialize)]
+struct DesktopUiRequest {
+    method: String,
+    path: String,
+    #[serde(default)]
+    query: String,
+    #[serde(default)]
+    body_text: String,
+}
+
 #[derive(Serialize)]
 struct DesktopSecretStatusItem {
     key: String,
@@ -68,16 +78,6 @@ impl SecretStore for DesktopKeyringSecretStore {
         write_desktop_secret_metadata(&self.metadata_path, secrets.keys())?;
         Ok(())
     }
-}
-
-#[derive(Deserialize)]
-struct DesktopUiRequest {
-    method: String,
-    path: String,
-    #[serde(default)]
-    query: String,
-    #[serde(default)]
-    body_text: String,
 }
 
 #[derive(Serialize)]
@@ -232,55 +232,196 @@ fn summarize_desktop_secret_status(
 }
 
 #[tauri::command]
-async fn execute_ui_request(
+async fn get_health_request(
     state: tauri::State<'_, DesktopState>,
-    mut request: DesktopUiRequest,
 ) -> Result<BridgeResponse, String> {
-    if request.method.eq_ignore_ascii_case("GET") && request.path == "/desktop-secrets" {
-        let config = state.app.get_config().await;
-        let metadata_path = desktop_secret_metadata_path(Path::new(state.app.config_file_path()));
-        let extracted_keys = read_desktop_secret_metadata(&metadata_path);
-        let summary = summarize_desktop_secret_status(
-            config.referenced_secret_keys(),
-            &extracted_keys,
-            DESKTOP_SECRET_SERVICE,
-        );
-        return Ok(json_response(
-            200,
-            serde_json::to_value(summary).map_err(|error| error.to_string())?,
-        ));
-    }
+    dispatch_ui_request(state, "GET", "/health", "", "").await
+}
 
-    if request.method.eq_ignore_ascii_case("DELETE") && request.path == "/desktop-secrets" {
-        let metadata_path = desktop_secret_metadata_path(Path::new(state.app.config_file_path()));
-        let deleted = delete_desktop_secrets_for_metadata(&metadata_path, DESKTOP_SECRET_SERVICE)
-            .map_err(|error| error.to_string())?;
-        return Ok(json_response(
-            200,
-            serde_json::json!({ "deleted": deleted }),
-        ));
-    }
+#[tauri::command]
+async fn get_schema_request(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(state, "GET", "/schema.json", "", "").await
+}
 
-    if request.method.eq_ignore_ascii_case("POST")
-        && request.path == "/config"
-        && !request.body_text.trim().is_empty()
-        && let Ok(mut config_value) = serde_json::from_str::<serde_json::Value>(&request.body_text)
-    {
-        if let Some(object) = config_value.as_object_mut() {
-            object.insert("extract_secrets".into(), serde_json::Value::Bool(true));
-            if let Ok(body_text) = serde_json::to_string(&config_value) {
-                request.body_text = body_text;
+#[tauri::command]
+async fn get_config_request(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(state, "GET", "/config", "", "").await
+}
+
+#[tauri::command]
+async fn post_config_request(
+    state: tauri::State<'_, DesktopState>,
+    body_text: String,
+) -> Result<BridgeResponse, String> {
+    let mut processed_body = body_text;
+    if !processed_body.trim().is_empty() {
+        if let Ok(mut config_value) = serde_json::from_str::<serde_json::Value>(&processed_body) {
+            if let Some(object) = config_value.as_object_mut() {
+                object.insert("extract_secrets".into(), serde_json::Value::Bool(true));
+                if let Ok(serialized) = serde_json::to_string(&config_value) {
+                    processed_body = serialized;
+                }
             }
         }
     }
+    dispatch_ui_request(state, "POST", "/config", "", &processed_body).await
+}
 
-    let mut message = CanonicalMessage::from(request.body_text);
+#[tauri::command]
+async fn get_desktop_secrets_request(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BridgeResponse, String> {
+    let config = state.app.get_config().await;
+    let metadata_path = desktop_secret_metadata_path(Path::new(state.app.config_file_path()));
+    let extracted_keys = read_desktop_secret_metadata(&metadata_path);
+    let summary = summarize_desktop_secret_status(
+        config.referenced_secret_keys(),
+        &extracted_keys,
+        DESKTOP_SECRET_SERVICE,
+    );
+    Ok(json_response(
+        200,
+        serde_json::to_value(summary).map_err(|error| error.to_string())?,
+    ))
+}
+
+#[tauri::command]
+async fn delete_desktop_secrets_request(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BridgeResponse, String> {
+    let metadata_path = desktop_secret_metadata_path(Path::new(state.app.config_file_path()));
+    let deleted = delete_desktop_secrets_for_metadata(&metadata_path, DESKTOP_SECRET_SERVICE)
+        .map_err(|error| error.to_string())?;
+    Ok(json_response(
+        200,
+        serde_json::json!({ "deleted": deleted }),
+    ))
+}
+
+#[tauri::command]
+async fn get_consumer_status_request(
+    state: tauri::State<'_, DesktopState>,
+    consumer: String,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(
+        state,
+        "GET",
+        "/consumer-status",
+        &format!("consumer={}", consumer),
+        "",
+    )
+    .await
+}
+
+#[tauri::command]
+async fn post_consumer_start_request(
+    state: tauri::State<'_, DesktopState>,
+    consumer: String,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(
+        state,
+        "POST",
+        "/consumer-start",
+        &format!("consumer={}", consumer),
+        "",
+    )
+    .await
+}
+
+#[tauri::command]
+async fn post_consumer_stop_request(
+    state: tauri::State<'_, DesktopState>,
+    consumer: String,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(
+        state,
+        "POST",
+        "/consumer-stop",
+        &format!("consumer={}", consumer),
+        "",
+    )
+    .await
+}
+
+#[tauri::command]
+async fn get_messages_request(
+    state: tauri::State<'_, DesktopState>,
+    consumer: Option<String>,
+) -> Result<BridgeResponse, String> {
+    let query = consumer
+        .map(|c| format!("consumer={}", c))
+        .unwrap_or_default();
+    dispatch_ui_request(state, "GET", "/messages", &query, "").await
+}
+
+#[tauri::command]
+async fn post_publish_request(
+    state: tauri::State<'_, DesktopState>,
+    body_text: String,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(state, "POST", "/publish", "", &body_text).await
+}
+
+#[tauri::command]
+async fn get_runtime_status_request(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(state, "GET", "/runtime-status", "", "").await
+}
+
+#[tauri::command]
+async fn get_metrics_request(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(state, "GET", "/metrics", "", "").await
+}
+
+#[tauri::command]
+async fn execute_ui_request(
+    state: tauri::State<'_, DesktopState>,
+    request: DesktopUiRequest,
+) -> Result<BridgeResponse, String> {
+    // Generic entry point used by bundled UI code
+    dispatch_ui_request(
+        state,
+        &request.method,
+        &request.path,
+        &request.query,
+        &request.body_text,
+    )
+    .await
+}
+
+async fn dispatch_ui_request(
+    state: tauri::State<'_, DesktopState>,
+    method: &str,
+    path: &str,
+    query: &str,
+    body_text: &str,
+) -> Result<BridgeResponse, String> {
+    tracing::trace!(
+        "UI request: method={}, path={}, query={}, body_len={}",
+        method,
+        path,
+        query,
+        body_text.len()
+    );
+
+    let mut message = CanonicalMessage::from(body_text.to_string());
     message
         .metadata
-        .insert("http_method".into(), request.method.to_uppercase());
-    message.metadata.insert("http_path".into(), request.path);
-    if !request.query.is_empty() {
-        message.metadata.insert("http_query".into(), request.query);
+        .insert("http_method".into(), method.to_uppercase());
+    message
+        .metadata
+        .insert("http_path".into(), path.to_string());
+    if !query.is_empty() {
+        message
+            .metadata
+            .insert("http_query".into(), query.to_string());
     }
 
     state
@@ -473,7 +614,22 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![execute_ui_request])
+        .invoke_handler(tauri::generate_handler![
+            execute_ui_request,
+            get_health_request,
+            get_schema_request,
+            get_config_request,
+            post_config_request,
+            get_desktop_secrets_request,
+            delete_desktop_secrets_request,
+            get_consumer_status_request,
+            post_consumer_start_request,
+            post_consumer_stop_request,
+            get_messages_request,
+            post_publish_request,
+            get_runtime_status_request,
+            get_metrics_request
+        ])
         .on_window_event(|_, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 tauri::async_runtime::spawn(async {

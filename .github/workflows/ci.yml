@@ -29,7 +29,7 @@ jobs:
         run: cargo check --all-targets
 
   test:
-    name: Cargo Test
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -40,8 +40,25 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config zlib1g-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config zlib1g-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
 
       - name: Run cargo test
         run: cargo test --all-targets
+
+      - name: Run frontend unit tests
+        run: npm run test:unit
+
+      - name: Run frontend UI tests
+        run: npm run test:ui

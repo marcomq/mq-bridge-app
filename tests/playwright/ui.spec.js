@@ -312,7 +312,7 @@ test("publisher can be copied to a new consumer", async ({ page }) => {
   await openPublisherDefinition(page, 0);
 
   await page.locator("#pub-copy").click();
-  const copyChoice = page.locator(".mqb-choice-link", { hasText: "New Consumer" });
+  const copyChoice = page.locator("wa-button", { hasText: "New Consumer" });
   await expect(copyChoice).toBeVisible();
   await copyChoice.click();
 
@@ -333,7 +333,7 @@ test("consumer can be copied to a new publisher for review", async ({ page }) =>
   await openConsumerDefinition(page, 0);
 
   await page.locator("#cons-copy").click();
-  const copyChoice = page.locator(".mqb-choice-link", { hasText: "New Publisher" });
+  const copyChoice = page.locator("wa-button", { hasText: "New Publisher" });
   await expect(copyChoice).toBeVisible();
   await copyChoice.click();
 
@@ -352,7 +352,7 @@ test("route can be copied to a new consumer for review", async ({ page }) => {
   await openRouteDefinition(page, 0);
 
   await page.locator("#route-copy").click();
-  const copyChoice = page.locator(".mqb-choice-link", { hasText: "Input -> New Consumer" });
+  const copyChoice = page.locator("wa-button", { hasText: "Input -> New Consumer" });
   await expect(copyChoice).toBeVisible();
   await copyChoice.click();
 

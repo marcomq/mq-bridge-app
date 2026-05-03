@@ -1,7 +1,6 @@
 use crate::config::{
     AppConfig, ConsumerConfig, ConsumerResponseConfig, EnvFileSecretStore, RouteConfig, SecretStore,
 };
-use crate::ui_api::{UiCommand, UiCommandError, UiResponse};
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -327,11 +326,16 @@ impl UiApp {
             .get("http_path")
             .map(|s| s.as_str())
             .unwrap_or("/");
-        let path = raw_path.to_lowercase();
+
+        // Strip anything after '#' to allow the UI to send "visible identifiers"
+        // that appear in the browser network tab but are ignored for routing.
+        let routing_path = raw_path.split('#').next().unwrap_or("/").to_lowercase();
+        // Use the original case for parameters if needed, but lowercase for routing
+        let path = routing_path.as_str();
 
         if method == "POST"
             && matches!(
-                path.as_str(),
+                path,
                 "/config" | "/publish" | "/consumer-start" | "/consumer-stop"
             )
             && !is_same_origin_request(&msg)
@@ -343,34 +347,44 @@ impl UiApp {
             ));
         }
 
-        let result = match (method.as_str(), path.as_str()) {
+        let result = match (method.as_str(), path) {
             ("GET", "/health") => Ok(Handled::Publish(msg!("OK"))),
-            ("GET", "/schema.json") => self.execute_ui_command(UiCommand::GetSchema).await,
-            ("GET", "/config") => self.execute_ui_command(UiCommand::GetConfig).await,
+            ("GET", "/schema.json") => {
+                let schema = schemars::schema_for!(AppConfig);
+                self.ok_json(&schema, false)
+            }
+            ("GET", "/config") => self.ok_json(&self.get_config().await, false),
             ("GET", "/consumer-status") => {
                 let name = query_param(&msg, "consumer").unwrap_or_default();
-                self.execute_ui_command(UiCommand::ConsumerStatus { name })
-                    .await
+                match self.consumer_status(&name).await {
+                    Some(status) => self.ok_json(&status, false),
+                    None => self.err_response(404, format!("Consumer not found: {name}")),
+                }
             }
             ("POST", "/consumer-start") => {
                 let name = query_param(&msg, "consumer").unwrap_or_default();
-                self.execute_ui_command(UiCommand::StartConsumer { name })
-                    .await
+                match self.start_consumer(&name).await {
+                    Ok(true) => Ok(Handled::Publish(msg!("Started"))),
+                    Ok(false) => self.err_response(404, format!("Consumer not found: {name}")),
+                    Err(e) => self.err_response(500, e.to_string()),
+                }
             }
             ("POST", "/consumer-stop") => {
                 let name = query_param(&msg, "consumer").unwrap_or_default();
-                self.execute_ui_command(UiCommand::StopConsumer { name })
-                    .await
+                self.stop_consumer(&name).await;
+                Ok(Handled::Publish(msg!("Stopped")))
             }
             ("GET", "/messages") => {
                 let consumer = query_param(&msg, "consumer");
-                self.execute_ui_command(UiCommand::GetMessages { consumer })
-                    .await
+                self.ok_json(&self.get_messages(consumer.as_deref()).await, true)
             }
             ("POST", "/config") => self.handle_update_config_message(msg).await,
             ("POST", "/publish") => self.handle_publish_message(msg).await,
-            ("GET", "/runtime-status") => self.execute_ui_command(UiCommand::RuntimeStatus).await,
-            ("GET", "/metrics") => self.execute_ui_command(UiCommand::RenderMetrics).await,
+            ("GET", "/runtime-status") => self.ok_json(&self.runtime_status().await, true),
+            ("GET", "/metrics") => Ok(Handled::Publish(
+                CanonicalMessage::from(self.render_metrics())
+                    .with_content_type("text/plain; version=0.0.4"),
+            )),
             ("GET", _) if serve_static_assets => self.handle_static_asset(raw_path),
             _ => Ok(Handled::Publish(msg!("Not Found").with_status_code("404"))),
         };
@@ -394,6 +408,32 @@ impl UiApp {
         };
 
         Ok(Handled::Publish(response))
+    }
+
+    fn ok_json<T: serde::Serialize>(
+        &self,
+        value: &T,
+        no_cache: bool,
+    ) -> Result<Handled, HandlerError> {
+        let mut m = CanonicalMessage::from_type(value)
+            .map_err(|e| HandlerError::NonRetryable(e.into()))?
+            .with_content_type("application/json");
+        if no_cache {
+            m = m.with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate");
+        }
+        Ok(Handled::Publish(m))
+    }
+
+    fn err_response(
+        &self,
+        status: u16,
+        message: impl Into<String>,
+    ) -> Result<Handled, HandlerError> {
+        Ok(Handled::Publish(
+            msg!(message.into())
+                .with_status_code(status.to_string())
+                .with_content_type("text/plain; charset=utf-8"),
+        ))
     }
 
     pub fn render_metrics(&self) -> String {
@@ -810,69 +850,6 @@ impl UiApp {
         Ok(())
     }
 
-    pub async fn execute_ui_command(&self, command: UiCommand) -> Result<Handled, HandlerError> {
-        match self.execute(command).await {
-            Ok(response) => self.ui_response_to_handled(response),
-            Err(error) => Ok(self.map_ui_command_error(error)),
-        }
-    }
-
-    fn json_response<T: serde::Serialize>(&self, value: &T) -> Result<Handled, HandlerError> {
-        Ok(Handled::Publish(
-            CanonicalMessage::from_type(value)
-                .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                .with_content_type("application/json"),
-        ))
-    }
-
-    fn map_ui_command_error(&self, error: UiCommandError) -> Handled {
-        match error {
-            UiCommandError::InvalidInput(err) => {
-                tracing::error!("{err}");
-                Handled::Publish(
-                    CanonicalMessage::from(err.to_string())
-                        .with_status_code(UiCommandError::InvalidInput(err).http_status_code()),
-                )
-            }
-            UiCommandError::NotFound { resource, name } => Handled::Publish(
-                CanonicalMessage::from(format!("{resource} not found: {name}"))
-                    .with_status_code("404"),
-            ),
-            UiCommandError::Failed(err) => {
-                tracing::error!("{err}");
-                Handled::Publish(
-                    CanonicalMessage::from(err.to_string())
-                        .with_status_code(UiCommandError::Failed(err).http_status_code()),
-                )
-            }
-        }
-    }
-
-    fn ui_response_to_handled(&self, response: UiResponse) -> Result<Handled, HandlerError> {
-        match response {
-            UiResponse::Ack { message } => Ok(Handled::Publish(CanonicalMessage::from(message))),
-            UiResponse::Config(config) => self.json_response(&config),
-            UiResponse::Schema(schema) => self.json_response(&schema),
-            UiResponse::ConsumerStatus(status) => self.json_response(&status),
-            UiResponse::Messages(messages) => Ok(Handled::Publish(
-                CanonicalMessage::from_type(&messages)
-                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                    .with_content_type("application/json")
-                    .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
-            )),
-            UiResponse::Publish(response) => self.json_response(&response),
-            UiResponse::RuntimeStatus(status) => Ok(Handled::Publish(
-                CanonicalMessage::from_type(&status)
-                    .map_err(|e| HandlerError::NonRetryable(e.into()))?
-                    .with_content_type("application/json")
-                    .with_metadata_kv("Cache-Control", "no-cache, no-store, must-revalidate"),
-            )),
-            UiResponse::Metrics(metrics) => Ok(Handled::Publish(
-                CanonicalMessage::from(metrics).with_content_type("text/plain; version=0.0.4"),
-            )),
-        }
-    }
-
     fn handle_static_asset(&self, request_path: &str) -> Result<Handled, HandlerError> {
         let Some(file_path) = resolve_static_asset_path(request_path) else {
             return Ok(Handled::Publish(msg!("Not Found").with_status_code("404")));
@@ -890,13 +867,20 @@ impl UiApp {
     }
 
     async fn handle_publish_message(&self, msg: CanonicalMessage) -> Result<Handled, HandlerError> {
-        match serde_json::from_slice::<PublishRequest>(&msg.payload) {
-            Ok(request) => self.execute_ui_command(UiCommand::Publish(Box::new(request))).await,
-            Err(e) => Ok(
-                self.map_ui_command_error(UiCommandError::invalid_input(format!(
-                    "Json deserialize error: {e}"
-                ))),
-            ),
+        let request: PublishRequest = match serde_json::from_slice(&msg.payload) {
+            Ok(req) => req,
+            Err(e) => {
+                return Ok(Handled::Publish(
+                    msg!(format!("Json deserialize error: {e}")).with_status_code("400"),
+                ));
+            }
+        };
+
+        let name = request.name.clone();
+        match self.publish(request).await {
+            Ok(Some(response)) => self.ok_json(&response, false),
+            Ok(None) => self.err_response(404, format!("Publisher not found: {name}")),
+            Err(e) => self.err_response(500, e.to_string()),
         }
     }
 
@@ -925,8 +909,18 @@ impl UiApp {
             }
         };
 
-        self.execute_ui_command(UiCommand::UpdateConfig(Box::new(new_config)))
-            .await
+        match self.update_config(new_config).await {
+            Ok(()) => Ok(Handled::Publish(msg!("Configuration updated"))),
+            Err(e) => {
+                let status_code = match e {
+                    UpdateConfigError::Other(_) => "500",
+                    _ => "400",
+                };
+                Ok(Handled::Publish(
+                    msg!(e.to_string()).with_status_code(status_code),
+                ))
+            }
+        }
     }
 
     async fn start_ui_collector_routes(&self, consumers: &[ConsumerConfig]) -> Result<()> {

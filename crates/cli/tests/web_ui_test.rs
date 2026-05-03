@@ -167,6 +167,43 @@ async fn test_web_ui_health_check() {
 }
 
 #[tokio::test]
+async fn test_web_ui_metrics_endpoint() {
+    let _guard = test_mutex().lock().await;
+    stop_all_routes().await;
+
+    let port = get_free_port();
+    let config_file = unique_config_path(port);
+    let builder = PrometheusBuilder::new();
+    let recorder = builder.build_recorder();
+    let handle = recorder.handle();
+
+    let key = Key::from_name("test_metric");
+    let metadata = metrics::Metadata::new("test_metric", metrics::Level::INFO, None);
+    let _ = recorder.register_counter(&key, &metadata);
+
+    let config_file_path = config_file.to_string_lossy().to_string();
+    let server = tokio::spawn(async move {
+        web_ui::start_web_server(
+            format!("127.0.0.1:{}", port),
+            AppConfig::default(),
+            handle,
+            config_file_path,
+        )
+        .await
+        .unwrap();
+    });
+    sleep(Duration::from_millis(200)).await;
+
+    let response = http_get(port, "/metrics").await;
+    assert!(response.contains("200 OK"));
+    assert!(response.contains("# TYPE test_metric counter"));
+
+    server.abort();
+    stop_all_routes().await;
+    let _ = std::fs::remove_file(config_file);
+}
+
+#[tokio::test]
 async fn test_web_ui_schema_and_index_expose_custom_ui_shape() {
     let _guard = test_mutex().lock().await;
     stop_all_routes().await;
@@ -502,43 +539,6 @@ async fn test_web_ui_can_disable_existing_route_and_runtime_status_updates() {
             .iter()
             .any(|name| name == &serde_json::Value::String(route_name.clone()))
     );
-
-    server.abort();
-    stop_all_routes().await;
-    let _ = std::fs::remove_file(config_file);
-}
-
-#[tokio::test]
-async fn test_web_ui_metrics_endpoint() {
-    let _guard = test_mutex().lock().await;
-    stop_all_routes().await;
-
-    let port = get_free_port();
-    let config_file = unique_config_path(port);
-    let builder = PrometheusBuilder::new();
-    let recorder = builder.build_recorder();
-    let handle = recorder.handle();
-
-    let key = Key::from_name("test_metric");
-    let metadata = metrics::Metadata::new("test_metric", metrics::Level::INFO, None);
-    let _ = recorder.register_counter(&key, &metadata);
-
-    let config_file_path = config_file.to_string_lossy().to_string();
-    let server = tokio::spawn(async move {
-        web_ui::start_web_server(
-            format!("127.0.0.1:{}", port),
-            AppConfig::default(),
-            handle,
-            config_file_path,
-        )
-        .await
-        .unwrap();
-    });
-    sleep(Duration::from_millis(200)).await;
-
-    let response = http_get(port, "/metrics").await;
-    assert!(response.contains("200 OK"));
-    assert!(response.contains("# TYPE test_metric counter"));
 
     server.abort();
     stop_all_routes().await;

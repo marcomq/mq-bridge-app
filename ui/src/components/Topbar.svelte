@@ -46,7 +46,7 @@
       title={`Theme: ${theme}`}
       aria-label={`Theme: ${theme}`}
     >
-      <wa-icon name={theme === "dark" ? "moon" : theme === "light" ? "sun" : "circle-half-stroke"}></wa-icon>
+    {theme === "dark" ? "☾" : theme === "light" ? "☼" : "◐"}
     </button>
 
     {#if themeSelectorOpen}

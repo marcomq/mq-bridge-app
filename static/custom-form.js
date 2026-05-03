@@ -58,10 +58,10 @@ setConfig({
       const isConsCtx = lowerPath.includes("consumers") || lowerPath.includes(".input") || formMode === "consumer";
 
       // 3. Hide cross-platform specific fields based on description markers
-      if (isPubCtx && description.includes("Consumer only")) {
+      if (isPubCtx && /\(Consumer only\)/i.test(description)) {
         return false;
       }
-      if (isConsCtx && description.includes("Publisher only")) {
+      if (isConsCtx && /\(Publisher only\)/i.test(description)) {
         return false;
       }
 
