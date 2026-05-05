@@ -2,7 +2,7 @@
   import { get } from "svelte/store";
   import { activeMainTab, publishersPanelState } from "../lib/stores";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
-  import CodeEditor from "./CodeEditor.svelte";
+  import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
   import {
     addPublisherAction,
     addPublisherMetadataRow,
@@ -16,7 +16,6 @@
     savePublisherPresetAction,
     renamePublisherPresetAction,
     savePublisherHistoryAsPresetAction,
-    editEnvironmentVarsAction,
     exportPublisherPresetsAction,
     importAsyncApiToPublisherAction,
     importMqbToPublisherAction,
@@ -268,9 +267,6 @@
           <wa-button variant="brand" size="small" id="pub-send" role="button" tabindex="0" onclick={sendPublisherAction}
             onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void sendPublisherAction())}>Send</wa-button
           >
-          <wa-button variant="neutral" appearance="outlined" size="small" id="pub-env" role="button" tabindex="0" onclick={editEnvironmentVarsAction}
-            onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void editEnvironmentVarsAction())}>Env</wa-button
-          >
         </div>
         <div class="content-tabs" id="pub-sub-tabs">
           <button type="button" class:active={$publishersPanelState.activeSubtab === "definition"} class="content-tab" data-target="pub-config-pane" id="ctab-config" onclick={() => openSubtab("definition")}>Definition</button>
@@ -296,21 +292,24 @@
               style="flex-direction:column;"
               style:display={$publishersPanelState.activeSubtab === "payload" ? "flex" : "none"}
             >
-              <div class="section-toolbar">
-                <div class="section-label">Request Body</div>
-                <wa-button variant="neutral" appearance="outlined" size="small" id="pub-beautify" role="button" tabindex="0"
-                  onclick={beautifyPublisherPayloadAction}
-                  onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void beautifyPublisherPayloadAction())}
-                  >Beautify JSON</wa-button
-                >
-              </div>
-              <CodeEditor
+              <PayloadDisplay
                 id="pub-payload"
-                value={$publishersPanelState.requestPayload}
+                label="Request Body"
+                payload={$publishersPanelState.requestPayload}
                 placeholder="Request body"
-                language="json-auto"
+                contentType={$publishersPanelState.requestContentType || ''}
+                readOnly={false}
                 onChange={updatePublisherPayload}
-              />
+              >
+                <wa-button slot="extra" appearance="outlined" size="small"
+                  variant="neutral"
+                  role="button"
+                  tabindex="0"
+                  onkeydown={(event: KeyboardEvent) => handleActionKey(event, beautifyPublisherPayloadAction)}
+                  onclick={beautifyPublisherPayloadAction}>
+                  Beautify
+                </wa-button>
+              </PayloadDisplay>
             </div>
             <div
               class="pane-top"
@@ -318,10 +317,7 @@
               style="flex-direction:column;"
               style:display={$publishersPanelState.activeSubtab === "headers" ? "flex" : "none"}
             >
-              <div class="section-toolbar response-editor-header">
-                <div class="section-label">Headers</div>
-              </div>
-              <div id="metadata-container">
+              <div id="metadata-container" style="flex: 1; overflow: auto;">
                 <HeaderRowsEditor
                   rows={$publishersPanelState.metadataRows}
                   addLabel="+ Add Header"
@@ -521,23 +517,37 @@
               <div class="section-toolbar editor-action-bar editor-action-bar--compact">
                 <div class="form-actions-row section-actions section-actions-right">
                   <div class="editor-action-cluster">
-                    <wa-button variant="neutral" appearance="outlined" size="small" id="pub-copy" role="button" tabindex="0"
-                      onclick={copyCurrentPublisherAction}
-                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void copyCurrentPublisherAction())}
+                    <wa-button 
+                      variant="neutral" 
+                      appearance="outlined" 
+                      size="small" 
+                      id="pub-copy" 
+                      onclick={copyCurrentPublisherAction} 
+                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void copyCurrentPublisherAction())} 
+                      role="button" 
+                      tabindex="0"
                       >Copy to...</wa-button
                     >
-                    <wa-button variant="neutral" appearance="outlined" size="small" id="pub-clone" role="button" tabindex="0"
-                      onclick={cloneCurrentPublisherAction}
-                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentPublisherAction)}
+                    <wa-button 
+                      variant="neutral" 
+                      appearance="outlined" 
+                      size="small" 
+                      id="pub-clone" 
+                      onclick={cloneCurrentPublisherAction} 
+                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentPublisherAction)} 
+                      role="button" 
+                      tabindex="0"
                       >Clone</wa-button
                     >
                   </div>
                   <div class="toolbar-divider" aria-hidden="true"></div>
                   <div class="editor-action-cluster">
-                    <wa-button variant="brand" size="small" id="pub-save" role="button" tabindex="0"
+                    <wa-button variant="brand" size="small" id="pub-save"
+                      role="button" tabindex="0"
                       onclick={(event: MouseEvent) => saveCurrentPublisherAction(event.currentTarget as HTMLElement)}
                       onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void saveCurrentPublisherAction(document.getElementById("pub-save")))}>Save</wa-button>
-                    <wa-button variant="danger" appearance="outlined" size="small" id="pub-delete" role="button" tabindex="0"
+                    <wa-button variant="danger" appearance="outlined" size="small" id="pub-delete"
+                      role="button" tabindex="0"
                       onclick={() => deleteCurrentPublisherAction(document.getElementById("pub-save"))}
                       onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void deleteCurrentPublisherAction(document.getElementById("pub-save")))}
                       >Delete</wa-button
@@ -648,9 +658,13 @@
                 </div>
                 <div class="section-label">Body</div>
               {/if}
-              <div id="pub-actual-payload" style="white-space: pre-wrap; font-family: var(--font); color: var(--text-payload);">
-                {$publishersPanelState.responsePayload}
-              </div>
+              <PayloadDisplay 
+                id="pub-actual-payload"
+                label="Response Body"
+                payload={$publishersPanelState.responsePayload}
+                contentType={$publishersPanelState.responseContentType || ''}
+                readOnly={true}
+              />
             </div>
           </div>
         </div>

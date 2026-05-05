@@ -19,10 +19,6 @@ body {
     overflow: hidden;
 }
 
-.topbar-logo pre  {
-    background-color: transparent;
-    overflow: hidden;
-}
 .detail-body .response-meta-block {
     white-space: normal;
 }
@@ -35,6 +31,7 @@ body {
     --bg-input: #f6f9ff;
     --bg-hover: #e4ecf8;
     --bg-active: #d8e8ff;
+    --shadow-color: #00000033;
     --border: #ccd8ea;
     --text-primary: #162033;
     --text-muted: #4e5f7b;
@@ -66,6 +63,7 @@ body {
     --bg-input: #1c2333;
     --bg-hover: #222d3a;
     --bg-active: #1f3a5f;
+    --shadow-color: #ffffff99;
     --border: #2a3444;
     --text-primary: #e6edf3;
     --text-muted: #7d8590;
@@ -114,20 +112,6 @@ body {
     -webkit-app-region: drag;
 }
 
-.topbar-logo {
-    line-height: 11px;
-    font-family: var(--font);
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--accent-blue);
-    letter-spacing: 0.05em;
-    -webkit-app-region: no-drag;
-}
-
-.topbar-logo span {
-    color: var(--text-muted);
-}
-
 .topbar-spacer {
     flex: 1;
 }
@@ -140,6 +124,14 @@ body {
     gap: 4px;
     -webkit-app-region: no-drag;
 }
+
+.main-tabs .topbar {
+    flex: 1;
+    background: transparent;
+    border-bottom: none;
+    height: 100%;
+}
+
 .theme {
     position: relative;
     display: inline-flex;

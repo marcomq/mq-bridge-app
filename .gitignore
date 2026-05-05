@@ -41,3 +41,4 @@ db
 /crates/desktop/gen
 /coverage
 config.yml
+.tokensave

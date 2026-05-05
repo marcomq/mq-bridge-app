@@ -1,7 +1,7 @@
 <script lang="ts">
   import { activeMainTab, consumersPanelState } from "../lib/stores";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
-  import CodeEditor from "./CodeEditor.svelte";
+  import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
   import {
     addConsumerAction,
     addConsumerResponseHeader,
@@ -292,12 +292,13 @@
                     onRemove={removeConsumerResponseHeader}
                   />
                 </div>
-                <div class="section-label">Payload</div>
-                <CodeEditor
+                <PayloadDisplay 
                   id="cons-response-payload"
-                  value={$consumersPanelState.responsePayload}
+                  label="Payload"
+                  payload={$consumersPanelState.responsePayload}
                   placeholder="Response body"
-                  language="json-auto"
+                  contentType={$consumersPanelState.responseContentType || ''}
+                  readOnly={false}
                   onChange={updateConsumerResponsePayload}
                 />
               </div>
@@ -402,9 +403,13 @@
                 </div>
                 <div class="section-label">Body</div>
               {/if}
-              <div id="cons-msg-payload" style="white-space: pre-wrap; font-family: var(--font); color: var(--text-payload);">
-                {$consumersPanelState.detailPayload}
-              </div>
+              <PayloadDisplay 
+                id="cons-msg-payload"
+                label="Message Body"
+                payload={$consumersPanelState.detailPayload}
+                contentType={$consumersPanelState.detailContentType || ''}
+                readOnly={true}
+              />
             </div>
           </div>
         </div>
@@ -412,3 +417,23 @@
     </div>
   </div>
 </div>
+
+<style>
+  .subtle-link-btn {
+    background: none;
+    border: none;
+    padding: 0 5px;
+    margin: 0;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 11px;
+    transition: color 0.2s;
+  }
+
+  .subtle-link-btn:hover {
+    color: var(--text-primary);
+  }
+
+  /* No collapsible sections in ConsumersPanel, so no need for .section-label--collapsible here */
+</style>

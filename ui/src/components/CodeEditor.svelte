@@ -8,20 +8,26 @@
   import { tags } from "@lezer/highlight";
   import { onDestroy } from "svelte";
 
-  type EditorLanguage = "text" | "json-auto";
+  type EditorLanguage = "text" | "json" | "json-auto";
 
   let {
     id = "",
     value = "",
     placeholder = "",
     language = "json-auto",
+    readOnly = false,
+    wrapLines = true,
     onChange = (_value: string) => {},
+    onBlur = () => {},
   }: {
     id?: string;
     value?: string;
     placeholder?: string;
     language?: EditorLanguage;
     onChange?: (value: string) => void;
+    readOnly?: boolean;
+    wrapLines?: boolean;
+    onBlur?: () => void;
   } = $props();
 
   let container: HTMLDivElement | null = null;
@@ -29,6 +35,8 @@
   let applyingExternalUpdate = false;
 
   const languageCompartment = new Compartment();
+  const readOnlyCompartment = new Compartment();
+  const wrapLinesCompartment = new Compartment();
   const highlightStyle = HighlightStyle.define([
     { tag: tags.propertyName, color: "var(--json-key)" },
     { tag: tags.string, color: "var(--json-string)" },
@@ -37,14 +45,14 @@
     { tag: tags.null, color: "var(--json-null)" },
   ]);
 
-  function shouldUseJsonLanguage(text: string) {
+  function isLikelyJson(text: string) {
     const trimmed = text.trim();
-    return trimmed.startsWith("{") || trimmed.startsWith("[");
+    return (trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"));
   }
 
   function languageExtensionFor(text: string, mode: EditorLanguage) {
-    if (mode === "json-auto" && shouldUseJsonLanguage(text)) {
-      return json();
+    if (mode === "json" || (mode === "json-auto" && isLikelyJson(text))) {
+      return json({ indentUnit: 2 });
     }
     return [];
   }
@@ -60,13 +68,17 @@
         extensions: [
           basicSetup,
           keymap.of([...historyKeymap]),
-          EditorView.lineWrapping,
           cmPlaceholder(placeholder),
           syntaxHighlighting(highlightStyle),
           languageCompartment.of(languageExtension),
+          readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
+          wrapLinesCompartment.of(wrapLines ? EditorView.lineWrapping : []),
           EditorView.updateListener.of((update) => {
             if (!update.docChanged || applyingExternalUpdate) return;
             onChange(update.state.doc.toString());
+          }),
+          EditorView.domEventHandlers({
+            blur: onBlur,
           }),
         ],
       }),
@@ -87,7 +99,11 @@
     }
 
     editorView.dispatch({
-      effects: languageCompartment.reconfigure(languageExtensionFor(nextValue, language)),
+      effects: [
+        languageCompartment.reconfigure(languageExtensionFor(nextValue, language)),
+        readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly)),
+        wrapLinesCompartment.reconfigure(wrapLines ? EditorView.lineWrapping : [])
+      ]
     });
   });
 
@@ -98,3 +114,13 @@
 </script>
 
 <div id={id} class="code-editor body-editor" bind:this={container}></div>
+
+<style>
+  .code-editor {
+    flex: 1;
+    min-height: 0;
+  }
+  :global(.cm-editor) {
+    height: 100% !important;
+  }
+</style>

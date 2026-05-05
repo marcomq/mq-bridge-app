@@ -34,7 +34,7 @@
 ## Testing Guidance
 
 - Unit tests:
-  - Command: `npm run test:unit`
+  - Commands: `npm run test:unit` and `cargo test`
   - Focused suites used often:
     - `tests/unit/consumers-view.test.ts`
     - `tests/unit/publishers-view.test.ts`
@@ -55,26 +55,89 @@
 - Enhanced real-time monitoring features and throughput visualization.
 - Additional consumer traffic E2E coverage can still be expanded.
 
+## Storage direction
 
-## Working style for Codex Agents
+Use a workspace-based storage model as the long-term target.
 
-For non-trivial implementation or refactoring tasks, do not jump directly to a finished solution.
+Workspace/domain data should live in the workspace config, not in `localStorage`. This includes publishers, consumers, routes, presets, request history, headers, payloads, and configured environment variables. `localStorage` should only keep UI preferences such as theme, layout, selected tab, collapsed panels, and recent workspace references.
+
+Target storage modes:
+
+- `unencrypted`: plain workspace config for debugging, examples, user has no keystore, and manual editing.
+- `balanced` default: plain workspace config, but explicit secrets such as passwords, tokens, API keys, and sensitive env values are stored in the OS key store. The config stores only references/placeholders.
+- `sensitive`: the complete workspace config is encrypted. A random workspace key is stored in the OS key store. The file contains encrypted data plus metadata only.
+
+Saving should not blindly stop or restart routes. Compare current, saved, and applied runtime state. We should add manual triggers to restart routes or consumers.
+
+When changing persistence code, prefer moving app data toward the central workspace model instead of adding new independent `localStorage` storage.
+
+## XSS
+
+Make sure we don't print user / network input as html in UI, as we need to be protected against XSS. There also should be a basic protection against CSRF in browser mode.
+
+## Working style for Codex agents
+
+For non-trivial implementation or refactoring tasks, do not jump directly to a complete implementation.
 
 Use a design-checkpoint workflow:
 
-1. Explore the relevant code.
-2. Before implementing, explain the intended solution shape:
+1. Explore the relevant code first. Follow the Codebase navigation guidance below.
+2. Before implementing the main change, explain the intended solution shape:
    - target architecture
    - data flow
    - files/components likely to change
    - what will be removed or replaced
-   - known tradeoffs
-3. You may even show code or modify code as unfinished solution, so that the user knows what you want to do.
+   - known tradeoffs or risks
+3. For larger changes, provide a small sketch or partial example if it helps clarify the approach. Mark it clearly as unfinished. Do not perform the main implementation yet.
 4. Stop and wait for user feedback before writing the main implementation.
-5. After feedback, finalize implementation step. Run the smallest relevant tests/checks. Just check if the test succeeds or fails - only check the test output on test fail.
-6. Show the final diff summary.
+5. After feedback, continue with the implementation. Run relevant tests/checks. Prefer checking only whether tests pass or fail; inspect detailed test output only when a test fails.
 
 The checkpoint is about design direction, not about asking permission for every small edit.
+
+## Codebase navigation
+
+Use the `tokensave` MCP, if available, before broad file exploration when you need to understand project structure, symbol relationships, call sites, or likely impact areas. If it is not available, fall back to targeted search and reading only the relevant files.
+
+Prefer tokensave for:
+- finding symbols, structs, traits, functions, and modules
+- finding callers/callees and related files
+- estimating the impact of a change
+- locating likely test files
+- avoiding repeated grep/read exploration across the repository
+
+After tokensave identifies relevant files or symbols, read the actual source files before editing them. Do not rely on summaries alone for implementation details.
+
+For Rust changes, prefer checking:
+- trait definitions and implementations
+- feature-gated code paths
+- public API usage
+- tests and examples affected by the change
+
+Avoid reading many unrelated files when a targeted tokensave query can narrow the scope first.
+
+## UI direction
+
+Prefer small, boring, understandable UI code over clever abstractions.
+
+Avoid adding new UI dependencies unless they clearly reduce complexity.
+
+Keep the visual style minimal and unobtrusive. Prefer simple native-like controls when Web Components introduce event or rendering issues.
+
+When changing forms, preserve keyboard usability and avoid hidden persistence side effects.
+
+## Optional review tools
+
+If the CodeRabbit CLI is installed and authenticated, it may be used for an additional local review of non-trivial diffs before finalizing.
+
+Prefer agent-readable output when used from an AI coding agent:
+
+```sh
+cr --agent --type uncommitted
+```
+
+Do not make CodeRabbit mandatory. If it is unavailable, unauthenticated, rate-limited, or not useful for the current task, continue with normal local checks.
+
+After running CodeRabbit, summarize only actionable findings and decide whether they should be applied.
 
 ## Operational Notes
 

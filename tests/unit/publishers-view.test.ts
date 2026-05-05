@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import {
+  addPublisherAction,
   applyPublisherPresetAction,
   addPublisherMetadataRow,
   beautifyPublisherPayloadAction,
@@ -19,6 +20,7 @@ import {
   renamePublisherPresetAction,
   removePublisherMetadataRow,
   savePublisherPresetAction,
+  saveCurrentPublisherAction,
   selectPublisherSubtab,
   togglePublisherMetadataRow,
   updatePublisherMetadataRow,
@@ -177,6 +179,66 @@ describe("initPublishers", () => {
     expect(document.getElementById("pub-main-ui")?.style.display).toBe("none");
   });
 
+  test("creates new http publishers with usable local defaults", async () => {
+    const config = { publishers: [], routes: {}, consumers: [] };
+    window.mqbChoose = vi.fn().mockResolvedValue("http");
+
+    initPublishers(config, { properties: { publishers: { items: {} } } });
+
+    await addPublisherAction();
+
+    expect(config.publishers).toHaveLength(1);
+    expect(config.publishers[0]).toMatchObject({
+      name: "http",
+      endpoint: {
+        http: {
+          url: "http://localhost:8080",
+          path: "/",
+          method: "POST",
+          custom_headers: {},
+          fire_and_forget: false,
+          compression_enabled: false,
+        },
+      },
+      comment: "",
+    });
+    expect(get(publishersPanelState).endpointType).toBe("HTTP");
+    expect(get(publishersPanelState).methodValue).toBe("POST");
+    expect(get(publishersPanelState).urlField.value).toBe("http://localhost:8080");
+  });
+
+  test("creates new queue and topic publishers with request bar defaults", async () => {
+    const config = { publishers: [], routes: {}, consumers: [] };
+    window.mqbChoose = vi.fn().mockResolvedValueOnce("amqp").mockResolvedValueOnce("kafka");
+
+    initPublishers(config, { properties: { publishers: { items: {} } } });
+
+    await addPublisherAction();
+    await addPublisherAction();
+
+    expect(config.publishers[0]).toMatchObject({
+      name: "amqp",
+      endpoint: {
+        amqp: {
+          url: "amqp://guest:guest@localhost:5672/%2f",
+          queue: "jobs",
+        },
+      },
+    });
+    expect(config.publishers[1]).toMatchObject({
+      name: "kafka",
+      endpoint: {
+        kafka: {
+          url: "localhost:9092",
+          topic: "events",
+        },
+      },
+    });
+    expect(get(publishersPanelState).endpointType).toBe("KAFKA");
+    expect(get(publishersPanelState).extraFieldOne.value).toBe("events");
+    expect(get(publishersPanelState).urlField.value).toBe("localhost:9092");
+  });
+
   test("falls back safely when persisted publisher localStorage is corrupted", () => {
     window.localStorage.setItem("mqb_publisher_state", "{broken-json");
     window.localStorage.setItem("mqb_publisher_history", "{broken-json");
@@ -220,6 +282,60 @@ describe("initPublishers", () => {
 
     expect(get(publishersPanelState).activeSubtab).toBe("definition");
     expect(get(publishersPanelState).requestPayload).toBe("{\"ok\":true}");
+  });
+
+  test("keeps definition tab and saves once after renaming an unsaved publisher", async () => {
+    const config = {
+      publishers: [
+        { name: "http", endpoint: { http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} } } },
+      ],
+      routes: {},
+      consumers: [],
+    };
+    let formChange: ((updated: unknown) => void) | null = null;
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, _schema, _data, onChange) => {
+      formChange = onChange;
+      return Promise.resolve();
+    });
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+    selectPublisherSubtab("definition");
+    await Promise.resolve();
+
+    formChange?.({
+      name: "renamed_http",
+      endpoint: { http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} } },
+      comment: "",
+    });
+
+    expect(config.publishers[0].name).toBe("renamed_http");
+    expect(get(publishersPanelState).activeSubtab).toBe("definition");
+
+    await saveCurrentPublisherAction(document.getElementById("pub-save"));
+
+    expect(window.saveConfigSection).toHaveBeenCalledTimes(1);
+    expect(window.saveConfigSection).toHaveBeenCalledWith(
+      "publishers",
+      [
+        {
+          name: "renamed_http",
+          endpoint: { http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} } },
+          comment: "",
+        },
+      ],
+      false,
+      document.getElementById("pub-save"),
+    );
+    expect(window.fetchConfigFromServer).not.toHaveBeenCalled();
+    expect(get(publishersPanelState).activeSubtab).toBe("definition");
+    expect(get(publishersPanelState).items[0]?.name).toBe("renamed_http");
   });
 
   test("restoring a publisher updates the remembered index and hash", () => {

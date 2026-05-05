@@ -298,7 +298,9 @@ function sortEntries(obj: Record<string, any> | undefined | null) {
 
 function defaultHttpConfig() {
   return {
-    url: "",
+    url: "http://localhost:8080",
+    path: "/",
+    method: "POST",
     tls: {
       required: false,
       accept_invalid_certs: false,
@@ -323,7 +325,21 @@ function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined)
 }
 
 function createDefaultPublisherEndpoint(endpointType: string) {
-  return { [endpointType]: {} };
+  const defaults: Record<string, Record<string, any>> = {
+    http: defaultHttpConfig(),
+    grpc: { url: "http://localhost:50051" },
+    nats: { url: "nats://localhost:4222", subject: "events.created" },
+    memory: { topic: "events" },
+    amqp: { url: "amqp://guest:guest@localhost:5672/%2f", queue: "jobs" },
+    kafka: { url: "localhost:9092", topic: "events" },
+    mqtt: { url: "tcp://localhost:1883", topic: "events/updates" },
+    mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" },
+    zeromq: { url: "tcp://127.0.0.1:5555", topic: "events" },
+    file: { path: "/tmp/messages.jsonl" },
+    sled: { path: "./data/sled", tree: "default" },
+    ibmmq: { url: "localhost(1414)", queue: "DEV.QUEUE.1", topic: "topic://events" },
+  };
+  return { [endpointType]: cloneJson(defaults[endpointType] || {}) };
 }
 
 function parseJsonSafe<T>(raw: string | null, fallback: T): T {
