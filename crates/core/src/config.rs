@@ -56,6 +56,8 @@ pub struct AppConfig {
     pub publishers: Vec<PublisherClient>,
     #[serde(default)]
     pub presets: HashMap<String, Vec<PublisherPreset>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub history: HashMap<String, serde_json::Value>,
     #[serde(default, alias = "envVars")]
     pub env_vars: HashMap<String, String>,
     /// If true, secrets will be extracted to .env file upon saving.
@@ -445,10 +447,16 @@ impl AppConfig {
             return;
         }
 
-        let mut existing_publisher_names: HashSet<String> =
-            self.publishers.iter().map(|publisher| publisher.name.clone()).collect();
-        let mut existing_consumer_names: HashSet<String> =
-            self.consumers.iter().map(|consumer| consumer.name.clone()).collect();
+        let mut existing_publisher_names: HashSet<String> = self
+            .publishers
+            .iter()
+            .map(|publisher| publisher.name.clone())
+            .collect();
+        let mut existing_consumer_names: HashSet<String> = self
+            .consumers
+            .iter()
+            .map(|consumer| consumer.name.clone())
+            .collect();
         let mut routes = std::mem::take(&mut self.routes);
 
         for (route_name, route_config) in routes.drain() {

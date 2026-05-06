@@ -3,8 +3,10 @@ import { mqbApp } from "./runtime-window";
 import {
   ensureWorkspaceCollections,
   sanitizeEnvVars,
+  sanitizePublisherHistory,
   sanitizePresets,
   type EnvVars,
+  type PublisherHistoryStore,
   type PresetsByPublisher,
   type PublisherPreset,
 } from "./workspace-config";
@@ -19,6 +21,8 @@ type ExportBundle = {
   presets: PresetsByPublisher;
   envVars: EnvVars;
 };
+
+const PUBLISHER_HISTORY_KEY = "mqb_publisher_history";
 
 function getWorkspaceConfig() {
   return ensureWorkspaceCollections(mqbApp.config<Record<string, unknown>>());
@@ -112,6 +116,7 @@ export async function importAppConfigFromJsonText(text: string) {
   const currentConsumers = normalizeNamedArray<Record<string, unknown>>(currentConfig.consumers);
   const currentPresets = sanitizePresets(currentConfig.presets);
   const currentEnvVars = sanitizeEnvVars(currentConfig.env_vars);
+  const currentHistory = sanitizePublisherHistory(currentConfig.history);
 
   const obj = asObject(parsed);
   const type = String(obj.type || "");
@@ -136,6 +141,7 @@ export async function importAppConfigFromJsonText(text: string) {
     consumers: mergedConsumers,
     presets: currentPresets,
     env_vars: currentEnvVars,
+    history: currentHistory,
   };
 
   const importedPresets = {
@@ -157,6 +163,7 @@ export async function importAppConfigFromJsonText(text: string) {
     ...sanitizeEnvVars(incomingConfig.env_vars),
     ...sanitizeEnvVars(obj.envVars),
   };
+  nextConfig.history = sanitizePublisherHistory(nextConfig.history);
 
   await saveImportedConfig(nextConfig);
   return {
@@ -173,6 +180,7 @@ export async function resetAppConfigToDefaults() {
     consumers: [],
     publishers: [],
     default_tab: "publishers",
+    history: sanitizePublisherHistory({}),
   };
   delete nextConfig.routes;
   await saveImportedConfig(nextConfig);
@@ -506,6 +514,11 @@ async function saveImportedConfig(config: Record<string, unknown>) {
   const refreshed = await saveWholeConfig(fetch, config);
   const nextConfig = { ...(refreshed as Record<string, unknown>) };
   delete nextConfig.routes;
+  const history = sanitizePublisherHistory(nextConfig.history);
+  nextConfig.history = history;
+  if (typeof window.localStorage?.setItem === "function") {
+    window.localStorage.setItem(PUBLISHER_HISTORY_KEY, JSON.stringify(history));
+  }
   mqbApp.setConfig(nextConfig);
 }
 
@@ -522,6 +535,7 @@ export async function importFromJsonText(
   const nextConfig = ensureWorkspaceCollections(currentConfig);
   const mergedEnvVars = { ...sanitizeEnvVars(nextConfig.env_vars) };
   let mergedPresets = sanitizePresets(nextConfig.presets);
+  let mergedHistory: PublisherHistoryStore = sanitizePublisherHistory(nextConfig.history);
   let importedPresetCount = 0;
   let importedKind = "unknown";
 
@@ -540,6 +554,7 @@ export async function importFromJsonText(
         nextConfig.ui_addr = importedConfig.ui_addr;
         nextConfig.metrics_addr = importedConfig.metrics_addr;
         nextConfig.extract_secrets = importedConfig.extract_secrets;
+        mergedHistory = sanitizePublisherHistory(importedConfig.history);
         mergedPresets = sanitizePresets(importedConfig.presets);
         Object.assign(mergedEnvVars, sanitizeEnvVars(importedConfig.env_vars));
       }
@@ -570,6 +585,9 @@ export async function importFromJsonText(
   if (options.includePresets) {
     nextConfig.presets = mergedPresets;
     nextConfig.env_vars = mergedEnvVars;
+  }
+  if (options.includeConfig) {
+    nextConfig.history = mergedHistory;
   }
 
   if (options.includeConfig || options.includePresets) {

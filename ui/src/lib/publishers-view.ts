@@ -14,8 +14,11 @@ import {
 import {
   ensureWorkspaceCollections,
   type EnvVars,
+  type PublisherHistoryEntry,
+  type PublisherHistoryStore,
   type PresetsByPublisher,
   type PublisherPreset,
+  sanitizePublisherHistory,
 } from "./workspace-config";
 
 export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
@@ -66,23 +69,7 @@ type ConsumerConfig = {
   response?: unknown;
 };
 
-type PublisherHistoryItem = {
-  name: string;
-  payload: string;
-  metadata?: Array<{ k: string; v: string }>;
-  requestMetadata?: Record<string, string>;
-  targetLabel?: string;
-  url?: string;
-  responseData?: unknown;
-  ok?: boolean;
-  status: number;
-  statusText?: string;
-  displayStatus?: string;
-  displayStatusText?: string;
-  duration: number;
-  time: number;
-  pinned?: boolean;
-};
+type PublisherHistoryItem = PublisherHistoryEntry;
 
 type PublishersAppConfig = {
   publishers: PublisherConfig[];
@@ -90,6 +77,7 @@ type PublishersAppConfig = {
   routes?: Record<string, unknown>;
   presets?: PresetsByPublisher;
   env_vars?: EnvVars;
+  history?: PublisherHistoryStore;
 };
 
 type PublishersSchemaRoot = {
@@ -347,13 +335,41 @@ function parseJsonSafe<T>(raw: string | null, fallback: T): T {
   }
 }
 
+function flattenPublisherHistory(store: PublisherHistoryStore): PublisherHistoryItem[] {
+  return Object.values(store.publishers || {})
+    .flatMap((rows) => rows || [])
+    .sort((a, b) => Number(b.time) - Number(a.time));
+}
+
+function buildPublisherHistoryStore(history: PublisherHistoryItem[], updatedAt = Date.now()): PublisherHistoryStore {
+  const publishers: PublisherHistoryStore["publishers"] = {};
+  for (const item of history) {
+    const name = String(item.name || "").trim();
+    if (!name) continue;
+    if (!publishers[name]) {
+      publishers[name] = [];
+    }
+    publishers[name].push(item);
+  }
+  return {
+    version: 1,
+    updated_at: updatedAt,
+    publishers,
+  };
+}
+
 export function initPublishers(config: PublishersAppConfig, schema: PublishersSchemaRoot) {
   mqbApp.setConfig(config as unknown as Record<string, any>);
   const container = document.getElementById("publishers-container") as HTMLElement | null;
   const publishers = config.publishers || [];
   const workspaceConfig = ensureWorkspaceCollections(config);
   let appState = parseJsonSafe<Record<string, PublisherState>>(localStorage.getItem(STORAGE_KEY), {});
-  let history = parseJsonSafe<PublisherHistoryItem[]>(localStorage.getItem(HISTORY_KEY), []);
+  const localHistoryStore = sanitizePublisherHistory(parseJsonSafe<unknown>(localStorage.getItem(HISTORY_KEY), {}));
+  const configHistoryStore = sanitizePublisherHistory(workspaceConfig.history);
+  let historyStore = localHistoryStore.updated_at >= configHistoryStore.updated_at
+    ? localHistoryStore
+    : configHistoryStore;
+  let history = flattenPublisherHistory(historyStore).slice(0, 1000);
   let presets = workspaceConfig.presets;
   let envVars = workspaceConfig.env_vars;
 
@@ -370,6 +386,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   let currentResponsePayload = "";
   let currentMethodValue = "POST";
   let nextPublisherHeaderId = 1;
+  let pendingHistorySync: number | null = null;
   const state = getMqbState();
 
   const rememberPublisherView = (
@@ -394,16 +411,38 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
 
   const saveAppState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
-  const saveHistory = () => {
+  const syncHistoryToConfig = async (silent = true) => {
+    historyStore = buildPublisherHistoryStore(history);
+    workspaceConfig.history = historyStore;
+    const nextConfig = mqbApp.config<PublishersAppConfig>();
+    nextConfig.history = historyStore;
+    await mqbRuntime.saveConfigSection("history", historyStore, silent);
+  };
+  const scheduleHistorySync = () => {
+    if (pendingHistorySync != null) {
+      appWindow().clearTimeout(pendingHistorySync);
+    }
+    pendingHistorySync = appWindow().setTimeout(() => {
+      pendingHistorySync = null;
+      void syncHistoryToConfig(true);
+    }, 2000);
+  };
+  const saveHistory = (options: { sync?: boolean } = {}) => {
     history = history.slice(0, 1000);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    historyStore = buildPublisherHistoryStore(history);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore));
+    if (options.sync !== false) {
+      scheduleHistorySync();
+    }
   };
   const persistWorkspaceCollections = async (silent = true) => {
     workspaceConfig.presets = presets;
     workspaceConfig.env_vars = envVars;
+    workspaceConfig.history = historyStore;
     const nextConfig = mqbApp.config<PublishersAppConfig>();
     nextConfig.presets = presets;
     nextConfig.env_vars = envVars;
+    nextConfig.history = historyStore;
     await mqbRuntime.saveConfigSection("presets", presets, silent);
     await mqbRuntime.saveConfigSection("env_vars", envVars, silent);
   };
@@ -431,6 +470,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       () => mqbApp.init.consumers(config, mqbApp.schema()),
     );
   };
+
+  if (
+    (historyStore.updated_at === configHistoryStore.updated_at && configHistoryStore.updated_at > localHistoryStore.updated_at)
+    || (history.length > 0 && flattenPublisherHistory(localHistoryStore).length === 0 && flattenPublisherHistory(configHistoryStore).length > 0)
+  ) {
+    saveHistory({ sync: false });
+  }
 
   const ensureHttpConfig = (publisher: PublisherConfig) => {
     publisher.endpoint ||= {};
@@ -726,9 +772,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const endpointType = getEndpointType(publisher);
     const layout = getRequestBarLayout(endpointType);
     const requestMetadata = item.requestMetadata || {};
+    const requestFields = item.request_fields || {};
     const request_fields = Object.fromEntries(
       layout.fields.map((descriptor) => {
-        const value = requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
+        const value = requestFields[descriptor.field]
+          ?? requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
           ?? requestMetadata[`request_bar.${descriptor.inputId}`]
           ?? (descriptor.field === "url" ? String(item.url || "") : "");
         return [descriptor.field, String(value || "")];
@@ -738,13 +786,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     return {
       name: presetName,
       payload: item.payload || "",
-      headers: (item.metadata || []).map(({ k, v }) => ({
-        key: String(k || ""),
-        value: String(v || ""),
-        enabled: true,
+      headers: (item.headers?.length ? item.headers : item.metadata || []).map((row: any) => ({
+        key: String(row.key ?? row.k ?? ""),
+        value: String(row.value ?? row.v ?? ""),
+        enabled: row.enabled !== false,
       })),
       endpoint_type: endpointType,
-      method: layout.showMethod ? String(requestMetadata.http_method || currentMethodValue || "POST") : undefined,
+      method: layout.showMethod ? String(item.method || requestMetadata.http_method || currentMethodValue || "POST") : undefined,
       url: request_fields.url || undefined,
       request_fields,
     };
@@ -1103,14 +1151,16 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!publisher) return;
     const endpointType = getEndpointType(publisher);
     const requestMetadata = item.requestMetadata || {};
+    const requestFields = item.request_fields || {};
 
-    if (requestMetadata.http_method) {
-      currentMethodValue = requestMetadata.http_method;
+    if (item.method || requestMetadata.http_method) {
+      currentMethodValue = String(item.method || requestMetadata.http_method);
     }
 
     const layout = getRequestBarLayout(endpointType);
     layout.fields.forEach((descriptor) => {
-      const value = requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
+      const value = requestFields[descriptor.field]
+        ?? requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
         ?? requestMetadata[`request_bar.${descriptor.inputId}`];
       if (typeof value === "string") {
         setRequestBarFieldValue(publisher, descriptor, value);
@@ -1120,7 +1170,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (endpointType !== "http") return;
 
     const httpConfig = ensureHttpConfig(publisher);
-    httpConfig.custom_headers = Object.fromEntries((item.metadata || []).map(({ k, v }) => [k, v]));
+    httpConfig.custom_headers = Object.fromEntries(
+      (item.headers?.length ? item.headers.map((row) => ({ k: row.key, v: row.value })) : item.metadata || [])
+        .map(({ k, v }) => [k, v]),
+    );
 
     const hasHistoryUrl = layout.fields.some((descriptor) =>
       typeof requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`] === "string" ||
@@ -1590,7 +1643,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       history.unshift({
         name,
         payload,
+        headers: metaArray.map(({ k, v }) => ({ key: k, value: v, enabled: true })),
         metadata: [...metaArray],
+        endpoint_type: endpointType,
+        method: layout.showMethod ? currentMethodValue : undefined,
+        request_fields: Object.fromEntries(
+          layout.fields.map((descriptor) => [descriptor.field, getRequestBarFieldValue(publisher, descriptor).trim()]),
+        ),
         requestMetadata: { ...metadata, ...requestHistoryMetadata },
         targetLabel: requestBinding?.label,
         url: resolvedRequestUrl,
@@ -1600,6 +1659,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         statusText: response.statusText,
         displayStatus: statusInfo.label,
         displayStatusText: statusInfo.text,
+        status_info: {
+          ok: statusInfo.ok,
+          code: response.status,
+          label: statusInfo.label,
+          text: statusInfo.text,
+        },
         duration,
         time: Date.now(),
       });
@@ -1934,15 +1999,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     await updateUIFromState();
     formatResponseDetails(
       {
-        ok: typeof item.ok === "boolean" ? item.ok : item.status < 300,
-        label: item.displayStatus || String(item.status),
-        text: item.displayStatusText || item.statusText,
+        ok: typeof item.ok === "boolean" ? item.ok : Boolean(item.status_info?.ok ?? item.status < 300),
+        label: String(item.displayStatus || item.status_info?.label || item.status),
+        text: String(item.displayStatusText || item.status_info?.text || item.statusText || ""),
       },
       item.duration,
       item.responseData,
       {
-        headers: item.metadata || [],
-        method: item.requestMetadata?.http_method,
+        headers: item.metadata?.length
+          ? item.metadata
+          : (item.headers || []).map((row) => ({ k: row.key, v: row.value })),
+        method: item.method || item.requestMetadata?.http_method,
         path: item.requestMetadata?.http_path,
         query: item.requestMetadata?.http_query,
         targetLabel: item.targetLabel,
