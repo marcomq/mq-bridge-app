@@ -1,5 +1,6 @@
 use crate::config::{
-    AppConfig, ConsumerConfig, ConsumerResponseConfig, EnvFileSecretStore, RouteConfig, SecretStore,
+    AppConfig, ConsumerConfig, ConsumerMessageCaptureConfig, ConsumerOutputConfig,
+    ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, RouteConfig, SecretStore,
 };
 use anyhow::{Result, anyhow};
 use chrono;
@@ -45,6 +46,8 @@ pub struct ConsumerStatusSnapshot {
     pub running: bool,
     pub status: mq_bridge::traits::EndpointStatus,
     pub message_sequence: u64,
+    pub capture_enabled: bool,
+    pub capture_keep_last: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -271,6 +274,102 @@ fn normalize_consumer_response(
     })
 }
 
+fn normalize_consumer_output(
+    output: ConsumerOutputConfig,
+    fallback_response: Option<ConsumerResponseConfig>,
+) -> ConsumerOutputConfig {
+    let normalized_fallback = normalize_consumer_response(fallback_response);
+
+    match output {
+        ConsumerOutputConfig::Publisher { publisher } => {
+            let publisher = publisher.trim().to_string();
+            ConsumerOutputConfig::Publisher { publisher }
+        }
+        ConsumerOutputConfig::Response { response } => ConsumerOutputConfig::Response {
+            response: normalize_consumer_response(response).or(normalized_fallback),
+        },
+        ConsumerOutputConfig::None => {
+            if let Some(response) = normalized_fallback {
+                ConsumerOutputConfig::Response {
+                    response: Some(response),
+                }
+            } else {
+                ConsumerOutputConfig::None
+            }
+        }
+    }
+}
+
+fn consumer_output_response_compat(output: &ConsumerOutputConfig) -> Option<ConsumerResponseConfig> {
+    match output {
+        ConsumerOutputConfig::Response { response } => normalize_consumer_response(response.clone()),
+        _ => None,
+    }
+}
+
+fn normalize_consumer_capture(
+    capture: ConsumerMessageCaptureConfig,
+) -> ConsumerMessageCaptureConfig {
+    ConsumerMessageCaptureConfig {
+        enabled: capture.enabled,
+        keep_last: capture.keep_last.max(1),
+    }
+}
+
+#[derive(Clone)]
+enum ResolvedConsumerOutput {
+    None,
+    Publisher {
+        publisher_name: String,
+        endpoint: Endpoint,
+    },
+    Response {
+        response: Option<ConsumerResponseConfig>,
+    },
+}
+
+fn resolve_consumer_output(
+    consumer: &ConsumerConfig,
+    publishers: &[PublisherClient],
+) -> std::result::Result<ResolvedConsumerOutput, UpdateConfigError> {
+    match &consumer.output {
+        ConsumerOutputConfig::None => Ok(ResolvedConsumerOutput::None),
+        ConsumerOutputConfig::Response { response } => {
+            if !endpoint_supports_consumer_response(&consumer.endpoint) {
+                return Err(UpdateConfigError::UnsupportedCustomResponses(format!(
+                    "Consumer {}: custom responses are not supported for endpoint type {}",
+                    consumer.name,
+                    consumer.endpoint.endpoint_type.name()
+                )));
+            }
+
+            Ok(ResolvedConsumerOutput::Response {
+                response: normalize_consumer_response(response.clone()),
+            })
+        }
+        ConsumerOutputConfig::Publisher { publisher } => {
+            let publisher_name = publisher.trim();
+            if publisher_name.is_empty() {
+                return Err(UpdateConfigError::Validation(format!(
+                    "Consumer {}: publisher output requires a selected publisher",
+                    consumer.name
+                )));
+            }
+            let Some(publisher_config) = publishers.iter().find(|candidate| candidate.name == publisher_name) else {
+                return Err(UpdateConfigError::Validation(format!(
+                    "Consumer {}: referenced publisher not found: {}",
+                    consumer.name, publisher_name
+                )));
+            };
+
+            Ok(ResolvedConsumerOutput::Publisher {
+                publisher_name: publisher_name.to_string(),
+                endpoint: publisher_config.endpoint.clone(),
+            })
+        }
+    }
+}
+
 impl UiApp {
     pub fn new(
         initial_config: AppConfig,
@@ -456,11 +555,16 @@ impl UiApp {
     pub async fn start_consumer(&self, name: &str) -> Result<bool> {
         let consumer_config = {
             let config = self.config.read().await;
-            config.consumers.iter().find(|c| c.name == name).cloned()
+            config
+                .consumers
+                .iter()
+                .find(|c| c.name == name)
+                .cloned()
+                .map(|consumer| (consumer, config.publishers.clone()))
         };
 
-        if let Some(consumer) = consumer_config {
-            self.start_ui_collector_routes(&[consumer]).await?;
+        if let Some((consumer, publishers)) = consumer_config {
+            self.start_ui_collector_routes(&[(consumer, publishers)]).await?;
             Ok(true)
         } else {
             Ok(false)
@@ -636,6 +740,8 @@ impl UiApp {
                     consumer.name.clone(),
                     ConsumerStatusSnapshot {
                         message_sequence,
+                        capture_enabled: consumer.message_capture.enabled,
+                        capture_keep_last: consumer.message_capture.keep_last,
                         ..snapshot
                     },
                 );
@@ -691,6 +797,8 @@ impl UiApp {
             running,
             status,
             message_sequence: 0,
+            capture_enabled: consumer.message_capture.enabled,
+            capture_keep_last: consumer.message_capture.keep_last,
         })
     }
 
@@ -710,7 +818,9 @@ impl UiApp {
             .drain(..)
             .map(|mut c| {
                 c.name = c.name.trim().to_string();
-                c.response = normalize_consumer_response(c.response);
+                c.output = normalize_consumer_output(c.output, c.response.clone());
+                c.response = consumer_output_response_compat(&c.output);
+                c.message_capture = normalize_consumer_capture(c.message_capture);
                 c
             })
             .collect();
@@ -724,16 +834,13 @@ impl UiApp {
             })?;
         }
         for consumer in &consumers {
-            if consumer.response.is_some()
-                && !endpoint_supports_consumer_response(&consumer.endpoint)
-            {
-                return Err(UpdateConfigError::UnsupportedCustomResponses(format!(
-                    "Consumer {}: custom responses are not supported for endpoint type {}",
-                    consumer.name,
-                    consumer.endpoint.endpoint_type.name()
-                )));
-            }
-            let temp_route = Route::new(consumer.endpoint.clone(), Endpoint::null());
+            let resolved_output = resolve_consumer_output(consumer, &new_config.publishers)?;
+            let output_endpoint = match &resolved_output {
+                ResolvedConsumerOutput::None => Endpoint::null(),
+                ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => endpoint.clone(),
+            };
+            let temp_route = Route::new(consumer.endpoint.clone(), output_endpoint);
             temp_route.check(&consumer.name, None).map_err(|e| {
                 UpdateConfigError::Validation(format!(
                     "Consumer {}: validation failed: {}",
@@ -759,22 +866,16 @@ impl UiApp {
         }
 
         {
-            let old_consumers_map: HashMap<_, _> = old_config
-                .consumers
-                .iter()
-                .map(|c| (&c.name, &c.endpoint))
-                .collect();
-            let new_consumers_map: HashMap<_, _> =
-                consumers.iter().map(|c| (&c.name, &c.endpoint)).collect();
-
             let mut handles = self.ui_handles.write().await;
             let mut collectors_to_remove = Vec::new();
 
             for name in handles.keys() {
-                let should_stop = if let (Some(old_ep), Some(new_ep)) =
-                    (old_consumers_map.get(name), new_consumers_map.get(name))
-                {
-                    serde_json::to_value(old_ep).unwrap() != serde_json::to_value(new_ep).unwrap()
+                let should_stop = if let (Some(old_consumer), Some(new_consumer)) = (
+                    old_config.consumers.iter().find(|consumer| &consumer.name == name),
+                    consumers.iter().find(|consumer| &consumer.name == name),
+                ) {
+                    serde_json::to_value(old_consumer).unwrap()
+                        != serde_json::to_value(new_consumer).unwrap()
                 } else {
                     true
                 };
@@ -801,7 +902,13 @@ impl UiApp {
             }
         }
         for consumer in &consumers {
-            let route = Route::new(consumer.endpoint.clone(), Endpoint::null());
+            let resolved_output = resolve_consumer_output(consumer, &new_config.publishers)?;
+            let output_endpoint = match &resolved_output {
+                ResolvedConsumerOutput::None => Endpoint::null(),
+                ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => endpoint.clone(),
+            };
+            let route = Route::new(consumer.endpoint.clone(), output_endpoint);
             if route.is_ref() {
                 route.register_output_endpoint(None).map_err(|e| {
                     UpdateConfigError::RegisterOutputEndpoint(format!(
@@ -923,22 +1030,28 @@ impl UiApp {
         }
     }
 
-    async fn start_ui_collector_routes(&self, consumers: &[ConsumerConfig]) -> Result<()> {
+    async fn start_ui_collector_routes(
+        &self,
+        consumers: &[(ConsumerConfig, Vec<PublisherClient>)],
+    ) -> Result<()> {
         let mut handles = self.ui_handles.write().await;
-        for consumer in consumers {
+        for (consumer, publishers) in consumers {
             if matches!(consumer.endpoint.endpoint_type, EndpointType::Null) {
                 continue;
             }
             let name = consumer.name.clone();
             let topic = format!("ui_collector_{name}");
+            let capture_enabled = consumer.message_capture.enabled;
+            let capture_keep_last = consumer.message_capture.keep_last.max(1);
             let log_channel =
-                mq_bridge::get_or_create_channel(&MemoryConfig::new(&topic, Some(1000)));
+                mq_bridge::get_or_create_channel(&MemoryConfig::new(&topic, Some(capture_keep_last)));
             let message_sequences = self.consumer_message_sequences.clone();
-            let response_config = normalize_consumer_response(consumer.response.clone());
-            let output = if endpoint_supports_consumer_response(&consumer.endpoint) {
-                Endpoint::new_response()
-            } else {
-                Endpoint::null()
+            let resolved_output =
+                resolve_consumer_output(consumer, publishers).map_err(anyhow::Error::msg)?;
+            let output = match &resolved_output {
+                ResolvedConsumerOutput::None => Endpoint::null(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => endpoint.clone(),
+                ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
             };
 
             let closure_name = name.clone();
@@ -947,7 +1060,7 @@ impl UiApp {
                     let name = closure_name.clone();
                     let log_channel = log_channel.clone();
                     let message_sequences = message_sequences.clone();
-                    let response_config = response_config.clone();
+                    let resolved_output = resolved_output.clone();
                     async move {
                         let payload_json: serde_json::Value = serde_json::from_slice(&msg.payload)
                             .unwrap_or_else(|_| {
@@ -961,26 +1074,40 @@ impl UiApp {
                             "metadata": msg.metadata.clone(),
                             "payload": payload_json
                         });
-                        let mut enriched = CanonicalMessage::from_type(&val)
-                            .unwrap_or_else(|_| CanonicalMessage::from(""));
-                        enriched.metadata.insert("ui_source".into(), name.clone());
-                        log_channel
-                            .sender
-                            .send(vec![enriched])
-                            .await
-                            .map_err(|e| HandlerError::NonRetryable(anyhow!(e.to_string())))?;
-                        {
-                            let mut sequences = message_sequences.write().await;
-                            let next = sequences.entry(name.clone()).or_insert(0);
-                            *next += 1;
+                        if capture_enabled {
+                            let mut enriched = CanonicalMessage::from_type(&val)
+                                .unwrap_or_else(|_| CanonicalMessage::from(""));
+                            enriched.metadata.insert("ui_source".into(), name.clone());
+                            log_channel
+                                .sender
+                                .send(vec![enriched])
+                                .await
+                                .map_err(|e| HandlerError::NonRetryable(anyhow!(e.to_string())))?;
+                            {
+                                let mut sequences = message_sequences.write().await;
+                                let next = sequences.entry(name.clone()).or_insert(0);
+                                *next += 1;
+                            }
                         }
 
-                        if let Some(response_config) = response_config.clone() {
-                            let mut response = CanonicalMessage::from(response_config.payload);
-                            response.metadata = response_config.headers;
-                            Ok(Handled::Publish(response))
-                        } else {
-                            Ok(Handled::Ack)
+                        match resolved_output.clone() {
+                            ResolvedConsumerOutput::None => Ok(Handled::Ack),
+                            ResolvedConsumerOutput::Publisher { publisher_name, .. } => {
+                                let mut forwarded = msg;
+                                forwarded
+                                    .metadata
+                                    .insert("mqb_consumer_output".into(), publisher_name);
+                                Ok(Handled::Publish(forwarded))
+                            }
+                            ResolvedConsumerOutput::Response { response } => {
+                                if let Some(response_config) = response {
+                                    let mut response = CanonicalMessage::from(response_config.payload);
+                                    response.metadata = response_config.headers;
+                                    Ok(Handled::Publish(response))
+                                } else {
+                                    Ok(Handled::Ack)
+                                }
+                            }
                         }
                     }
                 },

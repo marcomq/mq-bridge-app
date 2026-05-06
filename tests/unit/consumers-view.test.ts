@@ -14,6 +14,10 @@ import {
   sanitizeConsumerName,
   saveCurrentConsumerAction,
   selectConsumerSubtab,
+  setConsumerMessageCaptureEnabledAction,
+  setConsumerMessageCaptureKeepLastAction,
+  setConsumerOutputModeAction,
+  setConsumerOutputPublisherAction,
   toggleConsumerResponseHeader,
   toggleActiveConsumer,
   updateConsumerResponseHeader,
@@ -248,6 +252,319 @@ describe("initConsumers", () => {
     expect(get(consumersPanelState).responsePayload).toBe("{\"ok\":true}");
   });
 
+  test("switches consumer output modes and persists publisher selection", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [{ name: "orders_pub", endpoint: { http: { url: "https://example.com" } } }],
+    };
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    setConsumerOutputModeAction("publisher");
+    expect(get(consumersPanelState).outputMode).toBe("publisher");
+    expect(get(consumersPanelState).selectedPublisher).toBe("orders_pub");
+    expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "orders_pub" });
+
+    setConsumerOutputModeAction("none");
+    expect(get(consumersPanelState).outputMode).toBe("none");
+    expect(config.consumers[0].output).toEqual({ mode: "none" });
+  });
+
+  test("keeps publisher mode visible until a publisher is selected", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [
+        { name: "orders_pub", endpoint: { memory: { topic: "orders" } } },
+        { name: "audit_pub", endpoint: { memory: { topic: "audit" } } },
+      ],
+    };
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    setConsumerOutputModeAction("publisher");
+
+    expect(get(consumersPanelState).outputMode).toBe("publisher");
+    expect(get(consumersPanelState).publisherOptions).toEqual(["orders_pub", "audit_pub"]);
+    expect(get(consumersPanelState).selectedPublisher).toBe("");
+    expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "" });
+  });
+
+  test("reads publisher options from the live app config when local consumer config is stale", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    window.appConfig = {
+      consumers: config.consumers,
+      routes: {},
+      publishers: [{ name: "orders_pub", endpoint: { memory: { topic: "orders" } } }],
+    } as any;
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    setConsumerOutputModeAction("publisher");
+
+    expect(get(consumersPanelState).publisherOptions).toEqual(["orders_pub"]);
+    expect(get(consumersPanelState).selectedPublisher).toBe("orders_pub");
+    expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "orders_pub" });
+  });
+
+  test("saves consumer output configuration instead of dropping it", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [
+        { name: "orders_pub", endpoint: { memory: { topic: "orders" } } },
+        { name: "audit_pub", endpoint: { memory: { topic: "audit" } } },
+      ],
+    };
+    (window.saveConfigSection as any).mockImplementation(async (_section: string, consumers: any[]) => ({ consumers }));
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    setConsumerOutputModeAction("publisher");
+    setConsumerOutputPublisherAction("audit_pub");
+    await saveCurrentConsumerAction();
+
+    const savedConsumers = (window.saveConfigSection as any).mock.calls.at(-1)?.[1];
+    expect(savedConsumers[0].output).toEqual({ mode: "publisher", publisher: "audit_pub" });
+    expect(savedConsumers[0].response).toBeNull();
+  });
+
+  test("persists message capture settings and trims the stored buffer", async () => {
+    (window.localStorage.getItem as any).mockReturnValue(JSON.stringify({
+      orders_http: Array.from({ length: 20 }, (_, index) => ({ payload: `message-${index}` })),
+    }));
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    (window.saveConfigSection as any).mockImplementation(async (_section: string, consumers: any[]) => ({ consumers }));
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+                message_capture: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    setConsumerMessageCaptureEnabledAction(false);
+    setConsumerMessageCaptureKeepLastAction(10);
+    await saveCurrentConsumerAction();
+
+    const savedConsumers = (window.saveConfigSection as any).mock.calls.at(-1)?.[1];
+    expect(savedConsumers[0].message_capture).toEqual({ enabled: false, keep_last: 10 });
+    expect(window.localStorage.setItem).toHaveBeenCalledWith(
+      "mqb_consumer_messages",
+      expect.stringContaining("message-9"),
+    );
+    const persistedPayload = (window.localStorage.setItem as any).mock.calls.at(-1)?.[1] as string;
+    expect(JSON.parse(persistedPayload).orders_http).toHaveLength(10);
+  });
+
+  test("skips message fetches when capture is disabled", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ orders_http: [{ payload: "ignored" }] }),
+    });
+    globalThis.fetch = fetchMock as any;
+    window._mqb_runtime_status = {
+      active_consumers: ["orders_http"],
+      active_routes: [],
+      route_throughput: {},
+      consumers: {
+        orders_http: {
+          running: true,
+          status: { healthy: true },
+          message_sequence: 3,
+          capture_enabled: false,
+          capture_keep_last: 10,
+        },
+      },
+    };
+
+    await initConsumers(
+      {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { middlewares: [{ metrics: {} }], http: {} },
+            response: null,
+            message_capture: { enabled: false, keep_last: 10 },
+          },
+        ],
+        routes: {},
+        publishers: [],
+      },
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                message_capture: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer=orders_http");
+    expect(get(consumersPanelState).messageCaptureEnabled).toBe(false);
+    expect(get(consumersPanelState).messageCaptureKeepLast).toBe(10);
+  });
+
   test("polling refreshes consumer status and reschedules message polling", async () => {
     const scheduled: Array<() => void | Promise<void>> = [];
     const setTimeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler) => {
@@ -386,6 +703,80 @@ describe("initConsumers", () => {
     expect(get(consumersPanelState).selectedIndex).toBe(1);
     expect(window.location.hash).toBe("#consumers:1");
     expect((window as any)._mqb_last_consumer_idx).toBe(1);
+    expect((window as any)._mqb_last_consumer_tab).toBe("definition");
+  });
+
+  test("save keeps the selected consumer and subtab", async () => {
+    let resolveSave: ((value: any) => void) | null = null;
+    window.saveConfigSection = vi.fn().mockImplementation(
+      async () =>
+        await new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+
+    await initConsumers(
+      {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { middlewares: [{ metrics: {} }], http: {} },
+            response: null,
+          },
+          {
+            name: "events_memory",
+            endpoint: { middlewares: [{ metrics: {} }], memory: { topic: "events" } },
+            response: null,
+          },
+        ],
+        routes: {},
+        publishers: [],
+      },
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    await restoreConsumerStateFromView(1, { tab: "definition" });
+    const savePromise = saveCurrentConsumerAction();
+    resolveSave?.({
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          output: { mode: "none" },
+          response: null,
+        },
+        {
+          name: "events_memory",
+          endpoint: { middlewares: [{ metrics: {} }], memory: { topic: "events" } },
+          output: { mode: "none" },
+          response: null,
+        },
+      ],
+    });
+    await savePromise;
+    await Promise.resolve();
+
+    expect(get(consumersPanelState).selectedIndex).toBe(1);
+    expect(get(consumersPanelState).activeSubtab).toBe("definition");
+    expect((window as any)._mqb_last_consumer_idx).toBe(1);
+    expect((window as any)._mqb_last_consumer_tab).toBe("definition");
   });
 
   test("throughput label is only shown while consumer is running", async () => {
@@ -491,6 +882,10 @@ describe("initConsumers", () => {
     ]);
     expect(get(consumersPanelState).responsePayload).toBe("ready");
     expect(config.consumers[0].response).toEqual({ payload: "ready", headers: { "x-test": "ready" } });
+    expect(config.consumers[0].output).toEqual({
+      mode: "response",
+      response: { payload: "ready", headers: { "x-test": "ready" } },
+    });
 
     toggleConsumerResponseHeader(0, false);
 
@@ -498,6 +893,10 @@ describe("initConsumers", () => {
       { id: expect.any(Number), key: "x-test", value: "ready", enabled: false },
     ]);
     expect(config.consumers[0].response).toEqual({ payload: "ready", headers: {} });
+    expect(config.consumers[0].output).toEqual({
+      mode: "response",
+      response: { payload: "ready", headers: {} },
+    });
 
     removeConsumerResponseHeader(0);
 
@@ -821,6 +1220,8 @@ describe("initConsumers", () => {
         {
           name: "Memory_Consumer_2",
           endpoint: { middlewares: [{ metrics: {} }], memory: {} },
+          message_capture: { enabled: true, keep_last: 100 },
+          output: { mode: "none" },
           response: null,
         },
       ],
@@ -957,7 +1358,12 @@ describe("initConsumers", () => {
     });
     globalThis.fetch = fetchMock as any;
     window._mqb_saved_sections = {
-      consumers: [{ name: "saved_http", endpoint: { middlewares: [{ metrics: {} }], http: {} }, response: null }],
+      consumers: [{
+        name: "saved_http",
+        endpoint: { middlewares: [{ metrics: {} }], http: {} },
+        output: { mode: "none" },
+        response: null,
+      }],
     } as any;
 
     await initConsumers(
@@ -1052,6 +1458,8 @@ describe("initConsumers", () => {
         {
           name: "saved_http",
           endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          message_capture: { enabled: true, keep_last: 100 },
+          output: { mode: "none" },
           response: null,
         },
       ]);

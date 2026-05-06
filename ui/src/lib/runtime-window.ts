@@ -33,11 +33,19 @@ export type MqbState = {
   last_route_idx?: number;
   last_consumer_idx?: number;
   last_publisher_idx?: number;
+  last_consumer_tab?: "definition" | "response" | "messages";
+  last_publisher_tab?: "payload" | "headers" | "history" | "presets" | "definition";
   runtime_status: {
     active_consumers: string[];
     active_routes: string[];
     route_throughput: Record<string, number>;
-    consumers: Record<string, { running: boolean; status: { healthy: boolean; error?: string }; message_sequence: number }>;
+    consumers: Record<string, {
+      running: boolean;
+      status: { healthy: boolean; error?: string };
+      message_sequence: number;
+      capture_enabled?: boolean;
+      capture_keep_last?: number;
+    }>;
   };
   dirty_sections: Record<string, { buttonId: string; getValue: () => unknown; baseline: string }>;
   saved_sections: Record<string, unknown>;
@@ -63,6 +71,8 @@ export function getMqbState(): MqbState {
       last_route_idx: Number.isFinite(w._mqb_last_route_idx) ? w._mqb_last_route_idx : 0,
       last_consumer_idx: Number.isFinite(w._mqb_last_consumer_idx) ? w._mqb_last_consumer_idx : 0,
       last_publisher_idx: Number.isFinite(w._mqb_last_publisher_idx) ? w._mqb_last_publisher_idx : 0,
+      last_consumer_tab: w._mqb_last_consumer_tab ?? "messages",
+      last_publisher_tab: w._mqb_last_publisher_tab ?? "payload",
       runtime_status: w._mqb_runtime_status ?? {
         active_consumers: [],
         active_routes: [],
@@ -92,6 +102,8 @@ export function getMqbState(): MqbState {
   if (w._mqb_last_route_idx !== undefined) state.last_route_idx = w._mqb_last_route_idx;
   if (w._mqb_last_consumer_idx !== undefined) state.last_consumer_idx = w._mqb_last_consumer_idx;
   if (w._mqb_last_publisher_idx !== undefined) state.last_publisher_idx = w._mqb_last_publisher_idx;
+  if (w._mqb_last_consumer_tab !== undefined) state.last_consumer_tab = w._mqb_last_consumer_tab;
+  if (w._mqb_last_publisher_tab !== undefined) state.last_publisher_tab = w._mqb_last_publisher_tab;
   if (w._mqb_runtime_status !== undefined) state.runtime_status = w._mqb_runtime_status;
   if (w._mqb_dirty_sections !== undefined) state.dirty_sections = w._mqb_dirty_sections;
   if (w._mqb_saved_sections !== undefined) state.saved_sections = w._mqb_saved_sections;
@@ -112,6 +124,8 @@ export function getMqbState(): MqbState {
   w._mqb_last_route_idx = state.last_route_idx;
   w._mqb_last_consumer_idx = state.last_consumer_idx;
   w._mqb_last_publisher_idx = state.last_publisher_idx;
+  w._mqb_last_consumer_tab = state.last_consumer_tab;
+  w._mqb_last_publisher_tab = state.last_publisher_tab;
   w._mqb_runtime_status = state.runtime_status;
   w._mqb_dirty_sections = state.dirty_sections;
   w._mqb_saved_sections = state.saved_sections;

@@ -95,7 +95,7 @@ async function restoreTabState(name: MainTab) {
     const match = currentHash().match(/^#consumers:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : (state.last_consumer_idx ?? 0));
     state.last_consumer_idx = idx;
-    await restoreConsumerStateFromView(idx, { tab: pending?.tab });
+    await restoreConsumerStateFromView(idx, { tab: pending?.tab ?? state.last_consumer_tab });
     return;
   }
 
@@ -106,7 +106,7 @@ async function restoreTabState(name: MainTab) {
     const match = currentHash().match(/^#publishers:(\d+)$/);
     const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : (state.last_publisher_idx ?? 0));
     state.last_publisher_idx = idx;
-    await restorePublisherStateFromView(idx, { tab: pending?.tab });
+    await restorePublisherStateFromView(idx, { tab: pending?.tab ?? state.last_publisher_tab });
   }
 }
 

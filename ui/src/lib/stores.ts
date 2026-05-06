@@ -59,7 +59,13 @@ export interface ConsumersPanelState {
   items: ConsumerSidebarItem[];
   selectedIndex: number;
   activeSubtab: "definition" | "response" | "messages";
+  messageCaptureEnabled: boolean;
+  messageCaptureKeepLast: number;
   responseEnabled: boolean;
+  outputMode: "none" | "publisher" | "response";
+  publisherOptions: string[];
+  selectedPublisher: string;
+  responseSupported: boolean;
   responseHeaders: Array<{ id: number; key: string; value: string; enabled: boolean }>;
   responsePayload: string;
   liveStatusText: string;
@@ -79,10 +85,16 @@ export const consumersPanelState = writable<ConsumersPanelState>({
   items: [],
   selectedIndex: 0,
   activeSubtab: "messages",
+  messageCaptureEnabled: true,
+  messageCaptureKeepLast: 100,
   responseEnabled: false,
+  outputMode: "none",
+  publisherOptions: [],
+  selectedPublisher: "",
+  responseSupported: false,
   responseHeaders: [],
   responsePayload: "",
-  liveStatusText: "Log Collector Stopped",
+  liveStatusText: "Consumer Stopped",
   liveStatusVariant: "neutral",
   toggleLabel: "Start",
   toggleVariant: "success",

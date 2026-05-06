@@ -14,6 +14,10 @@
     restoreConsumerStateFromView,
     saveCurrentConsumerAction,
     selectConsumerSubtab,
+    setConsumerMessageCaptureEnabledAction,
+    setConsumerMessageCaptureKeepLastAction,
+    setConsumerOutputModeAction,
+    setConsumerOutputPublisherAction,
     showConsumerMessageDetails,
     toggleConsumerResponseHeader,
     toggleActiveConsumer,
@@ -55,6 +59,14 @@
     clearActiveConsumerHistory();
   }
 
+  function setMessageCaptureEnabled(event: Event) {
+    setConsumerMessageCaptureEnabledAction((event.currentTarget as HTMLInputElement).checked);
+  }
+
+  function setMessageCaptureKeepLast(event: Event) {
+    setConsumerMessageCaptureKeepLastAction(Number((event.currentTarget as HTMLSelectElement).value));
+  }
+
   async function copyMessageDetails() {
     if (!$consumersPanelState.detailPayload) return;
     await navigator.clipboard.writeText($consumersPanelState.detailPayload);
@@ -82,6 +94,14 @@
 
   function openSubtab(tab: "definition" | "response" | "messages") {
     selectConsumerSubtab(tab);
+  }
+
+  function setOutputMode(event: Event) {
+    setConsumerOutputModeAction((event.currentTarget as HTMLSelectElement).value as "none" | "publisher" | "response");
+  }
+
+  function setOutputPublisher(event: Event) {
+    setConsumerOutputPublisherAction((event.currentTarget as HTMLSelectElement).value);
   }
 
   function openImportPicker(kind: "asyncapi" | "mqb") {
@@ -189,7 +209,7 @@
             style:display={$consumersPanelState.responseEnabled ? "flex" : "none"}
             onclick={() => openSubtab("response")}
           >
-            Response
+            Output
           </button>
           <button
             type="button"
@@ -274,11 +294,49 @@
           <div class="pane-top" style="padding:12px;">
             <div id="cons-response-editor">
               <div class="section-toolbar response-editor-header">
-                <div class="section-label">Custom Response</div>
+                <div class="section-label">Output</div>
                 <span class="form-description">
-                  Returned to request-response consumer endpoints after the message is logged.
+                  Choose whether this consumer should acknowledge, forward to a publisher, or return a custom response.
                 </span>
               </div>
+              <div class="response-editor-grid">
+                <div class="wa-form-row field-grid">
+                  <label class="wa-form-label" for="cons-output-mode">Mode</label>
+                  <div class="wa-form-col">
+                    <select
+                      id="cons-output-mode"
+                      class="field-input"
+                      value={$consumersPanelState.outputMode}
+                      onchange={setOutputMode}
+                    >
+                      <option value="none">None</option>
+                      <option value="publisher">Publisher</option>
+                      <option value="response" disabled={!$consumersPanelState.responseSupported}>Response</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              {#if $consumersPanelState.outputMode === "publisher"}
+                <div class="response-editor-grid">
+                  <div class="wa-form-row field-grid">
+                    <label class="wa-form-label" for="cons-output-publisher">Publisher</label>
+                    <div class="wa-form-col">
+                      <select
+                        id="cons-output-publisher"
+                        class="field-input"
+                        value={$consumersPanelState.selectedPublisher}
+                        onchange={setOutputPublisher}
+                      >
+                        <option value="">Select a publisher…</option>
+                        {#each $consumersPanelState.publisherOptions as publisher (publisher)}
+                          <option value={publisher}>{publisher}</option>
+                        {/each}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              {/if}
+              {#if $consumersPanelState.outputMode === "response"}
               <div class="response-editor-grid">
                 <div class="section-label">Headers</div>
                 <div id="cons-response-headers">
@@ -302,6 +360,7 @@
                   onChange={updateConsumerResponsePayload}
                 />
               </div>
+              {/if}
             </div>
           </div>
         </div>
@@ -316,6 +375,30 @@
                 Incoming Messages:
                 <wa-badge variant={$consumersPanelState.liveStatusVariant}>{$consumersPanelState.liveStatusText}</wa-badge>
               </span>
+              <div class="consumer-message-controls">
+                <label class="consumer-message-control consumer-message-control--checkbox" for="cons-capture-enabled">
+                  <input
+                    id="cons-capture-enabled"
+                    type="checkbox"
+                    checked={$consumersPanelState.messageCaptureEnabled}
+                    onchange={setMessageCaptureEnabled}
+                  />
+                  <span>Capture messages</span>
+                </label>
+                <label class="consumer-message-control" for="cons-capture-keep-last">
+                  <span>Keep last</span>
+                  <select
+                    id="cons-capture-keep-last"
+                    class="field-input consumer-message-select"
+                    value={String($consumersPanelState.messageCaptureKeepLast)}
+                    onchange={setMessageCaptureKeepLast}
+                  >
+                    <option value="10">10</option>
+                    <option value="100">100</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
+              </div>
               <wa-button
                 variant="neutral"
                 appearance="outlined"
@@ -433,6 +516,32 @@
 
   .subtle-link-btn:hover {
     color: var(--text-primary);
+  }
+
+  .consumer-message-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    margin-left: auto;
+    margin-right: 8px;
+  }
+
+  .consumer-message-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+
+  .consumer-message-control--checkbox input {
+    margin: 0;
+  }
+
+  .consumer-message-select {
+    min-width: 72px;
+    padding: 4px 8px;
+    min-height: 30px;
   }
 
   /* No collapsible sections in ConsumersPanel, so no need for .section-label--collapsible here */

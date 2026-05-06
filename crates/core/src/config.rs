@@ -19,6 +19,14 @@ fn default_route_enabled() -> bool {
     true
 }
 
+fn default_consumer_capture_enabled() -> bool {
+    true
+}
+
+fn default_consumer_capture_keep_last() -> usize {
+    100
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
 pub struct AppConfig {
     #[serde(default = "default_log_level")]
@@ -103,6 +111,10 @@ pub struct ConsumerConfig {
     pub comment: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<ConsumerResponseConfig>,
+    #[serde(default, skip_serializing_if = "consumer_output_is_none")]
+    pub output: ConsumerOutputConfig,
+    #[serde(default)]
+    pub message_capture: ConsumerMessageCaptureConfig,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
@@ -111,6 +123,41 @@ pub struct ConsumerResponseConfig {
     pub headers: HashMap<String, String>,
     #[serde(default)]
     pub payload: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ConsumerOutputConfig {
+    #[default]
+    None,
+    Publisher {
+        publisher: String,
+    },
+    Response {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response: Option<ConsumerResponseConfig>,
+    },
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
+pub struct ConsumerMessageCaptureConfig {
+    #[serde(default = "default_consumer_capture_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_consumer_capture_keep_last", alias = "keepLast")]
+    pub keep_last: usize,
+}
+
+impl Default for ConsumerMessageCaptureConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_consumer_capture_enabled(),
+            keep_last: default_consumer_capture_keep_last(),
+        }
+    }
+}
+
+fn consumer_output_is_none(output: &ConsumerOutputConfig) -> bool {
+    matches!(output, ConsumerOutputConfig::None)
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
@@ -707,5 +754,58 @@ routes:
             route.route.input.endpoint_type,
             mq_bridge::models::EndpointType::Memory(_)
         ));
+    }
+
+    #[test]
+    fn test_consumer_output_deserializes_response_and_publisher_modes() {
+        let yaml_config = r#"
+consumers:
+  - name: "reply_consumer"
+    endpoint:
+      http:
+        url: "0.0.0.0:8080"
+    message_capture:
+      enabled: false
+      keep_last: 25
+    output:
+      mode: response
+      response:
+        headers:
+          content-type: "application/json"
+        payload: "{\"ok\":true}"
+  - name: "forward_consumer"
+    endpoint:
+      memory:
+        topic: "orders"
+    output:
+      mode: publisher
+      publisher: "orders_pub"
+"#;
+
+        let config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
+        assert_eq!(config.consumers.len(), 2);
+
+        match &config.consumers[0].output {
+            ConsumerOutputConfig::Response { response } => {
+                let response = response.clone().expect("response payload");
+                assert_eq!(response.payload, "{\"ok\":true}");
+                assert_eq!(
+                    response.headers.get("content-type").map(String::as_str),
+                    Some("application/json")
+                );
+            }
+            other => panic!("expected response output, got {other:?}"),
+        }
+        assert!(!config.consumers[0].message_capture.enabled);
+        assert_eq!(config.consumers[0].message_capture.keep_last, 25);
+
+        match &config.consumers[1].output {
+            ConsumerOutputConfig::Publisher { publisher } => {
+                assert_eq!(publisher, "orders_pub");
+            }
+            other => panic!("expected publisher output, got {other:?}"),
+        }
+        assert!(config.consumers[1].message_capture.enabled);
+        assert_eq!(config.consumers[1].message_capture.keep_last, 100);
     }
 }

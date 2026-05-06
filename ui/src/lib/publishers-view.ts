@@ -383,6 +383,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   let nextPublisherHeaderId = 1;
   const state = getMqbState();
 
+  const rememberPublisherView = (
+    idx = currentIdx,
+    tab: PublisherSubtab = activeSubtab,
+  ) => {
+    const nextIdx = Math.min(Math.max(0, idx), Math.max(publishers.length - 1, 0));
+    state.last_publisher_idx = nextIdx;
+    state.last_publisher_tab = tab;
+    (appWindow() as any)._mqb_last_publisher_idx = nextIdx;
+    (appWindow() as any)._mqb_last_publisher_tab = tab;
+  };
+
   mqbRuntime.registerDirtySection("publishers", {
     buttonId: "pub-save",
     getValue: () => config.publishers,
@@ -922,13 +933,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const nextIdx = Math.min(Math.max(0, idx), Math.max(publishers.length - 1, 0));
     const isSamePublisher = currentIdx === nextIdx;
     currentIdx = nextIdx;
-    getMqbState().last_publisher_idx = currentIdx;
-    (appWindow() as any)._mqb_last_publisher_idx = currentIdx;
     if (options.tab) {
       activeSubtab = options.tab;
     } else if (!(options.preserveTab && isSamePublisher)) {
       activeSubtab = "payload";
     }
+    rememberPublisherView(currentIdx, activeSubtab);
     syncPublishersPanelState();
   };
 
@@ -1056,10 +1066,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   const restorePublisherState = (idx: number, options: { tab?: string } = {}) => {
     if (!publishers[idx]) return;
-    const targetTab = normalizePublisherSubtab(options.tab, "payload");
+    const targetTab = normalizePublisherSubtab(options.tab, state.last_publisher_tab || "payload");
     if (currentIdx !== idx) setActiveItem(idx, { tab: targetTab });
     void updateUIFromState();
     activeSubtab = targetTab;
+    rememberPublisherView(idx, activeSubtab);
     syncPublishersPanelState();
   };
 
@@ -1399,6 +1410,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       tab: selectedTab,
     };
     getMqbState().pending_publisher_restore = pendingRestore;
+    rememberPublisherView(pendingRestore.idx, selectedTab);
     (appWindow() as any)._mqb_pending_publisher_restore = pendingRestore;
     initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>());
   };
@@ -1467,6 +1479,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
   selectPublisherSubtab = (tab) => {
     activeSubtab = tab;
+    rememberPublisherView(currentIdx, activeSubtab);
     syncPublishersPanelState();
   };
 
@@ -1800,6 +1813,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     activeSubtab = "payload";
+    rememberPublisherView(currentIdx, activeSubtab);
     syncPublishersPanelState();
   };
 
@@ -1979,8 +1993,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const pendingRestore = state.pending_publisher_restore || null;
     state.pending_publisher_restore = null;
     (appWindow() as any)._mqb_pending_publisher_restore = null;
-    const initialIdx = pendingRestore?.idx ?? 0;
-    const initialTab = normalizePublisherSubtab(pendingRestore?.tab, "payload");
+    const initialIdx = pendingRestore?.idx ?? state.last_publisher_idx ?? 0;
+    const initialTab = normalizePublisherSubtab(pendingRestore?.tab, state.last_publisher_tab || "payload");
     setActiveItem(initialIdx, { tab: initialTab });
     void updateUIFromState().then(() => {
       if (!hadUnsavedChangesBeforeInit) {

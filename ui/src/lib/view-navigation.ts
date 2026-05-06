@@ -37,6 +37,10 @@ export function openConsumerByIndex(
   fallback?: () => void,
 ) {
   const state = getMqbState();
+  state.last_consumer_idx = idx;
+  state.last_consumer_tab = tab;
+  (appWindow() as any)._mqb_last_consumer_idx = idx;
+  (appWindow() as any)._mqb_last_consumer_tab = tab;
   state.pending_consumer_restore = { idx, tab };
   (appWindow() as any)._mqb_pending_consumer_restore = state.pending_consumer_restore;
   replaceHash(`#consumers:${idx}`);
@@ -50,6 +54,10 @@ export function openPublisherByIndex(
   fallback?: () => void,
 ) {
   const state = getMqbState();
+  state.last_publisher_idx = idx;
+  state.last_publisher_tab = tab;
+  (appWindow() as any)._mqb_last_publisher_idx = idx;
+  (appWindow() as any)._mqb_last_publisher_tab = tab;
   state.pending_publisher_restore = { idx, tab };
   (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
   replaceHash(`#publishers:${idx}`);

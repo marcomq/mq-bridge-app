@@ -386,6 +386,49 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).selectedIndex).toBe(1);
     expect(window.location.hash).toBe("#publishers:1");
     expect((window as any)._mqb_last_publisher_idx).toBe(1);
+    expect((window as any)._mqb_last_publisher_tab).toBe("definition");
+  });
+
+  test("save keeps the selected publisher and subtab", async () => {
+    let resolveSave: ((value: any) => void) | null = null;
+    window.saveConfigSection = vi.fn().mockImplementation(
+      async () =>
+        await new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+
+    initPublishers(
+      {
+        publishers: [
+          { name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } },
+          { name: "events_memory", endpoint: { memory: { topic: "events" } } },
+        ],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    restorePublisherStateFromView(1, { tab: "definition" });
+    const savePromise = saveCurrentPublisherAction(document.getElementById("pub-save"));
+    await Promise.resolve();
+    resolveSave?.({
+      publishers: [
+        { name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } },
+        { name: "events_memory", endpoint: { memory: { topic: "events" } } },
+      ],
+    });
+    await savePromise;
+    await Promise.resolve();
+
+    expect(get(publishersPanelState).selectedIndex).toBe(1);
+    expect(get(publishersPanelState).activeSubtab).toBe("definition");
+    expect((window as any)._mqb_last_publisher_idx).toBe(1);
+    expect((window as any)._mqb_last_publisher_tab).toBe("definition");
   });
 
   test("edits actual custom headers and supports disable/delete", () => {

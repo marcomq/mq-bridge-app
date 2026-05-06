@@ -7,6 +7,8 @@ export interface RuntimeConsumerState {
     error?: string;
   };
   message_sequence: number;
+  capture_enabled: boolean;
+  capture_keep_last: number;
 }
 
 export interface RuntimeStatus {
@@ -121,6 +123,18 @@ export function createRuntimeStatusPoller({
                     : typeof rawConsumer.messageSequence === "number"
                       ? rawConsumer.messageSequence
                       : 0,
+                capture_enabled:
+                  typeof rawConsumer.capture_enabled === "boolean"
+                    ? rawConsumer.capture_enabled
+                    : typeof rawConsumer.captureEnabled === "boolean"
+                      ? rawConsumer.captureEnabled
+                      : true,
+                capture_keep_last:
+                  typeof rawConsumer.capture_keep_last === "number"
+                    ? rawConsumer.capture_keep_last
+                    : typeof rawConsumer.captureKeepLast === "number"
+                      ? rawConsumer.captureKeepLast
+                      : 100,
               } satisfies RuntimeConsumerState,
             ];
           }),
