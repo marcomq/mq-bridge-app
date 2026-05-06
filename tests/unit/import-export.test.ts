@@ -10,26 +10,19 @@ import {
   resetAppConfigToDefaults,
 } from "../../ui/src/lib/import-export";
 
-function installStorage() {
-  const storage = new Map<string, string>();
-  Object.defineProperty(window, "localStorage", {
-    value: {
-      getItem: vi.fn().mockImplementation((key: string) => storage.get(key) ?? null),
-      setItem: vi.fn().mockImplementation((key: string, value: string) => storage.set(key, value)),
-    },
-    configurable: true,
-  });
-  return storage;
-}
-
 describe("import-export", () => {
   const readFixture = (name: string) =>
     readFileSync(join(process.cwd(), "tests/fixtures/import-export", name), "utf8");
 
   beforeEach(() => {
-    installStorage();
-    window.appConfig = { publishers: [{ name: "orders_http" }], routes: {}, consumers: [] };
-    let serverConfig: any = { publishers: [{ name: "saved_pub" }], routes: { r1: {} }, consumers: [] };
+    window.appConfig = { publishers: [{ name: "orders_http" }], routes: {}, consumers: [], presets: {}, env_vars: {} };
+    let serverConfig: any = {
+      publishers: [{ name: "saved_pub" }],
+      routes: { r1: {} },
+      consumers: [],
+      presets: {},
+      env_vars: {},
+    };
     globalThis.fetch = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
       if (String(input) === "/config" && init?.method === "POST") {
         try {
@@ -62,10 +55,10 @@ describe("import-export", () => {
 
     expect(result.importedKind).toBe("mqb-presets");
     expect(result.importedPresetCount).toBe(1);
-    expect(JSON.parse(window.localStorage.getItem("mqb_publisher_presets") || "{}")).toEqual({
+    expect(window.appConfig.presets).toEqual({
       orders_http: [{ name: "preset_1", method: "POST", url: "https://api.local/orders", payload: "{\"order\":1}", headers: [] }],
     });
-    expect(JSON.parse(window.localStorage.getItem("mqb_env_vars") || "{}")).toEqual({
+    expect(window.appConfig.env_vars).toEqual({
       baseUrl: "https://api.local",
     });
   });
@@ -81,7 +74,7 @@ describe("import-export", () => {
 
     expect(result.importedKind).toBe("postman");
     expect(result.importedPresetCount).toBe(1);
-    const presets = JSON.parse(window.localStorage.getItem("mqb_publisher_presets") || "{}");
+    const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Create order",
       method: "POST",
@@ -100,13 +93,13 @@ describe("import-export", () => {
     });
 
     expect(result.importedKind).toBe("openapi");
-    const presets = JSON.parse(window.localStorage.getItem("mqb_publisher_presets") || "{}");
+    const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Create order",
       method: "POST",
       url: "${baseUrl}/orders",
     });
-    expect(JSON.parse(window.localStorage.getItem("mqb_env_vars") || "{}").baseUrl).toBe("https://openapi.example");
+    expect(window.appConfig.env_vars.baseUrl).toBe("https://openapi.example");
   });
 
   test("imports asyncapi channels as presets", async () => {
@@ -119,13 +112,13 @@ describe("import-export", () => {
     });
 
     expect(result.importedKind).toBe("asyncapi");
-    const presets = JSON.parse(window.localStorage.getItem("mqb_publisher_presets") || "{}");
+    const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Publish order created",
       method: "POST",
       url: "${baseUrl}/orders/created",
     });
-    expect(JSON.parse(window.localStorage.getItem("mqb_env_vars") || "{}").baseUrl).toBe("mqtt://broker.local:1883");
+    expect(window.appConfig.env_vars.baseUrl).toBe("mqtt://broker.local:1883");
   });
 
   test("imports config payload and replaces appConfig with refreshed server config", async () => {
@@ -145,8 +138,8 @@ describe("import-export", () => {
   });
 
   test("exports full bundle as downloadable JSON", () => {
-    window.localStorage.setItem("mqb_publisher_presets", JSON.stringify({ orders_http: [] }));
-    window.localStorage.setItem("mqb_env_vars", JSON.stringify({ baseUrl: "https://x" }));
+    window.appConfig.presets = { orders_http: [] };
+    window.appConfig.env_vars = { baseUrl: "https://x" };
 
     const createObjectURL = vi.fn().mockReturnValue("blob:test");
     const revokeObjectURL = vi.fn();
@@ -175,6 +168,8 @@ describe("import-export", () => {
       publishers: [{ name: "existing_pub" }],
       consumers: [{ name: "existing_cons", endpoint: { http: {} } }],
       routes: { existing_route: {} },
+      presets: {},
+      env_vars: {},
     };
     const bundle = JSON.stringify({
       type: "mqb-export",
@@ -195,7 +190,7 @@ describe("import-export", () => {
     expect(window.appConfig.publishers.length).toBeGreaterThanOrEqual(3);
     expect(window.appConfig.consumers.length).toBeGreaterThanOrEqual(3);
     expect(Object.keys(window.appConfig.routes).length).toBeGreaterThanOrEqual(3);
-    expect(JSON.parse(window.localStorage.getItem("mqb_env_vars") || "{}").baseUrl).toBe("http://x");
+    expect(window.appConfig.env_vars.baseUrl).toBe("http://x");
   });
 
   test("reset app config clears publishers, consumers and routes", async () => {
@@ -204,6 +199,8 @@ describe("import-export", () => {
       consumers: [{ name: "c1", endpoint: { http: {} } }],
       routes: { r1: {} },
       default_tab: "consumers",
+      presets: { keep_me: [{ name: "p1", method: "GET", url: "http://x", payload: "", headers: [] }] },
+      env_vars: { baseUrl: "http://x" },
     };
 
     await resetAppConfigToDefaults();
@@ -212,5 +209,7 @@ describe("import-export", () => {
     expect(window.appConfig.consumers).toEqual([]);
     expect(window.appConfig.routes).toEqual({});
     expect(window.appConfig.default_tab).toBe("publishers");
+    expect(window.appConfig.presets.keep_me).toHaveLength(1);
+    expect(window.appConfig.env_vars.baseUrl).toBe("http://x");
   });
 });

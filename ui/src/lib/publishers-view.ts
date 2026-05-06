@@ -13,6 +13,12 @@ import {
   exportPresetsForPublisher,
   importFromJsonText,
 } from "./import-export";
+import {
+  ensureWorkspaceCollections,
+  type EnvVars,
+  type PresetsByPublisher,
+  type PublisherPreset,
+} from "./workspace-config";
 
 export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showPublisherHistoryEntry: (historyIndex: number) => void | Promise<void> = () => {};
@@ -26,7 +32,7 @@ export let savePublisherPresetAction: () => void | Promise<void> = () => {};
 export let exportPublisherPresetsAction: () => void = () => {};
 export let renamePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
 export let applyPublisherPresetAction: (presetIndex: number) => void = () => {};
-export let deletePublisherPresetAction: (presetIndex: number) => void = () => {};
+export let deletePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
 export let importPostmanToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let importOpenApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let importAsyncApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
@@ -82,18 +88,12 @@ type PublisherHistoryItem = {
   pinned?: boolean;
 };
 
-type PublisherPreset = {
-  name: string;
-  method: string;
-  url: string;
-  payload: string;
-  headers: Array<{ key: string; value: string; enabled: boolean }>;
-};
-
 type PublishersAppConfig = {
   publishers: PublisherConfig[];
   consumers?: ConsumerConfig[];
   routes: Record<string, RouteConfig>;
+  presets?: PresetsByPublisher;
+  env_vars?: EnvVars;
 };
 
 type PublishersSchemaRoot = {
@@ -145,8 +145,6 @@ type PublisherSubtab = "payload" | "headers" | "history" | "presets" | "definiti
 
 const STORAGE_KEY = "mqb_publisher_state";
 const HISTORY_KEY = "mqb_publisher_history";
-const PRESETS_KEY = "mqb_publisher_presets";
-const ENV_VARS_KEY = "mqb_env_vars";
 const PUBLISHER_TYPE_OPTIONS = [
   "http",
   "grpc",
@@ -361,12 +359,14 @@ function parseJsonSafe<T>(raw: string | null, fallback: T): T {
 }
 
 export function initPublishers(config: PublishersAppConfig, schema: PublishersSchemaRoot) {
+  mqbApp.setConfig(config as unknown as Record<string, any>);
   const container = document.getElementById("publishers-container") as HTMLElement | null;
   const publishers = config.publishers || [];
+  const workspaceConfig = ensureWorkspaceCollections(config);
   let appState = parseJsonSafe<Record<string, PublisherState>>(localStorage.getItem(STORAGE_KEY), {});
   let history = parseJsonSafe<PublisherHistoryItem[]>(localStorage.getItem(HISTORY_KEY), []);
-  let presets = parseJsonSafe<Record<string, PublisherPreset[]>>(localStorage.getItem(PRESETS_KEY), {});
-  let envVars = parseJsonSafe<Record<string, string>>(localStorage.getItem(ENV_VARS_KEY), {});
+  let presets = workspaceConfig.presets;
+  let envVars = workspaceConfig.env_vars;
 
   const emptyAlert = document.getElementById("pub-empty-alert") as HTMLElement | null;
   const mainUi = document.getElementById("pub-main-ui") as HTMLElement | null;
@@ -398,11 +398,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     history = history.slice(0, 1000);
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   };
-  const savePresets = () => {
-    localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
-  };
-  const saveEnvVars = () => {
-    localStorage.setItem(ENV_VARS_KEY, JSON.stringify(envVars));
+  const persistWorkspaceCollections = async (silent = true) => {
+    workspaceConfig.presets = presets;
+    workspaceConfig.env_vars = envVars;
+    const nextConfig = mqbApp.config<PublishersAppConfig>();
+    nextConfig.presets = presets;
+    nextConfig.env_vars = envVars;
+    await mqbRuntime.saveConfigSection("presets", presets, silent);
+    await mqbRuntime.saveConfigSection("env_vars", envVars, silent);
   };
   const applyEnvVars = (value: string) =>
     String(value || "").replace(/\$\{([A-Za-z0-9_.-]+)\}/g, (_match, key) =>
@@ -816,8 +819,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     envVars = { ...envVars, ...(imported.envVars || {}) };
-    saveEnvVars();
-    savePresets();
+    await persistWorkspaceCollections(true);
     saveAppState();
 
     if (importedAsPublishers > 0) {
@@ -1693,7 +1695,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     } else {
       publisherPresets.push(preset);
     }
-    savePresets();
+    await persistWorkspaceCollections(true);
     syncPublishersPanelState();
   };
 
@@ -1730,7 +1732,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     } else {
       publisherPresets.push(preset);
     }
-    savePresets();
+    await persistWorkspaceCollections(true);
     syncPublishersPanelState();
   };
 
@@ -1767,7 +1769,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     preset.name = trimmed;
-    savePresets();
+    await persistWorkspaceCollections(true);
     syncPublishersPanelState();
   };
 
@@ -1801,12 +1803,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     syncPublishersPanelState();
   };
 
-  deletePublisherPresetAction = (presetIndex: number) => {
+  deletePublisherPresetAction = async (presetIndex: number) => {
     const publisher = publishers[currentIdx];
     if (!publisher) return;
     const publisherPresets = getPublisherPresets(publisher.name);
     publisherPresets.splice(presetIndex, 1);
-    savePresets();
+    await persistWorkspaceCollections(true);
     syncPublishersPanelState();
   };
 
@@ -1837,6 +1839,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         includePresets: true,
         targetPublisherName,
       });
+      const refreshedWorkspace = ensureWorkspaceCollections(mqbApp.config<PublishersAppConfig>());
+      presets = refreshedWorkspace.presets;
+      envVars = refreshedWorkspace.env_vars;
       syncPublishersPanelState();
       return result;
     }
@@ -1963,7 +1968,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       envVars = Object.fromEntries(
         Object.entries(parsed).map(([key, value]) => [String(key), typeof value === "string" ? value : JSON.stringify(value)]),
       );
-      saveEnvVars();
+      await persistWorkspaceCollections(true);
       await mqbDialogs.alert("Environment variables saved. You can now use ${varName} in URL, headers and body.");
     } catch (error) {
       await mqbDialogs.alert(`Invalid JSON: ${(error as Error).message}`);

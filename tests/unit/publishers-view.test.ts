@@ -123,7 +123,8 @@ function installPublisherWindowStubs() {
   window.mqbChoose = vi.fn().mockResolvedValue(null);
   window.switchMain = vi.fn();
   window._mqb_saved_sections = {};
-  window.appConfig = { publishers: [], routes: {} };
+  let serverConfig: any = { publishers: [], routes: {}, consumers: [], presets: {}, env_vars: {} };
+  window.appConfig = serverConfig;
   window.appSchema = {};
   window.initRoutes = vi.fn();
   window.initConsumers = vi.fn();
@@ -137,11 +138,35 @@ function installPublisherWindowStubs() {
     },
     configurable: true,
   });
-  globalThis.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    statusText: "OK",
-    text: async () => '{"status":"Ack"}',
+  globalThis.fetch = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+    if (String(input) === "/config" && init?.method === "POST") {
+      serverConfig = JSON.parse(String(init.body || "{}"));
+      window.appConfig = serverConfig;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => "",
+        json: async () => serverConfig,
+      };
+    }
+
+    if (String(input) === "/config") {
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => serverConfig,
+      };
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => '{"status":"Ack"}',
+      json: async () => ({ status: "Ack" }),
+    };
   }) as any;
 }
 
@@ -515,21 +540,6 @@ describe("initPublishers", () => {
   });
 
   test("applies preset and switches back to payload tab", async () => {
-    window.localStorage.setItem(
-      "mqb_publisher_presets",
-      JSON.stringify({
-        orders_http: [
-          {
-            name: "preset_a",
-            method: "PUT",
-            url: "https://api.example.test/orders/42",
-            payload: "{\"id\":42}",
-            headers: [{ key: "x-test", value: "yes", enabled: true }],
-          },
-        ],
-      }),
-    );
-
     const config = {
       publishers: [
         {
@@ -544,6 +554,18 @@ describe("initPublishers", () => {
       ],
       routes: {},
       consumers: [],
+      presets: {
+        orders_http: [
+          {
+            name: "preset_a",
+            method: "PUT",
+            url: "https://api.example.test/orders/42",
+            payload: "{\"id\":42}",
+            headers: [{ key: "x-test", value: "yes", enabled: true }],
+          },
+        ],
+      },
+      env_vars: {},
     };
 
     initPublishers(
@@ -881,19 +903,6 @@ describe("initPublishers", () => {
       }),
     );
 
-    // Re-init to reload persisted presets from localStorage into in-memory view state.
-    initPublishers(
-      {
-        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
-        routes: {},
-        consumers: [],
-      },
-      {
-        properties: { publishers: { items: {} } },
-        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
-      },
-    );
-
     expect(get(publishersPanelState).presetRows.map((row) => row.name)).toContain("imported_preset");
   });
 
@@ -936,9 +945,11 @@ describe("initPublishers", () => {
   });
 
   test("converts a preset into a persisted publisher", async () => {
-    window.localStorage.setItem(
-      "mqb_publisher_presets",
-      JSON.stringify({
+    const config = {
+      publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+      routes: {},
+      consumers: [],
+      presets: {
         orders_http: [
           {
             name: "new_http_target",
@@ -948,13 +959,8 @@ describe("initPublishers", () => {
             headers: [{ key: "x-id", value: "42", enabled: true }],
           },
         ],
-      }),
-    );
-
-    const config = {
-      publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
-      routes: {},
-      consumers: [],
+      },
+      env_vars: {},
     };
     const schema = {
       properties: { publishers: { items: {} } },
@@ -996,21 +1002,18 @@ describe("initPublishers", () => {
   });
 
   test("renames preset and handles overwrite cancel branch", async () => {
-    window.localStorage.setItem(
-      "mqb_publisher_presets",
-      JSON.stringify({
-        orders_http: [
-          { name: "a", method: "POST", url: "https://example.test/a", payload: "", headers: [] },
-          { name: "b", method: "POST", url: "https://example.test/b", payload: "", headers: [] },
-        ],
-      }),
-    );
-
     initPublishers(
       {
         publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
         routes: {},
         consumers: [],
+        presets: {
+          orders_http: [
+            { name: "a", method: "POST", url: "https://example.test/a", payload: "", headers: [] },
+            { name: "b", method: "POST", url: "https://example.test/b", payload: "", headers: [] },
+          ],
+        },
+        env_vars: {},
       },
       {
         properties: { publishers: { items: {} } },
@@ -1029,21 +1032,18 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).presetRows.map((row) => row.name)).toEqual(["renamed", "b"]);
   });
 
-  test("deletes preset row", () => {
-    window.localStorage.setItem(
-      "mqb_publisher_presets",
-      JSON.stringify({
-        orders_http: [
-          { name: "to_delete", method: "POST", url: "https://example.test/x", payload: "", headers: [] },
-        ],
-      }),
-    );
-
+  test("deletes preset row", async () => {
     initPublishers(
       {
         publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
         routes: {},
         consumers: [],
+        presets: {
+          orders_http: [
+            { name: "to_delete", method: "POST", url: "https://example.test/x", payload: "", headers: [] },
+          ],
+        },
+        env_vars: {},
       },
       {
         properties: { publishers: { items: {} } },
@@ -1051,7 +1051,7 @@ describe("initPublishers", () => {
       },
     );
 
-    deletePublisherPresetAction(0);
+    await deletePublisherPresetAction(0);
     expect(get(publishersPanelState).presetRows).toEqual([]);
   });
 

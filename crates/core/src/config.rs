@@ -39,12 +39,42 @@ pub struct AppConfig {
     pub consumers: Vec<ConsumerConfig>,
     #[serde(default)]
     pub publishers: Vec<PublisherClient>,
+    #[serde(default)]
+    pub presets: HashMap<String, Vec<PublisherPreset>>,
+    #[serde(default, alias = "envVars")]
+    pub env_vars: HashMap<String, String>,
     /// If true, secrets will be extracted to .env file upon saving.
     #[serde(default)]
     pub extract_secrets: bool,
     /// The default tab to show in the UI upon loading.
     #[serde(default)]
     pub default_tab: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
+pub struct PublisherPreset {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub payload: String,
+    #[serde(default)]
+    pub headers: Vec<PublisherPresetHeader>,
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
+pub struct PublisherPresetHeader {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default = "default_route_enabled")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema, Clone, Default)]
