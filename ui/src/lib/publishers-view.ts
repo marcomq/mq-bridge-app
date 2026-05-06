@@ -805,6 +805,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
     if (layout.showMethod && preset.method) {
       currentMethodValue = getPresetMethodValue(preset) || "POST";
+      if (endpointType === "http") {
+        publisher.endpoint.http ||= {};
+        publisher.endpoint.http.method = currentMethodValue;
+      }
     }
 
     layout.fields.forEach((descriptor) => {
@@ -1395,13 +1399,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         placeholder: "publisher_consumer",
       },
     );
-    if (!consumerName) return;
-    if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
+    const trimmedConsumerName = String(consumerName || "").trim();
+    if (!trimmedConsumerName) return;
+    if ((config.consumers || []).some((consumer) => consumer.name === trimmedConsumerName)) {
       await mqbDialogs.alert("Consumer already exists");
       return;
     }
     config.consumers.push({
-      name: consumerName,
+      name: trimmedConsumerName,
       endpoint: createConsumerEndpointFromPublisherEndpoint(currentEndpoint),
       comment: current.comment || "",
       response: null,

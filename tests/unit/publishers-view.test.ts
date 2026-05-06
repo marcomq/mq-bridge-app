@@ -173,6 +173,9 @@ function installPublisherWindowStubs() {
 
 describe("initPublishers", () => {
   beforeEach(() => {
+    delete (window as any).__mqb_state;
+    (window as any)._mqb_last_publisher_idx = undefined;
+    (window as any)._mqb_last_publisher_tab = undefined;
     mountPublishersDom();
     installPublisherWindowStubs();
   });
@@ -672,6 +675,7 @@ describe("initPublishers", () => {
     expect(state.methodValue).toBe("PUT");
     expect(state.urlField.value).toBe("https://api.example.test/orders/42");
     expect(state.requestPayload).toBe("{\"id\":42}");
+    expect(config.publishers[0].endpoint.http.method).toBe("PUT");
     expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
   });
 

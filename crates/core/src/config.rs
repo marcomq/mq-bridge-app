@@ -438,7 +438,21 @@ pub fn load_config_at_path(
 }
 
 impl AppConfig {
+    pub fn migrate_legacy_consumer_response(&mut self) {
+        for consumer in &mut self.consumers {
+            if matches!(consumer.output, ConsumerOutputConfig::None) {
+                if let Some(response) = consumer.response.take() {
+                    consumer.output = ConsumerOutputConfig::Response {
+                        response: Some(response),
+                    };
+                }
+            }
+        }
+    }
+
     pub fn migrate_legacy_routes(&mut self) {
+        self.migrate_legacy_consumer_response();
+
         if self.default_tab.trim() == "routes" {
             self.default_tab = "consumers".to_string();
         }
@@ -505,7 +519,7 @@ impl AppConfig {
 
     pub fn save_with_secret_store(&self, path: &str, secret_store: &dyn SecretStore) -> Result<()> {
         let mut config_to_save = self.clone();
-        config_to_save.migrate_legacy_routes();
+        config_to_save.migrate_legacy_consumer_response();
 
         // Sanitize route names to ensure compatibility with environment variables
         let sanitized_routes: HashMap<String, RouteConfig> = config_to_save
@@ -948,5 +962,37 @@ consumers:
         }
         assert!(config.consumers[1].message_capture.enabled);
         assert_eq!(config.consumers[1].message_capture.keep_last, 100);
+    }
+
+    #[test]
+    fn test_legacy_consumer_response_migrates_to_output() {
+        let yaml_config = r#"
+consumers:
+  - name: "reply_consumer"
+    endpoint:
+      http:
+        url: "0.0.0.0:8080"
+    response:
+      headers:
+        content-type: "application/json"
+      payload: "{\"ok\":true}"
+"#;
+
+        let mut config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
+        config.migrate_legacy_routes();
+
+        assert_eq!(config.consumers.len(), 1);
+        assert!(config.consumers[0].response.is_none());
+        match &config.consumers[0].output {
+            ConsumerOutputConfig::Response { response } => {
+                let response = response.clone().expect("response payload");
+                assert_eq!(response.payload, "{\"ok\":true}");
+                assert_eq!(
+                    response.headers.get("content-type").map(String::as_str),
+                    Some("application/json")
+                );
+            }
+            other => panic!("expected response output, got {other:?}"),
+        }
     }
 }

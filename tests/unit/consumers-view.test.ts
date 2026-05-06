@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import {
   addConsumerResponseHeader,
@@ -146,8 +146,13 @@ function createDeferred<T>() {
 
 describe("initConsumers", () => {
   beforeEach(() => {
+    delete (window as any).__mqb_state;
     mountConsumersDom();
     installConsumerWindowStubs();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   test("renders consumer names and waiting log state", async () => {
@@ -395,6 +400,50 @@ describe("initConsumers", () => {
     expect(get(consumersPanelState).publisherOptions).toEqual(["orders_pub"]);
     expect(get(consumersPanelState).selectedPublisher).toBe("orders_pub");
     expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "orders_pub" });
+  });
+
+  test("keeps consumer output unchanged when publisher mode is selected without publishers", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    setConsumerOutputModeAction("publisher");
+
+    expect(window.mqbAlert).toHaveBeenCalledWith("Create or select a publisher first.");
+    expect(get(consumersPanelState).outputMode).toBe("none");
+    expect(config.consumers[0].output).toEqual({ mode: "none" });
   });
 
   test("saves consumer output configuration instead of dropping it", async () => {
@@ -877,6 +926,83 @@ describe("initConsumers", () => {
 
     const state = get(consumersPanelState);
     expect(state.items[0]?.throughputLabel).toBe("");
+  });
+
+  test("computes throughput from fetched message count", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2025-01-01T00:00:00Z"));
+
+    const messageResponses = [
+      { orders_http: [{ payload: "first" }] },
+      {
+        orders_http: Array.from({ length: 30 }, (_, index) => ({
+          payload: `message-${index}`,
+        })),
+      },
+    ];
+
+    globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/messages")) {
+        return {
+          ok: true,
+          json: async () => messageResponses.shift() ?? { orders_http: [] },
+        } as any;
+      }
+      return { ok: true, json: async () => ({}) } as any;
+    }) as any;
+
+    window._mqb_runtime_status = {
+      active_consumers: ["orders_http"],
+      active_routes: [],
+      route_throughput: {},
+      consumers: {
+        orders_http: {
+          running: true,
+          status: { healthy: true },
+          message_sequence: 1,
+        },
+      },
+    };
+
+    await initConsumers(
+      {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { middlewares: [{ metrics: {} }], http: {} },
+            response: null,
+          },
+        ],
+        routes: {},
+        publishers: [],
+      },
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    await Promise.resolve();
+    window._mqb_runtime_status.consumers.orders_http.message_sequence = 2;
+    vi.setSystemTime(new Date("2025-01-01T00:00:01Z"));
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(parseFloat(get(consumersPanelState).items[0]?.throughputLabel || "0")).toBeGreaterThan(5);
   });
 
   test("keeps editable response header rows in local state and persists filtered headers", async () => {

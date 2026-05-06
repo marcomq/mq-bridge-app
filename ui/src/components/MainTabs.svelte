@@ -3,6 +3,7 @@
   import { switchMain } from "../bootstrap";
   import { runtimeStatusStore } from "../lib/stores";
   import { isRuntimeConnected, runtimeStatusLabel } from "../lib/runtime-status";
+  import { getThemePreference, setThemePreference } from "../lib/theme-bridge";
   import { onMount } from "svelte";
 
   type Theme = "auto" | "light" | "dark";
@@ -11,12 +12,12 @@
   let themeSelectorOpen = $state(false);
 
   onMount(() => {
-    theme = (window.getThemePreference?.() ?? "auto") as Theme;
+    theme = getThemePreference() ?? "auto";
   });
 
   function setTheme(value: Theme) {
     theme = value;
-    window.setThemePreference?.(value);
+    setThemePreference(value);
     themeSelectorOpen = false;
   }
 </script>

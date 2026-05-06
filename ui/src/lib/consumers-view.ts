@@ -419,6 +419,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const consumerThroughput: Record<string, number> = {};
   const consumerRateSamples: Record<string, { timestampMs: number; total: number }> = {};
   const consumerMessageSequences: Record<string, number> = {};
+  const consumerLastPolled: Record<string, number> = {};
   const consumerViewState: Record<number, { responseHeaders: ConsumerResponseHeaderRow[] }> = {};
   const syncSavedConsumerNames = (source: ConsumerConfig[]) => {
     savedConsumerNames = new Set((source || []).map((consumer) => consumer.name));
@@ -583,6 +584,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         delete consumerThroughput[existingName];
         delete consumerRateSamples[existingName];
         delete consumerMessageSequences[existingName];
+        delete consumerLastPolled[existingName];
       }
     }
 
@@ -815,6 +817,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     } else if (mode === "publisher") {
       const existing = normalizeConsumerOutput(current.output, current.response);
       const publisherOptions = getAvailablePublisherNames();
+      if (publisherOptions.length === 0) {
+        void mqbDialogs.alert("Create or select a publisher first.");
+        return;
+      }
       const preferredPublisher =
         existing.mode === "publisher" && existing.publisher
           ? existing.publisher
@@ -1282,10 +1288,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         let hasNew = false;
         const selectedMessages: ConsumerMessage[] = [];
         const maxMessages = messageCapture.keep_last;
+        let totalFetched = 0;
         for (const [sourceName, rawMessages] of Object.entries(data)) {
           const messages = Array.isArray(rawMessages)
             ? rawMessages.map((message) => normalizeConsumerMessage(message))
             : [];
+          totalFetched += messages.length;
           consumerMessages[sourceName] = [...messages, ...(consumerMessages[sourceName] || [])].slice(0, maxMessages);
           consumerMessages[sourceName].sort((a, b) => {
             const timeA = a.time || "";
@@ -1313,6 +1321,11 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           });
           hasNew = true;
         }
+        const nowMs = Date.now();
+        const previousPollMs = consumerLastPolled[name] || nowMs;
+        const elapsedSec = (nowMs - previousPollMs) / 1000;
+        consumerLastPolled[name] = nowMs;
+        consumerThroughput[name] = elapsedSec > 0 ? totalFetched / elapsedSec : 0;
         consumerMessageSequences[name] = nextSequence;
         if (hasNew) {
           saveMessages();

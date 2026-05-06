@@ -19,6 +19,7 @@ describe("routing", () => {
   test("picks default tab in priority order", () => {
     expect(pickDefaultTab("#consumers:1", [], "publishers")).toBe("consumers");
     expect(pickDefaultTab("", ["live_route"], "publishers")).toBe("publishers");
+    expect(pickDefaultTab("", [], "consumers")).toBe("consumers");
     expect(pickDefaultTab("", [], "config")).toBe("config");
     expect(pickDefaultTab("", [], "unknown")).toBe("publishers");
   });

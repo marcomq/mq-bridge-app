@@ -23,9 +23,9 @@ Longer-term candidates for config persistence:
 
 Avoid storing huge message buffers in durable config by default. Messages are runtime/debug data, not an archive.
 
-Presets and history need to sufficient for all different endpoint types. Just supporting http isn't sufficient. 
-We might even store a Hashmap and let javascript parse the values. 
-The values later also need to be exportable to asyncApi.
+Presets and history need to be sufficient for all endpoint types, not just HTTP.
+We might even store a hash map and let JavaScript parse the values.
+The values later also need to be exportable to AsyncAPI.
 
 ## 6. Improve UX of App Config page
 
