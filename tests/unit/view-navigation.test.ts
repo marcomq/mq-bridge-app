@@ -1,25 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "../../ui/src/lib/view-navigation";
+import { openConsumerByIndex, openPublisherByIndex } from "../../ui/src/lib/view-navigation";
 
 describe("view-navigation", () => {
-  it("opens route by name and delegates restore to switchMain", () => {
-    const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
-    const restoreRouteState = vi.fn();
-    const switchMain = vi.fn();
-
-    window.switchMain = switchMain;
-    const didOpen = openRouteByName({ alpha: {}, beta: {} }, "beta", restoreRouteState);
-
-    expect(didOpen).toBe(true);
-    expect(window._mqb_pending_route_restore).toEqual({ idx: 1 });
-    expect(replaceState).toHaveBeenCalledWith(null, "", "#routes:1");
-    expect(switchMain).toHaveBeenCalledWith("routes");
-    expect(restoreRouteState).not.toHaveBeenCalled();
-
-    replaceState.mockRestore();
-  });
-
   it("runs fallback when switchMain is unavailable", () => {
     const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
     const restorePublisherState = vi.fn();
@@ -37,14 +20,6 @@ describe("view-navigation", () => {
 
     replaceState.mockRestore();
   });
-
-  it("returns false when route does not exist", () => {
-    const restoreRouteState = vi.fn();
-    const didOpen = openRouteByName({ alpha: {} }, "missing", restoreRouteState);
-    expect(didOpen).toBe(false);
-    expect(restoreRouteState).not.toHaveBeenCalled();
-  });
-
   it("opens consumer and writes pending state", () => {
     const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
     const restoreConsumerState = vi.fn();

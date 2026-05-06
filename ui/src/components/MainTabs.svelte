@@ -3,20 +3,21 @@
   import { switchMain } from "../bootstrap";
   import { runtimeStatusStore } from "../lib/stores";
   import { isRuntimeConnected, runtimeStatusLabel } from "../lib/runtime-status";
+  import { getThemePreference, setThemePreference } from "../lib/theme-bridge";
   import { onMount } from "svelte";
 
   type Theme = "auto" | "light" | "dark";
 
-  let theme: Theme = "auto";
-  let themeSelectorOpen = false;
+  let theme = $state<Theme>("auto");
+  let themeSelectorOpen = $state(false);
 
   onMount(() => {
-    theme = (window.getThemePreference?.() ?? "auto") as Theme;
+    theme = getThemePreference() ?? "auto";
   });
 
   function setTheme(value: Theme) {
     theme = value;
-    window.setThemePreference?.(value);
+    setThemePreference(value);
     themeSelectorOpen = false;
   }
 </script>
@@ -40,15 +41,6 @@
     onclick={() => switchMain("consumers")}
   >
     <span class="tab-icon">↓</span> Consumers
-  </button>
-  <button
-    class:active={$activeMainTab === "routes"}
-    class="main-tab"
-    id="mtab-routes"
-    type="button"
-    onclick={() => switchMain("routes")}
-  >
-    <span class="tab-icon">⇄</span> Routes
   </button>
   <button
     class:active={$activeMainTab === "config"}

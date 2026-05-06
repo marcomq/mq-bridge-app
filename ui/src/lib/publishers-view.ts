@@ -1,11 +1,9 @@
 import {
   applyEndpointSchemaDefaults,
-  createEmptyRouteConfig,
-  defaultMetricsMiddleware,
   nextUniqueName,
 } from "./routes";
 import { cloneJson } from "./utils";
-import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
+import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { publishersPanelState } from "./stores";
 import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 import {
@@ -16,8 +14,11 @@ import {
 import {
   ensureWorkspaceCollections,
   type EnvVars,
+  type PublisherHistoryEntry,
+  type PublisherHistoryStore,
   type PresetsByPublisher,
   type PublisherPreset,
+  sanitizePublisherHistory,
 } from "./workspace-config";
 
 export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
@@ -68,32 +69,15 @@ type ConsumerConfig = {
   response?: unknown;
 };
 
-type RouteConfig = ReturnType<typeof createEmptyRouteConfig>;
-
-type PublisherHistoryItem = {
-  name: string;
-  payload: string;
-  metadata?: Array<{ k: string; v: string }>;
-  requestMetadata?: Record<string, string>;
-  targetLabel?: string;
-  url?: string;
-  responseData?: unknown;
-  ok?: boolean;
-  status: number;
-  statusText?: string;
-  displayStatus?: string;
-  displayStatusText?: string;
-  duration: number;
-  time: number;
-  pinned?: boolean;
-};
+type PublisherHistoryItem = PublisherHistoryEntry;
 
 type PublishersAppConfig = {
   publishers: PublisherConfig[];
   consumers?: ConsumerConfig[];
-  routes: Record<string, RouteConfig>;
+  routes?: Record<string, unknown>;
   presets?: PresetsByPublisher;
   env_vars?: EnvVars;
+  history?: PublisherHistoryStore;
 };
 
 type PublishersSchemaRoot = {
@@ -314,13 +298,6 @@ function defaultHttpConfig() {
   };
 }
 
-function createRefInputEndpoint(refName: string) {
-  return {
-    middlewares: defaultMetricsMiddleware(),
-    ref: refName,
-  };
-}
-
 function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined): string {
   const endpoint = publisher?.endpoint || {};
   return ENDPOINT_TYPE_KEYS.find((key) => key in endpoint) || "null";
@@ -358,13 +335,41 @@ function parseJsonSafe<T>(raw: string | null, fallback: T): T {
   }
 }
 
+function flattenPublisherHistory(store: PublisherHistoryStore): PublisherHistoryItem[] {
+  return Object.values(store.publishers || {})
+    .flatMap((rows) => rows || [])
+    .sort((a, b) => Number(b.time) - Number(a.time));
+}
+
+function buildPublisherHistoryStore(history: PublisherHistoryItem[], updatedAt = Date.now()): PublisherHistoryStore {
+  const publishers: PublisherHistoryStore["publishers"] = {};
+  for (const item of history) {
+    const name = String(item.name || "").trim();
+    if (!name) continue;
+    if (!publishers[name]) {
+      publishers[name] = [];
+    }
+    publishers[name].push(item);
+  }
+  return {
+    version: 1,
+    updated_at: updatedAt,
+    publishers,
+  };
+}
+
 export function initPublishers(config: PublishersAppConfig, schema: PublishersSchemaRoot) {
   mqbApp.setConfig(config as unknown as Record<string, any>);
   const container = document.getElementById("publishers-container") as HTMLElement | null;
   const publishers = config.publishers || [];
   const workspaceConfig = ensureWorkspaceCollections(config);
   let appState = parseJsonSafe<Record<string, PublisherState>>(localStorage.getItem(STORAGE_KEY), {});
-  let history = parseJsonSafe<PublisherHistoryItem[]>(localStorage.getItem(HISTORY_KEY), []);
+  const localHistoryStore = sanitizePublisherHistory(parseJsonSafe<unknown>(localStorage.getItem(HISTORY_KEY), {}));
+  const configHistoryStore = sanitizePublisherHistory(workspaceConfig.history);
+  let historyStore = localHistoryStore.updated_at >= configHistoryStore.updated_at
+    ? localHistoryStore
+    : configHistoryStore;
+  let history = flattenPublisherHistory(historyStore).slice(0, 1000);
   let presets = workspaceConfig.presets;
   let envVars = workspaceConfig.env_vars;
 
@@ -381,6 +386,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   let currentResponsePayload = "";
   let currentMethodValue = "POST";
   let nextPublisherHeaderId = 1;
+  let pendingHistorySync: number | null = null;
   const state = getMqbState();
 
   const rememberPublisherView = (
@@ -405,16 +411,38 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
 
   const saveAppState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
-  const saveHistory = () => {
+  const syncHistoryToConfig = async (silent = true) => {
+    historyStore = buildPublisherHistoryStore(history);
+    workspaceConfig.history = historyStore;
+    const nextConfig = mqbApp.config<PublishersAppConfig>();
+    nextConfig.history = historyStore;
+    await mqbRuntime.saveConfigSection("history", historyStore, silent);
+  };
+  const scheduleHistorySync = () => {
+    if (pendingHistorySync != null) {
+      appWindow().clearTimeout(pendingHistorySync);
+    }
+    pendingHistorySync = appWindow().setTimeout(() => {
+      pendingHistorySync = null;
+      void syncHistoryToConfig(true);
+    }, 2000);
+  };
+  const saveHistory = (options: { sync?: boolean } = {}) => {
     history = history.slice(0, 1000);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    historyStore = buildPublisherHistoryStore(history);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore));
+    if (options.sync !== false) {
+      scheduleHistorySync();
+    }
   };
   const persistWorkspaceCollections = async (silent = true) => {
     workspaceConfig.presets = presets;
     workspaceConfig.env_vars = envVars;
+    workspaceConfig.history = historyStore;
     const nextConfig = mqbApp.config<PublishersAppConfig>();
     nextConfig.presets = presets;
     nextConfig.env_vars = envVars;
+    nextConfig.history = historyStore;
     await mqbRuntime.saveConfigSection("presets", presets, silent);
     await mqbRuntime.saveConfigSection("env_vars", envVars, silent);
   };
@@ -443,14 +471,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     );
   };
 
-  const openRouteAt = (routeName: string) => {
-    openRouteByName(
-      config.routes,
-      routeName,
-      (routeIdx) => mqbApp.restore.route(routeIdx),
-      () => mqbApp.init.routes(config, mqbApp.schema()),
-    );
-  };
+  if (
+    (historyStore.updated_at === configHistoryStore.updated_at && configHistoryStore.updated_at > localHistoryStore.updated_at)
+    || (history.length > 0 && flattenPublisherHistory(localHistoryStore).length === 0 && flattenPublisherHistory(configHistoryStore).length > 0)
+  ) {
+    saveHistory({ sync: false });
+  }
 
   const ensureHttpConfig = (publisher: PublisherConfig) => {
     publisher.endpoint ||= {};
@@ -694,61 +720,171 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
   };
 
-  const requestToPreset = (request: {
-    name: string;
-    method: string;
-    url: string;
-    payload: string;
-    headers: Array<{ key: string; value: string; enabled: boolean }>;
-  }) => ({
-    name: request.name,
-    method: request.method || "POST",
-    url: request.url || "",
-    payload: request.payload || "",
-    headers: (request.headers || []).map((row) => ({
-      key: String(row.key || ""),
-      value: String(row.value || ""),
-      enabled: row.enabled !== false,
-    })),
-  });
+  const getPresetEndpointType = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) =>
+    preset.endpoint_type || (fallbackPublisher ? getEndpointType(fallbackPublisher) : "http");
 
-  const requestToPublisher = (request: {
-    name: string;
-    method: string;
-    url: string;
-    payload: string;
-    headers: Array<{ key: string; value: string; enabled: boolean }>;
-  }) => {
+  const getPresetRequestFields = (preset: PublisherPreset) => {
+    const nextFields = { ...(preset.request_fields || {}) };
+    if (preset.url && !nextFields.url) {
+      nextFields.url = preset.url;
+    }
+    return nextFields;
+  };
+
+  const getPresetRequestFieldValue = (preset: PublisherPreset, field: string) =>
+    String(getPresetRequestFields(preset)[field] || "");
+
+  const getPresetMethodValue = (preset: PublisherPreset) =>
+    String(preset.method || "").toUpperCase();
+
+  const createPresetFromPublisherState = (
+    publisher: PublisherConfig,
+    presetName: string,
+    payload: string,
+    headers: Array<{ key: string; value: string; enabled: boolean }>,
+  ): PublisherPreset => {
+    const endpointType = getEndpointType(publisher);
+    const layout = getRequestBarLayout(endpointType);
+    const request_fields = Object.fromEntries(
+      layout.fields.map((descriptor) => [descriptor.field, getRequestBarFieldValue(publisher, descriptor).trim()]),
+    );
+
+    return {
+      name: presetName,
+      payload: payload || "",
+      headers: (headers || []).map((row) => ({
+        key: String(row.key || ""),
+        value: String(row.value || ""),
+        enabled: row.enabled !== false,
+      })),
+      endpoint_type: endpointType,
+      method: layout.showMethod ? (currentMethodValue || "POST") : undefined,
+      url: request_fields.url || undefined,
+      request_fields,
+    };
+  };
+
+  const createPresetFromHistoryItem = (
+    publisher: PublisherConfig,
+    item: PublisherHistoryItem,
+    presetName: string,
+  ): PublisherPreset => {
+    const endpointType = getEndpointType(publisher);
+    const layout = getRequestBarLayout(endpointType);
+    const requestMetadata = item.requestMetadata || {};
+    const requestFields = item.request_fields || {};
+    const request_fields = Object.fromEntries(
+      layout.fields.map((descriptor) => {
+        const value = requestFields[descriptor.field]
+          ?? requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
+          ?? requestMetadata[`request_bar.${descriptor.inputId}`]
+          ?? (descriptor.field === "url" ? String(item.url || "") : "");
+        return [descriptor.field, String(value || "")];
+      }),
+    );
+
+    return {
+      name: presetName,
+      payload: item.payload || "",
+      headers: (item.headers?.length ? item.headers : item.metadata || []).map((row: any) => ({
+        key: String(row.key ?? row.k ?? ""),
+        value: String(row.value ?? row.v ?? ""),
+        enabled: row.enabled !== false,
+      })),
+      endpoint_type: endpointType,
+      method: layout.showMethod ? String(item.method || requestMetadata.http_method || currentMethodValue || "POST") : undefined,
+      url: request_fields.url || undefined,
+      request_fields,
+    };
+  };
+
+  const applyPresetToPublisher = (publisher: PublisherConfig, preset: PublisherPreset) => {
+    const endpointType = getEndpointType(publisher);
+    const layout = getRequestBarLayout(endpointType);
+    const requestFields = getPresetRequestFields(preset);
+
+    if (layout.showMethod && preset.method) {
+      currentMethodValue = getPresetMethodValue(preset) || "POST";
+      if (endpointType === "http") {
+        publisher.endpoint.http ||= {};
+        publisher.endpoint.http.method = currentMethodValue;
+      }
+    }
+
+    layout.fields.forEach((descriptor) => {
+      setRequestBarFieldValue(publisher, descriptor, String(requestFields[descriptor.field] || ""));
+    });
+
+    getPublisherState(publisher.name).payload = preset.payload || "";
+
+    if (endpointType === "http") {
+      const rows = (preset.headers || []).map((header, index) => ({
+        id: nextPublisherHeaderId + index,
+        key: String(header.key || ""),
+        value: String(header.value || ""),
+        enabled: header.enabled !== false,
+      }));
+      nextPublisherHeaderId += rows.length;
+      updatePublisherConfigFromMetadataRows(rows);
+      return;
+    }
+
+    persistConfigState();
+  };
+
+  const summarizePresetRequest = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
+    const endpointType = getPresetEndpointType(preset, fallbackPublisher);
+    const layout = getRequestBarLayout(endpointType);
+    const requestFields = getPresetRequestFields(preset);
+    const targetSummary = layout.fields
+      .map((descriptor) => {
+        const value = String(requestFields[descriptor.field] || "").trim();
+        return value ? `${descriptor.label}: ${value}` : "";
+      })
+      .filter(Boolean)
+      .join(" | ");
+
+    return {
+      endpointType,
+      methodLabel: layout.showMethod ? (getPresetMethodValue(preset) || "POST") : "",
+      targetSummary,
+    };
+  };
+
+  const requestToPublisher = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
     const currentNames = (config.publishers || []).map((publisher) => publisher.name);
-    const baseName = String(request.name || "http").trim().replace(/\s+/g, "_").toLowerCase() || "http";
+    const endpointType = getPresetEndpointType(preset, fallbackPublisher);
+    const baseName = String(preset.name || endpointType).trim().replace(/\s+/g, "_").toLowerCase() || endpointType;
     const name = nextUniqueName(baseName, currentNames);
-    const split = splitHttpUrl(request.url || "");
+    const requestFields = getPresetRequestFields(preset);
     const customHeaders = Object.fromEntries(
-      (request.headers || [])
+      (preset.headers || [])
         .filter((row) => row.enabled !== false && String(row.key || "").trim())
         .map((row) => [String(row.key).trim(), String(row.value || "")]),
     );
-    const endpoint = createDefaultPublisherEndpoint("http") as Record<string, any>;
-    endpoint.http = endpoint.http || {};
-    endpoint.http.url = split.base || (request.url || "");
-    endpoint.http.method = request.method || "POST";
-    endpoint.http.custom_headers = customHeaders;
-    if (split.path) {
-      endpoint.http.path = split.path;
-    }
+    const endpoint = createDefaultPublisherEndpoint(endpointType) as Record<string, any>;
     const publisher: PublisherConfig = {
       name,
       endpoint,
       comment: "",
     };
-    const headerRows = (request.headers || []).map((row) => ({
+    const layout = getRequestBarLayout(endpointType);
+    layout.fields.forEach((descriptor) => {
+      setRequestBarFieldValue(publisher, descriptor, String(requestFields[descriptor.field] || ""));
+    });
+    if (endpointType === "http") {
+      const httpConfig = ensureHttpConfig(publisher);
+      httpConfig.method = getPresetMethodValue(preset) || "POST";
+      httpConfig.custom_headers = customHeaders;
+    }
+    const headerRows = (preset.headers || []).map((row) => ({
       id: nextPublisherHeaderId++,
       key: String(row.key || ""),
       value: String(row.value || ""),
       enabled: row.enabled !== false,
     }));
     appState[name] = {
-      payload: request.payload || "",
+      payload: preset.payload || "",
       headers: headerRows,
     };
     return publisher;
@@ -774,9 +910,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (expectedKind === "postman") {
       const grouped = new Map<string, typeof imported.requests>();
       for (const request of imported.requests) {
-        const reqUrl = (request.url || "").trim();
+        const reqUrl = getPresetRequestFieldValue(request, "url").trim();
         if (reqUrl && reqUrl === activeUrl) {
-          const preset = requestToPreset(request);
+          const preset = structuredClone(request);
           const existingIndex = activePublisherPresets.findIndex((row) => row.name === preset.name);
           if (existingIndex >= 0) {
             activePublisherPresets[existingIndex] = preset;
@@ -797,11 +933,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         const publisher = requestToPublisher({
           ...first,
           name: groupName,
-        });
+        }, publisher);
         config.publishers.push(publisher);
         const publisherPresets = getPublisherPresets(publisher.name);
         for (const request of requests) {
-          const preset = requestToPreset(request);
+          const preset = structuredClone(request);
           const existingIndex = publisherPresets.findIndex((row) => row.name === preset.name);
           if (existingIndex >= 0) {
             publisherPresets[existingIndex] = preset;
@@ -813,8 +949,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       }
     } else {
       for (const request of imported.requests) {
-        if ((request.url || "").trim() && (request.url || "").trim() === activeUrl) {
-          const preset = requestToPreset(request);
+        const requestUrl = getPresetRequestFieldValue(request, "url").trim();
+        if (requestUrl && requestUrl === activeUrl) {
+          const preset = structuredClone(request);
           const existingIndex = activePublisherPresets.findIndex((row) => row.name === preset.name);
           if (existingIndex >= 0) {
             activePublisherPresets[existingIndex] = preset;
@@ -823,7 +960,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
           }
           importedAsPresets += 1;
         } else {
-          config.publishers.push(requestToPublisher(request));
+          config.publishers.push(requestToPublisher(request, publisher));
           importedAsPublishers += 1;
         }
       }
@@ -867,13 +1004,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     };
     const metadataRows = endpointType === "http" && activePublisher ? getPublisherHeaderRows(activePublisher) : [];
     const presetRows = activeName
-      ? getPublisherPresets(activeName).map((preset, presetIndex) => ({
-          presetIndex,
-          name: preset.name,
-          method: preset.method || "POST",
-          url: preset.url || "",
-          bodyPreview: (preset.payload || "").replace(/\s+/g, " ").trim().substring(0, 80),
-        }))
+      ? getPublisherPresets(activeName).map((preset, presetIndex) => {
+          const summary = summarizePresetRequest(preset, activePublisher);
+          return {
+            presetIndex,
+            name: preset.name,
+            endpointType: summary.endpointType.toUpperCase(),
+            methodLabel: summary.methodLabel,
+            targetSummary: summary.targetSummary,
+            bodyPreview: (preset.payload || "").replace(/\s+/g, " ").trim().substring(0, 80),
+          };
+        })
       : [];
     const requestPayload = activeName ? getPublisherState(activeName).payload : "";
 
@@ -1014,14 +1155,16 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!publisher) return;
     const endpointType = getEndpointType(publisher);
     const requestMetadata = item.requestMetadata || {};
+    const requestFields = item.request_fields || {};
 
-    if (requestMetadata.http_method) {
-      currentMethodValue = requestMetadata.http_method;
+    if (item.method || requestMetadata.http_method) {
+      currentMethodValue = String(item.method || requestMetadata.http_method);
     }
 
     const layout = getRequestBarLayout(endpointType);
     layout.fields.forEach((descriptor) => {
-      const value = requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
+      const value = requestFields[descriptor.field]
+        ?? requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
         ?? requestMetadata[`request_bar.${descriptor.inputId}`];
       if (typeof value === "string") {
         setRequestBarFieldValue(publisher, descriptor, value);
@@ -1031,7 +1174,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (endpointType !== "http") return;
 
     const httpConfig = ensureHttpConfig(publisher);
-    httpConfig.custom_headers = Object.fromEntries((item.metadata || []).map(({ k, v }) => [k, v]));
+    httpConfig.custom_headers = Object.fromEntries(
+      (item.headers?.length ? item.headers.map((row) => ({ k: row.key, v: row.value })) : item.metadata || [])
+        .map(({ k, v }) => [k, v]),
+    );
 
     const hasHistoryUrl = layout.fields.some((descriptor) =>
       typeof requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`] === "string" ||
@@ -1243,98 +1389,30 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const current = config.publishers[currentIdx];
     if (!current) return;
     const currentEndpoint = cloneJson(current.endpoint || { null: null });
-    const choice = await mqbDialogs.choose("Choose where to copy this publisher definition.", "Copy Publisher", {
-      confirmLabel: "Continue",
-      choices: [
-        { value: "route_output", label: "New Route Output", description: "Creates a route with this publisher as output." },
-        { value: "consumer", label: "New Consumer", description: "Copies the endpoint into a consumer. Review after copying." },
-        { value: "ref", label: "New Ref Route", description: "Creates a route with a ref input and this publisher as output." },
-      ],
-    });
-    if (!choice) return;
-
-    if (choice === "route_output") {
-      config.routes ||= {};
-      const routeName = await mqbDialogs.prompt(
-        "Choose a name for the new route. The input stays null until you review it.",
-        "Copy to Route",
-        {
-          confirmLabel: "Create",
-          value: nextUniqueName(`${current.name}_route`, Object.keys(config.routes || {})),
-          placeholder: "publisher_route",
-        },
-      );
-      if (!routeName) return;
-      if (config.routes[routeName]) {
-        await mqbDialogs.alert("Route already exists");
-        return;
-      }
-      const routeConfig = createEmptyRouteConfig();
-      routeConfig.output = currentEndpoint;
-      config.routes[routeName] = routeConfig;
-      mqbRuntime.refreshDirtySection("routes");
-      openRouteAt(routeName);
-      return;
-    }
-
-    if (choice === "consumer") {
-      config.consumers ||= [];
-      const consumerName = await mqbDialogs.prompt(
-        "Choose a name for the new consumer. Publisher-specific fields may need adjustment after copying.",
-        "Copy to Consumer",
-        {
-          confirmLabel: "Create",
-          value: nextUniqueName(getEndpointType(current), (config.consumers || []).map((consumer) => consumer.name)),
-          placeholder: "publisher_consumer",
-        },
-      );
-      if (!consumerName) return;
-      if ((config.consumers || []).some((consumer) => consumer.name === consumerName)) {
-        await mqbDialogs.alert("Consumer already exists");
-        return;
-      }
-      config.consumers.push({
-        name: consumerName,
-        endpoint: createConsumerEndpointFromPublisherEndpoint(currentEndpoint),
-        comment: current.comment || "",
-        response: null,
-      });
-      mqbRuntime.refreshDirtySection("consumers");
-      openConsumerAt(config.consumers.length - 1, "definition");
-      return;
-    }
-
-    const refTarget = await mqbDialogs.prompt(
-      "Choose the ref input name. Other endpoints can reference this publisher through that name after the route is saved and running.",
-      "Copy to Ref Route",
-      {
-        confirmLabel: "Next",
-        value: current.name,
-        placeholder: "publisher_ref",
-      },
-    );
-    if (!refTarget) return;
-    config.routes ||= {};
-    const routeName = await mqbDialogs.prompt(
-      "Choose a name for the new route that exposes this publisher via ref.",
-      "Copy to Ref Route",
+    config.consumers ||= [];
+    const consumerName = await mqbDialogs.prompt(
+      "Choose a name for the new consumer. Publisher-specific fields may need adjustment after copying.",
+      "Copy to Consumer",
       {
         confirmLabel: "Create",
-        value: nextUniqueName(`${current.name}_ref_route`, Object.keys(config.routes || {})),
-        placeholder: "publisher_ref_route",
+        value: nextUniqueName(getEndpointType(current), (config.consumers || []).map((consumer) => consumer.name)),
+        placeholder: "publisher_consumer",
       },
     );
-    if (!routeName) return;
-    if (config.routes[routeName]) {
-      await mqbDialogs.alert("Route already exists");
+    const trimmedConsumerName = String(consumerName || "").trim();
+    if (!trimmedConsumerName) return;
+    if ((config.consumers || []).some((consumer) => consumer.name === trimmedConsumerName)) {
+      await mqbDialogs.alert("Consumer already exists");
       return;
     }
-    const routeConfig = createEmptyRouteConfig();
-    routeConfig.input = createRefInputEndpoint(refTarget);
-    routeConfig.output = currentEndpoint;
-    config.routes[routeName] = routeConfig;
-    mqbRuntime.refreshDirtySection("routes");
-    openRouteAt(routeName);
+    config.consumers.push({
+      name: trimmedConsumerName,
+      endpoint: createConsumerEndpointFromPublisherEndpoint(currentEndpoint),
+      comment: current.comment || "",
+      response: null,
+    });
+    mqbRuntime.refreshDirtySection("consumers");
+    openConsumerAt(config.consumers.length - 1, "definition");
   };
 
   const addPublisher = async () => {
@@ -1570,7 +1648,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       history.unshift({
         name,
         payload,
+        headers: metaArray.map(({ k, v }) => ({ key: k, value: v, enabled: true })),
         metadata: [...metaArray],
+        endpoint_type: endpointType,
+        method: layout.showMethod ? currentMethodValue : undefined,
+        request_fields: Object.fromEntries(
+          layout.fields.map((descriptor) => [descriptor.field, getRequestBarFieldValue(publisher, descriptor).trim()]),
+        ),
         requestMetadata: { ...metadata, ...requestHistoryMetadata },
         targetLabel: requestBinding?.label,
         url: resolvedRequestUrl,
@@ -1580,6 +1664,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         statusText: response.statusText,
         displayStatus: statusInfo.label,
         displayStatusText: statusInfo.text,
+        status_info: {
+          ok: statusInfo.ok,
+          code: response.status,
+          label: statusInfo.label,
+          text: statusInfo.text,
+        },
         duration,
         time: Date.now(),
       });
@@ -1696,13 +1786,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     });
     if (!presetName) return;
 
-    const method = item.requestMetadata?.http_method || currentMethodValue || "POST";
-    const url = typeof item.url === "string" ? item.url : "";
-    const payload = item.payload || "";
-    const headers = (item.metadata || []).map(({ k, v }) => ({ key: String(k || ""), value: String(v || ""), enabled: true }));
-
     const existingIndex = publisherPresets.findIndex((preset) => preset.name === presetName);
-    const preset = { name: presetName, method, url, payload, headers };
+    const preset = createPresetFromHistoryItem(publisher, item, presetName);
     if (existingIndex >= 0) {
       publisherPresets[existingIndex] = preset;
     } else {
@@ -1728,18 +1813,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     });
     if (!presetName) return;
 
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    const url = getRequestBarFieldValue(publisher, layout.fields.find((field) => field.inputId === "pub-url")).trim();
-    const method = currentMethodValue || "POST";
     const payload = getPublisherState(publisher.name).payload || "";
-    const headers = endpointType === "http"
+    const headers = getEndpointType(publisher) === "http"
       ? getPublisherHeaderRows(publisher).map((row) => ({ key: row.key, value: row.value, enabled: row.enabled }))
       : [];
 
     const publisherPresets = getPublisherPresets(publisher.name);
     const existingIndex = publisherPresets.findIndex((preset) => preset.name === presetName);
-    const preset = { name: presetName, method, url, payload, headers };
+    const preset = createPresetFromPublisherState(publisher, presetName, payload, headers);
     if (existingIndex >= 0) {
       publisherPresets[existingIndex] = preset;
     } else {
@@ -1793,24 +1874,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const preset = publisherPresets[presetIndex];
     if (!preset) return;
 
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    currentMethodValue = preset.method || "POST";
-    setRequestBarFieldValue(publisher, layout.fields.find((field) => field.inputId === "pub-url"), preset.url || "");
-    getPublisherState(publisher.name).payload = preset.payload || "";
-
-    if (endpointType === "http") {
-      const rows = (preset.headers || []).map((header, index) => ({
-        id: nextPublisherHeaderId + index,
-        key: String(header.key || ""),
-        value: String(header.value || ""),
-        enabled: header.enabled !== false,
-      }));
-      nextPublisherHeaderId += rows.length;
-      updatePublisherConfigFromMetadataRows(rows);
-    } else {
-      persistConfigState();
-    }
+    applyPresetToPublisher(publisher, preset);
 
     activeSubtab = "payload";
     rememberPublisherView(currentIdx, activeSubtab);
@@ -1915,13 +1979,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const preset = publisherPresets[presetIndex];
     if (!preset) return;
 
-    config.publishers.push(requestToPublisher({
-      name: preset.name,
-      method: preset.method,
-      url: preset.url,
-      payload: preset.payload,
-      headers: preset.headers || [],
-    }));
+    config.publishers.push(requestToPublisher(preset, publisher));
     saveAppState();
     const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
     if (!saved) return;
@@ -1946,15 +2004,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     await updateUIFromState();
     formatResponseDetails(
       {
-        ok: typeof item.ok === "boolean" ? item.ok : item.status < 300,
-        label: item.displayStatus || String(item.status),
-        text: item.displayStatusText || item.statusText,
+        ok: typeof item.ok === "boolean" ? item.ok : Boolean(item.status_info?.ok ?? item.status < 300),
+        label: String(item.displayStatus || item.status_info?.label || item.status),
+        text: String(item.displayStatusText || item.status_info?.text || item.statusText || ""),
       },
       item.duration,
       item.responseData,
       {
-        headers: item.metadata || [],
-        method: item.requestMetadata?.http_method,
+        headers: item.metadata?.length
+          ? item.metadata
+          : (item.headers || []).map((row) => ({ k: row.key, v: row.value })),
+        method: item.method || item.requestMetadata?.http_method,
         path: item.requestMetadata?.http_path,
         query: item.requestMetadata?.http_query,
         targetLabel: item.targetLabel,

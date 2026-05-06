@@ -24,7 +24,7 @@
       const text = await file.text();
       const result = await importAppConfigFromJsonText(text);
       await mqbDialogs.alert(
-        `Imported ${result.importedPublishers} publishers, ${result.importedConsumers} consumers, ${result.importedRoutes} routes.`,
+        `Imported ${result.importedPublishers} publishers and ${result.importedConsumers} consumers.`,
         "Import complete",
       );
       window.location.reload();
@@ -37,7 +37,7 @@
 
   async function resetConfig() {
     const confirmed = await mqbDialogs.confirm(
-      "Reset publishers, consumers and routes? Existing entries will be removed.",
+      "Reset publishers and consumers? Existing entries will be removed.",
       "Reset App Config",
     );
     if (!confirmed) return;
@@ -99,7 +99,7 @@
           <button
             class="wa-native-button wa-native-button--danger"
             type="button"
-            title="Reset publishers, consumers and routes"
+            title="Reset publishers and consumers"
             onclick={resetConfig}>Reset</button
           >
           <button

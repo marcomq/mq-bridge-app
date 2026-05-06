@@ -15,13 +15,17 @@ describe("import-export", () => {
     readFileSync(join(process.cwd(), "tests/fixtures/import-export", name), "utf8");
 
   beforeEach(() => {
-    window.appConfig = { publishers: [{ name: "orders_http" }], routes: {}, consumers: [], presets: {}, env_vars: {} };
+    if (typeof window.localStorage?.setItem === "function") {
+      window.localStorage.setItem("mqb_publisher_history", JSON.stringify({ version: 1, updated_at: 0, publishers: {} }));
+    }
+    window.appConfig = { publishers: [{ name: "orders_http" }], routes: {}, consumers: [], presets: {}, env_vars: {}, history: {} };
     let serverConfig: any = {
       publishers: [{ name: "saved_pub" }],
       routes: { r1: {} },
       consumers: [],
       presets: {},
       env_vars: {},
+      history: {},
     };
     globalThis.fetch = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
       if (String(input) === "/config" && init?.method === "POST") {
@@ -56,7 +60,14 @@ describe("import-export", () => {
     expect(result.importedKind).toBe("mqb-presets");
     expect(result.importedPresetCount).toBe(1);
     expect(window.appConfig.presets).toEqual({
-      orders_http: [{ name: "preset_1", method: "POST", url: "https://api.local/orders", payload: "{\"order\":1}", headers: [] }],
+      orders_http: [{
+        name: "preset_1",
+        method: "POST",
+        url: "https://api.local/orders",
+        payload: "{\"order\":1}",
+        headers: [],
+        request_fields: { url: "https://api.local/orders" },
+      }],
     });
     expect(window.appConfig.env_vars).toEqual({
       baseUrl: "https://api.local",
@@ -77,8 +88,10 @@ describe("import-export", () => {
     const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Create order",
+      endpoint_type: "http",
       method: "POST",
       url: "https://api.test/orders",
+      request_fields: { url: "https://api.test/orders" },
       payload: "{\"order\":1}",
     });
   });
@@ -96,8 +109,10 @@ describe("import-export", () => {
     const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Create order",
+      endpoint_type: "http",
       method: "POST",
       url: "${baseUrl}/orders",
+      request_fields: { url: "${baseUrl}/orders" },
     });
     expect(window.appConfig.env_vars.baseUrl).toBe("https://openapi.example");
   });
@@ -115,8 +130,10 @@ describe("import-export", () => {
     const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Publish order created",
+      endpoint_type: "http",
       method: "POST",
       url: "${baseUrl}/orders/created",
+      request_fields: { url: "${baseUrl}/orders/created" },
     });
     expect(window.appConfig.env_vars.baseUrl).toBe("mqtt://broker.local:1883");
   });
@@ -189,11 +206,12 @@ describe("import-export", () => {
     expect(result.importedRoutes).toBe(2);
     expect(window.appConfig.publishers.length).toBeGreaterThanOrEqual(3);
     expect(window.appConfig.consumers.length).toBeGreaterThanOrEqual(3);
-    expect(Object.keys(window.appConfig.routes).length).toBeGreaterThanOrEqual(3);
+    expect(window.appConfig.routes).toBeUndefined();
     expect(window.appConfig.env_vars.baseUrl).toBe("http://x");
+    expect(window.appConfig.history).toMatchObject({ version: 1, publishers: {} });
   });
 
-  test("reset app config clears publishers, consumers and routes", async () => {
+  test("reset app config clears publishers and consumers", async () => {
     window.appConfig = {
       publishers: [{ name: "p1" }],
       consumers: [{ name: "c1", endpoint: { http: {} } }],
@@ -201,15 +219,17 @@ describe("import-export", () => {
       default_tab: "consumers",
       presets: { keep_me: [{ name: "p1", method: "GET", url: "http://x", payload: "", headers: [] }] },
       env_vars: { baseUrl: "http://x" },
+      history: { version: 1, updated_at: 1, publishers: { p1: [{ name: "p1", payload: "", headers: [], metadata: [], request_fields: {}, requestMetadata: {}, status: 200, duration: 1, time: 1 }] } },
     };
 
     await resetAppConfigToDefaults();
 
     expect(window.appConfig.publishers).toEqual([]);
     expect(window.appConfig.consumers).toEqual([]);
-    expect(window.appConfig.routes).toEqual({});
+    expect(window.appConfig.routes).toBeUndefined();
     expect(window.appConfig.default_tab).toBe("publishers");
     expect(window.appConfig.presets.keep_me).toHaveLength(1);
     expect(window.appConfig.env_vars.baseUrl).toBe("http://x");
+    expect(window.appConfig.history).toMatchObject({ version: 1, publishers: {} });
   });
 });

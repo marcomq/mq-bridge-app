@@ -113,8 +113,9 @@
       if (!q) return true;
       return (
         row.name.toLowerCase().includes(q) ||
-        row.method.toLowerCase().includes(q) ||
-        row.url.toLowerCase().includes(q) ||
+        row.endpointType.toLowerCase().includes(q) ||
+        row.methodLabel.toLowerCase().includes(q) ||
+        row.targetSummary.toLowerCase().includes(q) ||
         row.bodyPreview.toLowerCase().includes(q)
       );
     }),
@@ -440,8 +441,8 @@
                   <thead>
                     <tr>
                       <th style="width: 200px;">Name</th>
-                      <th style="width: 80px;">Method</th>
-                      <th>URL</th>
+                      <th style="width: 90px;">Type</th>
+                      <th>Request</th>
                       <th style="width: 115px;">Body Preview</th>
                       <th style="width: 340px;">Actions</th>
                     </tr>
@@ -457,8 +458,8 @@
                       {#each filteredPresetRows as preset (preset.presetIndex)}
                         <tr>
                           <td>{preset.name}</td>
-                          <td>{preset.method}</td>
-                          <td class="preview">{preset.url}</td>
+                          <td>{preset.endpointType}</td>
+                          <td class="preview">{preset.methodLabel ? `${preset.methodLabel} ` : ""}{preset.targetSummary}</td>
                           <td class="preview">{preset.bodyPreview}</td>
                           <td>
                             <div style="display:flex; gap:6px;">
@@ -525,7 +526,7 @@
                       onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void copyCurrentPublisherAction())} 
                       role="button" 
                       tabindex="0"
-                      >Copy to...</wa-button
+                      >Copy to Consumer</wa-button
                     >
                     <wa-button 
                       variant="neutral" 

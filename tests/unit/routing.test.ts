@@ -6,20 +6,20 @@ describe("routing", () => {
     expect(resolveTabFromHash("#publishers")).toBe("publishers");
     expect(resolveTabFromHash("#publishers:2")).toBe("publishers");
     expect(resolveTabFromHash("#consumers:1")).toBe("consumers");
-    expect(resolveTabFromHash("#routes:4")).toBe("routes");
     expect(resolveTabFromHash("#config")).toBe("config");
     expect(resolveTabFromHash("#else")).toBeNull();
   });
 
   test("preserves detail hash for active tab", () => {
     expect(nextHashForTab("#publishers:5", "publishers")).toBe("#publishers:5");
-    expect(nextHashForTab("#routes:1", "consumers", 3)).toBe("#consumers:3");
-    expect(nextHashForTab("#routes:1", "consumers")).toBe("#consumers");
+    expect(nextHashForTab("#publishers:1", "consumers", 3)).toBe("#consumers:3");
+    expect(nextHashForTab("#publishers:1", "consumers")).toBe("#consumers");
   });
 
   test("picks default tab in priority order", () => {
     expect(pickDefaultTab("#consumers:1", [], "publishers")).toBe("consumers");
-    expect(pickDefaultTab("", ["live_route"], "publishers")).toBe("routes");
+    expect(pickDefaultTab("", ["live_route"], "publishers")).toBe("publishers");
+    expect(pickDefaultTab("", [], "consumers")).toBe("consumers");
     expect(pickDefaultTab("", [], "config")).toBe("config");
     expect(pickDefaultTab("", [], "unknown")).toBe("publishers");
   });

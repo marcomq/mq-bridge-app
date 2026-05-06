@@ -300,9 +300,13 @@ fn normalize_consumer_output(
     }
 }
 
-fn consumer_output_response_compat(output: &ConsumerOutputConfig) -> Option<ConsumerResponseConfig> {
+fn consumer_output_response_compat(
+    output: &ConsumerOutputConfig,
+) -> Option<ConsumerResponseConfig> {
     match output {
-        ConsumerOutputConfig::Response { response } => normalize_consumer_response(response.clone()),
+        ConsumerOutputConfig::Response { response } => {
+            normalize_consumer_response(response.clone())
+        }
         _ => None,
     }
 }
@@ -355,7 +359,10 @@ fn resolve_consumer_output(
                     consumer.name
                 )));
             }
-            let Some(publisher_config) = publishers.iter().find(|candidate| candidate.name == publisher_name) else {
+            let Some(publisher_config) = publishers
+                .iter()
+                .find(|candidate| candidate.name == publisher_name)
+            else {
                 return Err(UpdateConfigError::Validation(format!(
                     "Consumer {}: referenced publisher not found: {}",
                     consumer.name, publisher_name
@@ -564,7 +571,8 @@ impl UiApp {
         };
 
         if let Some((consumer, publishers)) = consumer_config {
-            self.start_ui_collector_routes(&[(consumer, publishers)]).await?;
+            self.start_ui_collector_routes(&[(consumer, publishers)])
+                .await?;
             Ok(true)
         } else {
             Ok(false)
@@ -807,6 +815,7 @@ impl UiApp {
         mut new_config: AppConfig,
     ) -> std::result::Result<(), UpdateConfigError> {
         tracing::info!("Received new configuration via Web UI. Reloading...");
+        new_config.migrate_legacy_consumer_response();
 
         let routes: HashMap<String, RouteConfig> = new_config
             .routes
@@ -871,7 +880,10 @@ impl UiApp {
 
             for name in handles.keys() {
                 let should_stop = if let (Some(old_consumer), Some(new_consumer)) = (
-                    old_config.consumers.iter().find(|consumer| &consumer.name == name),
+                    old_config
+                        .consumers
+                        .iter()
+                        .find(|consumer| &consumer.name == name),
                     consumers.iter().find(|consumer| &consumer.name == name),
                 ) {
                     serde_json::to_value(old_consumer).unwrap()
@@ -1043,8 +1055,10 @@ impl UiApp {
             let topic = format!("ui_collector_{name}");
             let capture_enabled = consumer.message_capture.enabled;
             let capture_keep_last = consumer.message_capture.keep_last.max(1);
-            let log_channel =
-                mq_bridge::get_or_create_channel(&MemoryConfig::new(&topic, Some(capture_keep_last)));
+            let log_channel = mq_bridge::get_or_create_channel(&MemoryConfig::new(
+                &topic,
+                Some(capture_keep_last),
+            ));
             let message_sequences = self.consumer_message_sequences.clone();
             let resolved_output =
                 resolve_consumer_output(consumer, publishers).map_err(anyhow::Error::msg)?;
@@ -1055,63 +1069,63 @@ impl UiApp {
             };
 
             let closure_name = name.clone();
-            let route = Route::new(consumer.endpoint.clone(), output).with_handler(
-                move |msg: CanonicalMessage| {
-                    let name = closure_name.clone();
-                    let log_channel = log_channel.clone();
-                    let message_sequences = message_sequences.clone();
-                    let resolved_output = resolved_output.clone();
-                    async move {
-                        let payload_json: serde_json::Value = serde_json::from_slice(&msg.payload)
-                            .unwrap_or_else(|_| {
-                                serde_json::Value::String(msg.get_payload_str().to_string())
+            let route =
+                Route::new(consumer.endpoint.clone(), output).with_handler(
+                    move |msg: CanonicalMessage| {
+                        let name = closure_name.clone();
+                        let log_channel = log_channel.clone();
+                        let message_sequences = message_sequences.clone();
+                        let resolved_output = resolved_output.clone();
+                        async move {
+                            let payload_json: serde_json::Value =
+                                serde_json::from_slice(&msg.payload).unwrap_or_else(|_| {
+                                    serde_json::Value::String(msg.get_payload_str().to_string())
+                                });
+                            let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
+
+                            let val = serde_json::json!({
+                                "id": id,
+                                "time": chrono::Local::now().to_rfc3339(),
+                                "metadata": msg.metadata.clone(),
+                                "payload": payload_json
                             });
-                        let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
-
-                        let val = serde_json::json!({
-                            "id": id,
-                            "time": chrono::Local::now().to_rfc3339(),
-                            "metadata": msg.metadata.clone(),
-                            "payload": payload_json
-                        });
-                        if capture_enabled {
-                            let mut enriched = CanonicalMessage::from_type(&val)
-                                .unwrap_or_else(|_| CanonicalMessage::from(""));
-                            enriched.metadata.insert("ui_source".into(), name.clone());
-                            log_channel
-                                .sender
-                                .send(vec![enriched])
-                                .await
-                                .map_err(|e| HandlerError::NonRetryable(anyhow!(e.to_string())))?;
-                            {
-                                let mut sequences = message_sequences.write().await;
-                                let next = sequences.entry(name.clone()).or_insert(0);
-                                *next += 1;
+                            if capture_enabled {
+                                let mut enriched = CanonicalMessage::from_type(&val)
+                                    .unwrap_or_else(|_| CanonicalMessage::from(""));
+                                enriched.metadata.insert("ui_source".into(), name.clone());
+                                log_channel.sender.send(vec![enriched]).await.map_err(|e| {
+                                    HandlerError::NonRetryable(anyhow!(e.to_string()))
+                                })?;
+                                {
+                                    let mut sequences = message_sequences.write().await;
+                                    let next = sequences.entry(name.clone()).or_insert(0);
+                                    *next += 1;
+                                }
                             }
-                        }
 
-                        match resolved_output.clone() {
-                            ResolvedConsumerOutput::None => Ok(Handled::Ack),
-                            ResolvedConsumerOutput::Publisher { publisher_name, .. } => {
-                                let mut forwarded = msg;
-                                forwarded
-                                    .metadata
-                                    .insert("mqb_consumer_output".into(), publisher_name);
-                                Ok(Handled::Publish(forwarded))
-                            }
-                            ResolvedConsumerOutput::Response { response } => {
-                                if let Some(response_config) = response {
-                                    let mut response = CanonicalMessage::from(response_config.payload);
-                                    response.metadata = response_config.headers;
-                                    Ok(Handled::Publish(response))
-                                } else {
-                                    Ok(Handled::Ack)
+                            match resolved_output.clone() {
+                                ResolvedConsumerOutput::None => Ok(Handled::Ack),
+                                ResolvedConsumerOutput::Publisher { publisher_name, .. } => {
+                                    let mut forwarded = msg;
+                                    forwarded
+                                        .metadata
+                                        .insert("mqb_consumer_output".into(), publisher_name);
+                                    Ok(Handled::Publish(forwarded))
+                                }
+                                ResolvedConsumerOutput::Response { response } => {
+                                    if let Some(response_config) = response {
+                                        let mut response =
+                                            CanonicalMessage::from(response_config.payload);
+                                        response.metadata = response_config.headers;
+                                        Ok(Handled::Publish(response))
+                                    } else {
+                                        Ok(Handled::Ack)
+                                    }
                                 }
                             }
                         }
-                    }
-                },
-            );
+                    },
+                );
             let internal_route_name = format!("ui_collector_route_{name}");
             let handle = route.run(&internal_route_name).await?;
             handles.insert(name, handle);
