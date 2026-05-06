@@ -1,6 +1,5 @@
 import {
   applyEndpointSchemaDefaults,
-  createEmptyRouteConfig,
   defaultMetricsMiddleware,
   nextUniqueName
 } from "./routes";
@@ -11,7 +10,7 @@ import {
   sanitizeConsumerName,
 } from "./utils";
 import { extractImportedRequests } from "./import-export";
-import { openConsumerByIndex, openPublisherByIndex, openRouteByName } from "./view-navigation";
+import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { consumersPanelState } from "./stores";
 import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 
@@ -90,12 +89,10 @@ type PublisherConfig = {
   comment?: string;
 };
 
-type RouteConfig = ReturnType<typeof createEmptyRouteConfig>;
-
 type ConsumersAppConfig = {
   consumers: ConsumerConfig[];
   publishers?: PublisherConfig[];
-  routes: Record<string, RouteConfig>;
+  routes?: Record<string, unknown>;
 };
 
 type ConsumersSchemaRoot = {
@@ -422,6 +419,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const consumerThroughput: Record<string, number> = {};
   const consumerRateSamples: Record<string, { timestampMs: number; total: number }> = {};
   const consumerMessageSequences: Record<string, number> = {};
+  const consumerLastPolled: Record<string, number> = {};
   const consumerViewState: Record<number, { responseHeaders: ConsumerResponseHeaderRow[] }> = {};
   const syncSavedConsumerNames = (source: ConsumerConfig[]) => {
     savedConsumerNames = new Set((source || []).map((consumer) => consumer.name));
@@ -586,6 +584,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         delete consumerThroughput[existingName];
         delete consumerRateSamples[existingName];
         delete consumerMessageSequences[existingName];
+        delete consumerLastPolled[existingName];
       }
     }
 
@@ -672,119 +671,35 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     );
   };
 
-  const openRouteAt = (routeName: string) => {
-    openRouteByName(
-      config.routes,
-      routeName,
-      (routeIdx) => mqbApp.restore.route(routeIdx),
-      () => mqbApp.init.routes(config, mqbApp.schema()),
-    );
-  };
-
   const copyCurrentConsumer = async () => {
     const current = config.consumers[currentIdx];
     if (!current) return;
-
-    const choice = await mqbDialogs.choose("Choose where to copy this consumer definition.", "Copy Consumer", {
-      confirmLabel: "Continue",
-      choices: [
-        { value: "route_input", label: "New Route Input" },
-        { value: "publisher", label: "New Publisher (review required)" },
-        { value: "ref", label: "New Ref Consumer" },
-      ],
-    });
-    if (!choice) return;
-
-    if (choice === "route_input") {
-      const routeName = await mqbDialogs.prompt(
-        "Choose a name for the new route. The output stays null until you review it.",
-        "Copy to Route",
-        {
-          confirmLabel: "Create",
-          value: nextUniqueName(`${current.name}_route`, Object.keys(config.routes || {})),
-          placeholder: "consumer_route",
-        },
-      );
-      if (!routeName) return;
-      if (config.routes[routeName]) {
-        await mqbDialogs.alert("Route already exists");
-        return;
-      }
-
-      const routeConfig = createEmptyRouteConfig();
-      routeConfig.input = cloneJson(current.endpoint);
-      config.routes[routeName] = routeConfig;
-      mqbRuntime.refreshDirtySection("routes");
-      openRouteAt(routeName);
-      return;
-    }
-
-    if (choice === "publisher") {
-      const publisherName = await mqbDialogs.prompt(
-        "Choose a name for the new publisher. Consumer-specific fields may need adjustment after copying.",
-        "Copy to Publisher",
-        {
-          confirmLabel: "Create",
-          value: nextUniqueName(
-            `${current.name}_publisher`,
-            (config.publishers || []).map((publisher) => publisher.name),
-          ),
-          placeholder: "consumer_publisher",
-        },
-      );
-      if (!publisherName) return;
-      if ((config.publishers || []).some((publisher) => publisher.name === publisherName)) {
-        await mqbDialogs.alert("Publisher already exists");
-        return;
-      }
-
-      config.publishers ||= [];
-      config.publishers.push({
-        name: publisherName,
-        endpoint: cloneJson(current.endpoint),
-        comment: current.comment || "",
-      });
-      mqbRuntime.refreshDirtySection("publishers");
-      openPublisherAt(config.publishers.length - 1, "definition");
-      return;
-    }
-
-    const refTarget = await mqbDialogs.prompt(
-      "Enter the ref target name. This must match a registered endpoint name at runtime.",
-      "Copy as Ref Consumer",
+    const publisherName = await mqbDialogs.prompt(
+      "Choose a name for the new publisher. Consumer-specific fields may need adjustment after copying.",
+      "Copy to Publisher",
       {
-        confirmLabel: "Next",
-        value: current.name,
-        placeholder: "route_or_ref_name",
+        confirmLabel: "Create",
+        value: nextUniqueName(
+          `${current.name}_publisher`,
+          (config.publishers || []).map((publisher) => publisher.name),
+        ),
+        placeholder: "consumer_publisher",
       },
     );
-    if (!refTarget) return;
-
-    const consumerName = await mqbDialogs.prompt("Choose a name for the new ref consumer.", "Copy as Ref Consumer", {
-      confirmLabel: "Create",
-      value: nextUniqueName("ref", (config.consumers || []).map((consumer) => consumer.name)),
-      placeholder: "ref_consumer",
-    });
-    if (!consumerName) return;
-    const normalizedConsumerName = nextUniqueName(
-      sanitizeConsumerName(consumerName),
-      (config.consumers || []).map((consumer) => consumer.name),
-    );
-    if ((config.consumers || []).some((consumer) => consumer.name === normalizedConsumerName)) {
-      await mqbDialogs.alert("Consumer already exists");
+    if (!publisherName) return;
+    if ((config.publishers || []).some((publisher) => publisher.name === publisherName)) {
+      await mqbDialogs.alert("Publisher already exists");
       return;
     }
 
-    config.consumers.push({
-      name: normalizedConsumerName,
-      endpoint: { ref: refTarget },
+    config.publishers ||= [];
+    config.publishers.push({
+      name: publisherName,
+      endpoint: cloneJson(current.endpoint),
       comment: current.comment || "",
-      response: null,
-      output: getDefaultConsumerOutput({ endpoint: { ref: refTarget } }, config.publishers || []),
-      message_capture: getDefaultConsumerMessageCapture(),
     });
-    mqbRuntime.refreshDirtySection("consumers");
-    openConsumerAt(config.consumers.length - 1);
+    mqbRuntime.refreshDirtySection("publishers");
+    openPublisherAt(config.publishers.length - 1, "definition");
   };
 
   const addConsumer = async () => {
@@ -902,6 +817,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     } else if (mode === "publisher") {
       const existing = normalizeConsumerOutput(current.output, current.response);
       const publisherOptions = getAvailablePublisherNames();
+      if (publisherOptions.length === 0) {
+        void mqbDialogs.alert("Create or select a publisher first.");
+        return;
+      }
       const preferredPublisher =
         existing.mode === "publisher" && existing.publisher
           ? existing.publisher
@@ -1369,10 +1288,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         let hasNew = false;
         const selectedMessages: ConsumerMessage[] = [];
         const maxMessages = messageCapture.keep_last;
+        let totalFetched = 0;
         for (const [sourceName, rawMessages] of Object.entries(data)) {
           const messages = Array.isArray(rawMessages)
             ? rawMessages.map((message) => normalizeConsumerMessage(message))
             : [];
+          totalFetched += messages.length;
           consumerMessages[sourceName] = [...messages, ...(consumerMessages[sourceName] || [])].slice(0, maxMessages);
           consumerMessages[sourceName].sort((a, b) => {
             const timeA = a.time || "";
@@ -1400,6 +1321,11 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           });
           hasNew = true;
         }
+        const nowMs = Date.now();
+        const previousPollMs = consumerLastPolled[name] || nowMs;
+        const elapsedSec = (nowMs - previousPollMs) / 1000;
+        consumerLastPolled[name] = nowMs;
+        consumerThroughput[name] = elapsedSec > 0 ? totalFetched / elapsedSec : 0;
         consumerMessageSequences[name] = nextSequence;
         if (hasNew) {
           saveMessages();

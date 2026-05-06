@@ -67,10 +67,8 @@ declare global {
     };
     renderRoutesRuntimeMetrics?: () => void;
     renderConsumersRuntimeStatus?: () => void;
-    initRoutes?: (config: Record<string, any>, schema: Record<string, any>) => void;
     initConsumers?: (config: Record<string, any>, schema: Record<string, any>) => void;
     initPublishers?: (config: Record<string, any>, schema: Record<string, any>) => void;
-    restoreRouteState?: (idx: number) => void;
     restoreConsumerState?: (idx: number, options?: { tab?: string }) => void;
     restorePublisherState?: (idx: number, options?: { tab?: string }) => void;
 

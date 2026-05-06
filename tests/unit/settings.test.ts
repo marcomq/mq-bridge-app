@@ -12,7 +12,7 @@ describe("settings", () => {
       <div id="form-container"></div>
     `;
 
-    window.appConfig = { routes: {}, consumers: [], publishers: [], default_tab: "publishers" };
+    window.appConfig = { consumers: [], publishers: [], default_tab: "publishers" };
     window.registerDirtySection = vi.fn();
     window.refreshDirtySection = vi.fn();
     window.saveConfig = vi.fn().mockResolvedValue(true);

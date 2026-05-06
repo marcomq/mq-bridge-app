@@ -16,21 +16,17 @@ export function onHashChange(listener: () => void) {
 
 export function clearLegacyPendingRestoreGlobals() {
   const w = appWindow() as any;
-  w._mqb_pending_route_restore = null;
   w._mqb_pending_consumer_restore = null;
   w._mqb_pending_publisher_restore = null;
 }
 
 export type MqbState = {
-  active_tab?: "publishers" | "consumers" | "routes" | "config";
-  routes_initialized?: boolean;
+  active_tab?: "publishers" | "consumers" | "config";
   consumers_initialized?: boolean;
   publishers_initialized?: boolean;
   config_initialized?: boolean;
-  pending_route_restore?: { idx: number } | null;
   pending_consumer_restore?: { idx: number; tab?: string } | null;
   pending_publisher_restore?: { idx: number; tab?: string } | null;
-  last_route_idx?: number;
   last_consumer_idx?: number;
   last_publisher_idx?: number;
   last_consumer_tab?: "definition" | "response" | "messages";
@@ -61,14 +57,11 @@ export function getMqbState(): MqbState {
   if (!w.__mqb_state) {
     w.__mqb_state = {
       active_tab: w._mqb_active_tab,
-      routes_initialized: w._mqb_routes_initialized ?? false,
       consumers_initialized: w._mqb_consumers_initialized ?? false,
       publishers_initialized: w._mqb_publishers_initialized ?? false,
       config_initialized: w._mqb_config_initialized ?? false,
-      pending_route_restore: w._mqb_pending_route_restore ?? null,
       pending_consumer_restore: w._mqb_pending_consumer_restore ?? null,
       pending_publisher_restore: w._mqb_pending_publisher_restore ?? null,
-      last_route_idx: Number.isFinite(w._mqb_last_route_idx) ? w._mqb_last_route_idx : 0,
       last_consumer_idx: Number.isFinite(w._mqb_last_consumer_idx) ? w._mqb_last_consumer_idx : 0,
       last_publisher_idx: Number.isFinite(w._mqb_last_publisher_idx) ? w._mqb_last_publisher_idx : 0,
       last_consumer_tab: w._mqb_last_consumer_tab ?? "messages",
@@ -92,14 +85,11 @@ export function getMqbState(): MqbState {
 
   // Keep migration compatibility with remaining legacy test/setup assignments.
   if (w._mqb_active_tab !== undefined) state.active_tab = w._mqb_active_tab;
-  if (w._mqb_routes_initialized !== undefined) state.routes_initialized = w._mqb_routes_initialized;
   if (w._mqb_consumers_initialized !== undefined) state.consumers_initialized = w._mqb_consumers_initialized;
   if (w._mqb_publishers_initialized !== undefined) state.publishers_initialized = w._mqb_publishers_initialized;
   if (w._mqb_config_initialized !== undefined) state.config_initialized = w._mqb_config_initialized;
-  if (w._mqb_pending_route_restore !== undefined) state.pending_route_restore = w._mqb_pending_route_restore;
   if (w._mqb_pending_consumer_restore !== undefined) state.pending_consumer_restore = w._mqb_pending_consumer_restore;
   if (w._mqb_pending_publisher_restore !== undefined) state.pending_publisher_restore = w._mqb_pending_publisher_restore;
-  if (w._mqb_last_route_idx !== undefined) state.last_route_idx = w._mqb_last_route_idx;
   if (w._mqb_last_consumer_idx !== undefined) state.last_consumer_idx = w._mqb_last_consumer_idx;
   if (w._mqb_last_publisher_idx !== undefined) state.last_publisher_idx = w._mqb_last_publisher_idx;
   if (w._mqb_last_consumer_tab !== undefined) state.last_consumer_tab = w._mqb_last_consumer_tab;
@@ -114,14 +104,11 @@ export function getMqbState(): MqbState {
   if (w._consSplit !== undefined) state.cons_split = w._consSplit;
 
   w._mqb_active_tab = state.active_tab;
-  w._mqb_routes_initialized = state.routes_initialized;
   w._mqb_consumers_initialized = state.consumers_initialized;
   w._mqb_publishers_initialized = state.publishers_initialized;
   w._mqb_config_initialized = state.config_initialized;
-  w._mqb_pending_route_restore = state.pending_route_restore;
   w._mqb_pending_consumer_restore = state.pending_consumer_restore;
   w._mqb_pending_publisher_restore = state.pending_publisher_restore;
-  w._mqb_last_route_idx = state.last_route_idx;
   w._mqb_last_consumer_idx = state.last_consumer_idx;
   w._mqb_last_publisher_idx = state.last_publisher_idx;
   w._mqb_last_consumer_tab = state.last_consumer_tab;
@@ -209,9 +196,6 @@ export const mqbApp = {
     appWindow().appSchema = value;
   },
   init: {
-    routes(config: Record<string, any>, schema: Record<string, any>) {
-      return appWindow().initRoutes?.(config, schema);
-    },
     consumers(config: Record<string, any>, schema: Record<string, any>) {
       return appWindow().initConsumers?.(config, schema);
     },

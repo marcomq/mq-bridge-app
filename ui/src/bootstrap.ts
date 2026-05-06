@@ -5,7 +5,6 @@ import { initConsumers, restoreConsumerStateFromView } from "./lib/consumers-vie
 import { initPublishers, restorePublisherStateFromView } from "./lib/publishers-view";
 import { EMPTY_RUNTIME_STATUS, createRuntimeStatusPoller } from "./lib/runtime-status";
 import { nextHashForTab, pickDefaultTab, resolveTabFromHash } from "./lib/routing";
-import { initRoutes, restoreRouteStateFromView } from "./lib/routes-view";
 import { initSettings } from "./lib/settings";
 import { installDialogs } from "./lib/dialogs";
 import {
@@ -27,7 +26,6 @@ function setActiveTab(name: MainTab) {
 
 function rememberedIndexForTab(name: MainTab): number | undefined {
   const state = getMqbState();
-  if (name === "routes") return state.last_route_idx ?? 0;
   if (name === "consumers") return state.last_consumer_idx ?? 0;
   if (name === "publishers") return state.last_publisher_idx ?? 0;
   return undefined;
@@ -37,7 +35,6 @@ function rememberSelectionFromHash(hash: string) {
   const state = getMqbState();
   const publisherMatch = hash.match(/^#publishers:(\d+)$/);
   const consumerMatch = hash.match(/^#consumers:(\d+)$/);
-  const routeMatch = hash.match(/^#routes:(\d+)$/);
 
   if (publisherMatch) {
     state.last_publisher_idx = parseInt(publisherMatch[1], 10);
@@ -45,19 +42,11 @@ function rememberSelectionFromHash(hash: string) {
   if (consumerMatch) {
     state.last_consumer_idx = parseInt(consumerMatch[1], 10);
   }
-  if (routeMatch) {
-    state.last_route_idx = parseInt(routeMatch[1], 10);
-  }
 }
 
 async function initTabIfNeeded(name: MainTab) {
   const state = getMqbState();
   const win = appWindow() as any;
-  if (name === "routes" && !state.routes_initialized) {
-    await mqbApp.init.routes(mqbApp.config(), mqbApp.schema());
-    state.routes_initialized = true;
-    win._mqb_routes_initialized = true;
-  }
   if (name === "consumers" && !state.consumers_initialized) {
     await mqbApp.init.consumers(mqbApp.config(), mqbApp.schema());
     state.consumers_initialized = true;
@@ -77,17 +66,6 @@ async function initTabIfNeeded(name: MainTab) {
 
 async function restoreTabState(name: MainTab) {
   const state = getMqbState();
-  if (name === "routes") {
-    const pending = state.pending_route_restore || null;
-    state.pending_route_restore = null;
-    clearLegacyPendingRestoreGlobals();
-    const match = currentHash().match(/^#routes:(\d+)$/);
-    const idx = pending?.idx ?? (match ? parseInt(match[1], 10) : (state.last_route_idx ?? 0));
-    state.last_route_idx = idx;
-    await restoreRouteStateFromView(idx);
-    return;
-  }
-
   if (name === "consumers") {
     const pending = state.pending_consumer_restore || null;
     state.pending_consumer_restore = null;
@@ -223,7 +201,6 @@ function installGlobals() {
   state.dirty_sections = {};
   state.saved_sections = {};
   appWindow().switchMain = switchMain;
-  appWindow().initRoutes = initRoutes;
   appWindow().initConsumers = initConsumers;
   appWindow().initPublishers = initPublishers;
   appWindow().showJsonModal = showJsonModal;
@@ -323,11 +300,11 @@ export async function bootstrapApp() {
     }
   }
 
+  delete config.routes;
   mqbApp.setConfig(config);
   mqbApp.setSchema(schema);
   const state = getMqbState();
   state.saved_sections = {
-    routes: cloneSectionState(config.routes),
     consumers: cloneSectionState(config.consumers),
     publishers: cloneSectionState(config.publishers),
     config: cloneSectionState(config),

@@ -44,7 +44,7 @@ setI18n({
 
 setConfig({
   visibility: {
-    hiddenPaths: ["publishers", "consumers", "routes", "presets", "env_vars"],
+    hiddenPaths: ["publishers", "consumers", "routes", "presets", "env_vars", "history"],
     customVisibility: (node: SchemaNode, path: string) => {
       const description = String(node.description || "");
       const lowerPath = path.toLowerCase();

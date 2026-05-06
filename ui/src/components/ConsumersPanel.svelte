@@ -238,7 +238,7 @@
                     tabindex="0"
                     onclick={copyCurrentConsumer}
                     onkeydown={(event: KeyboardEvent) => handleActionKey(event, copyCurrentConsumer)}
-                    >Copy to...</wa-button
+                    >Copy to Publisher</wa-button
                   >
                   <wa-button
                     variant="neutral"

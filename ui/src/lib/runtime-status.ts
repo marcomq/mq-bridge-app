@@ -1,4 +1,4 @@
-export type MainTab = "publishers" | "consumers" | "routes" | "config";
+export type MainTab = "publishers" | "consumers" | "config";
 
 export interface RuntimeConsumerState {
   running: boolean;

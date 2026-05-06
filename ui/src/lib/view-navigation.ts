@@ -2,7 +2,7 @@ type ConsumerTab = "definition" | "response" | "messages";
 type PublisherTab = "payload" | "headers" | "history" | "definition" | "presets";
 import { appWindow, getMqbState, replaceHash } from "./runtime-window";
 
-function switchOrRun(mainTab: "routes" | "consumers" | "publishers", callback: () => void, fallback?: () => void) {
+function switchOrRun(mainTab: "consumers" | "publishers", callback: () => void, fallback?: () => void) {
   if (appWindow().switchMain) {
     fallback?.(); // Refresh view state before switching tabs
     appWindow().switchMain(mainTab);
@@ -11,23 +11,6 @@ function switchOrRun(mainTab: "routes" | "consumers" | "publishers", callback: (
 
   fallback?.();
   callback();
-}
-
-export function openRouteByName(
-  routes: Record<string, unknown> | undefined,
-  routeName: string,
-  restoreRouteState: (idx: number) => void,
-  fallback?: () => void,
-): boolean {
-  const routeIdx = Object.keys(routes || {}).indexOf(routeName);
-  if (routeIdx === -1) return false;
-
-  const state = getMqbState();
-  state.pending_route_restore = { idx: routeIdx };
-  (appWindow() as any)._mqb_pending_route_restore = state.pending_route_restore;
-  replaceHash(`#routes:${routeIdx}`);
-  switchOrRun("routes", () => restoreRouteState(routeIdx), fallback);
-  return true;
 }
 
 export function openConsumerByIndex(

@@ -58,7 +58,6 @@ vi.mock("../../ui/src/lib/runtime-window", () => ({
     setSchema: vi.fn(),
     isDesktop: vi.fn(() => false),
     init: {
-      routes: vi.fn(),
       consumers: vi.fn(),
       publishers: vi.fn(),
     },
@@ -85,7 +84,6 @@ vi.mock("../../ui/src/lib/config-api", () => ({
 }));
 vi.mock("../../ui/src/lib/consumers-view", () => ({ initConsumers: vi.fn(), restoreConsumerStateFromView: vi.fn() }));
 vi.mock("../../ui/src/lib/publishers-view", () => ({ initPublishers: vi.fn(), restorePublisherStateFromView: vi.fn() }));
-vi.mock("../../ui/src/lib/routes-view", () => ({ initRoutes: vi.fn(), restoreRouteStateFromView: vi.fn() }));
 vi.mock("../../ui/src/lib/settings", () => ({ initSettings: vi.fn() }));
 vi.mock("../../ui/src/lib/dialogs", () => ({ installDialogs: vi.fn() }));
 vi.mock("../../ui/src/lib/routing", () => ({
