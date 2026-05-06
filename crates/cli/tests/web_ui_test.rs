@@ -242,7 +242,8 @@ async fn test_web_ui_serves_custom_static_assets() {
     assert!(app_bundle.contains("route-toggle"));
     assert!(app_bundle.contains("No routes configured. Click \"+\" to create one."));
     assert!(app_bundle.contains("Request Presets"));
-    assert!(app_bundle.contains("Custom Response"));
+    assert!(app_bundle.contains("Output"));
+    assert!(app_bundle.contains("Response"));
     assert!(app_bundle.contains("Execution History"));
 
     let style_css = http_get(port, "/style.css").await;

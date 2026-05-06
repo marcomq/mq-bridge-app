@@ -807,6 +807,7 @@ impl UiApp {
         mut new_config: AppConfig,
     ) -> std::result::Result<(), UpdateConfigError> {
         tracing::info!("Received new configuration via Web UI. Reloading...");
+        new_config.migrate_legacy_routes();
 
         let routes: HashMap<String, RouteConfig> = new_config
             .routes

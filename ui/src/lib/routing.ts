@@ -4,7 +4,6 @@ export function resolveTabFromHash(hash: string): MainTab | null {
   if (!hash) return null;
   if (hash === "#publishers" || hash.startsWith("#publishers:")) return "publishers";
   if (hash === "#consumers" || hash.startsWith("#consumers:")) return "consumers";
-  if (hash === "#routes" || hash.startsWith("#routes:")) return "routes";
   if (hash === "#config") return "config";
   return null;
 }
@@ -26,11 +25,9 @@ export function pickDefaultTab(
 ): MainTab {
   const hashTab = resolveTabFromHash(hash);
   if (hashTab) return hashTab;
-  if (activeRoutes.length > 0) return "routes";
   if (
     configuredDefault === "publishers" ||
     configuredDefault === "consumers" ||
-    configuredDefault === "routes" ||
     configuredDefault === "config"
   ) {
     return configuredDefault;

@@ -783,8 +783,7 @@ textarea.field-input {
     border-radius: 5px;
     padding: 14px 16px 16px;
     margin: 10px 0 6px;
-    background:
-        linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, #fff 12%), color-mix(in srgb, var(--bg-panel) 96%, transparent));
+    background-color: color-mix(in srgb, var(--bg-panel) 96%, transparent);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     width: 100%;
 }

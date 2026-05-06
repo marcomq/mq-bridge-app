@@ -630,6 +630,60 @@ describe("initPublishers", () => {
     expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
   });
 
+  test("applies non-http preset fields and switches back to payload tab", async () => {
+    const config = {
+      publishers: [
+        {
+          name: "events_kafka",
+          endpoint: {
+            kafka: {
+              url: "localhost:9092",
+              topic: "events",
+            },
+          },
+        },
+      ],
+      routes: {},
+      consumers: [],
+      presets: {
+        events_kafka: [
+          {
+            name: "orders_created",
+            endpoint_type: "kafka",
+            payload: "{\"id\":42}",
+            headers: [],
+            request_fields: {
+              topic: "orders.created",
+              url: "kafka-a:9092,kafka-b:9092",
+            },
+          },
+        ],
+      },
+      env_vars: {},
+    };
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { KafkaConfig: { properties: {} } },
+      },
+    );
+
+    selectPublisherSubtab("presets");
+    applyPublisherPresetAction(0);
+
+    const state = get(publishersPanelState);
+    expect(state.activeSubtab).toBe("payload");
+    expect(state.extraFieldOne.value).toBe("orders.created");
+    expect(state.urlField.value).toBe("kafka-a:9092,kafka-b:9092");
+    expect(state.requestPayload).toBe("{\"id\":42}");
+    expect(config.publishers[0].endpoint.kafka).toMatchObject({
+      topic: "orders.created",
+      url: "kafka-a:9092,kafka-b:9092",
+    });
+  });
+
   test("restores http method and visible url field from history", async () => {
     window.localStorage.setItem(
       "mqb_publisher_history",
@@ -1022,6 +1076,48 @@ describe("initPublishers", () => {
     expect(config.publishers[1].endpoint.http.path).toBe("/orders/new");
   });
 
+  test("converts a non-http preset into a persisted publisher", async () => {
+    const config = {
+      publishers: [{ name: "messages_mongodb", endpoint: { mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" } } }],
+      routes: {},
+      consumers: [],
+      presets: {
+        messages_mongodb: [
+          {
+            name: "orders_outbox",
+            endpoint_type: "mongodb",
+            payload: "{\"ok\":true}",
+            headers: [],
+            request_fields: {
+              database: "orders",
+              collection: "outbox",
+              url: "mongodb://mongo.local:27017",
+            },
+          },
+        ],
+      },
+      env_vars: {},
+    };
+    const schema = {
+      properties: { publishers: { items: {} } },
+      $defs: { MongoDbConfig: { properties: {} } },
+    };
+
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
+    window.fetchConfigFromServer = vi.fn().mockImplementation(async () => ({ publishers: config.publishers }));
+
+    initPublishers(config, schema);
+    await presetToPublisherAction(0);
+
+    expect(config.publishers.length).toBe(2);
+    expect(config.publishers[1].name).toContain("orders_outbox");
+    expect(config.publishers[1].endpoint.mongodb).toMatchObject({
+      database: "orders",
+      collection: "outbox",
+      url: "mongodb://mongo.local:27017",
+    });
+  });
+
   test("saves current publisher request as a preset", async () => {
     const config = {
       publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
@@ -1042,6 +1138,40 @@ describe("initPublishers", () => {
     await savePublisherPresetAction();
 
     expect(get(publishersPanelState).presetRows.map((row) => row.name)).toContain("saved_preset");
+  });
+
+  test("saves current non-http publisher request as a protocol-aware preset", async () => {
+    const config = {
+      publishers: [{ name: "messages_mongodb", endpoint: { mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" } } }],
+      routes: {},
+      consumers: [],
+    };
+    window.mqbPrompt = vi.fn().mockResolvedValue("saved_mongo_preset");
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { MongoDbConfig: { properties: {} } },
+      },
+    );
+
+    updatePublisherRequestField("pub-extra-1", "orders");
+    updatePublisherRequestField("pub-extra-2", "outbox");
+    updatePublisherRequestField("pub-url", "mongodb://mongo.local:27017");
+    updatePublisherPayload("{\"hello\":true}");
+    await savePublisherPresetAction();
+
+    expect(config.presets.messages_mongodb[0]).toMatchObject({
+      name: "saved_mongo_preset",
+      endpoint_type: "mongodb",
+      payload: "{\"hello\":true}",
+      request_fields: {
+        database: "orders",
+        collection: "outbox",
+        url: "mongodb://mongo.local:27017",
+      },
+    });
   });
 
   test("renames preset and handles overwrite cancel branch", async () => {
@@ -1115,14 +1245,13 @@ describe("initPublishers", () => {
     expect(window.mqbAlert).toHaveBeenCalled();
   });
 
-  test("copy publisher as route output creates route config", async () => {
+  test("copy publisher creates a consumer", async () => {
     const config = {
       publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
       routes: {},
       consumers: [],
     };
-    window.mqbChoose = vi.fn().mockResolvedValue("route_output");
-    window.mqbPrompt = vi.fn().mockResolvedValue("orders_route");
+    window.mqbPrompt = vi.fn().mockResolvedValue("orders_consumer");
 
     initPublishers(
       config,
@@ -1133,7 +1262,12 @@ describe("initPublishers", () => {
     );
 
     await copyCurrentPublisherAction();
-    expect(Object.keys(config.routes)).toContain("orders_route");
+    expect(config.consumers).toEqual([
+      expect.objectContaining({
+        name: "orders_consumer",
+        endpoint: expect.objectContaining({ http: expect.any(Object) }),
+      }),
+    ]);
   });
 
   test("clone publisher duplicate name shows alert branch", () => {

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import {
   addConsumerResponseHeader,
+  copyCurrentConsumerAction,
   importAsyncApiToConsumerAction,
   importMqbToConsumerAction,
   initConsumers,
@@ -658,6 +659,51 @@ describe("initConsumers", () => {
       payload: { ok: true, source: "memory" },
       time: "2026-04-30T12:00:00.000Z",
     });
+  });
+
+  test("copy consumer creates a publisher", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: { url: "127.0.0.1:8080" } },
+          response: null,
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    window.mqbPrompt = vi.fn().mockResolvedValue("orders_publisher");
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    await copyCurrentConsumerAction();
+    expect(config.publishers).toEqual([
+      expect.objectContaining({
+        name: "orders_publisher",
+        endpoint: expect.objectContaining({ http: expect.any(Object) }),
+      }),
+    ]);
   });
 
   test("restoring a consumer updates the remembered index and hash", async () => {

@@ -123,8 +123,9 @@ export interface PublisherHistoryRow {
 export interface PublisherPresetRow {
   presetIndex: number;
   name: string;
-  method: string;
-  url: string;
+  endpointType: string;
+  methodLabel: string;
+  targetSummary: string;
   bodyPreview: string;
 }
 

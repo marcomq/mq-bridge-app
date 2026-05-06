@@ -27,6 +27,13 @@ fn default_consumer_capture_keep_last() -> usize {
     100
 }
 
+fn default_route_migrated_capture() -> ConsumerMessageCaptureConfig {
+    ConsumerMessageCaptureConfig {
+        enabled: false,
+        keep_last: default_consumer_capture_keep_last(),
+    }
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
 pub struct AppConfig {
     #[serde(default = "default_log_level")]
@@ -41,7 +48,7 @@ pub struct AppConfig {
     /// If it matches `ui_addr`, the standalone server is skipped as the UI handles it.
     #[serde(default)]
     pub metrics_addr: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub routes: HashMap<String, RouteConfig>,
     #[serde(default)]
     pub consumers: Vec<ConsumerConfig>,
@@ -61,18 +68,23 @@ pub struct AppConfig {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
 pub struct PublisherPreset {
+    // Presets mirror request-bar state so they can be reused across non-HTTP endpoints too.
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub method: String,
-    #[serde(default)]
-    pub url: String,
     #[serde(default)]
     pub payload: String,
     #[serde(default)]
     pub headers: Vec<PublisherPresetHeader>,
     #[serde(default)]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub request_fields: HashMap<String, String>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
@@ -109,6 +121,7 @@ pub struct ConsumerConfig {
     pub endpoint: Endpoint,
     #[serde(default)]
     pub comment: String,
+    // TODO: remove, as already implemented in output
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<ConsumerResponseConfig>,
     #[serde(default, skip_serializing_if = "consumer_output_is_none")]
@@ -166,6 +179,29 @@ pub struct PublisherClient {
     pub endpoint: Endpoint,
     #[serde(default)]
     pub comment: String,
+}
+
+fn normalized_config_name(name: &str) -> String {
+    name.trim().replace(' ', "_").to_lowercase()
+}
+
+fn next_unique_name(base: &str, existing: &HashSet<String>) -> String {
+    if !existing.contains(base) {
+        return base.to_string();
+    }
+
+    let mut index = 1;
+    loop {
+        let candidate = format!("{base}_{index}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn endpoint_value(endpoint: &Endpoint) -> serde_json::Value {
+    serde_json::to_value(endpoint).unwrap_or(serde_json::Value::Null)
 }
 
 pub trait SecretStore: Send + Sync {
@@ -372,7 +408,8 @@ fn load_config_internal(
 
     settings.clone().try_deserialize::<serde_json::Value>()?;
 
-    let config: AppConfig = settings.try_deserialize()?;
+    let mut config: AppConfig = settings.try_deserialize()?;
+    config.migrate_legacy_routes();
     Ok((config, persistent_file))
 }
 
@@ -399,6 +436,60 @@ pub fn load_config_at_path(
 }
 
 impl AppConfig {
+    pub fn migrate_legacy_routes(&mut self) {
+        if self.default_tab.trim() == "routes" {
+            self.default_tab = "consumers".to_string();
+        }
+
+        if self.routes.is_empty() {
+            return;
+        }
+
+        let mut existing_publisher_names: HashSet<String> =
+            self.publishers.iter().map(|publisher| publisher.name.clone()).collect();
+        let mut existing_consumer_names: HashSet<String> =
+            self.consumers.iter().map(|consumer| consumer.name.clone()).collect();
+        let mut routes = std::mem::take(&mut self.routes);
+
+        for (route_name, route_config) in routes.drain() {
+            let normalized_route_name = normalized_config_name(&route_name);
+            let output = if matches!(route_config.route.output.endpoint_type, EndpointType::Null) {
+                ConsumerOutputConfig::None
+            } else if let Some(existing) = self.publishers.iter().find(|publisher| {
+                endpoint_value(&publisher.endpoint) == endpoint_value(&route_config.route.output)
+            }) {
+                ConsumerOutputConfig::Publisher {
+                    publisher: existing.name.clone(),
+                }
+            } else {
+                let publisher_name = next_unique_name(
+                    &format!("{normalized_route_name}_publisher"),
+                    &existing_publisher_names,
+                );
+                existing_publisher_names.insert(publisher_name.clone());
+                self.publishers.push(PublisherClient {
+                    name: publisher_name.clone(),
+                    endpoint: route_config.route.output.clone(),
+                    comment: String::new(),
+                });
+                ConsumerOutputConfig::Publisher {
+                    publisher: publisher_name,
+                }
+            };
+
+            let consumer_name = next_unique_name(&normalized_route_name, &existing_consumer_names);
+            existing_consumer_names.insert(consumer_name.clone());
+            self.consumers.push(ConsumerConfig {
+                name: consumer_name,
+                endpoint: route_config.route.input,
+                comment: String::new(),
+                response: None,
+                output,
+                message_capture: default_route_migrated_capture(),
+            });
+        }
+    }
+
     pub fn save(&self, path: &str) -> Result<()> {
         let env_store = EnvFileSecretStore::new(".env");
         self.save_with_secret_store(path, &env_store)
@@ -406,6 +497,7 @@ impl AppConfig {
 
     pub fn save_with_secret_store(&self, path: &str, secret_store: &dyn SecretStore) -> Result<()> {
         let mut config_to_save = self.clone();
+        config_to_save.migrate_legacy_routes();
 
         // Sanitize route names to ensure compatibility with environment variables
         let sanitized_routes: HashMap<String, RouteConfig> = config_to_save
@@ -664,16 +756,24 @@ routes:
         let config: Result<AppConfig, _> = serde_yaml_ng::from_str(yaml_config);
         dbg!(&config);
         assert!(config.is_ok());
-        let config = config.unwrap();
+        let mut config = config.unwrap();
+        config.migrate_legacy_routes();
 
         assert_eq!(config.log_level, "debug");
-        assert_eq!(config.routes.len(), 1);
+        assert!(config.routes.is_empty());
+        assert_eq!(config.publishers.len(), 1);
+        assert_eq!(config.consumers.len(), 1);
 
-        let route = &config.routes["kafka_to_nats"];
-        assert!(route.enabled);
-        if let mq_bridge::models::EndpointType::Kafka(k) = &route.route.input.endpoint_type {
+        let consumer = &config.consumers[0];
+        if let mq_bridge::models::EndpointType::Kafka(k) = &consumer.endpoint.endpoint_type {
             assert_eq!(k.url, "kafka:9092");
             assert_eq!(k.topic.as_deref(), Some("in_topic"));
+        }
+        match &consumer.output {
+            ConsumerOutputConfig::Publisher { publisher } => {
+                assert_eq!(publisher, "kafka_to_nats_publisher");
+            }
+            other => panic!("expected publisher output, got {other:?}"),
         }
     }
     #[test]
@@ -715,17 +815,15 @@ routes:
         let (config, _) = load_config(None, None, None, None).unwrap();
 
         // Assertions
-        dbg!(&config.routes);
         assert_eq!(config.log_level, "trace");
         assert_eq!(config.logger, "json");
-        assert_eq!(config.routes.len(), 1);
+        assert!(config.routes.is_empty());
+        assert_eq!(config.publishers.len(), 1);
+        assert_eq!(config.consumers.len(), 1);
 
-        let (name, route) = config.routes.iter().next().unwrap();
-        assert_eq!(name, "kafka_to_nats_from_env");
-
-        // Assert source
-        assert!(route.enabled);
-        if let mq_bridge::models::EndpointType::Kafka(k) = &route.route.input.endpoint_type {
+        let consumer = &config.consumers[0];
+        assert_eq!(consumer.name, "kafka_to_nats_from_env");
+        if let mq_bridge::models::EndpointType::Kafka(k) = &consumer.endpoint.endpoint_type {
             assert_eq!(k.url, "env-kafka:9092"); // group_id is now optional
             assert_eq!(k.topic.as_deref(), Some("env-in-topic"));
         } else {
@@ -747,13 +845,47 @@ routes:
         topic: "out_topic"
 "#;
 
-        let config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
-        let route = &config.routes["paused_route"];
-        assert!(!route.enabled);
+        let mut config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
+        config.migrate_legacy_routes();
+        assert!(config.routes.is_empty());
+        let consumer = &config.consumers[0];
+        assert_eq!(consumer.name, "paused_route");
+        assert!(!consumer.message_capture.enabled);
         assert!(matches!(
-            route.route.input.endpoint_type,
+            consumer.endpoint.endpoint_type,
             mq_bridge::models::EndpointType::Memory(_)
         ));
+    }
+
+    #[test]
+    fn test_route_migration_reuses_matching_publishers() {
+        let yaml_config = r#"
+publishers:
+  - name: "existing_pub"
+    endpoint:
+      memory:
+        topic: "shared"
+routes:
+  route_alpha:
+    input:
+      memory:
+        topic: "in"
+    output:
+      memory:
+        topic: "shared"
+"#;
+
+        let mut config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
+        config.migrate_legacy_routes();
+        assert!(config.routes.is_empty());
+        assert_eq!(config.publishers.len(), 1);
+        assert_eq!(config.consumers.len(), 1);
+        match &config.consumers[0].output {
+            ConsumerOutputConfig::Publisher { publisher } => {
+                assert_eq!(publisher, "existing_pub");
+            }
+            other => panic!("expected publisher output, got {other:?}"),
+        }
     }
 
     #[test]
@@ -782,7 +914,8 @@ consumers:
       publisher: "orders_pub"
 "#;
 
-        let config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
+        let mut config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
+        config.migrate_legacy_routes();
         assert_eq!(config.consumers.len(), 2);
 
         match &config.consumers[0].output {

@@ -56,7 +56,14 @@ describe("import-export", () => {
     expect(result.importedKind).toBe("mqb-presets");
     expect(result.importedPresetCount).toBe(1);
     expect(window.appConfig.presets).toEqual({
-      orders_http: [{ name: "preset_1", method: "POST", url: "https://api.local/orders", payload: "{\"order\":1}", headers: [] }],
+      orders_http: [{
+        name: "preset_1",
+        method: "POST",
+        url: "https://api.local/orders",
+        payload: "{\"order\":1}",
+        headers: [],
+        request_fields: { url: "https://api.local/orders" },
+      }],
     });
     expect(window.appConfig.env_vars).toEqual({
       baseUrl: "https://api.local",
@@ -77,8 +84,10 @@ describe("import-export", () => {
     const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Create order",
+      endpoint_type: "http",
       method: "POST",
       url: "https://api.test/orders",
+      request_fields: { url: "https://api.test/orders" },
       payload: "{\"order\":1}",
     });
   });
@@ -96,8 +105,10 @@ describe("import-export", () => {
     const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Create order",
+      endpoint_type: "http",
       method: "POST",
       url: "${baseUrl}/orders",
+      request_fields: { url: "${baseUrl}/orders" },
     });
     expect(window.appConfig.env_vars.baseUrl).toBe("https://openapi.example");
   });
@@ -115,8 +126,10 @@ describe("import-export", () => {
     const presets = window.appConfig.presets;
     expect(presets.orders_http[0]).toMatchObject({
       name: "Publish order created",
+      endpoint_type: "http",
       method: "POST",
       url: "${baseUrl}/orders/created",
+      request_fields: { url: "${baseUrl}/orders/created" },
     });
     expect(window.appConfig.env_vars.baseUrl).toBe("mqtt://broker.local:1883");
   });
@@ -189,11 +202,11 @@ describe("import-export", () => {
     expect(result.importedRoutes).toBe(2);
     expect(window.appConfig.publishers.length).toBeGreaterThanOrEqual(3);
     expect(window.appConfig.consumers.length).toBeGreaterThanOrEqual(3);
-    expect(Object.keys(window.appConfig.routes).length).toBeGreaterThanOrEqual(3);
+    expect(window.appConfig.routes).toBeUndefined();
     expect(window.appConfig.env_vars.baseUrl).toBe("http://x");
   });
 
-  test("reset app config clears publishers, consumers and routes", async () => {
+  test("reset app config clears publishers and consumers", async () => {
     window.appConfig = {
       publishers: [{ name: "p1" }],
       consumers: [{ name: "c1", endpoint: { http: {} } }],
@@ -207,7 +220,7 @@ describe("import-export", () => {
 
     expect(window.appConfig.publishers).toEqual([]);
     expect(window.appConfig.consumers).toEqual([]);
-    expect(window.appConfig.routes).toEqual({});
+    expect(window.appConfig.routes).toBeUndefined();
     expect(window.appConfig.default_tab).toBe("publishers");
     expect(window.appConfig.presets.keep_me).toHaveLength(1);
     expect(window.appConfig.env_vars.baseUrl).toBe("http://x");

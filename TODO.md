@@ -5,207 +5,7 @@ This file is intentionally broader than one implementation task. It should act a
 Important workflow for Codex: for non-trivial changes, do not jump directly to a finished implementation. First inspect the relevant code, propose the intended solution shape, list affected files/components, identify removals/migrations/tradeoffs, and stop for feedback before the main implementation.
 
 
-## 1. Simplify the app model: Consumer + Output instead of Routes
-
-### Goal
-
-Remove or de-emphasize the separate `Routes` concept in the main UI. A bridge/route should be represented as a Consumer with an Output configured to use a Publisher.
-
-The primary objects should be:
-
-- `Publisher`: sends messages to a configured endpoint.
-- `Consumer`: receives messages from a configured endpoint and can optionally output/forward them.
-- `Output`: is part of the consumer and describes what a Consumer does after receiving a message.
-
-Conceptually:
-
-```text
-Old Route = Consumer + Output: Publisher
-```
-
-### Product decisions
-
-`Routes` currently overlaps too much with Consumer once message inspection exists. Do not add a separate `Trace` UI for routes. Use `Messages` consistently.
-
-All Publishers should be reusable and referenceable as Consumer Output targets. Remove the distinction between normal Publishers and `ref publishers` if possible.
-
-This should also simplify `copy to`, because there is no longer a need to choose between routes, ref publishers, or special target types.
-
-### Consumer Output
-
-Add an `Output` section to the Consumer configuration.
-
-Potential output modes:
-
-```text
-None
-Publisher
-Response (optional, only if still needed for request-response transports)
-```
-
-The most important mode is:
-
-```text
-Output: Response
-```
-It is the default for new consumers that support reply/response. The content should look mostly the same as "Response" looks now.
-
-When `Output: Publisher` is selected, show a Publisher selector.
-
-Possible behavior:
-
-- If exactly one Publisher exists, preselect it.
-- If a recently used Publisher exists, consider preselecting it.
-- Avoid silently forwarding messages without an explicit Consumer start/action.
-
-### Consumer start vs Messages capture
-
-Keep the existing Consumer `Start` button if it still fits, but clarify its meaning:
-
-```text
-Start = start the Consumer runtime / begin consuming from input
-```
-
-But this start button should not necessarily belong to the `Messages` panel.
-
-Messages need a separate enable/disable control:
-
-```text
-Capture messages: on / off
-```
-
-When message capture is disabled, the Consumer can still run and forward messages to the configured Output. In that mode it behaves like the old Route concept.
-
-There should still be a stop button reachable from "messages". It shouldn't be necessary to navigate to stop message flow.
-
-## 2. Messages model and retention
-
-### Goal
-
-Use `Messages` as the single concept for inspected runtime data. Do not introduce a separate `Trace` concept.
-
-Messages should be useful for debugging what was actually received and what was actually sent/forwarded.
-
-
-Messages should also be captured not only with request headers and body, but also with response headers and body. This is mostly relevant in case that we don't only have a configured response, but another publisher as "output".
-
-### Bounded message buffer
-
-Messages must always be bounded. Never store an unbounded number of messages in memory.
-
-Suggested controls:
-
-```text
-Capture messages: on/off
-Clear
-Keep last: 10 / 100 / 500 / custom
-Max payload preview size
-```
-
-Possible defaults:
-
-```text
-Consumer inspect default: capture enabled, keep last 100
-Forwarding/default route-like mode: capture disabled or keep last small
-```
-
-### Message contents
-
-Do not reduce Messages to metadata-only records. For debugging, the user wants to verify real payloads.
-
-A message entry may include:
-
-- received payload/body
-- received headers/properties
-- output target
-- output payload/body
-- output headers/properties
-- output status
-- response/error
-- timestamps
-
-Payload storage can be bounded/truncated for safety, but the feature should be designed around inspecting real message contents.
-
-## 3. Remove/refactor Routes
-
-### Goal
-
-Avoid a third top-level object that duplicates Consumer behavior.
-
-Potential new main navigation:
-
-```text
-Publishers
-Consumers
-Config
-```
-
-Optional later additions:
-
-```text
-Presets / Collections
-Imports
-```
-
-### Migration / compatibility
-
-If Routes already exist in persisted config, migrate them conceptually to Consumers with Output configured.
-
-Old:
-
-```text
-Route {
-  input: ...
-  output: ...
-}
-```
-
-New:
-
-```text
-Consumer {
-  input: ...
-  output: Publisher(...)
-  messages: disabled or enabled depending on previous behavior
-}
-```
-
-If full migration is too large for the first step, keep compatibility internally but hide/de-emphasize Routes in the UI.
-
-## 4. Simplify `copy to`
-
-### Goal
-
-Make `copy to` direct and lightweight.
-
-Because all Publishers are reusable output targets, `copy to` should no longer need a heavy dialog for choosing between route/ref-publisher/publisher concepts.
-
-Possible direct actions:
-
-```text
-Copy message to Publisher
-Create Publisher from message
-Use this Publisher as Consumer Output
-```
-
-If there is only one natural target type, avoid showing a dialog.
-
-## 5. Presets / Collections / saved snapshots
-
-### Goal
-
-Clarify how reusable configurations are stored and reused.
-
-Presets should probably become complete snapshots with a clear name and description. Avoid partial “apply URL” behavior unless it is very explicit and safe.
-
-Potential tasks:
-
-- Add or verify `description` field for presets.
-- Make presets easy to compare later, but do not overbuild this now.
-- Keep preset application predictable: applying a preset should not silently merge complex URL parts unless the UI clearly explains it.
-- Consider whether Publishers and Consumers themselves are the main saved objects, with presets becoming less central.
-
-## 6. Config persistence and storage direction
+## 5. Config persistence and storage direction
 
 ### Goal
 
@@ -222,6 +22,17 @@ Longer-term candidates for config persistence:
 - app UI preferences if needed
 
 Avoid storing huge message buffers in durable config by default. Messages are runtime/debug data, not an archive.
+
+Presets and history need to sufficient for all different endpoint types. Just supporting http isn't sufficient. 
+We might even store a Hashmap and let javascript parse the values. 
+The values later also need to be exportable to asyncApi.
+
+## 6. Improve UX of App Config page
+
+App config currently stores the whole config object in one large form.
+This makes the page hard to follow or read. Also, the configurable options are redundant. The other forms already configure most options.
+We should keep only the options that are not available in the rest of the app. And we should have those options visible directly, and not
+on click on "show advanced".
 
 ## 7. Encryption modes for config
 
@@ -241,7 +52,7 @@ Possible interpretation:
 
 - `unencrypted`: config stored plainly.
 - `balanced`: non-sensitive config plain, secrets/passwords stored in OS keychain/keystore.
-- `sensitive`: full config encrypted with a random key stored in the OS keychain/keystore.
+- `sensitive`: full config encrypted with a random key stored in the OS keychain/keystore. Localstore should also avoid storing sensitive data - maybe we should encrypt it with the same random key.
 
 Tasks:
 
@@ -286,48 +97,6 @@ Tasks:
 - Avoid importing unclear partial configs silently.
 - Keep room for future Kafka/NATS/RabbitMQ-specific import behavior.
 
-## 10. Authentication and header extraction / storage middleware
-
-### Goal
-
-Explore whether missing scripting/authentication features can be partly covered by extractor/storage middleware.
-
-Potential idea:
-
-- Extract a value from response headers/body.
-- Store it in a variable/secret store.
-- Reuse it in later Publisher/Consumer configs.
-
-This could cover many token/session workflows without implementing a full scripting engine immediately.
-
-Tasks:
-
-- Define a minimal variable model.
-- Decide whether extracted values are normal variables or secrets.
-- Decide where values are stored under each encryption mode.
-- Consider UI support for header/body extractors.
-
-## 11. Scripting / pre-send / post-receive hooks
-
-### Goal
-
-Keep scripting as a possible future feature, but do not let it block the core app.
-
-Possible hook points:
-
-```text
-pre-send
-post-receive
-before-forward
-after-forward
-```
-
-Considerations:
-
-- Security/sandboxing.
-- Language/runtime choice.
-- Whether this belongs in Rust, JS, or an embedded scripting language.
-- Whether extractor/storage middleware is enough for most cases.
 
 ## 12. UI structure and naming
 
@@ -445,7 +214,5 @@ Use this section for additional ideas before turning them into concrete tasks.
 - Better AsyncAPI/OpenAPI import preview.
 - Config encryption polish.
 - Hex payload and whitespace visualization.
-- Header extractor and variable storage.
-- Optional scripting hooks.
 - Tauri packaging/release cleanup.
 - App icon/logo polish.

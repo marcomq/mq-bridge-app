@@ -2,11 +2,13 @@ export type HeaderRow = { key: string; value: string; enabled: boolean };
 
 export type PublisherPreset = {
   name: string;
-  method: string;
-  url: string;
   payload: string;
   headers: HeaderRow[];
   group?: string;
+  endpoint_type?: string;
+  method?: string;
+  url?: string;
+  request_fields?: Record<string, string>;
 };
 
 export type PresetsByPublisher = Record<string, PublisherPreset[]>;
@@ -38,13 +40,25 @@ export function sanitizePresets(value: unknown): PresetsByPublisher {
           enabled: header.enabled !== false,
         };
       });
+      const requestFieldsValue = isRecord(entry.request_fields) ? entry.request_fields : {};
+      const request_fields = Object.fromEntries(
+        Object.entries(requestFieldsValue).map(([key, raw]) => [String(key), String(raw ?? "")]),
+      );
+      const endpoint_type = entry.endpoint_type ? String(entry.endpoint_type) : undefined;
+      const method = entry.method ? String(entry.method).toUpperCase() : undefined;
+      const url = entry.url ? String(entry.url) : undefined;
+      if (url && !request_fields.url) {
+        request_fields.url = url;
+      }
       return {
         name: String(entry.name || `Imported preset ${index + 1}`),
-        method: String(entry.method || "GET").toUpperCase(),
-        url: String(entry.url || ""),
         payload: String(entry.payload || ""),
         headers,
         group: entry.group ? String(entry.group) : undefined,
+        endpoint_type,
+        method,
+        url,
+        request_fields,
       };
     });
   }
