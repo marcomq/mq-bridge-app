@@ -296,7 +296,6 @@
                 id="pub-payload"
                 label="Request Body"
                 payload={$publishersPanelState.requestPayload}
-                placeholder="Request body"
                 contentType={$publishersPanelState.requestContentType || ''}
                 readOnly={false}
                 onChange={updatePublisherPayload}
@@ -442,8 +441,8 @@
                     <tr>
                       <th style="width: 200px;">Name</th>
                       <th style="width: 80px;">Method</th>
-                      <th style="width: 34%;">URL</th>
-                      <th>Body Preview</th>
+                      <th>URL</th>
+                      <th style="width: 115px;">Body Preview</th>
                       <th style="width: 340px;">Actions</th>
                     </tr>
                   </thead>
@@ -628,7 +627,15 @@
             <div class="detail-body" id="pub-response">
               {#if showRequestMeta && ($publishersPanelState.requestRows.length > 0 || $publishersPanelState.requestHeaders.length > 0)}
                 <div class="response-meta-block">
-                  <div class="section-label">Request</div>
+                  <div class="section-label">Request
+                  <span
+                    class="section-hide"
+                    role="button"
+                    tabindex="0"
+                    onclick={() => (showRequestMeta = !showRequestMeta)}
+                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => { showRequestMeta = !showRequestMeta; })}
+                    >{showRequestMeta ? " (hide)" : "show req"}</span
+                  ></div> 
                   {#each $publishersPanelState.requestRows as [key, value] (`req:${key}:${value}`)}
                     <div class="response-meta-row">
                       <span class="response-meta-key">{key}</span>
@@ -648,15 +655,22 @@
               {/if}
               {#if showResponseMeta && $publishersPanelState.responseHeaders.length > 0}
                 <div class="response-meta-block">
-                  <div class="section-label">Response Headers</div>
-                  {#each $publishersPanelState.responseHeaders as [key, value] (`resp:${key}:${value}`)}
+                  <div class="section-label">Response Headers
+                    <span
+                      class="section-hide"
+                      role="button"
+                      tabindex="0"
+                      onclick={() => (showResponseMeta = !showResponseMeta)}
+                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => { showResponseMeta = !showResponseMeta; })}
+                      >{showResponseMeta ? " (hide)" : "show resp hdrs"}</span
+                    ></div>
+                    {#each $publishersPanelState.responseHeaders as [key, value] (`resp:${key}:${value}`)}
                     <div class="response-meta-row">
                       <span class="response-meta-key">{key}</span>
                       <span class="response-meta-value">{value}</span>
                     </div>
                   {/each}
                 </div>
-                <div class="section-label">Body</div>
               {/if}
               <PayloadDisplay 
                 id="pub-actual-payload"

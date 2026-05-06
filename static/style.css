@@ -1427,6 +1427,10 @@ wa-button[variant="neutral"]::part(base) {
     margin-bottom: 10px;
 }
 
+.section-hide {
+    text-transform: none;
+}
+
 .section-toolbar {
     display: flex;
     align-items: center;

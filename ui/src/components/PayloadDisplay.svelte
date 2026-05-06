@@ -1,8 +1,8 @@
 <script lang="ts">
   import CodeEditor from "./CodeEditor.svelte";
-  import { isPrintableAscii, toHexString, fromHexString, uint8ArrayToString, stringToUint8ArrayLatin1 } from "../lib/utils";
+  import { formatPayload, type PayloadViewMode } from "../lib/payload-format";
 
-  export type PayloadViewMode = "auto" | "text" | "json" | "hex";
+  export type { PayloadViewMode };
 
   let {
     id = "",
@@ -25,180 +25,11 @@
   let showLineEndings = $state(false);
   let wrapLines = $state(true);
 
-  let displayPayload = $state("");
-  let editorLanguage = $state<"text" | "json" | "json-auto">("text");
+  let formattedPayload = $derived(formatPayload(payload, currentViewMode, contentType));
 
   // New state to hold user's raw hex input when actively editing
   let userHexInput: string | null = $state(null);
   let isEditingHex = $state(false);
-
-
-  // Utility to check if a string is valid JSON
-  function isValidJson(str: string): boolean {
-    const trimmed = str.trim();
-    // Only consider it JSON if it starts and ends with { } or [ ]
-    if (!((trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-          (trimmed.startsWith("[") && trimmed.endsWith("]")))) {
-      return false;
-    }
-    try {
-      JSON.parse(trimmed);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function toHexPreview(bytes: Uint8Array): string {
-    const hex = toHexString(bytes);
-    const ascii = Array.from(bytes)
-      .map(b => (b >= 32 && b <= 126 ? String.fromCharCode(b) : "."))
-      .join("");
-    return `${hex}  |  ${ascii}`;
-  }
-
-  function stringToBytes(str: string): Uint8Array {
-    try {
-      return new TextEncoder().encode(str);
-    } catch {
-      const bytes = new Uint8Array(str.length);
-      for (let i = 0; i < str.length; i++) {
-        bytes[i] = str.charCodeAt(i) & 0xff;
-      }
-      return bytes;
-    }
-  }
-
-  // Converts the payload prop (string or Uint8Array) into a Uint8Array
-  function getPayloadAsBytes(p: string | Uint8Array | null | undefined): Uint8Array {
-    if (p === null || p === undefined) {
-      return new Uint8Array(0);
-    }
-    if (p instanceof Uint8Array) {
-      return p;
-    }
-    // If it's a string, try to interpret it.
-    // If it's a hex string, convert from hex.
-    // Otherwise, treat as Latin1 string to preserve bytes.
-    const trimmed = p.trim();
-    if (trimmed.match(/^[0-9a-fA-F\s]*$/) && trimmed.length > 0) {
-      try {
-        return fromHexString(trimmed.replace(/\s/g, ''));
-      } catch (e) {
-        // Fallback if fromHexString fails (e.g., odd length hex string)
-        return stringToUint8ArrayLatin1(p);
-      }
-    }
-    return stringToUint8ArrayLatin1(p);
-  }
-  
-  // Function to determine the best view mode and format the payload
-  function formatPayload(
-    rawPayload: string | Uint8Array | null | undefined, // Explicitly allow null/undefined
-    mode: PayloadViewMode,
-    currentContentType: string,
-    currentShowWhitespace: boolean,
-    currentShowLineEndings: boolean,
-  ): { formatted: string; language: "text" | "json" | "json-auto" } {
-    let payloadAsString = "";
-    if (rawPayload === null || rawPayload === undefined) {
-      rawPayload = ""; // Treat null/undefined as empty string for processing
-    }
-
-    let isBinaryData = false;
-    let originalBytes: Uint8Array | null = null;
-
-    if (rawPayload instanceof Uint8Array) {
-      originalBytes = rawPayload;
-      payloadAsString = uint8ArrayToString(rawPayload);
-      if (payloadAsString === "[BINARY DATA]" && rawPayload.length > 0) {
-        isBinaryData = true;
-      }
-    } else {
-      payloadAsString = rawPayload;
-      // Check if string contains non-printable ASCII characters, suggesting binary
-      if (payloadAsString.length > 0 && !isPrintableAscii(payloadAsString)) {
-         isBinaryData = true;
-      }
-      // If the string itself is a hex representation, we should treat it as binary data
-      if (payloadAsString.match(/^[0-9a-fA-F\s]*$/) && payloadAsString.trim().length > 0) {
-        isBinaryData = true;
-      }
-    }
-
-    let effectiveMode = mode;
-    if (mode === "auto") {
-      if (currentContentType.includes("json") && isValidJson(payloadAsString)) {
-        effectiveMode = "json";
-      } else if (isValidJson(payloadAsString)) {
-        effectiveMode = "json";
-      } else if (isBinaryData) {
-        effectiveMode = "hex";
-      } else {
-        effectiveMode = "text";
-      }
-    }
-
-    let formatted = payloadAsString;
-    let language: "text" | "json" | "json-auto" = "text";
-
-    if (effectiveMode === "json") {
-      try {
-        formatted = JSON.stringify(JSON.parse(payloadAsString), null, 2);
-        language = "json";
-      } catch (e) {
-        // Fallback to text if not valid JSON
-        formatted = payloadAsString;
-        language = "text";
-        if (mode === "json") { // If user explicitly chose JSON, log debug message
-            console.debug("Payload is not valid JSON, displaying as plain text:", e);
-        }
-      }
-    } else if (effectiveMode === "hex") {
-      let bytesToFormat: Uint8Array;
-      if (rawPayload instanceof Uint8Array) {
-        bytesToFormat = rawPayload;
-      } else if (typeof rawPayload === 'string' && rawPayload.match(/^[0-9a-fA-F\s]*$/)) {
-        // If the rawPayload is already a hex string (from store), convert it to bytes
-        bytesToFormat = fromHexString(rawPayload);
-      } else {
-        // If it's a regular string (text mode content), encode it to bytes
-        // We use latin1 here to ensure every character maps to a byte,
-        // as the store expects a string representation of the bytes.
-        bytesToFormat = stringToUint8ArrayLatin1(payloadAsString);
-      }
-      formatted = toHexPreview(bytesToFormat);
-      language = "text"; // Hex view is text, not JSON
-    } else { // text mode or auto fallback to text
-      formatted = payloadAsString;
-      language = "text";
-    }
-
-    // Apply whitespace/line ending visibility for text/json modes
-    // For hex, we usually don't want these visual cues as it's already a formatted representation.
-    if (effectiveMode !== "hex") {
-        if (currentShowWhitespace) {
-            // Replace spaces with middle dot, tabs with right arrow
-            formatted = formatted.replace(/ /g, '·').replace(/\t/g, '→');
-        }
-        if (currentShowLineEndings) {
-            // Replace CR+LF with ␍↵, LF with ↵, CR with ␍
-            formatted = formatted.replace(/\r\n/g, '␍↵\r\n').replace(/(?<!\r)\n/g, '↵\n').replace(/\r(?![\n])/g, '␍\r');
-        }
-    }
-
-    return { formatted, language };
-  }
-
-  $effect(() => {
-    // Convert the raw payload (which might be a hex string) into bytes first
-    const payloadBytes = getPayloadAsBytes(payload); // Ensure payload is in bytes for consistent processing
-    const { formatted, language } = formatPayload(payloadBytes, currentViewMode, contentType, showWhitespace, showLineEndings);
-    if (displayPayload !== formatted) {
-      displayPayload = formatted;
-    }
-    editorLanguage = language;
-  });
 
   function handleEditorChange(newValue: string) {
     if (readOnly) return;
@@ -254,10 +85,9 @@
       if (!file) return;
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
-      // Always try to decode as UTF-8. If it fails, store as Latin1 string.
-      const decodedString = uint8ArrayToString(bytes);
-      onChange(decodedString !== "[BINARY DATA]" ? decodedString : new TextDecoder("latin1").decode(bytes));
-      currentViewMode = decodedString !== "[BINARY DATA]" ? "text" : "hex";
+      const decodedString = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+      onChange(decodedString);
+      currentViewMode = "text";
     };
     input.click();
   }
@@ -270,6 +100,7 @@
       <button class:active={currentViewMode === 'auto'} type="button" onclick={() => setViewMode('auto')}>Auto</button>
       <button class:active={currentViewMode === 'text'} type="button" onclick={() => setViewMode('text')}>Text</button>
       <button class:active={currentViewMode === 'json'} type="button" onclick={() => setViewMode('json')}>JSON</button>
+      <button class:active={currentViewMode === 'xml'} type="button" onclick={() => setViewMode('xml')}>XML</button>
       <button class:active={currentViewMode === 'hex'} type="button" onclick={() => setViewMode('hex')}>Hex</button>
     </div>
 
@@ -296,12 +127,14 @@
   <div class="payload-content">
     <CodeEditor
       id={id ? `${id}-editor` : ""}
-      value={isEditingHex && userHexInput !== null ? userHexInput : displayPayload}
-      language={editorLanguage}
+      value={isEditingHex && userHexInput !== null ? userHexInput : formattedPayload.formatted}
+      language={formattedPayload.language}
       onChange={handleEditorChange}
       onBlur={handleEditorBlur}
       readOnly={readOnly}
       wrapLines={wrapLines}
+      showWhitespace={showWhitespace}
+      showLineEndings={showLineEndings}
     />
   </div>
 </div>

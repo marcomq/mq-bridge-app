@@ -21,6 +21,8 @@ import {
   removePublisherMetadataRow,
   savePublisherPresetAction,
   saveCurrentPublisherAction,
+  sendPublisherAction,
+  showPublisherHistoryEntry,
   selectPublisherSubtab,
   togglePublisherMetadataRow,
   updatePublisherMetadataRow,
@@ -561,6 +563,274 @@ describe("initPublishers", () => {
     expect(state.urlField.value).toBe("https://api.example.test/orders/42");
     expect(state.requestPayload).toBe("{\"id\":42}");
     expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
+  });
+
+  test("restores http method and visible url field from history", async () => {
+    window.localStorage.setItem(
+      "mqb_publisher_history",
+      JSON.stringify([
+        {
+          name: "orders_http",
+          payload: "{\"id\":42}",
+          metadata: [{ k: "x-test", v: "yes" }],
+          requestMetadata: {
+            http_method: "PUT",
+            http_path: "/orders/42",
+            "request_bar.url": "https://api.example.test/orders/42",
+            "request_bar.pub-url": "https://api.example.test/orders/42",
+          },
+          targetLabel: "URL",
+          url: "https://api.example.test/orders/42",
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          duration: 12,
+          time: 1,
+        },
+      ]),
+    );
+    const config = {
+      publishers: [
+        {
+          name: "orders_http",
+          endpoint: {
+            http: {
+              url: "https://example.test",
+              path: "/old",
+              method: "POST",
+              custom_headers: {},
+            },
+          },
+        },
+      ],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    await showPublisherHistoryEntry(0);
+
+    expect(get(publishersPanelState).methodValue).toBe("PUT");
+    expect(get(publishersPanelState).urlField.value).toBe("https://api.example.test/orders/42");
+    expect(config.publishers[0].endpoint.http.url).toBe("https://api.example.test");
+    expect(config.publishers[0].endpoint.http.path).toBe("/orders/42");
+    expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
+  });
+
+  test("restores all visible non-http request bar fields from history", async () => {
+    window.localStorage.setItem(
+      "mqb_publisher_history",
+      JSON.stringify([
+        {
+          name: "events_kafka",
+          payload: "event",
+          metadata: [],
+          requestMetadata: {
+            "request_bar.topic": "orders.created",
+            "request_bar.pub-extra-1": "orders.created",
+            "request_bar.url": "kafka-a:9092,kafka-b:9092",
+            "request_bar.pub-url": "kafka-a:9092,kafka-b:9092",
+          },
+          targetLabel: "BROKERS",
+          url: "kafka-a:9092,kafka-b:9092",
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          duration: 12,
+          time: 1,
+        },
+      ]),
+    );
+    const config = {
+      publishers: [
+        {
+          name: "events_kafka",
+          endpoint: {
+            kafka: {
+              url: "localhost:9092",
+              topic: "events",
+            },
+          },
+        },
+      ],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { KafkaConfig: { properties: {} } },
+      },
+    );
+
+    await showPublisherHistoryEntry(0);
+
+    expect(get(publishersPanelState).extraFieldOne.value).toBe("orders.created");
+    expect(get(publishersPanelState).urlField.value).toBe("kafka-a:9092,kafka-b:9092");
+    expect(config.publishers[0].endpoint.kafka.topic).toBe("orders.created");
+    expect(config.publishers[0].endpoint.kafka.url).toBe("kafka-a:9092,kafka-b:9092");
+  });
+
+  test("records visible request bar fields in publisher history when sending", async () => {
+    const config = {
+      publishers: [
+        {
+          name: "events_kafka",
+          endpoint: {
+            kafka: {
+              url: "localhost:9092",
+              topic: "events",
+            },
+          },
+        },
+      ],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { KafkaConfig: { properties: {} } },
+      },
+    );
+
+    updatePublisherRequestField("pub-extra-1", "orders.created");
+    updatePublisherRequestField("pub-url", "kafka-a:9092,kafka-b:9092");
+    updatePublisherPayload("event");
+    await sendPublisherAction();
+
+    const history = JSON.parse(window.localStorage.getItem("mqb_publisher_history") || "[]");
+    expect(history[0].requestMetadata).toMatchObject({
+      "request_bar.topic": "orders.created",
+      "request_bar.pub-extra-1": "orders.created",
+      "request_bar.url": "kafka-a:9092,kafka-b:9092",
+      "request_bar.pub-url": "kafka-a:9092,kafka-b:9092",
+    });
+  });
+
+  test("restores request bar fields from input-id fallback history metadata", async () => {
+    window.localStorage.setItem(
+      "mqb_publisher_history",
+      JSON.stringify([
+        {
+          name: "jobs_amqp",
+          payload: "job",
+          metadata: [],
+          requestMetadata: {
+            "request_bar.pub-extra-1": "critical_jobs",
+            "request_bar.pub-url": "amqp://guest:guest@mq.local:5672/%2f",
+          },
+          targetLabel: "URL",
+          url: "amqp://guest:guest@mq.local:5672/%2f",
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          duration: 12,
+          time: 1,
+        },
+      ]),
+    );
+    const config = {
+      publishers: [
+        {
+          name: "jobs_amqp",
+          endpoint: {
+            amqp: {
+              url: "amqp://guest:guest@localhost:5672/%2f",
+              queue: "jobs",
+            },
+          },
+        },
+      ],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { AmqpConfig: { properties: {} } },
+      },
+    );
+
+    await showPublisherHistoryEntry(0);
+
+    expect(get(publishersPanelState).extraFieldOne.value).toBe("critical_jobs");
+    expect(get(publishersPanelState).urlField.value).toBe("amqp://guest:guest@mq.local:5672/%2f");
+    expect(config.publishers[0].endpoint.amqp.queue).toBe("critical_jobs");
+    expect(config.publishers[0].endpoint.amqp.url).toBe("amqp://guest:guest@mq.local:5672/%2f");
+  });
+
+  test("restores multi-field request bar publishers from history", async () => {
+    window.localStorage.setItem(
+      "mqb_publisher_history",
+      JSON.stringify([
+        {
+          name: "messages_mongodb",
+          payload: "{\"ok\":true}",
+          metadata: [],
+          requestMetadata: {
+            "request_bar.database": "orders",
+            "request_bar.collection": "outbox",
+            "request_bar.url": "mongodb://mongo.local:27017",
+          },
+          targetLabel: "URL",
+          url: "mongodb://mongo.local:27017",
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          duration: 12,
+          time: 1,
+        },
+      ]),
+    );
+    const config = {
+      publishers: [
+        {
+          name: "messages_mongodb",
+          endpoint: {
+            mongodb: {
+              url: "mongodb://localhost:27017",
+              database: "app",
+              collection: "messages",
+            },
+          },
+        },
+      ],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { MongoDbConfig: { properties: {} } },
+      },
+    );
+
+    await showPublisherHistoryEntry(0);
+
+    expect(get(publishersPanelState).extraFieldOne.value).toBe("orders");
+    expect(get(publishersPanelState).extraFieldTwo.value).toBe("outbox");
+    expect(get(publishersPanelState).urlField.value).toBe("mongodb://mongo.local:27017");
+    expect(config.publishers[0].endpoint.mongodb).toMatchObject({
+      database: "orders",
+      collection: "outbox",
+      url: "mongodb://mongo.local:27017",
+    });
   });
 
   test("rejects non-mq-bridge import payloads", async () => {

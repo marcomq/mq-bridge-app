@@ -141,6 +141,8 @@ type RequestBarLayout = {
   fields: RequestBarFieldDescriptor[];
 };
 
+type PublisherSubtab = "payload" | "headers" | "history" | "presets" | "definition";
+
 const STORAGE_KEY = "mqb_publisher_state";
 const HISTORY_KEY = "mqb_publisher_history";
 const PRESETS_KEY = "mqb_publisher_presets";
@@ -161,6 +163,8 @@ const PUBLISHER_TYPE_OPTIONS = [
 ];
 
 const HTTP_METHOD_OPTIONS = ["POST", "GET", "PUT", "DELETE"];
+const PUBLISHER_SUBTABS = new Set<PublisherSubtab>(["payload", "headers", "history", "presets", "definition"]);
+const REQUEST_BAR_METADATA_PREFIX = "request_bar.";
 
 const ENDPOINT_TYPE_KEYS = [
   "http",
@@ -324,6 +328,10 @@ function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined)
   return ENDPOINT_TYPE_KEYS.find((key) => key in endpoint) || "null";
 }
 
+function normalizePublisherSubtab(tab: string | undefined, fallback: PublisherSubtab = "payload"): PublisherSubtab {
+  return PUBLISHER_SUBTABS.has(tab as PublisherSubtab) ? (tab as PublisherSubtab) : fallback;
+}
+
 function createDefaultPublisherEndpoint(endpointType: string) {
   const defaults: Record<string, Record<string, any>> = {
     http: defaultHttpConfig(),
@@ -368,7 +376,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   container.style.display = "contents";
   let currentIdx = 0;
-  let activeSubtab: "payload" | "headers" | "history" | "presets" | "definition" = "payload";
+  let activeSubtab: PublisherSubtab = "payload";
   let pubSplit: unknown;
   let currentResponsePayload = "";
   let currentMethodValue = "POST";
@@ -908,11 +916,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     mainUi.style.display = hasPublishers ? "contents" : "none";
   };
 
-  const setActiveItem = (idx: number) => {
-    currentIdx = Math.min(Math.max(0, idx), Math.max(publishers.length - 1, 0));
+  const setActiveItem = (idx: number, options: { tab?: PublisherSubtab; preserveTab?: boolean } = {}) => {
+    const nextIdx = Math.min(Math.max(0, idx), Math.max(publishers.length - 1, 0));
+    const isSamePublisher = currentIdx === nextIdx;
+    currentIdx = nextIdx;
     getMqbState().last_publisher_idx = currentIdx;
     (appWindow() as any)._mqb_last_publisher_idx = currentIdx;
-    activeSubtab = "payload";
+    if (options.tab) {
+      activeSubtab = options.tab;
+    } else if (!(options.preserveTab && isSamePublisher)) {
+      activeSubtab = "payload";
+    }
     syncPublishersPanelState();
   };
 
@@ -966,12 +980,52 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     return metadata;
   };
 
+  const buildRequestBarHistoryMetadata = (publisher: PublisherConfig) => {
+    const endpointType = getEndpointType(publisher);
+    const layout = getRequestBarLayout(endpointType);
+    const metadata: Record<string, string> = {};
+
+    if (layout.showMethod && currentMethodValue) {
+      metadata.http_method = currentMethodValue;
+    }
+
+    layout.fields.forEach((descriptor) => {
+      const value = applyEnvVars(getRequestBarFieldValue(publisher, descriptor).trim());
+      metadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`] = value;
+      metadata[`request_bar.${descriptor.inputId}`] = value;
+    });
+
+    return metadata;
+  };
+
   const applyHistoryRequestToPublisher = (publisher: PublisherConfig | undefined, item: PublisherHistoryItem) => {
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
+    const endpointType = getEndpointType(publisher);
+    const requestMetadata = item.requestMetadata || {};
+
+    if (requestMetadata.http_method) {
+      currentMethodValue = requestMetadata.http_method;
+    }
+
+    const layout = getRequestBarLayout(endpointType);
+    layout.fields.forEach((descriptor) => {
+      const value = requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
+        ?? requestMetadata[`request_bar.${descriptor.inputId}`];
+      if (typeof value === "string") {
+        setRequestBarFieldValue(publisher, descriptor, value);
+      }
+    });
+
+    if (endpointType !== "http") return;
+
     const httpConfig = ensureHttpConfig(publisher);
     httpConfig.custom_headers = Object.fromEntries((item.metadata || []).map(({ k, v }) => [k, v]));
 
-    if (typeof item.url === "string") {
+    const hasHistoryUrl = layout.fields.some((descriptor) =>
+      typeof requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`] === "string" ||
+      typeof requestMetadata[`request_bar.${descriptor.inputId}`] === "string",
+    );
+    if (!hasHistoryUrl && typeof item.url === "string") {
       const parsed = splitHttpUrl(item.url);
       httpConfig.url = parsed.base || item.url;
       if (parsed.path) {
@@ -979,14 +1033,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       } else {
         delete httpConfig.path;
       }
-      return;
     }
 
+    if (hasHistoryUrl) return;
+
     const existingUrl = httpConfig.url || "";
-    const requestMetadata = item.requestMetadata || {};
-    if (requestMetadata.http_method) {
-      currentMethodValue = requestMetadata.http_method;
-    }
     if (!requestMetadata.http_path && !requestMetadata.http_query) return;
 
     try {
@@ -1003,13 +1054,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   const restorePublisherState = (idx: number, options: { tab?: string } = {}) => {
     if (!publishers[idx]) return;
-    if (currentIdx !== idx) setActiveItem(idx);
+    const targetTab = normalizePublisherSubtab(options.tab, "payload");
+    if (currentIdx !== idx) setActiveItem(idx, { tab: targetTab });
     void updateUIFromState();
-    const targetTab = options.tab || "payload";
-    activeSubtab =
-      targetTab === "definition" || targetTab === "history" || targetTab === "headers" || targetTab === "presets"
-        ? targetTab
-        : "payload";
+    activeSubtab = targetTab;
     syncPublishersPanelState();
   };
 
@@ -1073,7 +1121,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!pubSplit && mqbApp.split()) {
       pubSplit = mqbApp.split()?.(["#pub-top-content-wrapper", "#pub-response-container"], {
         direction: "vertical",
-        sizes: [40, 60],
+        sizes: [35, 65],
         minSize: 100,
         gutterSize: 4,
         elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
@@ -1327,17 +1375,30 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
 
   saveCurrentPublisherAction = async (button = null) => {
-    const selectedName = config.publishers[currentIdx]?.name || null;
+    const activeElement = document.activeElement as HTMLElement | null;
+    activeElement?.blur();
+    await Promise.resolve();
+
+    const selectedIdx = currentIdx;
+    const selectedName = config.publishers[selectedIdx]?.name || null;
+    const selectedTab = activeSubtab;
     const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
     if (!saved) return;
 
-    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
-    mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
+    const savedPublishers = Array.isArray((saved as PublishersAppConfig).publishers)
+      ? (saved as PublishersAppConfig).publishers
+      : config.publishers;
+    config.publishers = savedPublishers;
+    mqbApp.config<PublishersAppConfig>().publishers = savedPublishers;
+    mqbRuntime.markSectionSaved("publishers", savedPublishers);
+    const refreshedIdx = (savedPublishers || []).findIndex((publisher: PublisherConfig) => publisher.name === selectedName);
+    const pendingRestore = {
+      idx: refreshedIdx === -1 ? Math.min(selectedIdx, Math.max(savedPublishers.length - 1, 0)) : refreshedIdx,
+      tab: selectedTab,
+    };
+    getMqbState().pending_publisher_restore = pendingRestore;
+    (appWindow() as any)._mqb_pending_publisher_restore = pendingRestore;
     initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>());
-    const refreshedIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex((publisher: PublisherConfig) => publisher.name === selectedName);
-    if (refreshedIdx !== -1) {
-      restorePublisherStateFromView(refreshedIdx, { tab: "definition" });
-    }
   };
 
   addPublisherMetadataRow = () => {
@@ -1429,6 +1490,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     Object.keys(metadata).forEach((key) => {
       metadata[key] = applyEnvVars(String(metadata[key]));
     });
+    const requestHistoryMetadata = buildRequestBarHistoryMetadata(publisher);
 
     // Merge custom headers into metadata for the outgoing request
     metaArray.forEach(({ k, v }) => {
@@ -1494,7 +1556,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         name,
         payload,
         metadata: [...metaArray],
-        requestMetadata: { ...metadata },
+        requestMetadata: { ...metadata, ...requestHistoryMetadata },
         targetLabel: requestBinding?.label,
         url: resolvedRequestUrl,
         responseData,
@@ -1532,7 +1594,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   if (document.getElementById("tab-publishers")?.classList.contains("active") && !pubSplit && mqbApp.split()) {
     pubSplit = mqbApp.split()?.(["#pub-top-content-wrapper", "#pub-response-container"], {
       direction: "vertical",
-      sizes: [40, 60],
+      sizes: [35, 65],
       minSize: 100,
       gutterSize: 4,
       elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
@@ -1911,21 +1973,16 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   if (publishers.length > 0) {
     const pendingRestore = state.pending_publisher_restore || null;
     state.pending_publisher_restore = null;
+    (appWindow() as any)._mqb_pending_publisher_restore = null;
     const initialIdx = pendingRestore?.idx ?? 0;
-    const initialTab = pendingRestore?.tab || "payload";
-    setActiveItem(initialIdx);
+    const initialTab = normalizePublisherSubtab(pendingRestore?.tab, "payload");
+    setActiveItem(initialIdx, { tab: initialTab });
     void updateUIFromState().then(() => {
       if (!hadUnsavedChangesBeforeInit) {
         mqbRuntime.markSectionSaved("publishers", config.publishers);
       }
     });
-    activeSubtab =
-      initialTab === "definition" ||
-      initialTab === "history" ||
-      initialTab === "headers" ||
-      initialTab === "presets"
-        ? initialTab
-        : "payload";
+    activeSubtab = initialTab;
     syncPublishersPanelState();
   } else if (!hadUnsavedChangesBeforeInit) {
     mqbRuntime.markSectionSaved("publishers", config.publishers);

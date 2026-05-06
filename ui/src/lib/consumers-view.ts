@@ -966,7 +966,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     if (activeSubtab === "messages" && !state.cons_split && mqbApp.split()) {
       state.cons_split = mqbApp.split()?.(["#cons-list-pane", "#cons-detail-pane"], {
         direction: "vertical",
-        sizes: [60, 40],
+        sizes: [40, 60],
         minSize: 100,
         gutterSize: 4,
         elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
