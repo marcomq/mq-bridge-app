@@ -258,12 +258,12 @@ async fn test_web_ui_serves_custom_static_assets() {
 
     let app_bundle = http_get(port, "/index.js").await;
     assert!(app_bundle.contains("200 OK"));
-    assert!(app_bundle.contains("route-toggle"));
-    assert!(app_bundle.contains("No routes configured. Click \"+\" to create one."));
+    assert!(app_bundle.contains("pub-copy"));
     assert!(app_bundle.contains("Request Presets"));
     assert!(app_bundle.contains("cons-output-mode"));
     assert!(app_bundle.contains("cons-output-publisher"));
     assert!(app_bundle.contains("Execution History"));
+    assert!(app_bundle.contains("js-storage-security-note"));
 
     let style_css = http_get(port, "/style.css").await;
     assert!(style_css.contains("200 OK"));
