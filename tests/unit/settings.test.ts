@@ -26,9 +26,13 @@ describe("settings", () => {
     window.mqbConfirm = vi.fn().mockResolvedValue(true);
     window.__MQB_DESKTOP__ = false;
     window._mqb_storage_security = {
+      target: "cli",
       encrypted: true,
       persistent: false,
       keySource: "ephemeral-process",
+      keyStoreAvailable: false,
+      encryptedConfigAvailable: false,
+      persistentMessagesAvailable: false,
       configEncrypted: false,
       messagesEncrypted: true,
       messagesPersistent: false,
@@ -77,6 +81,44 @@ describe("settings", () => {
       default_tab: "publishers",
       log_level: "info",
       env_vars: { BASE_URL: "https://example.test" },
+      config_security: { mode: "balanced" },
+    });
+  });
+
+  test("annotates security mode options with target capabilities", () => {
+    const schema = buildSettingsSchema(
+      {
+        properties: {
+          config_security: {
+            type: "object",
+            properties: {
+              mode: {
+                type: "string",
+                enum: ["unencrypted", "balanced", "env_temporary_messages", "temporary_messages", "sensitive", "durable"],
+              },
+            },
+          },
+        },
+      },
+      window._mqb_storage_security as any,
+    );
+
+    expect((schema.properties.config_security as any).description).toContain("Env secrets + temporary encrypted messages");
+    expect((schema.properties.config_security as any).properties.mode.description).toContain(
+      "Env secrets + temporary encrypted messages",
+    );
+  });
+
+  test("normalizes legacy security settings into config_security", () => {
+    const settings = extractSettingsConfig({
+      default_tab: "publishers",
+      extract_secrets: false,
+    });
+
+    expect(settings).toEqual({
+      default_tab: "publishers",
+      config_security: { mode: "unencrypted" },
+      env_vars: {},
     });
   });
 
@@ -121,6 +163,7 @@ describe("settings", () => {
       default_tab: "publishers",
       log_level: "info",
       env_vars: { BASE_URL: "https://example.test" },
+      config_security: { mode: "balanced" },
     };
 
     await initSettings(
@@ -153,6 +196,7 @@ describe("settings", () => {
         default_tab: "publishers",
         log_level: "info",
         env_vars: { BASE_URL: "https://example.test" },
+        config_security: { mode: "balanced" },
       },
     );
     expect(document.getElementById("form-actions")?.style.display).toBe("flex");
@@ -162,20 +206,71 @@ describe("settings", () => {
     expect(document.getElementById("js-storage-security-note")?.textContent).toContain(
       "Message history is encrypted at rest to avoid leaving readable broker payloads",
     );
+    expect(document.getElementById("js-storage-mode-note")?.textContent).toContain(
+      "Env secrets + temporary encrypted messages: Plain config with env placeholders and encrypted message history cleared after restart.",
+    );
 
     const submitButton = document.getElementById("js-submit") as HTMLButtonElement;
     (window as any).__settingsData.log_level = "debug";
     (window as any).__settingsData.env_vars = { BASE_URL: "https://changed.test", API_TOKEN: "abc" };
+    (window as any).__settingsData.config_security = { mode: "balanced" };
     await submitButton.onclick?.({ currentTarget: submitButton } as unknown as MouseEvent);
     expect(window.saveConfig).toHaveBeenCalledWith(false, submitButton);
     expect(window.appConfig.log_level).toBe("debug");
     expect(window.appConfig.env_vars).toEqual({ BASE_URL: "https://changed.test", API_TOKEN: "abc" });
+    expect(window.appConfig.config_security).toEqual({ mode: "balanced" });
     expect(window.appConfig.publishers).toEqual([{ name: "pub-a" }]);
 
     const formContainer = document.getElementById("form-container") as HTMLDivElement;
     formContainer.oninput?.(new Event("input"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(window.refreshDirtySection).toHaveBeenCalledWith("config");
+  });
+
+  test("prunes rendered storage mode options for cli", async () => {
+    window.appConfig = {
+      consumers: [],
+      publishers: [],
+      config_security: { mode: "balanced" },
+    };
+
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation(async (container: HTMLElement) => {
+      const select = document.createElement("select");
+      select.name = "config_security.mode";
+      ["unencrypted", "balanced", "env_temporary_messages", "temporary_messages", "sensitive", "durable"].forEach((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      });
+      container.appendChild(select);
+      return {};
+    });
+
+    await initSettings(
+      window.appConfig as Record<string, unknown>,
+      {
+        properties: {
+          config_security: {
+            type: "object",
+            properties: {
+              mode: {
+                type: "string",
+                enum: ["unencrypted", "balanced", "env_temporary_messages", "temporary_messages", "sensitive", "durable"],
+              },
+            },
+          },
+        },
+      } as Record<string, unknown>,
+    );
+
+    const select = document.querySelector('select[name="config_security.mode"]') as HTMLSelectElement | null;
+    expect(select).not.toBeNull();
+    expect(Array.from(select?.options || []).map((option) => option.value)).toEqual([
+      "unencrypted",
+      "balanced",
+      "env_temporary_messages",
+    ]);
   });
 
   test("adds desktop secret actions and reports stored secret summary", async () => {

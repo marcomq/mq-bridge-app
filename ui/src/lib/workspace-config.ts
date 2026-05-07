@@ -1,6 +1,12 @@
 export type HeaderRow = { key: string; value: string; enabled: boolean };
 export type HistoryMetadataRow = { k: string; v: string };
-export type ConfigSecurityMode = "unencrypted" | "balanced" | "sensitive" | "durable";
+export type ConfigSecurityMode =
+  | "unencrypted"
+  | "balanced"
+  | "env_temporary_messages"
+  | "temporary_messages"
+  | "sensitive"
+  | "durable";
 export type ConfigSecurity = { mode: ConfigSecurityMode };
 
 export type PublisherPreset = {
@@ -244,7 +250,15 @@ export function sanitizeConfigSecurity(value: unknown): ConfigSecurity {
   const entry = isRecord(value) ? value : {};
   const mode = entry.mode;
   return {
-    mode: mode === "unencrypted" || mode === "sensitive" || mode === "durable" ? mode : "balanced",
+    mode:
+      mode === "unencrypted"
+      || mode === "balanced"
+      || mode === "env_temporary_messages"
+      || mode === "temporary_messages"
+      || mode === "sensitive"
+      || mode === "durable"
+        ? mode
+        : "balanced",
   };
 }
 

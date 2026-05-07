@@ -15,6 +15,7 @@ use mq_bridge::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::sync::RwLock as StdRwLock;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -30,9 +31,13 @@ fn generate_ephemeral_message_key() -> (String, String) {
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
     match config.security_mode() {
         ConfigSecurityMode::Unencrypted => StorageSecurityInfoResponse {
+            target: "cli".to_string(),
             encrypted: false,
             persistent: true,
             key_source: "none".to_string(),
+            key_store_available: false,
+            encrypted_config_available: has_config_master_key(),
+            persistent_messages_available: false,
             config_encrypted: false,
             messages_encrypted: false,
             messages_persistent: true,
@@ -41,9 +46,13 @@ pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoRespon
             kid: None,
         },
         ConfigSecurityMode::Balanced => StorageSecurityInfoResponse {
+            target: "cli".to_string(),
             encrypted: false,
             persistent: true,
             key_source: "env".to_string(),
+            key_store_available: false,
+            encrypted_config_available: has_config_master_key(),
+            persistent_messages_available: false,
             config_encrypted: false,
             messages_encrypted: false,
             messages_persistent: true,
@@ -51,12 +60,34 @@ pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoRespon
             message_key_hex: None,
             kid: None,
         },
-        ConfigSecurityMode::Sensitive | ConfigSecurityMode::Durable => {
+        ConfigSecurityMode::EnvTemporaryMessages | ConfigSecurityMode::TemporaryMessages => {
             let (message_key_hex, kid) = generate_ephemeral_message_key();
             StorageSecurityInfoResponse {
+                target: "cli".to_string(),
                 encrypted: true,
                 persistent: false,
                 key_source: "ephemeral-process".to_string(),
+                key_store_available: false,
+                encrypted_config_available: has_config_master_key(),
+                persistent_messages_available: false,
+                config_encrypted: false,
+                messages_encrypted: true,
+                messages_persistent: false,
+                reason: Some("cli-mode".to_string()),
+                message_key_hex: Some(message_key_hex),
+                kid: Some(kid),
+            }
+        }
+        ConfigSecurityMode::Sensitive | ConfigSecurityMode::Durable => {
+            let (message_key_hex, kid) = generate_ephemeral_message_key();
+            StorageSecurityInfoResponse {
+                target: "cli".to_string(),
+                encrypted: true,
+                persistent: false,
+                key_source: "ephemeral-process".to_string(),
+                key_store_available: false,
+                encrypted_config_available: has_config_master_key(),
+                persistent_messages_available: false,
                 config_encrypted: has_config_master_key(),
                 messages_encrypted: true,
                 messages_persistent: false,
@@ -65,6 +96,52 @@ pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoRespon
                 kid: Some(kid),
             }
         }
+    }
+}
+
+type StorageSecurityResolver =
+    dyn Fn(&AppConfig) -> StorageSecurityInfoResponse + Send + Sync + 'static;
+type StorageSavePrepare = dyn Fn(&AppConfig) -> anyhow::Result<()> + Send + Sync + 'static;
+type ConfigRecoveryReset =
+    dyn Fn(&AppConfig) -> anyhow::Result<ConfigRecoveryResetResponse> + Send + Sync + 'static;
+
+#[derive(Default)]
+pub struct UiAppRuntimeHooks {
+    storage_security_resolver: Option<Arc<StorageSecurityResolver>>,
+    storage_save_prepare: Option<Arc<StorageSavePrepare>>,
+    config_recovery: Option<ConfigRecoveryStatusResponse>,
+    config_recovery_reset: Option<Arc<ConfigRecoveryReset>>,
+}
+
+impl UiAppRuntimeHooks {
+    pub fn for_cli() -> Self {
+        Self {
+            storage_security_resolver: Some(Arc::new(storage_security_for_cli)),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_storage_security_resolver(
+        mut self,
+        resolver: Arc<StorageSecurityResolver>,
+    ) -> Self {
+        self.storage_security_resolver = Some(resolver);
+        self
+    }
+
+    pub fn with_storage_save_prepare(mut self, prepare: Arc<StorageSavePrepare>) -> Self {
+        self.storage_save_prepare = Some(prepare);
+        self
+    }
+
+    pub fn with_config_recovery(mut self, recovery: Option<ConfigRecoveryStatusResponse>) -> Self {
+        self.config_recovery = recovery;
+        self
+    }
+
+    pub fn with_config_recovery_reset(mut self, reset: Option<Arc<ConfigRecoveryReset>>) -> Self {
+        self.config_recovery_reset = reset;
+        self
     }
 }
 
@@ -77,7 +154,11 @@ pub struct UiApp {
     ui_handles: Arc<RwLock<HashMap<String, RouteHandle>>>,
     throughput_samples: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
     consumer_message_sequences: Arc<RwLock<HashMap<String, u64>>>,
-    storage_security: Arc<StorageSecurityInfoResponse>,
+    storage_security: Arc<StdRwLock<StorageSecurityInfoResponse>>,
+    storage_security_resolver: Option<Arc<StorageSecurityResolver>>,
+    storage_save_prepare: Option<Arc<StorageSavePrepare>>,
+    config_recovery: Arc<StdRwLock<Option<ConfigRecoveryStatusResponse>>>,
+    config_recovery_reset: Option<Arc<ConfigRecoveryReset>>,
 }
 
 #[derive(Clone, Copy)]
@@ -126,6 +207,20 @@ pub struct PublishResponse {
     pub payload: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConfigRecoveryStatusResponse {
+    pub mode: Option<String>,
+    pub reason: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConfigRecoveryResetResponse {
+    pub backup_path: String,
 }
 
 trait CanonicalMessageExt {
@@ -378,7 +473,7 @@ enum ResolvedConsumerOutput {
     None,
     Publisher {
         publisher_name: String,
-        endpoint: Endpoint,
+        endpoint: Box<Endpoint>,
     },
     Response {
         response: Option<ConsumerResponseConfig>,
@@ -424,7 +519,7 @@ fn resolve_consumer_output(
 
             Ok(ResolvedConsumerOutput::Publisher {
                 publisher_name: publisher_name.to_string(),
-                endpoint: publisher_config.endpoint.clone(),
+                endpoint: Box::new(publisher_config.endpoint.clone()),
             })
         }
     }
@@ -437,12 +532,13 @@ impl UiApp {
         config_file_path: String,
     ) -> Self {
         let storage_security = storage_security_for_cli(&initial_config);
-        Self::new_with_secret_store_and_storage_security(
+        Self::new_internal(
             initial_config,
             metrics_handle,
             config_file_path,
             Arc::new(EnvFileSecretStore::new(".env")),
             storage_security,
+            UiAppRuntimeHooks::for_cli(),
         )
     }
 
@@ -452,12 +548,13 @@ impl UiApp {
         config_file_path: String,
         secret_store: Arc<dyn SecretStore>,
     ) -> Self {
-        Self::new_with_secret_store_and_storage_security(
+        Self::new_internal(
             initial_config.clone(),
             metrics_handle,
             config_file_path,
             secret_store,
             storage_security_for_cli(&initial_config),
+            UiAppRuntimeHooks::for_cli(),
         )
     }
 
@@ -468,6 +565,64 @@ impl UiApp {
         secret_store: Arc<dyn SecretStore>,
         storage_security: StorageSecurityInfoResponse,
     ) -> Self {
+        Self::new_internal(
+            initial_config,
+            metrics_handle,
+            config_file_path,
+            secret_store,
+            storage_security,
+            UiAppRuntimeHooks::default(),
+        )
+    }
+
+    pub fn new_with_secret_store_and_storage_hooks(
+        initial_config: AppConfig,
+        metrics_handle: PrometheusHandle,
+        config_file_path: String,
+        secret_store: Arc<dyn SecretStore>,
+        storage_security: StorageSecurityInfoResponse,
+        storage_security_resolver: Arc<StorageSecurityResolver>,
+        storage_save_prepare: Arc<StorageSavePrepare>,
+    ) -> Self {
+        Self::new_internal(
+            initial_config,
+            metrics_handle,
+            config_file_path,
+            secret_store,
+            storage_security,
+            UiAppRuntimeHooks::default()
+                .with_storage_security_resolver(storage_security_resolver)
+                .with_storage_save_prepare(storage_save_prepare),
+        )
+    }
+
+    pub fn new_with_secret_store_and_runtime_hooks(
+        initial_config: AppConfig,
+        metrics_handle: PrometheusHandle,
+        config_file_path: String,
+        secret_store: Arc<dyn SecretStore>,
+        storage_security: StorageSecurityInfoResponse,
+        runtime_hooks: UiAppRuntimeHooks,
+    ) -> Self {
+        Self::new_internal(
+            initial_config,
+            metrics_handle,
+            config_file_path,
+            secret_store,
+            storage_security,
+            runtime_hooks,
+        )
+    }
+
+    fn new_internal(
+        mut initial_config: AppConfig,
+        metrics_handle: PrometheusHandle,
+        config_file_path: String,
+        secret_store: Arc<dyn SecretStore>,
+        storage_security: StorageSecurityInfoResponse,
+        runtime_hooks: UiAppRuntimeHooks,
+    ) -> Self {
+        initial_config.migrate_legacy_security_mode();
         Self {
             config: Arc::new(RwLock::new(initial_config)),
             metrics_handle,
@@ -476,16 +631,32 @@ impl UiApp {
             ui_handles: Arc::new(RwLock::new(HashMap::new())),
             throughput_samples: Arc::new(RwLock::new(HashMap::new())),
             consumer_message_sequences: Arc::new(RwLock::new(HashMap::new())),
-            storage_security: Arc::new(storage_security),
+            storage_security: Arc::new(StdRwLock::new(storage_security)),
+            storage_security_resolver: runtime_hooks.storage_security_resolver,
+            storage_save_prepare: runtime_hooks.storage_save_prepare,
+            config_recovery: Arc::new(StdRwLock::new(runtime_hooks.config_recovery)),
+            config_recovery_reset: runtime_hooks.config_recovery_reset,
         }
     }
 
     pub async fn get_config(&self) -> AppConfig {
-        self.config.read().await.clone()
+        let mut config = self.config.read().await.clone();
+        config.migrate_legacy_security_mode();
+        config
     }
 
     pub fn storage_security(&self) -> StorageSecurityInfoResponse {
-        (*self.storage_security).clone()
+        self.storage_security
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    pub fn config_recovery(&self) -> Option<ConfigRecoveryStatusResponse> {
+        self.config_recovery
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn config_file_path(&self) -> &str {
@@ -518,7 +689,11 @@ impl UiApp {
         if method == "POST"
             && matches!(
                 path,
-                "/config" | "/publish" | "/consumer-start" | "/consumer-stop"
+                "/config"
+                    | "/config-recovery/reset"
+                    | "/publish"
+                    | "/consumer-start"
+                    | "/consumer-stop"
             )
             && !is_same_origin_request(&msg)
         {
@@ -536,6 +711,7 @@ impl UiApp {
                 self.ok_json(&schema, false)
             }
             ("GET", "/config") => self.ok_json(&self.get_config().await, false),
+            ("GET", "/config-recovery") => self.ok_json(&self.config_recovery(), true),
             ("GET", "/storage-security") => self.ok_json(&self.storage_security(), true),
             ("GET", "/consumer-status") => {
                 let name = query_param(&msg, "consumer").unwrap_or_default();
@@ -562,6 +738,7 @@ impl UiApp {
                 self.ok_json(&self.get_messages(consumer.as_deref()).await, true)
             }
             ("POST", "/config") => self.handle_update_config_message(msg).await,
+            ("POST", "/config-recovery/reset") => self.handle_reset_config_recovery().await,
             ("POST", "/publish") => self.handle_publish_message(msg).await,
             ("GET", "/runtime-status") => self.ok_json(&self.runtime_status().await, true),
             ("GET", "/metrics") => Ok(Handled::Publish(
@@ -741,6 +918,28 @@ impl UiApp {
         }
     }
 
+    async fn handle_reset_config_recovery(&self) -> Result<Handled, HandlerError> {
+        let Some(reset_hook) = self.config_recovery_reset.as_ref() else {
+            return self.err_response(404, "Config recovery reset is not available");
+        };
+        if self.config_recovery().is_none() {
+            return self.err_response(409, "No config recovery action is pending");
+        }
+
+        let current_config = self.get_config().await;
+        let result = reset_hook(&current_config).map_err(HandlerError::NonRetryable)?;
+
+        {
+            let mut recovery = self
+                .config_recovery
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            *recovery = None;
+        }
+
+        self.ok_json(&result, true)
+    }
+
     pub async fn runtime_status(&self) -> RuntimeStatusResponse {
         let mut active_consumers: Vec<String> =
             self.ui_handles.read().await.keys().cloned().collect();
@@ -892,7 +1091,14 @@ impl UiApp {
         mut new_config: AppConfig,
     ) -> std::result::Result<(), UpdateConfigError> {
         tracing::info!("Received new configuration via Web UI. Reloading...");
+        new_config.migrate_legacy_security_mode();
         new_config.migrate_legacy_consumer_response();
+
+        if let Some(prepare) = &self.storage_save_prepare {
+            prepare(&new_config).map_err(|error| {
+                UpdateConfigError::Other(anyhow!("Failed to prepare encrypted storage: {error}"))
+            })?;
+        }
 
         let routes: HashMap<String, RouteConfig> = new_config
             .routes
@@ -924,7 +1130,7 @@ impl UiApp {
             let output_endpoint = match &resolved_output {
                 ResolvedConsumerOutput::None => Endpoint::null(),
                 ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
-                ResolvedConsumerOutput::Publisher { endpoint, .. } => endpoint.clone(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => *endpoint.clone(),
             };
             let temp_route = Route::new(consumer.endpoint.clone(), output_endpoint);
             temp_route.check(&consumer.name, None).map_err(|e| {
@@ -995,7 +1201,7 @@ impl UiApp {
             let output_endpoint = match &resolved_output {
                 ResolvedConsumerOutput::None => Endpoint::null(),
                 ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
-                ResolvedConsumerOutput::Publisher { endpoint, .. } => endpoint.clone(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => *endpoint.clone(),
             };
             let route = Route::new(consumer.endpoint.clone(), output_endpoint);
             if route.is_ref() {
@@ -1037,6 +1243,14 @@ impl UiApp {
                 UpdateConfigError::Other(anyhow!("Failed to save configuration: {e}"))
             })?;
         tracing::info!("Configuration saved to {}", config_file);
+
+        if let Some(resolver) = &self.storage_security_resolver {
+            let mut storage_security = self
+                .storage_security
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            *storage_security = resolver(&new_config);
+        }
 
         {
             let mut config_guard = self.config.write().await;
@@ -1141,7 +1355,7 @@ impl UiApp {
                 resolve_consumer_output(consumer, publishers).map_err(anyhow::Error::msg)?;
             let output = match &resolved_output {
                 ResolvedConsumerOutput::None => Endpoint::null(),
-                ResolvedConsumerOutput::Publisher { endpoint, .. } => endpoint.clone(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => *endpoint.clone(),
                 ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
             };
 
@@ -1234,9 +1448,13 @@ impl std::fmt::Display for UpdateConfigError {
 impl std::error::Error for UpdateConfigError {}
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StorageSecurityInfoResponse {
+    pub target: String,
     pub encrypted: bool,
     pub persistent: bool,
     pub key_source: String,
+    pub key_store_available: bool,
+    pub encrypted_config_available: bool,
+    pub persistent_messages_available: bool,
     pub config_encrypted: bool,
     pub messages_encrypted: bool,
     pub messages_persistent: bool,
@@ -1246,4 +1464,200 @@ pub struct StorageSecurityInfoResponse {
     pub message_key_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kid: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConfigSecurity;
+    use crate::encrypted_config::{
+        clear_process_config_master_key, set_process_config_master_key_hex,
+        test_config_master_key_lock,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct NoopSecretStore;
+
+    impl SecretStore for NoopSecretStore {
+        fn store(&self, _secrets: &HashMap<String, String>) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn sample_storage_security(config: &AppConfig) -> StorageSecurityInfoResponse {
+        match config.security_mode() {
+            ConfigSecurityMode::Sensitive => StorageSecurityInfoResponse {
+                target: "cli".to_string(),
+                encrypted: true,
+                persistent: false,
+                key_source: "ephemeral-process".to_string(),
+                key_store_available: false,
+                encrypted_config_available: true,
+                persistent_messages_available: false,
+                config_encrypted: true,
+                messages_encrypted: true,
+                messages_persistent: false,
+                reason: None,
+                message_key_hex: Some("abc".to_string()),
+                kid: Some("kid".to_string()),
+            },
+            _ => StorageSecurityInfoResponse {
+                target: "cli".to_string(),
+                encrypted: false,
+                persistent: true,
+                key_source: "none".to_string(),
+                key_store_available: false,
+                encrypted_config_available: false,
+                persistent_messages_available: false,
+                config_encrypted: false,
+                messages_encrypted: false,
+                messages_persistent: true,
+                reason: None,
+                message_key_hex: None,
+                kid: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn update_config_runs_storage_hooks_and_refreshes_security() {
+        let _guard = test_config_master_key_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut initial_config = AppConfig::default();
+        initial_config.config_security = Some(ConfigSecurity {
+            mode: ConfigSecurityMode::Balanced,
+        });
+
+        let temp_path =
+            std::env::temp_dir().join(format!("mqb-ui-app-test-{}.yaml", Uuid::new_v4()));
+        let prepare_calls = Arc::new(AtomicUsize::new(0));
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+
+        let prepare_counter = Arc::clone(&prepare_calls);
+        let resolver_counter = Arc::clone(&resolver_calls);
+        let app = UiApp::new_with_secret_store_and_storage_hooks(
+            initial_config.clone(),
+            metrics_exporter_prometheus::PrometheusBuilder::new()
+                .build_recorder()
+                .handle(),
+            temp_path.to_string_lossy().to_string(),
+            Arc::new(NoopSecretStore),
+            sample_storage_security(&initial_config),
+            Arc::new(move |config| {
+                resolver_counter.fetch_add(1, Ordering::SeqCst);
+                sample_storage_security(config)
+            }),
+            Arc::new(move |config| {
+                prepare_counter.fetch_add(1, Ordering::SeqCst);
+                if matches!(
+                    config.security_mode(),
+                    ConfigSecurityMode::Sensitive | ConfigSecurityMode::Durable
+                ) {
+                    set_process_config_master_key_hex(
+                        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+                            .to_string(),
+                    );
+                }
+                Ok(())
+            }),
+        );
+
+        let mut next_config = initial_config.clone();
+        next_config.config_security = Some(ConfigSecurity {
+            mode: ConfigSecurityMode::Sensitive,
+        });
+
+        app.update_config(next_config).await.unwrap();
+
+        assert_eq!(prepare_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(resolver_calls.load(Ordering::SeqCst), 1);
+        assert!(app.storage_security().config_encrypted);
+
+        let _ = std::fs::remove_file(temp_path);
+        clear_process_config_master_key();
+    }
+
+    #[tokio::test]
+    async fn reset_config_recovery_clears_pending_status() {
+        let mut initial_config = AppConfig::default();
+        initial_config.config_security = Some(ConfigSecurity {
+            mode: ConfigSecurityMode::Balanced,
+        });
+
+        let app = UiApp::new_with_secret_store_and_runtime_hooks(
+            initial_config.clone(),
+            metrics_exporter_prometheus::PrometheusBuilder::new()
+                .build_recorder()
+                .handle(),
+            "/tmp/mqb-config.yml".to_string(),
+            Arc::new(NoopSecretStore),
+            sample_storage_security(&initial_config),
+            UiAppRuntimeHooks::default()
+                .with_storage_security_resolver(Arc::new(sample_storage_security))
+                .with_storage_save_prepare(Arc::new(|_| Ok(())))
+                .with_config_recovery(Some(ConfigRecoveryStatusResponse {
+                    mode: Some("sensitive".to_string()),
+                    reason: "decrypt-failed".to_string(),
+                    message: "The encrypted config could not be decrypted.".to_string(),
+                    detail: Some("Failed to decrypt sensitive config".to_string()),
+                }))
+                .with_config_recovery_reset(Some(Arc::new(|_| {
+                    Ok(ConfigRecoveryResetResponse {
+                        backup_path: "/tmp/mqb-config.yml.recovery.bak".to_string(),
+                    })
+                }))),
+        );
+
+        let handled = app.handle_reset_config_recovery().await.unwrap();
+        let Handled::Publish(message) = handled else {
+            panic!("expected publish response");
+        };
+        let payload = message.get_payload_str();
+
+        assert!(payload.contains("backup_path"));
+        assert!(app.config_recovery().is_none());
+    }
+
+    #[test]
+    fn storage_security_for_cli_uses_explicit_temporary_messages_mode() {
+        let mut config = AppConfig::default();
+        config.config_security = Some(ConfigSecurity {
+            mode: ConfigSecurityMode::EnvTemporaryMessages,
+        });
+
+        let info = storage_security_for_cli(&config);
+
+        assert_eq!(info.target, "cli");
+        assert!(info.encrypted);
+        assert!(!info.persistent);
+        assert_eq!(info.key_source, "ephemeral-process");
+        assert!(!info.config_encrypted);
+        assert!(info.messages_encrypted);
+        assert!(!info.messages_persistent);
+        assert!(info.message_key_hex.is_some());
+        assert!(info.kid.is_some());
+    }
+
+    #[test]
+    fn storage_security_for_cli_uses_config_master_key_for_sensitive_modes() {
+        let _guard = test_config_master_key_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        clear_process_config_master_key();
+
+        let mut config = AppConfig::default();
+        config.config_security = Some(ConfigSecurity {
+            mode: ConfigSecurityMode::Sensitive,
+        });
+        assert!(!storage_security_for_cli(&config).config_encrypted);
+
+        set_process_config_master_key_hex(
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+        );
+        assert!(storage_security_for_cli(&config).config_encrypted);
+
+        clear_process_config_master_key();
+    }
 }

@@ -23,6 +23,33 @@ It provides a complete developer and operator workflow:
 
 Supported integration types include **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **AWS SQS**, **MQTT**, **IBM MQ**, **HTTP**, **gRPC**, **ZeroMQ**, **MongoDB**, **sqlx(MySQL, MariaDB, PostgreSQL)**, and filesystem endpoints.
 
+## How It Differs
+
+`mq-bridge-app` overlaps with API clients and collections tools like Postman, Bruno, ApiArc, and similar apps, but its center of gravity is different: it is designed around message bridging, runtime operation, and long-lived route management rather than just request composition.
+
+The table below is intentionally broad. Exact feature sets vary by product and edition, but it captures the main difference in emphasis.
+| Capability | mq-bridge | Postman | Bruno | Insomnia | Hoppscotch |
+| --- | --- | --- | --- | --- | --- |
+| Basic HTTP/API requests | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Scripting | — | ✓ | ✓ | ✓ | ✓ |
+| Cookie jar | Not yet | ✓ | ✓ | ✓ | ~ |
+| Multipart forms | - | ✓ | ✓ | ✓ | ✓ |
+| Hex-level payload debugging | ✓ | — | — | — | — |
+| Broker pub/sub workflow | ✓ | MQTT | — | — | MQTT |
+| Long-lived consumers/routes | ✓ | — | — | — | — |
+| Bridge traffic between protocols | ✓ | — | — | — | — |
+| Replay captured messages | ✓ |  ~ | — | — | ~ |
+| Local-first workspace | ✓ | ~ | ✓ | ✓ | ~ |
+| Git-friendly config | ✓ | ~ | ✓ | ✓ | ~ |
+| Cloud sync by default | — | ✓ | — | Optional | Optional |
+| AI / agent features | — | ✓ | ~ | ~ | ~ |
+| Encrypted config | ✓ | ~ | ~ | ~ | ~ |
+
+In short:
+
+- use Postman, Bruno, or ApiArc when your main job is crafting and sharing API requests, or if you have complex authentications or request workflows;
+- use `mq-bridge-app` when you need to connect systems, move messages between protocols, inspect live traffic, and manage bridge-style runtime configuration.
+
 ## Screenshots
 
 Dark mode:
@@ -52,6 +79,12 @@ It originally served as the primary reference implementation and testbed for the
 - **Built-in Web UI**: Svelte-based management UI for publishers, consumers, routes, runtime status, presets, and imports.
 - **Observability**: Production-ready with structured **JSON logging** and a **Prometheus** metrics endpoint.
 - **Flexible Configuration**: Hierarchical configuration via files (YAML, JSON, TOML) and Environment Variables, perfect for Container/Kubernetes environments.
+- **Storage Security Modes**: Supports plain storage, extracted secrets, encrypted config, and encrypted message history modes for both CLI/server and desktop workflows.
+
+### Security & Storage
+- **Config Security Modes**: Choose between plain config, extracted secrets, encrypted config, and persistent encrypted history depending on runtime target and available key storage.
+- **Encrypted Message History**: Cached broker payloads and captured message history can be encrypted at rest to avoid leaving readable data behind after shutdown.
+- **Local-First Operation**: Config files stay under your control instead of being tied to a mandatory cloud workspace.
 
 ## Quick Start (UI)
 

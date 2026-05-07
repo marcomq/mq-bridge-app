@@ -229,6 +229,25 @@ async fn test_web_ui_schema_and_index_expose_custom_ui_shape() {
 }
 
 #[tokio::test]
+async fn test_web_ui_exposes_storage_security_json() {
+    let _guard = test_mutex().lock().await;
+    stop_all_routes().await;
+
+    let port = get_free_port();
+    let config_file = unique_config_path(port);
+    let server = start_test_server(port, AppConfig::default(), &config_file).await;
+
+    let storage_security = read_json_response(port, "/storage-security").await;
+    assert_eq!(storage_security["target"], "cli");
+    assert_eq!(storage_security["encrypted"], false);
+    assert_eq!(storage_security["persistent"], true);
+
+    server.abort();
+    stop_all_routes().await;
+    let _ = std::fs::remove_file(config_file);
+}
+
+#[tokio::test]
 async fn test_web_ui_serves_custom_static_assets() {
     let _guard = test_mutex().lock().await;
     stop_all_routes().await;

@@ -8,6 +8,11 @@ export async function fetchStorageSecurityFromServer<T>(fetchImpl: typeof fetch)
   return response.json() as Promise<T>;
 }
 
+export async function fetchConfigRecoveryFromServer<T>(fetchImpl: typeof fetch): Promise<T> {
+  const response = await fetchImpl("/config-recovery", { cache: "no-store" });
+  return response.json() as Promise<T>;
+}
+
 export async function postConfig(fetchImpl: typeof fetch, config: unknown): Promise<void> {
   const response = await fetchImpl("/config", {
     method: "POST",
@@ -17,6 +22,18 @@ export async function postConfig(fetchImpl: typeof fetch, config: unknown): Prom
   if (!response.ok) {
     throw new Error(await response.text());
   }
+}
+
+export async function postResetConfigRecovery<T>(fetchImpl: typeof fetch): Promise<T> {
+  const response = await fetchImpl("/config-recovery/reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<T>;
 }
 
 export async function saveWholeConfig<T extends object>(

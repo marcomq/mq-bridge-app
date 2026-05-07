@@ -5,6 +5,7 @@ use aes_gcm::{
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use config::FileFormat;
+use std::sync::{OnceLock, RwLock};
 
 pub const CONFIG_MASTER_KEY_ENV: &str = "MQB_CONFIG_MASTER_KEY";
 const CONFIG_ENVELOPE_VERSION: u8 = 1;
@@ -12,10 +13,12 @@ const CONFIG_ENVELOPE_ALG: &str = "AES-256-GCM";
 const CONFIG_ENVELOPE_AAD: &[u8] = b"mq-bridge-app:config";
 const SENSITIVE_MODE_LABEL: &str = "sensitive";
 const DURABLE_MODE_LABEL: &str = "durable";
+const CONFIG_MASTER_KEY_MEMORY_KID: &str = "process-memory";
 
 #[cfg(test)]
 static TEST_CONFIG_MASTER_KEY_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
     std::sync::OnceLock::new();
+static CONFIG_MASTER_KEY_MEMORY: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone, Default)]
 struct EncryptedEnvelope {
@@ -41,7 +44,11 @@ struct EncryptedConfigSecurity {
 }
 
 pub fn has_config_master_key() -> bool {
-    std::env::var(CONFIG_MASTER_KEY_ENV).is_ok()
+    config_master_key_memory()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .is_some()
+        || std::env::var(CONFIG_MASTER_KEY_ENV).is_ok()
 }
 
 #[cfg(test)]
@@ -61,13 +68,40 @@ pub fn config_file_format_from_path(path: &str) -> FileFormat {
     }
 }
 
-fn read_config_master_key() -> Result<Vec<u8>, anyhow::Error> {
-    let raw = std::env::var(CONFIG_MASTER_KEY_ENV).map_err(|_| {
-        anyhow::anyhow!(
-            "Sensitive config requires {} to be set to a 32-byte hex key",
-            CONFIG_MASTER_KEY_ENV
-        )
-    })?;
+fn config_master_key_memory() -> &'static RwLock<Option<String>> {
+    CONFIG_MASTER_KEY_MEMORY.get_or_init(|| RwLock::new(None))
+}
+
+pub fn set_process_config_master_key_hex(value: String) {
+    let mut guard = config_master_key_memory()
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = Some(value);
+}
+
+pub fn clear_process_config_master_key() {
+    let mut guard = config_master_key_memory()
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = None;
+}
+
+fn read_config_master_key() -> Result<(Vec<u8>, &'static str), anyhow::Error> {
+    let in_memory = config_master_key_memory()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let (raw, kid) = if let Some(value) = in_memory {
+        (value, CONFIG_MASTER_KEY_MEMORY_KID)
+    } else {
+        let value = std::env::var(CONFIG_MASTER_KEY_ENV).map_err(|_| {
+            anyhow::anyhow!(
+                "Sensitive config requires {} to be set to a 32-byte hex key",
+                CONFIG_MASTER_KEY_ENV
+            )
+        })?;
+        (value, CONFIG_MASTER_KEY_ENV)
+    };
     let bytes = hex::decode(raw.trim()).map_err(|_| {
         anyhow::anyhow!(
             "{} must contain a valid 32-byte hex key",
@@ -77,11 +111,11 @@ fn read_config_master_key() -> Result<Vec<u8>, anyhow::Error> {
     if bytes.len() != 32 {
         anyhow::bail!("{} must contain exactly 32 bytes", CONFIG_MASTER_KEY_ENV);
     }
-    Ok(bytes)
+    Ok((bytes, kid))
 }
 
 fn encrypt_config_payload(plaintext: &str) -> Result<EncryptedEnvelope, anyhow::Error> {
-    let key = read_config_master_key()?;
+    let (key, kid) = read_config_master_key()?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| anyhow::anyhow!("Failed to initialize config encryption"))?;
     let mut nonce_bytes = [0u8; 12];
@@ -100,7 +134,7 @@ fn encrypt_config_payload(plaintext: &str) -> Result<EncryptedEnvelope, anyhow::
     Ok(EncryptedEnvelope {
         v: CONFIG_ENVELOPE_VERSION,
         alg: CONFIG_ENVELOPE_ALG.to_string(),
-        kid: CONFIG_MASTER_KEY_ENV.to_string(),
+        kid: kid.to_string(),
         nonce: BASE64.encode(nonce_bytes),
         ciphertext: BASE64.encode(ciphertext),
     })
@@ -114,7 +148,7 @@ fn decrypt_config_payload(envelope: &EncryptedEnvelope) -> Result<String, anyhow
         anyhow::bail!("Unsupported encrypted config algorithm: {}", envelope.alg);
     }
 
-    let key = read_config_master_key()?;
+    let (key, _) = read_config_master_key()?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| anyhow::anyhow!("Failed to initialize config decryption"))?;
     let nonce_bytes = BASE64
@@ -242,6 +276,18 @@ mod tests {
         f()
     }
 
+    fn with_test_process_master_key<T>(f: impl FnOnce() -> T) -> T {
+        let _env_guard = env_lock().lock().unwrap_or_else(|error| error.into_inner());
+        clear_process_config_master_key();
+        unsafe {
+            std::env::remove_var(CONFIG_MASTER_KEY_ENV);
+        }
+        set_process_config_master_key_hex(TEST_MASTER_KEY_HEX.to_string());
+        let result = f();
+        clear_process_config_master_key();
+        result
+    }
+
     fn sample_sensitive_config() -> AppConfig {
         serde_yaml_ng::from_str(
             r#"
@@ -287,6 +333,23 @@ publishers:
                 .unwrap()
                 .unwrap();
             assert_eq!(decoded, plaintext);
+        });
+    }
+
+    #[test]
+    fn process_master_key_round_trip_encrypts_and_decrypts() {
+        with_test_process_master_key(|| {
+            let plaintext = "hello: world\nconfig_security:\n  mode: sensitive\n";
+            let encoded =
+                encode_sensitive_config_file(plaintext, FileFormat::Yaml, SENSITIVE_MODE_LABEL)
+                    .unwrap();
+
+            assert!(encoded.contains("kid: process-memory"));
+
+            let decrypted = maybe_decrypt_config_source(&encoded, FileFormat::Yaml)
+                .unwrap()
+                .expect("decrypted payload");
+            assert_eq!(decrypted, plaintext);
         });
     }
 

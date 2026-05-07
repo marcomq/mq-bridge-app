@@ -44,9 +44,13 @@ export type MqbState = {
     }>;
   };
   storage_security?: {
+    target?: "cli" | "desktop";
     encrypted: boolean;
     persistent: boolean;
     keySource: "none" | "os-key-store" | "ephemeral-process" | "env";
+    keyStoreAvailable?: boolean;
+    encryptedConfigAvailable?: boolean;
+    persistentMessagesAvailable?: boolean;
     configEncrypted: boolean;
     messagesEncrypted: boolean;
     messagesPersistent: boolean;

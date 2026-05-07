@@ -1,8 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   fetchConfigFromServer,
+  fetchConfigRecoveryFromServer,
   fetchStorageSecurityFromServer,
   postConfig,
+  postResetConfigRecovery,
   saveConfigSection,
   saveWholeConfig,
 } from "../../ui/src/lib/config-api";
@@ -37,6 +39,33 @@ describe("config-api", () => {
       messagesEncrypted: true,
     });
     expect(fetchImpl).toHaveBeenCalledWith("/storage-security", { cache: "no-store" });
+  });
+
+  test("fetches config recovery status without cache", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      json: async () => ({ message: "needs recovery" }),
+    });
+
+    await expect(fetchConfigRecoveryFromServer(fetchImpl as unknown as typeof fetch)).resolves.toEqual({
+      message: "needs recovery",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith("/config-recovery", { cache: "no-store" });
+  });
+
+  test("posts config recovery reset and returns backup info", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ backup_path: "/tmp/config.yml.recovery.bak" }),
+    });
+
+    await expect(postResetConfigRecovery(fetchImpl as unknown as typeof fetch)).resolves.toEqual({
+      backup_path: "/tmp/config.yml.recovery.bak",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith("/config-recovery/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
   });
 
   test("saves whole config and returns refreshed data", async () => {

@@ -49,12 +49,20 @@ pub enum ConfigSecurityMode {
     Unencrypted,
     #[default]
     Balanced,
+    EnvTemporaryMessages,
+    TemporaryMessages,
     Sensitive,
     Durable,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
 pub struct ConfigSecurity {
+    /// Configuration security.
+    /// balanced: Extract secrets to the target secret store and keep message history plain.
+    /// env_temporary_messages: Extract secrets to env or placeholders and encrypt message history temporarily.
+    /// temporary_messages: Keep config plain and encrypt message history temporarily.
+    /// sensitive: Encrypt config and encrypt message history temporarily.
+    /// durable: Encrypt config and keep encrypted message history between restarts when supported.
     #[serde(default)]
     pub mode: ConfigSecurityMode,
 }
@@ -469,6 +477,8 @@ impl AppConfig {
         match mode {
             ConfigSecurityMode::Unencrypted => "unencrypted",
             ConfigSecurityMode::Balanced => "balanced",
+            ConfigSecurityMode::EnvTemporaryMessages => "env_temporary_messages",
+            ConfigSecurityMode::TemporaryMessages => "temporary_messages",
             ConfigSecurityMode::Sensitive => "sensitive",
             ConfigSecurityMode::Durable => "durable",
         }
@@ -487,20 +497,22 @@ impl AppConfig {
             })
     }
 
-    fn migrate_legacy_security_mode(&mut self) {
+    pub fn migrate_legacy_security_mode(&mut self) {
         let mode = self.security_mode();
         self.config_security = Some(ConfigSecurity { mode });
-        self.extract_secrets = matches!(mode, ConfigSecurityMode::Balanced);
+        // Keep the legacy flag read-compatible, but normalize runtime state onto
+        // config_security.mode so the UI and save path have a single source of truth.
+        self.extract_secrets = false;
     }
 
     pub fn migrate_legacy_consumer_response(&mut self) {
         for consumer in &mut self.consumers {
-            if matches!(consumer.output, ConsumerOutputConfig::None) {
-                if let Some(response) = consumer.response.take() {
-                    consumer.output = ConsumerOutputConfig::Response {
-                        response: Some(response),
-                    };
-                }
+            if matches!(consumer.output, ConsumerOutputConfig::None)
+                && let Some(response) = consumer.response.take()
+            {
+                consumer.output = ConsumerOutputConfig::Response {
+                    response: Some(response),
+                };
             }
         }
     }
@@ -595,7 +607,10 @@ impl AppConfig {
         }
 
         let mode = config_to_save.security_mode();
-        if matches!(mode, ConfigSecurityMode::Balanced) {
+        if matches!(
+            mode,
+            ConfigSecurityMode::Balanced | ConfigSecurityMode::EnvTemporaryMessages
+        ) {
             let secrets = config_to_save.extract_secrets();
             secret_store.store(&secrets)?;
         }
@@ -1117,6 +1132,7 @@ consumers: []
                 .map(|security| security.mode),
             Some(ConfigSecurityMode::Balanced)
         );
+        assert!(!config.extract_secrets);
     }
 
     #[test]
@@ -1152,6 +1168,42 @@ consumers: []
         assert!(!saved.contains("Bearer token"));
         assert!(!saved.contains("extract_secrets"));
         assert_eq!(secret_store.stored.lock().unwrap().len(), 1);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_save_env_temporary_messages_extracts_and_stores_secrets() {
+        let config = sample_security_config("env_temporary_messages");
+        let secret_store = RecordingSecretStore::default();
+        let path = std::env::temp_dir().join("mqb-config-env-temporary-messages.yml");
+
+        config
+            .save_with_secret_store(path.to_str().unwrap(), &secret_store)
+            .unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("mode: env_temporary_messages"));
+        assert!(!saved.contains("Bearer token"));
+        assert_eq!(secret_store.stored.lock().unwrap().len(), 1);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_save_temporary_messages_keeps_inline_secrets() {
+        let config = sample_security_config("temporary_messages");
+        let secret_store = RecordingSecretStore::default();
+        let path = std::env::temp_dir().join("mqb-config-temporary-messages.yml");
+
+        config
+            .save_with_secret_store(path.to_str().unwrap(), &secret_store)
+            .unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("mode: temporary_messages"));
+        assert!(saved.contains("Bearer token"));
+        assert!(secret_store.stored.lock().unwrap().is_empty());
 
         let _ = std::fs::remove_file(path);
     }

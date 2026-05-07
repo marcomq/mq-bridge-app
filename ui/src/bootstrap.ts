@@ -4,7 +4,9 @@ import {
   saveWholeConfig,
   saveConfigSection as persistConfigSection,
   fetchConfigFromServer,
+  fetchConfigRecoveryFromServer,
   fetchStorageSecurityFromServer,
+  postResetConfigRecovery,
 } from "./lib/config-api";
 import { initConsumers, restoreConsumerStateFromView } from "./lib/consumers-view";
 import { initPublishers, restorePublisherStateFromView } from "./lib/publishers-view";
@@ -25,6 +27,51 @@ import {
 import type { MainTab } from "./lib/runtime-status";
 import { EMPTY_STORAGE_SECURITY, normalizeStorageSecurityInfo } from "./lib/storage-security";
 import { getStoredJson } from "./lib/encrypted-json-storage";
+
+type ConfigRecoveryStatus = {
+  mode?: string;
+  reason?: string;
+  message?: string;
+  detail?: string;
+} | null;
+
+async function maybeHandleConfigRecovery(fetchImpl: typeof fetch): Promise<void> {
+  const recovery = await fetchConfigRecoveryFromServer<ConfigRecoveryStatus>(fetchImpl).catch(() => null);
+  if (!recovery?.message) {
+    return;
+  }
+
+  const choice = await mqbDialogs.choose(
+    `${recovery.message}${recovery.detail ? `\n\n${recovery.detail}` : ""}`,
+    "Encrypted Config Recovery",
+    {
+      confirmLabel: "Continue",
+      cancelLabel: "Close",
+      choices: [
+        {
+          value: "continue",
+          label: "Continue",
+          description: "Open the app with a temporary empty config for now.",
+        },
+        {
+          value: "reset",
+          label: "Reset Config",
+          description: "Back up the unreadable config and replace it with a fresh default config.",
+        },
+      ],
+    },
+  );
+
+  if (choice === "reset") {
+    const result = await postResetConfigRecovery<{ backup_path?: string }>(fetchImpl);
+    await mqbDialogs.alert(
+      result?.backup_path
+        ? `The unreadable config was backed up to:\n${result.backup_path}`
+        : "The unreadable config was reset.",
+      "Encrypted Config Reset",
+    );
+  }
+}
 
 function setActiveTab(name: MainTab) {
   activeMainTab.set(name);
@@ -245,8 +292,16 @@ function installGlobals() {
   appWindow().saveConfig = async (silent = false, button = null) => {
     const doSave = async () => {
       const appConfig = mqbApp.config<Record<string, unknown>>();
-      const refreshedConfig = await saveWholeConfig(fetch, appConfig);
+      const [refreshedConfig, refreshedStorageSecurity] = await Promise.all([
+        saveWholeConfig(fetch, appConfig),
+        fetchStorageSecurityFromServer(fetch).catch(() => null),
+      ]);
       Object.assign(appConfig, refreshedConfig);
+      if (refreshedStorageSecurity) {
+        const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
+        state.storage_security = normalizedStorageSecurity;
+        (appWindow() as any)._mqb_storage_security = normalizedStorageSecurity;
+      }
       appWindow().markSectionSaved("config", appConfig);
       return true;
     };
@@ -295,6 +350,8 @@ function installGlobals() {
 
 export async function bootstrapApp() {
   installGlobals();
+
+  await maybeHandleConfigRecovery(fetch);
 
   const [config, schema, storageSecurityRaw] = await Promise.all([
     fetchConfigFromServer<Record<string, any>>(fetch),

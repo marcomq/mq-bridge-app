@@ -6,7 +6,14 @@ interface DesktopSecretEntry {
 }
 import { cloneSectionState } from "./dirty-state";
 import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
-import { storageSecurityDetail, storageSecuritySummary } from "./storage-security";
+import {
+  storageModeOptions,
+  storageModeOptionsSummary,
+  storageSecurityDetail,
+  storageSecuritySummary,
+  type StorageSecurityInfo,
+} from "./storage-security";
+import { ensureWorkspaceCollections } from "./workspace-config";
 
 interface DesktopSecretSummary {
   routes?: Record<string, DesktopSecretEntry[]>;
@@ -25,6 +32,14 @@ const SETTINGS_KEYS = [
 ] as const;
 
 type SettingsKey = (typeof SETTINGS_KEYS)[number];
+const STORAGE_MODE_VALUES = new Set([
+  "unencrypted",
+  "balanced",
+  "env_temporary_messages",
+  "temporary_messages",
+  "sensitive",
+  "durable",
+]);
 
 function cloneSchema<T>(schema: T): T {
   return JSON.parse(JSON.stringify(schema)) as T;
@@ -40,11 +55,49 @@ function filterObjectKeys<T extends Record<string, unknown>>(value: T, keys: rea
   return result;
 }
 
-export function buildSettingsSchema(schema: Record<string, unknown>) {
+function applyStorageModeDescriptions(
+  properties: Record<string, unknown>,
+  storageInfo: StorageSecurityInfo | undefined,
+  currentMode?: string,
+) {
+  const configSecurity = properties.config_security as Record<string, unknown> | undefined;
+  const nestedProperties = configSecurity?.properties as Record<string, unknown> | undefined;
+  const modeProperty = nestedProperties?.mode as Record<string, unknown> | undefined;
+  if (!configSecurity || !modeProperty || !storageInfo) {
+    return;
+  }
+
+  const options = storageModeOptions(storageInfo);
+  if (currentMode && !options.some((option) => option.value === currentMode)) {
+    options.push({
+      value: currentMode as any,
+      title: `${currentMode} (Current, unsupported here)`,
+      detail: "This mode was loaded from another target or older config and is not normally offered here.",
+      available: false,
+    });
+  }
+  configSecurity.description = storageModeOptionsSummary(storageInfo);
+  modeProperty.description = options
+    .map((option) => `${option.title}: ${option.available ? option.detail : `Unavailable. ${option.detail}`}`)
+    .join("\n");
+}
+
+export function buildSettingsSchema(
+  schema: Record<string, unknown>,
+  storageInfo?: StorageSecurityInfo,
+  currentConfig?: Record<string, unknown>,
+) {
   const cloned = cloneSchema(schema);
   const properties = filterObjectKeys(
     ((cloned?.properties as Record<string, unknown> | undefined) || {}) as Record<string, unknown>,
     SETTINGS_KEYS,
+  );
+  applyStorageModeDescriptions(
+    properties,
+    storageInfo,
+    typeof (currentConfig as any)?.config_security?.mode === "string"
+      ? (currentConfig as any).config_security.mode
+      : undefined,
   );
   return {
     ...cloned,
@@ -56,7 +109,8 @@ export function buildSettingsSchema(schema: Record<string, unknown>) {
 }
 
 export function extractSettingsConfig(config: Record<string, unknown>) {
-  return filterObjectKeys(config, SETTINGS_KEYS);
+  const normalized = ensureWorkspaceCollections({ ...(config as Record<string, unknown>) });
+  return filterObjectKeys(normalized, SETTINGS_KEYS);
 }
 
 function mergeSettingsConfig(target: Record<string, unknown>, settingsConfig: Record<string, unknown>) {
@@ -97,6 +151,57 @@ function renderStorageSecurityNotice() {
   }
 
   notice.textContent = `${storageSecuritySummary(info)} ${storageSecurityDetail(info)}`;
+}
+
+function renderStorageModeNotice() {
+  const formActions = document.getElementById("form-actions");
+  const state = getMqbState();
+  const info = state.storage_security;
+  if (!formActions || !info) return;
+
+  let notice = document.getElementById("js-storage-mode-note");
+  if (!notice) {
+    notice = document.createElement("div");
+    notice.id = "js-storage-mode-note";
+    notice.className = "storage-security-note";
+    formActions.parentElement?.insertBefore(notice, formActions);
+  }
+
+  const options = storageModeOptions(info);
+  notice.textContent = options
+    .map((option) => `${option.title}: ${option.available ? option.detail : `Unavailable. ${option.detail}`}`)
+    .join(" ");
+}
+
+function pruneStorageModeOptions(
+  container: HTMLElement,
+  storageInfo: StorageSecurityInfo | undefined,
+  currentMode?: string,
+) {
+  if (!storageInfo) {
+    return;
+  }
+
+  const allowed = new Set(storageModeOptions(storageInfo).map((option) => option.value));
+  if (currentMode && STORAGE_MODE_VALUES.has(currentMode)) {
+    allowed.add(currentMode as any);
+  }
+
+  const candidates = Array.from(container.querySelectorAll("select")) as HTMLSelectElement[];
+  const select = candidates.find((candidate) => {
+    const optionValues = Array.from(candidate.options).map((option) => option.value);
+    const storageMatches = optionValues.filter((value) => STORAGE_MODE_VALUES.has(value)).length;
+    return storageMatches >= 3;
+  });
+  if (!select) {
+    return;
+  }
+
+  for (const option of Array.from(select.options)) {
+    if (STORAGE_MODE_VALUES.has(option.value) && !allowed.has(option.value as any)) {
+      option.remove();
+    }
+  }
 }
 
 export function formatDesktopSecretsSummary(summary: DesktopSecretSummary): string {
@@ -141,9 +246,9 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
     return;
   }
 
-  const settingsSchema = buildSettingsSchema(schema);
-  let settingsConfig = extractSettingsConfig(config);
   const state = getMqbState();
+  const settingsSchema = buildSettingsSchema(schema, state.storage_security, config);
+  let settingsConfig = extractSettingsConfig(config);
   state.saved_sections.config = cloneSectionState(settingsConfig);
 
   mqbRuntime.registerDirtySection("config", {
@@ -154,7 +259,15 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   state.form_mode = "settings";
   (window as any)._mqb_form_mode = "settings";
   await lib.init(container, settingsSchema, settingsConfig);
+  pruneStorageModeOptions(
+    container,
+    state.storage_security,
+    typeof (settingsConfig as any)?.config_security?.mode === "string"
+      ? (settingsConfig as any).config_security.mode
+      : undefined,
+  );
   renderStorageSecurityNotice();
+  renderStorageModeNotice();
 
   const formActions = document.getElementById("form-actions");
   if (formActions) {
@@ -173,6 +286,8 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
       if (saved) {
         settingsConfig = extractSettingsConfig(appConfig);
         appWindow().markSectionSaved("config", settingsConfig);
+        renderStorageSecurityNotice();
+        renderStorageModeNotice();
       }
     };
   }

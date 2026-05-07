@@ -81,7 +81,9 @@ vi.mock("../../ui/src/lib/config-api", () => ({
   saveWholeConfig: vi.fn(),
   saveConfigSection: vi.fn(),
   fetchConfigFromServer: vi.fn(),
+  fetchConfigRecoveryFromServer: vi.fn(),
   fetchStorageSecurityFromServer: vi.fn(),
+  postResetConfigRecovery: vi.fn(),
 }));
 vi.mock("../../ui/src/lib/consumers-view", () => ({ initConsumers: vi.fn(), restoreConsumerStateFromView: vi.fn() }));
 vi.mock("../../ui/src/lib/publishers-view", () => ({ initPublishers: vi.fn(), restorePublisherStateFromView: vi.fn() }));
@@ -115,6 +117,80 @@ describe("bootstrap runtime status sync", () => {
     await import("../../ui/src/bootstrap");
   });
 
+  test("refreshes storage security after saving config", async () => {
+    const {
+      fetchConfigFromServer,
+      fetchConfigRecoveryFromServer,
+      saveWholeConfig,
+      fetchStorageSecurityFromServer,
+    } = await import("../../ui/src/lib/config-api");
+    const { bootstrapApp } = await import("../../ui/src/bootstrap");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({ properties: {} }),
+      }),
+    );
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    });
+    vi.mocked(fetchConfigFromServer).mockResolvedValue({
+      consumers: [],
+      publishers: [],
+      default_tab: "publishers",
+      config_security: { mode: "balanced" },
+    });
+    vi.mocked(fetchConfigRecoveryFromServer).mockResolvedValue(null);
+    vi.mocked(saveWholeConfig).mockResolvedValue({
+      consumers: [],
+      publishers: [],
+      config_security: { mode: "sensitive" },
+    });
+    vi.mocked(fetchStorageSecurityFromServer).mockResolvedValueOnce({
+      encrypted: false,
+      persistent: true,
+      keySource: "env",
+      configEncrypted: false,
+      messagesEncrypted: false,
+      messagesPersistent: true,
+    });
+    vi.mocked(fetchStorageSecurityFromServer).mockResolvedValue({
+      encrypted: true,
+      persistent: false,
+      keySource: "ephemeral-process",
+      configEncrypted: true,
+      messagesEncrypted: true,
+      messagesPersistent: false,
+    });
+
+    (window as any).appConfig = { consumers: [], publishers: [], config_security: { mode: "balanced" } };
+    vi.mocked(saveWholeConfig).mockResolvedValueOnce({
+      consumers: [],
+      publishers: [],
+      config_security: { mode: "sensitive" },
+    });
+
+    await bootstrapApp();
+    await (window as any).saveConfig();
+
+    expect(fetchStorageSecurityFromServer).toHaveBeenCalled();
+    expect((window as any)._mqb_storage_security).toEqual({
+      target: "cli",
+      encrypted: true,
+      persistent: false,
+      keySource: "ephemeral-process",
+      keyStoreAvailable: false,
+      encryptedConfigAvailable: false,
+      persistentMessagesAvailable: false,
+      configEncrypted: true,
+      messagesEncrypted: true,
+      messagesPersistent: false,
+    });
+    vi.unstubAllGlobals();
+  });
+
   test("publishes the fresh polled status even when legacy global is stale", () => {
     const nextStatus = {
       active_consumers: ["memory_consumer", "http222"],
@@ -128,5 +204,61 @@ describe("bootstrap runtime status sync", () => {
 
     expect((window as any)._mqb_runtime_status).toEqual(nextStatus);
     expect(runtimeStatusStoreSet).toHaveBeenLastCalledWith(nextStatus);
+  });
+
+  test("offers encrypted config recovery reset before continuing bootstrap", async () => {
+    const {
+      fetchConfigFromServer,
+      fetchConfigRecoveryFromServer,
+      fetchStorageSecurityFromServer,
+      postResetConfigRecovery,
+    } = await import("../../ui/src/lib/config-api");
+    const { bootstrapApp } = await import("../../ui/src/bootstrap");
+    const { mqbDialogs } = await import("../../ui/src/lib/runtime-window");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({ properties: {} }),
+      }),
+    );
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    });
+
+    vi.mocked(fetchConfigRecoveryFromServer).mockResolvedValue({
+      message: "The encrypted config could not be decrypted with the available key.",
+      detail: "Failed to decrypt sensitive config",
+    });
+    vi.mocked((mqbDialogs as any).choose).mockResolvedValue("reset");
+    vi.mocked((mqbDialogs as any).alert).mockResolvedValue(undefined);
+    vi.mocked(postResetConfigRecovery).mockResolvedValue({
+      backup_path: "/tmp/config.yml.recovery-20260507-174500.bak",
+    });
+    vi.mocked(fetchConfigFromServer).mockResolvedValue({
+      consumers: [],
+      publishers: [],
+      default_tab: "publishers",
+      config_security: { mode: "balanced" },
+    });
+    vi.mocked(fetchStorageSecurityFromServer).mockResolvedValue({
+      encrypted: false,
+      persistent: true,
+      keySource: "env",
+      configEncrypted: false,
+      messagesEncrypted: false,
+      messagesPersistent: true,
+    });
+
+    await bootstrapApp();
+
+    expect(mqbDialogs.choose).toHaveBeenCalled();
+    expect(postResetConfigRecovery).toHaveBeenCalled();
+    expect(mqbDialogs.alert).toHaveBeenCalledWith(
+      "The unreadable config was backed up to:\n/tmp/config.yml.recovery-20260507-174500.bak",
+      "Encrypted Config Reset",
+    );
+    vi.unstubAllGlobals();
   });
 });

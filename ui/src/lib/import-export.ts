@@ -564,7 +564,6 @@ export async function importFromJsonText(
         nextConfig.ui_addr = importedConfig.ui_addr;
         nextConfig.metrics_addr = importedConfig.metrics_addr;
         nextConfig.config_security = importedConfig.config_security;
-        nextConfig.extract_secrets = importedConfig.extract_secrets;
         mergedHistory = sanitizePublisherHistory(importedConfig.history);
         mergedPresets = sanitizePresets(importedConfig.presets);
         Object.assign(mergedEnvVars, sanitizeEnvVars(importedConfig.env_vars));

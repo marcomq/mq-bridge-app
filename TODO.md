@@ -18,6 +18,19 @@ Important distinction:
 
 Keep the user-facing modes simple. Do not expose a large internal matrix even if the implementation uses richer key-provider and encryption abstractions.
 
+Current implementation note:
+
+- The app currently uses one shared config enum across targets: `unencrypted`, `balanced`, `env_temporary_messages`, `temporary_messages`, `sensitive`, and `durable`.
+- That is slightly different from the target-specific naming above.
+- In the current mapping:
+  - CLI `balanced` behaves like `env-secrets`.
+  - CLI `env_temporary_messages` behaves like `env-secrets-temporary-messages`.
+  - Desktop `balanced` behaves like `keychain-secrets`.
+  - Desktop `temporary_messages` is the plain-config fallback when no key store is available.
+  - `sensitive` means encrypted config plus temporary encrypted messages.
+  - `durable` means encrypted config plus persistent encrypted messages where the target supports it.
+- The UI should make target capability differences visible even before the naming is fully aligned.
+
 CLI target:
 
 1. `unencrypted`
