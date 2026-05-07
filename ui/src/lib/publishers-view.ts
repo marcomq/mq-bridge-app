@@ -5,7 +5,7 @@ import {
 import { cloneJson } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { publishersPanelState } from "./stores";
-import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
+import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 import {
   extractImportedRequests,
   exportPresetsForPublisher,
@@ -2053,7 +2053,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const pendingRestore = state.pending_publisher_restore || null;
     state.pending_publisher_restore = null;
     (appWindow() as any)._mqb_pending_publisher_restore = null;
-    const initialIdx = pendingRestore?.idx ?? state.last_publisher_idx ?? 0;
+    const hashMatch = currentHash().match(/^#publishers:(\d+)$/);
+    const hashIdx = hashMatch ? parseInt(hashMatch[1], 10) : null;
+    const initialIdx = pendingRestore?.idx ?? hashIdx ?? state.last_publisher_idx ?? 0;
     const initialTab = normalizePublisherSubtab(pendingRestore?.tab, state.last_publisher_tab || "payload");
     setActiveItem(initialIdx, { tab: initialTab });
     void updateUIFromState().then(() => {

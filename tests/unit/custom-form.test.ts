@@ -311,6 +311,93 @@ async function loadCustomForm() {
         return wrapper;
       }
 
+      if ("rows" in props && "onChange" in props) {
+        const fieldset = document.createElement("fieldset");
+        fieldset.className = "mqb-inline-editor";
+
+        const legend = document.createElement("legend");
+        legend.textContent = String(props.title || "");
+        fieldset.appendChild(legend);
+
+        if (props.description) {
+          const description = document.createElement("div");
+          description.className = "mqb-form-description-block";
+          description.textContent = String(props.description);
+          fieldset.appendChild(description);
+        }
+
+        if (props.sectionLabel) {
+          const sectionLabel = document.createElement("div");
+          sectionLabel.className = "section-label";
+          sectionLabel.textContent = String(props.sectionLabel || "");
+          fieldset.appendChild(sectionLabel);
+        }
+
+        const rowsContainer = document.createElement("div");
+        rowsContainer.className = "mqb-headers-grid";
+        fieldset.appendChild(rowsContainer);
+
+        const renderRows = () => {
+          rowsContainer.innerHTML = "";
+
+          if (!props.rows.length) {
+            const empty = document.createElement("div");
+            empty.className = "mqb-empty-inline-note";
+            empty.textContent = String(props.emptyLabel || "");
+            rowsContainer.appendChild(empty);
+          }
+
+          props.rows.forEach((row: { key: string; value: string }, index: number) => {
+            const rowEl = document.createElement("div");
+            rowEl.className = "response-header-row mqb-header-row";
+
+            const keyInput = document.createElement("input");
+            keyInput.className = "field-input cons-response-header-key";
+            keyInput.placeholder = String(props.keyPlaceholder || "");
+            keyInput.value = row.key;
+            keyInput.addEventListener("input", () => {
+              props.rows[index] = { ...props.rows[index], key: keyInput.value };
+              props.onChange([...props.rows]);
+            });
+
+            const valueInput = document.createElement("input");
+            valueInput.className = "field-input cons-response-header-value";
+            valueInput.placeholder = String(props.valuePlaceholder || "");
+            valueInput.value = row.value;
+            valueInput.addEventListener("input", () => {
+              props.rows[index] = { ...props.rows[index], value: valueInput.value };
+              props.onChange([...props.rows]);
+            });
+
+            const deleteButton = document.createElement("button");
+            deleteButton.type = "button";
+            deleteButton.textContent = String(props.deleteLabel || "Delete");
+            deleteButton.addEventListener("click", () => {
+              props.rows = props.rows.filter((_: unknown, currentIndex: number) => currentIndex !== index);
+              props.onChange([...props.rows]);
+              renderRows();
+            });
+
+            rowEl.append(keyInput, valueInput, deleteButton);
+            rowsContainer.appendChild(rowEl);
+          });
+        };
+
+        renderRows();
+
+        const addButton = document.createElement("button");
+        addButton.type = "button";
+        addButton.textContent = String(props.addLabel || "");
+        addButton.addEventListener("click", () => {
+          props.rows = [...props.rows, { key: "", value: "" }];
+          props.onChange([...props.rows]);
+          renderRows();
+        });
+        fieldset.appendChild(addButton);
+
+        return fieldset;
+      }
+
       throw new Error(`Unhandled mocked Svelte render props: ${Object.keys(props).join(", ")}`);
     },
   }));
@@ -396,6 +483,40 @@ describe("custom form runtime", () => {
     const reopenedCheckbox = findCheckboxByLabel(element, "Compression Enabled");
     expect(reopenedCheckbox).not.toBeNull();
     expect((reopenedCheckbox as HTMLInputElement).checked).toBe(true);
+  });
+
+  test("renders env vars as environment variables without advanced toggle", async () => {
+    const forms = await loadCustomForm();
+    const renderEnvVars = forms.customRenderers.env_vars.render as Function;
+    const store = createStore({
+      env_vars: {
+        API_TOKEN: "secret",
+      },
+    });
+    forms.__activeStore = store;
+
+    const element = renderEnvVars(
+      {
+        type: "object",
+        title: "Additional Properties",
+        description: "Config environment values",
+      },
+      "",
+      "root.env_vars",
+      ["env_vars"],
+      { store },
+    ) as HTMLElement;
+
+    document.body.appendChild(element);
+
+    expect(element.querySelector("legend")?.textContent).toBe("Environment Variables");
+    expect(element.querySelector(".section-label")).toBeNull();
+    expect(element.querySelector(".mqb-form-toggle")).toBeNull();
+
+    const deleteButton = Array.from(element.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Delete")) as HTMLButtonElement | undefined;
+    deleteButton?.click();
+    expect(store.getPath(["env_vars"])).toEqual({});
   });
 
   test("optional tls sections can be toggled repeatedly and keep nested values connected to the store", async () => {

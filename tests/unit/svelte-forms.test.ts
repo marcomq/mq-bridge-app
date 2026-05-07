@@ -134,4 +134,32 @@ describe("svelte form components", () => {
     expect(target.querySelector(".mqb-empty-inline-note")?.textContent).toContain("No headers defined.");
     unmount(instance);
   });
+
+  test("HeadersEditor supports custom labels for environment variables", async () => {
+    const onChange = vi.fn();
+    const { target, instance } = mountComponent(HeadersEditor, {
+      title: "Environment Variables",
+      sectionLabel: "Environment Variables",
+      keyPlaceholder: "Variable name",
+      valuePlaceholder: "Value",
+      addLabel: "Add Variable",
+      emptyLabel: "No environment variables defined.",
+      rows: [],
+      onChange,
+    });
+
+    expect(target.querySelector("legend")?.textContent).toBe("Environment Variables");
+    expect(target.querySelector(".section-label")?.textContent).toBe("Environment Variables");
+    expect(target.querySelector(".mqb-empty-inline-note")?.textContent).toContain("No environment variables defined.");
+
+    const addButton = Array.from(target.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Add Variable")) as HTMLButtonElement | undefined;
+    addButton?.click();
+    flushSync();
+
+    const inputs = target.querySelectorAll("input");
+    expect((inputs[0] as HTMLInputElement).placeholder).toBe("Variable name");
+    expect((inputs[1] as HTMLInputElement).placeholder).toBe("Value");
+    unmount(instance);
+  });
 });

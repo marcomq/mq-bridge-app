@@ -204,9 +204,6 @@ export const mqbApp = {
     },
   },
   restore: {
-    route(idx: number) {
-      appWindow().restoreRouteState?.(idx);
-    },
     consumer(idx: number, options?: { tab?: string }) {
       appWindow().restoreConsumerState?.(idx, options);
     },

@@ -1366,7 +1366,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   if (consumers.length > 0) {
     const pendingRestore = state.pending_consumer_restore || null;
     state.pending_consumer_restore = null;
-    const initialIdx = pendingRestore?.idx ?? state.last_consumer_idx ?? 0;
+    const hashMatch = currentHash().match(/^#consumers:(\d+)$/);
+    const hashIdx = hashMatch ? parseInt(hashMatch[1], 10) : null;
+    const initialIdx = pendingRestore?.idx ?? hashIdx ?? state.last_consumer_idx ?? 0;
     const initialTab = (pendingRestore?.tab || state.last_consumer_tab || "messages") as "definition" | "response" | "messages";
 
     activeSubtab = initialTab;

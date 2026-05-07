@@ -4,6 +4,7 @@ interface DesktopSecretEntry {
   stored?: boolean;
   error?: string;
 }
+import { cloneSectionState } from "./dirty-state";
 import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 
 interface DesktopSecretSummary {
@@ -12,8 +13,57 @@ interface DesktopSecretSummary {
   publishers?: Record<string, DesktopSecretEntry[]>;
 }
 
+const SETTINGS_KEYS = [
+  "default_tab",
+  "log_level",
+  "logger",
+  "ui_addr",
+  "metrics_addr",
+  "extract_secrets",
+  "env_vars",
+] as const;
+
+type SettingsKey = (typeof SETTINGS_KEYS)[number];
+
 function cloneSchema<T>(schema: T): T {
   return JSON.parse(JSON.stringify(schema)) as T;
+}
+
+function filterObjectKeys<T extends Record<string, unknown>>(value: T, keys: readonly SettingsKey[]) {
+  const result: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      result[key] = value[key];
+    }
+  }
+  return result;
+}
+
+export function buildSettingsSchema(schema: Record<string, unknown>) {
+  const cloned = cloneSchema(schema);
+  const properties = filterObjectKeys(
+    ((cloned?.properties as Record<string, unknown> | undefined) || {}) as Record<string, unknown>,
+    SETTINGS_KEYS,
+  );
+  return {
+    ...cloned,
+    properties,
+    required: Array.isArray(cloned?.required)
+      ? cloned.required.filter((key) => typeof key === "string" && Object.prototype.hasOwnProperty.call(properties, key))
+      : [],
+  };
+}
+
+export function extractSettingsConfig(config: Record<string, unknown>) {
+  return filterObjectKeys(config, SETTINGS_KEYS);
+}
+
+function mergeSettingsConfig(target: Record<string, unknown>, settingsConfig: Record<string, unknown>) {
+  for (const key of SETTINGS_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(settingsConfig, key)) {
+      target[key] = settingsConfig[key];
+    }
+  }
 }
 
 function createActionButton(
@@ -73,15 +123,19 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
     return;
   }
 
+  const settingsSchema = buildSettingsSchema(schema);
+  let settingsConfig = extractSettingsConfig(config);
+  const state = getMqbState();
+  state.saved_sections.config = cloneSectionState(settingsConfig);
+
   mqbRuntime.registerDirtySection("config", {
     buttonId: "js-submit",
-    getValue: () => mqbApp.config(),
+    getValue: () => settingsConfig,
   });
 
-  const state = getMqbState();
   state.form_mode = "settings";
   (window as any)._mqb_form_mode = "settings";
-  await lib.init(container, cloneSchema(schema), config);
+  await lib.init(container, settingsSchema, settingsConfig);
 
   const formActions = document.getElementById("form-actions");
   if (formActions) {
@@ -93,7 +147,14 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   }) | null;
   if (submitButton) {
     submitButton.onclick = async (event) => {
-      await appWindow().saveConfig(false, event.currentTarget as HTMLElement | null);
+      const currentTarget = event.currentTarget as HTMLElement | null;
+      const appConfig = mqbApp.config<Record<string, unknown>>();
+      mergeSettingsConfig(appConfig, settingsConfig);
+      const saved = await appWindow().saveConfig(false, currentTarget);
+      if (saved) {
+        settingsConfig = extractSettingsConfig(appConfig);
+        appWindow().markSectionSaved("config", settingsConfig);
+      }
     };
   }
 

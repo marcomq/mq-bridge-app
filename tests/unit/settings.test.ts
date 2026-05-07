@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { formatDesktopSecretsSummary, initSettings } from "../../ui/src/lib/settings";
+import {
+  buildSettingsSchema,
+  extractSettingsConfig,
+  formatDesktopSecretsSummary,
+  initSettings,
+} from "../../ui/src/lib/settings";
 
 describe("settings", () => {
   beforeEach(() => {
@@ -15,6 +20,7 @@ describe("settings", () => {
     window.appConfig = { consumers: [], publishers: [], default_tab: "publishers" };
     window.registerDirtySection = vi.fn();
     window.refreshDirtySection = vi.fn();
+    window.markSectionSaved = vi.fn();
     window.saveConfig = vi.fn().mockResolvedValue(true);
     window.mqbAlert = vi.fn().mockResolvedValue(undefined);
     window.mqbConfirm = vi.fn().mockResolvedValue(true);
@@ -26,8 +32,44 @@ describe("settings", () => {
         element.textContent = label;
         return element;
       },
-      init: vi.fn().mockResolvedValue({}),
+      init: vi.fn().mockImplementation(async (_container: HTMLElement, _schema: Record<string, unknown>, data: Record<string, unknown>) => {
+        (window as any).__settingsData = data;
+        return {};
+      }),
     } as any;
+  });
+
+  test("builds a compact settings schema and config payload", () => {
+    const schema = buildSettingsSchema({
+      properties: {
+        default_tab: { type: "string" },
+        log_level: { type: "string" },
+        env_vars: { type: "object" },
+        publishers: { type: "array" },
+        consumers: { type: "array" },
+      },
+      required: ["default_tab", "publishers"],
+    });
+    const settings = extractSettingsConfig({
+      default_tab: "publishers",
+      log_level: "info",
+      env_vars: { BASE_URL: "https://example.test" },
+      publishers: [{ name: "pub-a" }],
+    });
+
+    expect(schema).toEqual({
+      properties: {
+        default_tab: { type: "string" },
+        log_level: { type: "string" },
+        env_vars: { type: "object" },
+      },
+      required: ["default_tab"],
+    });
+    expect(settings).toEqual({
+      default_tab: "publishers",
+      log_level: "info",
+      env_vars: { BASE_URL: "https://example.test" },
+    });
   });
 
   test("formats desktop secret summary by section and name", () => {
@@ -65,9 +107,24 @@ describe("settings", () => {
   });
 
   test("initializes the settings form and wires save handling", async () => {
+    window.appConfig = {
+      consumers: [],
+      publishers: [{ name: "pub-a" }],
+      default_tab: "publishers",
+      log_level: "info",
+      env_vars: { BASE_URL: "https://example.test" },
+    };
+
     await initSettings(
       window.appConfig as Record<string, unknown>,
-      { properties: { default_tab: { type: "string" } } } as Record<string, unknown>,
+      {
+        properties: {
+          default_tab: { type: "string" },
+          log_level: { type: "string" },
+          env_vars: { type: "object" },
+          publishers: { type: "array" },
+        },
+      } as Record<string, unknown>,
     );
 
     expect(window.registerDirtySection).toHaveBeenCalledWith("config", {
@@ -76,14 +133,30 @@ describe("settings", () => {
     });
     expect(window.VanillaSchemaForms.init).toHaveBeenCalledWith(
       document.getElementById("form-container"),
-      { properties: { default_tab: { type: "string" } } },
-      window.appConfig,
+      {
+        properties: {
+          default_tab: { type: "string" },
+          log_level: { type: "string" },
+          env_vars: { type: "object" },
+        },
+        required: [],
+      },
+      {
+        default_tab: "publishers",
+        log_level: "info",
+        env_vars: { BASE_URL: "https://example.test" },
+      },
     );
     expect(document.getElementById("form-actions")?.style.display).toBe("flex");
 
     const submitButton = document.getElementById("js-submit") as HTMLButtonElement;
+    (window as any).__settingsData.log_level = "debug";
+    (window as any).__settingsData.env_vars = { BASE_URL: "https://changed.test", API_TOKEN: "abc" };
     await submitButton.onclick?.({ currentTarget: submitButton } as unknown as MouseEvent);
     expect(window.saveConfig).toHaveBeenCalledWith(false, submitButton);
+    expect(window.appConfig.log_level).toBe("debug");
+    expect(window.appConfig.env_vars).toEqual({ BASE_URL: "https://changed.test", API_TOKEN: "abc" });
+    expect(window.appConfig.publishers).toEqual([{ name: "pub-a" }]);
 
     const formContainer = document.getElementById("form-container") as HTMLDivElement;
     formContainer.oninput?.(new Event("input"));

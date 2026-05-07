@@ -801,6 +801,50 @@ describe("initConsumers", () => {
     expect((window as any)._mqb_last_consumer_tab).toBe("definition");
   });
 
+  test("init restores the selected consumer from the URL hash on reload", async () => {
+    window.location.hash = "#consumers:1";
+
+    await initConsumers(
+      {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { middlewares: [{ metrics: {} }], http: {} },
+            response: null,
+          },
+          {
+            name: "events_memory",
+            endpoint: { middlewares: [{ metrics: {} }], memory: { topic: "events" } },
+            response: null,
+          },
+        ],
+        routes: {},
+        publishers: [],
+      },
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    expect(get(consumersPanelState).selectedIndex).toBe(1);
+    expect((window as any)._mqb_last_consumer_idx).toBe(1);
+  });
+
   test("save keeps the selected consumer and subtab", async () => {
     let resolveSave: ((value: any) => void) | null = null;
     window.saveConfigSection = vi.fn().mockImplementation(

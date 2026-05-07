@@ -5,38 +5,6 @@ import { EMPTY_RUNTIME_STATUS } from "./runtime-status";
 export const activeMainTab = writable<MainTab>("publishers");
 export const runtimeStatusStore = writable<RuntimeStatus>(EMPTY_RUNTIME_STATUS);
 
-export interface RouteSidebarItem {
-  name: string;
-  inputProto: string;
-  outputProto: string;
-  isDisabled: boolean;
-  showMetrics: boolean;
-  throughputLabel: string;
-  originalIndex: number;
-}
-
-export interface RoutesPanelState {
-  hasRoutes: boolean;
-  items: RouteSidebarItem[];
-  selectedIndex: number;
-  currentRouteName: string;
-  toggleVisible: boolean;
-  toggleLabel: string;
-  toggleVariant: "danger" | "success";
-  toggleAppearance: "outlined" | "filled";
-}
-
-export const routesPanelState = writable<RoutesPanelState>({
-  hasRoutes: false,
-  items: [],
-  selectedIndex: 0,
-  currentRouteName: "",
-  toggleVisible: false,
-  toggleLabel: "Disable",
-  toggleVariant: "danger",
-  toggleAppearance: "outlined",
-});
-
 export interface ConsumerSidebarItem {
   name: string;
   inputProto: string;

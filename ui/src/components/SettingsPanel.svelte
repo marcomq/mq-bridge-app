@@ -1,7 +1,6 @@
 <script lang="ts">
   import { activeMainTab } from "../lib/stores";
   import { exportFullBundle, importAppConfigFromJsonText, resetAppConfigToDefaults } from "../lib/import-export";
-  import { editEnvironmentVarsAction } from "../lib/publishers-view";
   import { mqbDialogs, mqbApp } from "../lib/runtime-window";
   import { EditorView, basicSetup } from "codemirror";
   import { json } from "@codemirror/lang-json";
@@ -101,12 +100,6 @@
             type="button"
             title="Reset publishers and consumers"
             onclick={resetConfig}>Reset</button
-          >
-          <button
-            class="wa-native-button wa-native-button--neutral"
-            type="button"
-            title="Edit application environment variables"
-            onclick={editEnvironmentVarsAction}>Env</button
           >
           <input bind:this={importInputEl} type="file" accept=".json,application/json" style="display:none" onchange={handleImportSelected} />
           <button

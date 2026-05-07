@@ -44,7 +44,7 @@ setI18n({
 
 setConfig({
   visibility: {
-    hiddenPaths: ["publishers", "consumers", "routes", "presets", "env_vars", "history"],
+    hiddenPaths: ["publishers", "consumers", "routes", "presets", "history"],
     customVisibility: (node: SchemaNode, path: string) => {
       const description = String(node.description || "");
       const lowerPath = path.toLowerCase();
@@ -442,6 +442,36 @@ const customHeadersRenderer = {
   },
 };
 
+const envVarsRenderer = {
+  render: (node: SchemaNode, _path: string, _elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    const store = context.store;
+    const currentValue = store.getPath(dataPath) ?? node.defaultValue ?? {};
+    const rows = Object.entries(currentValue)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => ({ key: String(key), value: String(value ?? "") }));
+
+    return renderSvelteNode(HeadersEditor, {
+      title: "Environment Variables",
+      sectionLabel: "",
+      description: String(node.description || ""),
+      keyPlaceholder: "Variable name",
+      valuePlaceholder: "Value",
+      addLabel: "Add Variable",
+      emptyLabel: "No environment variables defined.",
+      deleteLabel: "Delete",
+      rows,
+      onChange: (nextRows: Array<{ key: string; value: string }>) => {
+        const nextValue = Object.fromEntries(
+          nextRows
+            .filter((row) => row.key.trim().length > 0)
+            .map((row) => [row.key.trim(), row.value]),
+        );
+        store.setPath(dataPath, nextValue);
+      },
+    });
+  },
+};
+
 const createCustomCollapsibleRenderer = (visibleKeys: string[]) => ({
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     fixNullBooleans(node, dataPath, context);
@@ -627,7 +657,7 @@ const rootRenderer = {
     }
 
     if (formMode === "settings") {
-      return appConfigRenderer.render(node, path, elementId, dataPath, context);
+      return renderObject(context, node, elementId, false, dataPath);
     }
 
     return renderObject(context, node, elementId, false, dataPath);
@@ -700,6 +730,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   tls: tlsRenderer,
   basic_auth: basicAuthRenderer,
   custom_headers: customHeadersRenderer,
+  env_vars: envVarsRenderer,
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,
@@ -760,7 +791,7 @@ CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
     ).sort((a, b) => a.localeCompare(b)),
 });
 
-CUSTOM_RENDERERS.AppConfig = appConfigRenderer;
+CUSTOM_RENDERERS.AppConfig = rootRenderer;
 CUSTOM_RENDERERS.route = routeObjectRenderer;
 CUSTOM_RENDERERS.root = rootRenderer;
 

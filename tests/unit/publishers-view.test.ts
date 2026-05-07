@@ -479,6 +479,28 @@ describe("initPublishers", () => {
     expect((window as any)._mqb_last_publisher_tab).toBe("definition");
   });
 
+  test("init restores the selected publisher from the URL hash on reload", async () => {
+    window.location.hash = "#publishers:1";
+
+    await initPublishers(
+      {
+        publishers: [
+          { name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } },
+          { name: "events_memory", endpoint: { memory: { topic: "events" } } },
+        ],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    expect(get(publishersPanelState).selectedIndex).toBe(1);
+    expect((window as any)._mqb_last_publisher_idx).toBe(1);
+  });
+
   test("edits actual custom headers and supports disable/delete", () => {
     const config = {
       publishers: [

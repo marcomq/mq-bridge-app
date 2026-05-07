@@ -3,14 +3,26 @@
 
   interface Props {
     title?: string;
+    sectionLabel?: string;
     description?: string;
+    keyPlaceholder?: string;
+    valuePlaceholder?: string;
+    addLabel?: string;
+    emptyLabel?: string;
+    deleteLabel?: string;
     rows: HeaderItem[];
     onChange: (next: HeaderItem[]) => void;
   }
 
   let {
     title = "Custom Headers",
+    sectionLabel = "Headers",
     description = "",
+    keyPlaceholder = "Header name",
+    valuePlaceholder = "Header value",
+    addLabel = "Add Header",
+    emptyLabel = "No headers defined.",
+    deleteLabel = "Delete",
     rows,
     onChange,
   }: Props = $props();
@@ -44,10 +56,12 @@
     <div class="form-description form-description-block mqb-form-description-block">{description}</div>
   {/if}
 
-  <div class="section-label">Headers</div>
+  {#if sectionLabel}
+    <div class="section-label">{sectionLabel}</div>
+  {/if}
   <div class="response-editor-grid mqb-headers-grid">
     {#if rows.length === 0}
-      <div class="mqb-empty-inline-note">No headers defined.</div>
+      <div class="mqb-empty-inline-note">{emptyLabel}</div>
     {/if}
 
     {#each rows as row, index}
@@ -55,14 +69,14 @@
         <input
           class="field-input cons-response-header-key"
           type="text"
-          placeholder="Header name"
+          placeholder={keyPlaceholder}
           value={row.key}
           oninput={(event) => updateRow(index, "key", (event.currentTarget as HTMLInputElement).value)}
         />
         <input
           class="field-input cons-response-header-value"
           type="text"
-          placeholder="Header value"
+          placeholder={valuePlaceholder}
           value={row.value}
           oninput={(event) => updateRow(index, "value", (event.currentTarget as HTMLInputElement).value)}
         />
@@ -71,13 +85,13 @@
           class="wa-native-button wa-native-button--neutral cons-response-header-delete"
           onclick={() => removeRow(index)}
         >
-          Delete
+          {deleteLabel}
         </button>
       </div>
     {/each}
   </div>
 
   <div class="response-editor-actions">
-    <button type="button" class="wa-native-button wa-native-button--neutral" onclick={addRow}>Add Header</button>
+    <button type="button" class="wa-native-button wa-native-button--neutral" onclick={addRow}>{addLabel}</button>
   </div>
 </fieldset>
