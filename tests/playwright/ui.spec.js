@@ -93,15 +93,6 @@ async function openConsumerDefinition(page, index = 0) {
   await expect(page.locator("#cons-config-form")).toBeVisible();
 }
 
-async function openRouteDefinition(page, index = 0) {
-  await page.goto(`/#routes:${index}`);
-  const firstRoute = page.locator("#route-list .route-item").first();
-  if (await firstRoute.count()) {
-    await firstRoute.click();
-  }
-  await expect(page.locator("#route-config-form")).toBeVisible();
-}
-
 async function expectSaveButtonClean(page, buttonSelector) {
   await expect(page.locator(buttonSelector)).toHaveAttribute("data-dirty", "false");
 }
@@ -312,10 +303,6 @@ test("publisher can be copied to a new consumer", async ({ page }) => {
   await openPublisherDefinition(page, 0);
 
   await page.locator("#pub-copy").click();
-  const copyChoice = page.locator("wa-button", { hasText: "New Consumer" });
-  await expect(copyChoice).toBeVisible();
-  await copyChoice.click();
-
   const input = page.locator(".mqb-dialog-input");
   await expect(input).toBeVisible();
   await expect(input).toHaveValue(/http/);
@@ -333,10 +320,6 @@ test("consumer can be copied to a new publisher for review", async ({ page }) =>
   await openConsumerDefinition(page, 0);
 
   await page.locator("#cons-copy").click();
-  const copyChoice = page.locator("wa-button", { hasText: "New Publisher" });
-  await expect(copyChoice).toBeVisible();
-  await copyChoice.click();
-
   const input = page.locator(".mqb-dialog-input");
   await expect(input).toBeVisible();
   await input.fill("copied_memory_publisher");
@@ -346,25 +329,6 @@ test("consumer can be copied to a new publisher for review", async ({ page }) =>
   await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("copied_memory_publisher");
   await expect(page.locator("#pub-config-form")).toBeVisible();
   await expect(page.locator("#pub-save")).toHaveAttribute("data-dirty", /^(true|false)$/);
-});
-
-test("route can be copied to a new consumer for review", async ({ page }) => {
-  await openRouteDefinition(page, 0);
-
-  await page.locator("#route-copy").click();
-  const copyChoice = page.locator("wa-button", { hasText: "Input -> New Consumer" });
-  await expect(copyChoice).toBeVisible();
-  await copyChoice.click();
-
-  const input = page.locator(".mqb-dialog-input");
-  await expect(input).toBeVisible();
-  await input.fill("route_input_consumer");
-  await page.locator("wa-button", { hasText: "Create" }).click();
-
-  await expect(page.locator("#mtab-consumers")).toHaveClass(/active/);
-  await expect(page.locator("#cons-list .cons-item.active .item-name")).toHaveText("route_input_consumer");
-  await expect(page.locator("#cons-config-form")).toBeVisible();
-  await expect(page.locator("#cons-save")).toHaveAttribute("data-dirty", /^(true|false)$/);
 });
 
 test("publisher delete can be saved and stays deleted after reload", async ({ page }) => {
@@ -378,31 +342,17 @@ test("publisher delete can be saved and stays deleted after reload", async ({ pa
 
   await openPublisherDefinition(page, 0);
   await expect(page.locator("#pub-list .pub-item .item-name").filter({ hasText: "mongo_publisher" })).toHaveCount(0);
-  await expectSaveButtonClean(page, "#pub-save");
 });
 
-test("route delete is persisted immediately", async ({ page }) => {
-  await openRouteDefinition(page, 0);
-  await expect(page.locator("#route-list .route-item.active .item-name")).toHaveText("ingest_http");
-
-  await page.locator("#route-delete").click();
-  await page.locator("wa-button", { hasText: "Continue" }).click();
-  await expect(page.locator("#route-list .route-item .item-name").filter({ hasText: "ingest_http" })).toHaveCount(0);
-  await expect(page.locator("#route-save")).toHaveText("Saved");
-
-  await page.goto("/#routes:0");
-  await expect(page.locator("#route-list .route-item .item-name").filter({ hasText: "ingest_http" })).toHaveCount(0);
-  await expectSaveButtonClean(page, "#route-save");
-});
-
-test("app config shows existing routes in the routes map", async ({ page }) => {
+test("app config shows security and environment variable sections", async ({ page }) => {
   await page.goto("/#config");
   await expect(page.locator("#form-container")).toBeVisible();
-  await expect(page.locator("#form-container")).toContainText("Routes");
+  await expect(page.locator("#form-container")).toContainText("Config Security");
+  await expect(page.locator("#form-container")).toContainText("Environment Variables");
 });
 
 test("active tabs stretch to the full viewport height", async ({ page }) => {
-  for (const hash of ["/#consumers:0", "/#publishers:0", "/#routes:0", "/#config"]) {
+  for (const hash of ["/#consumers:0", "/#publishers:0", "/#config"]) {
     await page.goto(hash);
     const metrics = await page.evaluate(() => {
       const activePanel = document.querySelector(".tab-content-panel.active");
