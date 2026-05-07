@@ -64,6 +64,8 @@ test.use({
 });
 
 test("Generate showcase video", async ({ page }) => {
+  test.skip(!isShowcase, "Showcase recording is opt-in and skipped during normal CI runs.");
+
   // Utility to slow down actions for recording clarity
   const pause = (ms = 1500) => isShowcase ? page.waitForTimeout(ms) : Promise.resolve();
 
