@@ -1,5 +1,7 @@
 export type HeaderRow = { key: string; value: string; enabled: boolean };
 export type HistoryMetadataRow = { k: string; v: string };
+export type ConfigSecurityMode = "unencrypted" | "balanced" | "sensitive" | "durable";
+export type ConfigSecurity = { mode: ConfigSecurityMode };
 
 export type PublisherPreset = {
   name: string;
@@ -47,6 +49,8 @@ export type WorkspaceConfig = Record<string, unknown> & {
   presets?: PresetsByPublisher;
   env_vars?: EnvVars;
   history?: PublisherHistoryStore;
+  config_security?: ConfigSecurity;
+  extract_secrets?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -236,13 +240,43 @@ export function sanitizeEnvVars(value: unknown): EnvVars {
   return result;
 }
 
+export function sanitizeConfigSecurity(value: unknown): ConfigSecurity {
+  const entry = isRecord(value) ? value : {};
+  const mode = entry.mode;
+  return {
+    mode: mode === "unencrypted" || mode === "sensitive" || mode === "durable" ? mode : "balanced",
+  };
+}
+
+function migrateConfigSecurity(config: WorkspaceConfig): ConfigSecurity {
+  if (isRecord(config.config_security)) {
+    return sanitizeConfigSecurity(config.config_security);
+  }
+  if (typeof config.extract_secrets === "boolean") {
+    return { mode: config.extract_secrets ? "balanced" : "unencrypted" };
+  }
+  return sanitizeConfigSecurity(config.config_security);
+}
+
+export function isSensitiveConfig(config: Pick<WorkspaceConfig, "config_security"> | Record<string, unknown>) {
+  const mode = sanitizeConfigSecurity((config as WorkspaceConfig).config_security).mode;
+  return mode === "sensitive" || mode === "durable";
+}
+
 export function ensureWorkspaceCollections<T extends WorkspaceConfig>(config: T): T & {
   presets: PresetsByPublisher;
   env_vars: EnvVars;
   history: PublisherHistoryStore;
+  config_security: ConfigSecurity;
 } {
   config.presets = sanitizePresets(config.presets);
   config.env_vars = sanitizeEnvVars(config.env_vars);
   config.history = sanitizePublisherHistory(config.history);
-  return config as T & { presets: PresetsByPublisher; env_vars: EnvVars; history: PublisherHistoryStore };
+  config.config_security = migrateConfigSecurity(config);
+  return config as T & {
+    presets: PresetsByPublisher;
+    env_vars: EnvVars;
+    history: PublisherHistoryStore;
+    config_security: ConfigSecurity;
+  };
 }

@@ -6,6 +6,7 @@ interface DesktopSecretEntry {
 }
 import { cloneSectionState } from "./dirty-state";
 import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
+import { storageSecurityDetail, storageSecuritySummary } from "./storage-security";
 
 interface DesktopSecretSummary {
   routes?: Record<string, DesktopSecretEntry[]>;
@@ -19,7 +20,7 @@ const SETTINGS_KEYS = [
   "logger",
   "ui_addr",
   "metrics_addr",
-  "extract_secrets",
+  "config_security",
   "env_vars",
 ] as const;
 
@@ -81,6 +82,23 @@ function createActionButton(
   return button;
 }
 
+function renderStorageSecurityNotice() {
+  const formActions = document.getElementById("form-actions");
+  const state = getMqbState();
+  const info = state.storage_security;
+  if (!formActions || !info) return;
+
+  let notice = document.getElementById("js-storage-security-note");
+  if (!notice) {
+    notice = document.createElement("div");
+    notice.id = "js-storage-security-note";
+    notice.className = "storage-security-note";
+    formActions.parentElement?.insertBefore(notice, formActions);
+  }
+
+  notice.textContent = `${storageSecuritySummary(info)} ${storageSecurityDetail(info)}`;
+}
+
 export function formatDesktopSecretsSummary(summary: DesktopSecretSummary): string {
   const groups: Array<[string, Record<string, DesktopSecretEntry[]>]> = [
     ["Routes", summary.routes || {}],
@@ -136,6 +154,7 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   state.form_mode = "settings";
   (window as any)._mqb_form_mode = "settings";
   await lib.init(container, settingsSchema, settingsConfig);
+  renderStorageSecurityNotice();
 
   const formActions = document.getElementById("form-actions");
   if (formActions) {

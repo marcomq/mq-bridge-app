@@ -3,6 +3,11 @@ export async function fetchConfigFromServer<T>(fetchImpl: typeof fetch): Promise
   return response.json() as Promise<T>;
 }
 
+export async function fetchStorageSecurityFromServer<T>(fetchImpl: typeof fetch): Promise<T> {
+  const response = await fetchImpl("/storage-security", { cache: "no-store" });
+  return response.json() as Promise<T>;
+}
+
 export async function postConfig(fetchImpl: typeof fetch, config: unknown): Promise<void> {
   const response = await fetchImpl("/config", {
     method: "POST",

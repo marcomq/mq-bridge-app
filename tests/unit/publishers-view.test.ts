@@ -136,6 +136,9 @@ function installPublisherWindowStubs() {
       setItem: vi.fn().mockImplementation((key: string, value: string) => {
         storage.set(key, value);
       }),
+      removeItem: vi.fn().mockImplementation((key: string) => {
+        storage.delete(key);
+      }),
     },
     configurable: true,
   });
@@ -176,6 +179,8 @@ describe("initPublishers", () => {
     delete (window as any).__mqb_state;
     (window as any)._mqb_last_publisher_idx = undefined;
     (window as any)._mqb_last_publisher_tab = undefined;
+    (window as any)._mqb_storage_security = undefined;
+    (window as any)._mqb_storage_cache = undefined;
     mountPublishersDom();
     installPublisherWindowStubs();
   });
@@ -337,6 +342,62 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).historyRows).toHaveLength(1);
     const stored = JSON.parse(window.localStorage.getItem("mqb_publisher_history") || "{}");
     expect(stored.publishers.orders_http).toHaveLength(1);
+  });
+
+  test("hydrates publisher cache from preloaded temporary encrypted storage", () => {
+    (window as any)._mqb_storage_security = {
+      encrypted: true,
+      persistent: false,
+      keySource: "ephemeral-process",
+      configEncrypted: false,
+      messagesEncrypted: true,
+      messagesPersistent: false,
+      messageKeyHex: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+      kid: "session-1",
+    };
+    (window as any)._mqb_storage_cache = {
+      publisher_state: {
+        orders_http: {
+          payload: "{\"cached\":true}",
+        },
+      },
+      publisher_history: {
+        version: 1,
+        updated_at: 50,
+        publishers: {
+          orders_http: [{
+            name: "orders_http",
+            payload: "{\"cached\":true}",
+            headers: [],
+            metadata: [],
+            endpoint_type: "http",
+            method: "POST",
+            url: "https://example.test/orders",
+            request_fields: { url: "https://example.test/orders" },
+            requestMetadata: { "request_bar.url": "https://example.test/orders" },
+            status: 200,
+            duration: 5,
+            time: 50,
+          }],
+        },
+      },
+    };
+
+    initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+        config_security: { mode: "sensitive" },
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    expect(get(publishersPanelState).requestPayload).toBe("{\"cached\":true}");
+    expect(get(publishersPanelState).historyRows).toHaveLength(1);
   });
 
   test("tracks active subtab and payload in publisher panel state", () => {

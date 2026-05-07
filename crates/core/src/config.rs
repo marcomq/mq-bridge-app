@@ -3,6 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::encrypted_config::{
+    config_file_format_from_path, encode_sensitive_config_file, maybe_decrypt_config_source,
+};
 use anyhow::Result;
 use config::Config;
 use mq_bridge::{
@@ -27,11 +30,33 @@ fn default_consumer_capture_keep_last() -> usize {
     100
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn default_route_migrated_capture() -> ConsumerMessageCaptureConfig {
     ConsumerMessageCaptureConfig {
         enabled: false,
         keep_last: default_consumer_capture_keep_last(),
     }
+}
+
+#[derive(
+    Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Copy, PartialEq, Eq, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigSecurityMode {
+    Unencrypted,
+    #[default]
+    Balanced,
+    Sensitive,
+    Durable,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
+pub struct ConfigSecurity {
+    #[serde(default)]
+    pub mode: ConfigSecurityMode,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
@@ -60,8 +85,10 @@ pub struct AppConfig {
     pub history: HashMap<String, serde_json::Value>,
     #[serde(default, alias = "envVars")]
     pub env_vars: HashMap<String, String>,
-    /// If true, secrets will be extracted to .env file upon saving.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_security: Option<ConfigSecurity>,
+    /// Legacy compatibility flag. Prefer config_security.mode instead.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub extract_secrets: bool,
     /// The default tab to show in the UI upon loading.
     #[serde(default)]
@@ -345,11 +372,7 @@ fn load_config_internal(
                     persistent_file, template_path
                 );
                 let content = std::fs::read_to_string(template_path)?;
-                let format = if template_path.ends_with(".json") {
-                    config::FileFormat::Json
-                } else {
-                    config::FileFormat::Yaml
-                };
+                let format = config_file_format_from_path(template_path);
                 builder = builder.add_source(source_from_str(&content, format)?);
             } else {
                 eprintln!(
@@ -373,12 +396,9 @@ fn load_config_internal(
         // Main config file exists, load it.
         eprintln!("INFO: Loading configuration from '{}'.", persistent_file);
         let content = std::fs::read_to_string(&persistent_file)?;
-        let format = if persistent_file.ends_with(".json") {
-            config::FileFormat::Json
-        } else {
-            config::FileFormat::Yaml
-        };
-        builder = builder.add_source(source_from_str(&content, format)?);
+        let format = config_file_format_from_path(&persistent_file);
+        let effective_content = maybe_decrypt_config_source(&content, format)?.unwrap_or(content);
+        builder = builder.add_source(source_from_str(&effective_content, format)?);
 
         if init_config_path.is_some() || init_config_str.is_some() {
             eprintln!(
@@ -438,6 +458,41 @@ pub fn load_config_at_path(
 }
 
 impl AppConfig {
+    fn uses_encrypted_config_mode(mode: ConfigSecurityMode) -> bool {
+        matches!(
+            mode,
+            ConfigSecurityMode::Sensitive | ConfigSecurityMode::Durable
+        )
+    }
+
+    fn security_mode_label(mode: ConfigSecurityMode) -> &'static str {
+        match mode {
+            ConfigSecurityMode::Unencrypted => "unencrypted",
+            ConfigSecurityMode::Balanced => "balanced",
+            ConfigSecurityMode::Sensitive => "sensitive",
+            ConfigSecurityMode::Durable => "durable",
+        }
+    }
+
+    pub fn security_mode(&self) -> ConfigSecurityMode {
+        self.config_security
+            .as_ref()
+            .map(|security| security.mode)
+            .unwrap_or_else(|| {
+                if self.extract_secrets {
+                    ConfigSecurityMode::Balanced
+                } else {
+                    ConfigSecurityMode::Unencrypted
+                }
+            })
+    }
+
+    fn migrate_legacy_security_mode(&mut self) {
+        let mode = self.security_mode();
+        self.config_security = Some(ConfigSecurity { mode });
+        self.extract_secrets = matches!(mode, ConfigSecurityMode::Balanced);
+    }
+
     pub fn migrate_legacy_consumer_response(&mut self) {
         for consumer in &mut self.consumers {
             if matches!(consumer.output, ConsumerOutputConfig::None) {
@@ -451,6 +506,7 @@ impl AppConfig {
     }
 
     pub fn migrate_legacy_routes(&mut self) {
+        self.migrate_legacy_security_mode();
         self.migrate_legacy_consumer_response();
 
         if self.default_tab.trim() == "routes" {
@@ -520,6 +576,7 @@ impl AppConfig {
     pub fn save_with_secret_store(&self, path: &str, secret_store: &dyn SecretStore) -> Result<()> {
         let mut config_to_save = self.clone();
         config_to_save.migrate_legacy_consumer_response();
+        config_to_save.migrate_legacy_security_mode();
 
         // Sanitize route names to ensure compatibility with environment variables
         let sanitized_routes: HashMap<String, RouteConfig> = config_to_save
@@ -537,21 +594,36 @@ impl AppConfig {
             pub_client.name = pub_client.name.trim().to_string();
         }
 
-        if config_to_save.extract_secrets {
+        let mode = config_to_save.security_mode();
+        if matches!(mode, ConfigSecurityMode::Balanced) {
             let secrets = config_to_save.extract_secrets();
             secret_store.store(&secrets)?;
         }
+        config_to_save.config_security = Some(ConfigSecurity { mode });
+        config_to_save.extract_secrets = false;
 
         let mut config_value = serde_json::to_value(&config_to_save)?;
         strip_nulls(&mut config_value);
-
-        let yaml = serde_yaml_ng::to_string(&config_value)?;
         if let Some(parent) = Path::new(path).parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, yaml)?;
+
+        let format = config_file_format_from_path(path);
+        let output = if Self::uses_encrypted_config_mode(mode) {
+            let plaintext = match format {
+                config::FileFormat::Json => serde_json::to_string_pretty(&config_value)?,
+                _ => serde_yaml_ng::to_string(&config_value)?,
+            };
+            encode_sensitive_config_file(&plaintext, format, Self::security_mode_label(mode))?
+        } else {
+            match format {
+                config::FileFormat::Json => serde_json::to_string_pretty(&config_value)?,
+                _ => serde_yaml_ng::to_string(&config_value)?,
+            }
+        };
+        std::fs::write(path, output)?;
         Ok(())
     }
 
@@ -753,9 +825,39 @@ fn strip_nulls(v: &mut serde_json::Value) {
     }
 }
 
-#[allow(unused_imports)]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingSecretStore {
+        stored: Mutex<Vec<HashMap<String, String>>>,
+    }
+
+    impl SecretStore for RecordingSecretStore {
+        fn store(&self, secrets: &HashMap<String, String>) -> Result<()> {
+            self.stored.lock().unwrap().push(secrets.clone());
+            Ok(())
+        }
+    }
+
+    fn sample_security_config(mode: &str) -> AppConfig {
+        serde_yaml_ng::from_str(&format!(
+            r#"
+config_security:
+  mode: {mode}
+publishers:
+  - name: "orders_http"
+    endpoint:
+      http:
+        url: "https://example.test/orders"
+        custom_headers:
+          authorization: "Bearer token"
+"#
+        ))
+        .unwrap()
+    }
 
     #[test]
     fn test_config_deserialization() {
@@ -993,6 +1095,95 @@ consumers:
                 );
             }
             other => panic!("expected response output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_legacy_extract_secrets_migrates_to_security_mode() {
+        let yaml_config = r#"
+extract_secrets: true
+publishers: []
+consumers: []
+"#;
+
+        let mut config: AppConfig = serde_yaml_ng::from_str(yaml_config).unwrap();
+        config.migrate_legacy_routes();
+
+        assert_eq!(config.security_mode(), ConfigSecurityMode::Balanced);
+        assert_eq!(
+            config
+                .config_security
+                .as_ref()
+                .map(|security| security.mode),
+            Some(ConfigSecurityMode::Balanced)
+        );
+    }
+
+    #[test]
+    fn test_save_unencrypted_keeps_inline_secrets() {
+        let config = sample_security_config("unencrypted");
+        let secret_store = RecordingSecretStore::default();
+        let path = std::env::temp_dir().join("mqb-config-unencrypted.yml");
+
+        config
+            .save_with_secret_store(path.to_str().unwrap(), &secret_store)
+            .unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("mode: unencrypted"));
+        assert!(saved.contains("Bearer token"));
+        assert!(secret_store.stored.lock().unwrap().is_empty());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_save_balanced_extracts_and_stores_secrets() {
+        let config = sample_security_config("balanced");
+        let secret_store = RecordingSecretStore::default();
+        let path = std::env::temp_dir().join("mqb-config-balanced.yml");
+
+        config
+            .save_with_secret_store(path.to_str().unwrap(), &secret_store)
+            .unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("mode: balanced"));
+        assert!(!saved.contains("Bearer token"));
+        assert!(!saved.contains("extract_secrets"));
+        assert_eq!(secret_store.stored.lock().unwrap().len(), 1);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_save_durable_encrypts_without_storing_secrets() {
+        let config = sample_security_config("durable");
+        let secret_store = RecordingSecretStore::default();
+        let path = std::env::temp_dir().join("mqb-config-durable.yml");
+        let _guard = crate::encrypted_config::test_config_master_key_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        unsafe {
+            std::env::set_var(
+                crate::encrypted_config::CONFIG_MASTER_KEY_ENV,
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+            );
+        }
+
+        config
+            .save_with_secret_store(path.to_str().unwrap(), &secret_store)
+            .unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("mode: durable"));
+        assert!(saved.contains("encrypted_config"));
+        assert!(!saved.contains("Bearer token"));
+        assert!(secret_store.stored.lock().unwrap().is_empty());
+
+        let _ = std::fs::remove_file(path);
+        unsafe {
+            std::env::remove_var(crate::encrypted_config::CONFIG_MASTER_KEY_ENV);
         }
     }
 }

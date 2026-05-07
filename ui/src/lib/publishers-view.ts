@@ -13,6 +13,8 @@ import {
 } from "./import-export";
 import {
   ensureWorkspaceCollections,
+  isSensitiveConfig,
+  type ConfigSecurity,
   type EnvVars,
   type PublisherHistoryEntry,
   type PublisherHistoryStore,
@@ -20,6 +22,8 @@ import {
   type PublisherPreset,
   sanitizePublisherHistory,
 } from "./workspace-config";
+import { setStoredJson } from "./encrypted-json-storage";
+import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
 
 export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showPublisherHistoryEntry: (historyIndex: number) => void | Promise<void> = () => {};
@@ -78,6 +82,7 @@ type PublishersAppConfig = {
   presets?: PresetsByPublisher;
   env_vars?: EnvVars;
   history?: PublisherHistoryStore;
+  config_security?: ConfigSecurity;
 };
 
 type PublishersSchemaRoot = {
@@ -363,8 +368,24 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const container = document.getElementById("publishers-container") as HTMLElement | null;
   const publishers = config.publishers || [];
   const workspaceConfig = ensureWorkspaceCollections(config);
-  let appState = parseJsonSafe<Record<string, PublisherState>>(localStorage.getItem(STORAGE_KEY), {});
-  const localHistoryStore = sanitizePublisherHistory(parseJsonSafe<unknown>(localStorage.getItem(HISTORY_KEY), {}));
+  const storageSecurity = resolveStorageSecurity(getMqbState().storage_security, workspaceConfig);
+  const encryptedMessages = hasEncryptedMessages(storageSecurity);
+  const sensitiveMode = isSensitiveConfig(workspaceConfig) && !encryptedMessages;
+  if (sensitiveMode && typeof localStorage.removeItem === "function") {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(HISTORY_KEY);
+  }
+  const preloadedStorage = getMqbState().storage_cache;
+  let appState = sensitiveMode
+    ? {}
+    : encryptedMessages && preloadedStorage?.publisher_state
+      ? (preloadedStorage.publisher_state as Record<string, PublisherState>)
+    : parseJsonSafe<Record<string, PublisherState>>(localStorage.getItem(STORAGE_KEY), {});
+  const localHistoryStore = sensitiveMode
+    ? sanitizePublisherHistory({})
+    : encryptedMessages && preloadedStorage?.publisher_history
+      ? sanitizePublisherHistory(preloadedStorage.publisher_history)
+    : sanitizePublisherHistory(parseJsonSafe<unknown>(localStorage.getItem(HISTORY_KEY), {}));
   const configHistoryStore = sanitizePublisherHistory(workspaceConfig.history);
   let historyStore = localHistoryStore.updated_at >= configHistoryStore.updated_at
     ? localHistoryStore
@@ -410,7 +431,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     appWindow().history.replaceState(null, "", `#publishers:${currentIdx || 0}`);
   };
 
-  const saveAppState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+  const saveAppState = () => {
+    if (sensitiveMode) return;
+    if (encryptedMessages) {
+      void setStoredJson(STORAGE_KEY, appState, storageSecurity);
+      return;
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+  };
   const syncHistoryToConfig = async (silent = true) => {
     historyStore = buildPublisherHistoryStore(history);
     workspaceConfig.history = historyStore;
@@ -430,7 +458,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const saveHistory = (options: { sync?: boolean } = {}) => {
     history = history.slice(0, 1000);
     historyStore = buildPublisherHistoryStore(history);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore));
+    if (!sensitiveMode && !encryptedMessages) {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore));
+    } else if (encryptedMessages) {
+      void setStoredJson(HISTORY_KEY, historyStore, storageSecurity);
+    }
     if (options.sync !== false) {
       scheduleHistorySync();
     }

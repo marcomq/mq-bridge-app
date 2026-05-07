@@ -1,6 +1,11 @@
 import { activeMainTab, runtimeStatusStore } from "./lib/stores";
 import { createDirtyTracker, cloneSectionState, isDirty } from "./lib/dirty-state";
-import { saveWholeConfig, saveConfigSection as persistConfigSection, fetchConfigFromServer } from "./lib/config-api";
+import {
+  saveWholeConfig,
+  saveConfigSection as persistConfigSection,
+  fetchConfigFromServer,
+  fetchStorageSecurityFromServer,
+} from "./lib/config-api";
 import { initConsumers, restoreConsumerStateFromView } from "./lib/consumers-view";
 import { initPublishers, restorePublisherStateFromView } from "./lib/publishers-view";
 import { EMPTY_RUNTIME_STATUS, createRuntimeStatusPoller } from "./lib/runtime-status";
@@ -18,6 +23,8 @@ import {
   replaceHash,
 } from "./lib/runtime-window";
 import type { MainTab } from "./lib/runtime-status";
+import { EMPTY_STORAGE_SECURITY, normalizeStorageSecurityInfo } from "./lib/storage-security";
+import { getStoredJson } from "./lib/encrypted-json-storage";
 
 function setActiveTab(name: MainTab) {
   activeMainTab.set(name);
@@ -198,6 +205,7 @@ function installGlobals() {
   installDialogs();
   const state = getMqbState();
   state.runtime_status = { ...EMPTY_RUNTIME_STATUS };
+  state.storage_security = { ...EMPTY_STORAGE_SECURITY };
   state.dirty_sections = {};
   state.saved_sections = {};
   appWindow().switchMain = switchMain;
@@ -288,10 +296,12 @@ function installGlobals() {
 export async function bootstrapApp() {
   installGlobals();
 
-  const [config, schema] = await Promise.all([
+  const [config, schema, storageSecurityRaw] = await Promise.all([
     fetchConfigFromServer<Record<string, any>>(fetch),
     fetch("/schema.json").then((response) => response.json()),
+    fetchStorageSecurityFromServer(fetch).catch(() => EMPTY_STORAGE_SECURITY),
   ]);
+  const storageSecurity = normalizeStorageSecurityInfo(storageSecurityRaw);
 
   if (mqbApp.isDesktop()) {
     delete config.extract_secrets;
@@ -304,6 +314,14 @@ export async function bootstrapApp() {
   mqbApp.setConfig(config);
   mqbApp.setSchema(schema);
   const state = getMqbState();
+  state.storage_security = storageSecurity;
+  (appWindow() as any)._mqb_storage_security = storageSecurity;
+  state.storage_cache = {
+    publisher_state: await getStoredJson("mqb_publisher_state", {}, storageSecurity),
+    publisher_history: await getStoredJson("mqb_publisher_history", {}, storageSecurity),
+    consumer_messages: await getStoredJson("mqb_consumer_messages", {}, storageSecurity),
+  };
+  (appWindow() as any)._mqb_storage_cache = state.storage_cache;
   state.saved_sections = {
     consumers: cloneSectionState(config.consumers),
     publishers: cloneSectionState(config.publishers),

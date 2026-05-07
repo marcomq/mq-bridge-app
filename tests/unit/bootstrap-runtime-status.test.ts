@@ -81,6 +81,7 @@ vi.mock("../../ui/src/lib/config-api", () => ({
   saveWholeConfig: vi.fn(),
   saveConfigSection: vi.fn(),
   fetchConfigFromServer: vi.fn(),
+  fetchStorageSecurityFromServer: vi.fn(),
 }));
 vi.mock("../../ui/src/lib/consumers-view", () => ({ initConsumers: vi.fn(), restoreConsumerStateFromView: vi.fn() }));
 vi.mock("../../ui/src/lib/publishers-view", () => ({ initPublishers: vi.fn(), restorePublisherStateFromView: vi.fn() }));

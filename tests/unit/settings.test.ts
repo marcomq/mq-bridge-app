@@ -25,6 +25,14 @@ describe("settings", () => {
     window.mqbAlert = vi.fn().mockResolvedValue(undefined);
     window.mqbConfirm = vi.fn().mockResolvedValue(true);
     window.__MQB_DESKTOP__ = false;
+    window._mqb_storage_security = {
+      encrypted: true,
+      persistent: false,
+      keySource: "ephemeral-process",
+      configEncrypted: false,
+      messagesEncrypted: true,
+      messagesPersistent: false,
+    };
     window.VanillaSchemaForms = {
       h: (tagName: string, attrs: Record<string, string>, label: string) => {
         const element = document.createElement(tagName);
@@ -148,6 +156,12 @@ describe("settings", () => {
       },
     );
     expect(document.getElementById("form-actions")?.style.display).toBe("flex");
+    expect(document.getElementById("js-storage-security-note")?.textContent).toContain(
+      "Messages are encrypted during the current session and cleared after restart.",
+    );
+    expect(document.getElementById("js-storage-security-note")?.textContent).toContain(
+      "Message history is encrypted at rest to avoid leaving readable broker payloads",
+    );
 
     const submitButton = document.getElementById("js-submit") as HTMLButtonElement;
     (window as any).__settingsData.log_level = "debug";

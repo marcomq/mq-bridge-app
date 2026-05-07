@@ -13,6 +13,9 @@ import { extractImportedRequests } from "./import-export";
 import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { consumersPanelState } from "./stores";
 import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
+import { ensureWorkspaceCollections, isSensitiveConfig, type ConfigSecurity } from "./workspace-config";
+import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
+import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
 
 export let restoreConsumerStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showConsumerMessageDetails: (name: string, msgIdx: number) => void = () => {};
@@ -93,6 +96,7 @@ type ConsumersAppConfig = {
   consumers: ConsumerConfig[];
   publishers?: PublisherConfig[];
   routes?: Record<string, unknown>;
+  config_security?: ConfigSecurity;
 };
 
 type ConsumersSchemaRoot = {
@@ -311,6 +315,13 @@ function getDefaultConsumerMessageCapture(): ConsumerMessageCaptureConfig {
 }
 
 export async function initConsumers(config: ConsumersAppConfig, schema: ConsumersSchemaRoot) {
+  const workspaceConfig = ensureWorkspaceCollections(config as ConsumersAppConfig & Record<string, unknown>);
+  const storageSecurity = resolveStorageSecurity(getMqbState().storage_security, workspaceConfig);
+  const encryptedMessages = hasEncryptedMessages(storageSecurity);
+  const sensitiveMode = isSensitiveConfig(workspaceConfig) && !encryptedMessages;
+  if (sensitiveMode && typeof localStorage.removeItem === "function") {
+    localStorage.removeItem(MSG_STORAGE_KEY);
+  }
   const consumers = config.consumers || [];
   consumers.forEach((consumer) => syncLegacyConsumerResponse(consumer));
   const consList = document.getElementById("cons-list") as HTMLElement | null;
@@ -383,20 +394,40 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   let consumerMessages: Record<string, ConsumerMessage[]> = {};
-  try {
-    const parsed = JSON.parse(localStorage.getItem(MSG_STORAGE_KEY) || "{}");
-    consumerMessages = parsed && typeof parsed === "object"
+  if (encryptedMessages) {
+    const loaded = getMqbState().storage_cache?.consumer_messages
+      || await getStoredJson<Record<string, unknown>>(MSG_STORAGE_KEY, {}, storageSecurity);
+    consumerMessages = loaded && typeof loaded === "object"
       ? Object.fromEntries(
-          Object.entries(parsed as Record<string, unknown>).map(([name, messages]) => [
+          Object.entries(loaded).map(([name, messages]) => [
             name,
             Array.isArray(messages) ? messages.map((message) => normalizeConsumerMessage(message)) : [],
           ]),
         )
       : {};
-  } catch {
-    consumerMessages = {};
+  } else if (!sensitiveMode) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MSG_STORAGE_KEY) || "{}");
+      consumerMessages = parsed && typeof parsed === "object"
+        ? Object.fromEntries(
+            Object.entries(parsed as Record<string, unknown>).map(([name, messages]) => [
+              name,
+              Array.isArray(messages) ? messages.map((message) => normalizeConsumerMessage(message)) : [],
+            ]),
+          )
+        : {};
+    } catch {
+      consumerMessages = {};
+    }
   }
-  const saveMessages = () => localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
+  const saveMessages = () => {
+    if (sensitiveMode) return;
+    if (encryptedMessages) {
+      void setStoredJson(MSG_STORAGE_KEY, consumerMessages, storageSecurity);
+      return;
+    }
+    localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
+  };
   const trimStoredMessages = (consumerName: string) => {
     const consumer = (config.consumers || []).find((entry) => entry.name === consumerName);
     const capture = normalizeConsumerMessageCapture(consumer?.message_capture);

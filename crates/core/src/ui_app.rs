@@ -1,7 +1,9 @@
 use crate::config::{
-    AppConfig, ConsumerConfig, ConsumerMessageCaptureConfig, ConsumerOutputConfig,
-    ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, RouteConfig, SecretStore,
+    AppConfig, ConfigSecurityMode, ConsumerConfig, ConsumerMessageCaptureConfig,
+    ConsumerOutputConfig, ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, RouteConfig,
+    SecretStore,
 };
+use crate::encrypted_config::has_config_master_key;
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -15,6 +17,56 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use uuid::Uuid;
+
+fn generate_ephemeral_message_key() -> (String, String) {
+    let mut bytes = [0u8; 32];
+    bytes[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    bytes[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    let kid = Uuid::new_v4().to_string();
+    (hex::encode(bytes), kid)
+}
+
+pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
+    match config.security_mode() {
+        ConfigSecurityMode::Unencrypted => StorageSecurityInfoResponse {
+            encrypted: false,
+            persistent: true,
+            key_source: "none".to_string(),
+            config_encrypted: false,
+            messages_encrypted: false,
+            messages_persistent: true,
+            reason: Some("cli-mode".to_string()),
+            message_key_hex: None,
+            kid: None,
+        },
+        ConfigSecurityMode::Balanced => StorageSecurityInfoResponse {
+            encrypted: false,
+            persistent: true,
+            key_source: "env".to_string(),
+            config_encrypted: false,
+            messages_encrypted: false,
+            messages_persistent: true,
+            reason: Some("cli-mode".to_string()),
+            message_key_hex: None,
+            kid: None,
+        },
+        ConfigSecurityMode::Sensitive | ConfigSecurityMode::Durable => {
+            let (message_key_hex, kid) = generate_ephemeral_message_key();
+            StorageSecurityInfoResponse {
+                encrypted: true,
+                persistent: false,
+                key_source: "ephemeral-process".to_string(),
+                config_encrypted: has_config_master_key(),
+                messages_encrypted: true,
+                messages_persistent: false,
+                reason: Some("cli-mode".to_string()),
+                message_key_hex: Some(message_key_hex),
+                kid: Some(kid),
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct UiApp {
@@ -25,6 +77,7 @@ pub struct UiApp {
     ui_handles: Arc<RwLock<HashMap<String, RouteHandle>>>,
     throughput_samples: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
     consumer_message_sequences: Arc<RwLock<HashMap<String, u64>>>,
+    storage_security: Arc<StorageSecurityInfoResponse>,
 }
 
 #[derive(Clone, Copy)]
@@ -383,11 +436,13 @@ impl UiApp {
         metrics_handle: PrometheusHandle,
         config_file_path: String,
     ) -> Self {
-        Self::new_with_secret_store(
+        let storage_security = storage_security_for_cli(&initial_config);
+        Self::new_with_secret_store_and_storage_security(
             initial_config,
             metrics_handle,
             config_file_path,
             Arc::new(EnvFileSecretStore::new(".env")),
+            storage_security,
         )
     }
 
@@ -397,6 +452,22 @@ impl UiApp {
         config_file_path: String,
         secret_store: Arc<dyn SecretStore>,
     ) -> Self {
+        Self::new_with_secret_store_and_storage_security(
+            initial_config.clone(),
+            metrics_handle,
+            config_file_path,
+            secret_store,
+            storage_security_for_cli(&initial_config),
+        )
+    }
+
+    pub fn new_with_secret_store_and_storage_security(
+        initial_config: AppConfig,
+        metrics_handle: PrometheusHandle,
+        config_file_path: String,
+        secret_store: Arc<dyn SecretStore>,
+        storage_security: StorageSecurityInfoResponse,
+    ) -> Self {
         Self {
             config: Arc::new(RwLock::new(initial_config)),
             metrics_handle,
@@ -405,11 +476,16 @@ impl UiApp {
             ui_handles: Arc::new(RwLock::new(HashMap::new())),
             throughput_samples: Arc::new(RwLock::new(HashMap::new())),
             consumer_message_sequences: Arc::new(RwLock::new(HashMap::new())),
+            storage_security: Arc::new(storage_security),
         }
     }
 
     pub async fn get_config(&self) -> AppConfig {
         self.config.read().await.clone()
+    }
+
+    pub fn storage_security(&self) -> StorageSecurityInfoResponse {
+        (*self.storage_security).clone()
     }
 
     pub fn config_file_path(&self) -> &str {
@@ -460,6 +536,7 @@ impl UiApp {
                 self.ok_json(&schema, false)
             }
             ("GET", "/config") => self.ok_json(&self.get_config().await, false),
+            ("GET", "/storage-security") => self.ok_json(&self.storage_security(), true),
             ("GET", "/consumer-status") => {
                 let name = query_param(&msg, "consumer").unwrap_or_default();
                 match self.consumer_status(&name).await {
@@ -1155,3 +1232,18 @@ impl std::fmt::Display for UpdateConfigError {
 }
 
 impl std::error::Error for UpdateConfigError {}
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StorageSecurityInfoResponse {
+    pub encrypted: bool,
+    pub persistent: bool,
+    pub key_source: String,
+    pub config_encrypted: bool,
+    pub messages_encrypted: bool,
+    pub messages_persistent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_key_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kid: Option<String>,
+}

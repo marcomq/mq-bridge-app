@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   fetchConfigFromServer,
+  fetchStorageSecurityFromServer,
   postConfig,
   saveConfigSection,
   saveWholeConfig,
@@ -25,6 +26,17 @@ describe("config-api", () => {
     await expect(postConfig(fetchImpl as unknown as typeof fetch, { foo: "bar" })).rejects.toThrow(
       "bad config",
     );
+  });
+
+  test("fetches storage security without cache", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      json: async () => ({ messagesEncrypted: true }),
+    });
+
+    await expect(fetchStorageSecurityFromServer(fetchImpl as unknown as typeof fetch)).resolves.toEqual({
+      messagesEncrypted: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith("/storage-security", { cache: "no-store" });
   });
 
   test("saves whole config and returns refreshed data", async () => {

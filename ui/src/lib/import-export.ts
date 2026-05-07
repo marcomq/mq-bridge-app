@@ -2,6 +2,7 @@ import { saveWholeConfig } from "./config-api";
 import { mqbApp } from "./runtime-window";
 import {
   ensureWorkspaceCollections,
+  isSensitiveConfig,
   sanitizeEnvVars,
   sanitizePublisherHistory,
   sanitizePresets,
@@ -10,6 +11,8 @@ import {
   type PresetsByPublisher,
   type PublisherPreset,
 } from "./workspace-config";
+import { setStoredJson } from "./encrypted-json-storage";
+import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
 
 export type ImportedRequest = PublisherPreset;
 
@@ -175,11 +178,13 @@ export async function importAppConfigFromJsonText(text: string) {
 
 export async function resetAppConfigToDefaults() {
   const currentConfig = asObject(structuredClone(mqbApp.config<Record<string, unknown>>()));
+  const normalizedCurrentConfig = ensureWorkspaceCollections(currentConfig);
   const nextConfig = {
     ...currentConfig,
     consumers: [],
     publishers: [],
     default_tab: "publishers",
+    config_security: normalizedCurrentConfig.config_security,
     history: sanitizePublisherHistory({}),
   };
   delete nextConfig.routes;
@@ -516,8 +521,13 @@ async function saveImportedConfig(config: Record<string, unknown>) {
   delete nextConfig.routes;
   const history = sanitizePublisherHistory(nextConfig.history);
   nextConfig.history = history;
-  if (typeof window.localStorage?.setItem === "function") {
+  const storageSecurity = resolveStorageSecurity((window as any)._mqb_storage_security, nextConfig);
+  if (typeof window.localStorage?.setItem === "function" && hasEncryptedMessages(storageSecurity)) {
+    await setStoredJson(PUBLISHER_HISTORY_KEY, history, storageSecurity);
+  } else if (typeof window.localStorage?.setItem === "function" && !isSensitiveConfig(nextConfig)) {
     window.localStorage.setItem(PUBLISHER_HISTORY_KEY, JSON.stringify(history));
+  } else if (typeof window.localStorage?.removeItem === "function") {
+    window.localStorage.removeItem(PUBLISHER_HISTORY_KEY);
   }
   mqbApp.setConfig(nextConfig);
 }
@@ -553,6 +563,7 @@ export async function importFromJsonText(
         nextConfig.logger = importedConfig.logger;
         nextConfig.ui_addr = importedConfig.ui_addr;
         nextConfig.metrics_addr = importedConfig.metrics_addr;
+        nextConfig.config_security = importedConfig.config_security;
         nextConfig.extract_secrets = importedConfig.extract_secrets;
         mergedHistory = sanitizePublisherHistory(importedConfig.history);
         mergedPresets = sanitizePresets(importedConfig.presets);

@@ -5,62 +5,176 @@ This file is intentionally broader than one implementation task. It should act a
 Important workflow for Codex: for non-trivial changes, do not jump directly to a finished implementation. First inspect the relevant code, propose the intended solution shape, list affected files/components, identify removals/migrations/tradeoffs, and stop for feedback before the main implementation.
 
 
-## 5. Config persistence and storage direction
+## 7. Storage and encryption modes
 
 ### Goal
 
-Move long-lived app state out of browser/localStorage-style storage and into the app config where practical.
+Document and implement clear storage/security behavior for config and cached message artifacts.
 
-Longer-term candidates for config persistence:
+Important distinction:
 
-- history
-- presets
-- publishers
-- consumers
-- message capture preferences
-- import settings
-- app UI preferences if needed
+- Encrypted `localStorage` is for encryption at rest of offline artifacts after shutdown.
+- It is not intended as a defense against malicious JavaScript, XSS, compromised frontend code, or code execution inside the running app.
 
-Avoid storing huge message buffers in durable config by default. Messages are runtime/debug data, not an archive.
+Keep the user-facing modes simple. Do not expose a large internal matrix even if the implementation uses richer key-provider and encryption abstractions.
 
-Presets and history need to be sufficient for all endpoint types, not just HTTP.
-We might even store a hash map and let JavaScript parse the values.
-The values later also need to be exportable to AsyncAPI.
+CLI target:
 
-## 6. Improve UX of App Config page
+1. `unencrypted`
+   - Config is plain.
+   - Sensitive values may be stored directly.
+   - Messages and local storage are plain.
 
-App config currently stores the whole config object in one large form.
-This makes the page hard to follow or read. Also, the configurable options are redundant. The other forms already configure most options.
-We should keep only the options that are not available in the rest of the app. And we should have those options visible directly, and not
-on click on "show advanced".
+2. `env-secrets`
+   - Config is plain.
+   - Sensitive values are extracted to env vars or placeholders.
+   - Messages and local storage are plain.
 
-## 7. Encryption modes for config
+3. `env-secrets-temporary-messages`
+   - Config is plain.
+   - Sensitive values are extracted to env vars or placeholders.
+   - Messages and local storage are encrypted with a random process key.
+   - Message history is intentionally lost after restart.
+   - This should probably be the CLI default.
 
-### Goal
+Tauri target:
 
-Document and implement clear config security modes.
+1. `unencrypted`
+   - Config is plain.
+   - Sensitive values may be stored directly.
+   - Messages and local storage are plain.
 
-Planned modes:
+2. `keychain-secrets`
+   - Config is plain.
+   - Sensitive values are stored in the OS key store or keychain.
+   - Messages and local storage are plain.
 
-```text
-unencrypted
-balanced (default)
-sensitive
+3. `encrypted-config-temporary-messages`
+   - Config is encrypted using a persistent random key stored in the OS key store or keychain.
+   - Sensitive values may live in the key store or inside the encrypted config depending on the final implementation.
+   - Messages and local storage are encrypted with a separate random process key.
+   - Message history is intentionally cleared after restart.
+   - This should probably be the Tauri default if a key store is available.
+
+4. `encrypted-config-persistent-messages`
+   - Config is encrypted using a persistent random key stored in the OS key store or keychain.
+   - Messages and local storage are encrypted with a separate persistent random key stored in the OS key store or keychain.
+   - Message history survives restart.
+   - This should be opt-in, not the default.
+
+Fallback behavior:
+
+- Do not assume the OS key store is always available, especially on Linux, headless, or minimal systems.
+- If Tauri has no usable key store, only offer or fall back to:
+  - `unencrypted`
+  - temporary encrypted messages with an ephemeral process key
+- Do not silently pretend message history is persistent if it is not.
+- The backend should expose storage/security status to the UI so the UI can explain whether message history is persistent or temporary.
+
+Suggested runtime status shape:
+
+```ts
+type StorageSecurityInfo = {
+  encrypted: boolean;
+  persistent: boolean;
+  keySource: "none" | "os-key-store" | "ephemeral-process" | "env";
+  configEncrypted: boolean;
+  messagesEncrypted: boolean;
+  messagesPersistent: boolean;
+  reason?: "key-store-unavailable" | "key-store-write-failed" | "cli-mode";
+};
 ```
 
-Possible interpretation:
+Important behavior:
 
-- `unencrypted`: config stored plainly.
-- `balanced`: non-sensitive config plain, secrets/passwords stored in OS keychain/keystore.
-- `sensitive`: full config encrypted with a random key stored in the OS keychain/keystore. Localstore should also avoid storing sensitive data - maybe we should encrypt it with the same random key.
+- If message decryption fails and the message key is ephemeral:
+  - clear old encrypted message storage
+  - continue with empty messages
+  - do not fail the whole app
+- If config decryption fails with a persistent key:
+  - show a recoverable error
+  - offer a reset or migration path
+  - do not silently delete config
+
+Storage design:
+
+- Keep an algorithm-pluggable encrypted envelope from the beginning.
+- Prefer `nonce` over `iv` in naming.
+- Include version, algorithm id, key id, nonce, and ciphertext.
+- Use AAD where possible to bind ciphertext to a logical storage slot such as:
+  - `mq-bridge-app:localStorage:messages`
+  - `mq-bridge-app:config`
+
+Example envelope:
+
+```ts
+type EncryptedEnvelope = {
+  v: number;
+  alg: "AES-256-GCM" | "AES-256-GCM-SIV" | "XCHACHA20-POLY1305";
+  kid: string;
+  nonce: string;
+  ciphertext: string;
+};
+```
+
+Algorithm direction:
+
+- Avoid AES-CBC, AES-CTR without authentication, custom crypto constructions, and opaque \"secure localStorage\" helpers.
+- If encryption happens in frontend JS:
+  - start with AES-256-GCM via WebCrypto
+  - use a fresh random 96-bit nonce for every encryption
+- If encryption happens in Rust/Tauri/backend:
+  - prefer an AEAD abstraction
+  - AES-256-GCM-SIV is attractive if crate support is solid
+  - AES-256-GCM is acceptable as the first implementation
+- Keep the envelope pluggable so future algorithm upgrades and key rotation stay possible.
+
+Recommended architecture:
+
+- `StorageMode` / `SecurityMode` enum
+- backend-exposed `StorageSecurityInfo`
+- `KeyProvider` abstraction
+  - `NoKeyProvider`
+  - `EnvKeyProvider` / `EnvSecretProvider`
+  - `OsKeyStoreProvider`
+  - `EphemeralProcessKeyProvider`
+- `Encryptor` / `Decryptor` abstraction with an algorithm registry
+- `EncryptedJsonStorage` wrapper
+  - `setJson(key, value)`
+  - `getJson(key)`
+  - `clearNamespace(namespace)`
+- `MessageHistoryStore`
+  - uses encrypted local storage depending on mode
+  - auto-clears on ephemeral decrypt failure
+- `ConfigStore`
+  - handles encrypted vs plain config
+  - is stricter than message history because config is not disposable
+
+Documentation and UI copy:
+
+- Explain clearly that encrypted message history is about not leaving readable broker payloads, traces, headers, and captured data on disk after shutdown.
+- Make it explicit that this is not a runtime code-execution or XSS defense.
+
+Suggested copy:
+
+- \"Message history is encrypted at rest to avoid leaving readable broker payloads in local browser storage after shutdown. This does not protect against code running inside the app.\"
+- \"Messages are encrypted during the current session and cleared after restart.\"
+- \"Messages are encrypted and can be restored after restart using a key stored in the OS key store.\"
+- \"No OS key store is available. Message history can only be stored temporarily and will be cleared after restart.\"
 
 Tasks:
 
-- Define exact behavior for each mode.
-- Define migration behavior between modes.
-- Decide which fields count as secrets.
-- Avoid giving users a false sense of security: encryption is local-at-rest protection, not a full threat model.
-- Add this target to `AGENTS.md` or project docs so future agent sessions do not accidentally design around localStorage-only persistence.
+- Define exact migration behavior from the current `config_security.mode` model to the expanded CLI and Tauri mode sets.
+- Decide which fields count as secrets versus encrypted-but-cacheable data.
+- Add a shared encrypted storage abstraction instead of scattering crypto calls across UI code.
+- Expose storage/security status from backend startup to the UI.
+- Implement temporary encrypted message history first, then persistent encrypted history.
+- Implement encrypted config for Tauri with a recoverable failure path.
+- Keep defaults simple:
+  - CLI default: env secrets + temporary encrypted messages
+  - Tauri default with key store: encrypted config + temporary encrypted messages
+  - Tauri default without key store: temporary encrypted messages fallback
+  - persistent encrypted message history should be opt-in
 
 ## 8. Binary payloads, hex view, and whitespace display
 

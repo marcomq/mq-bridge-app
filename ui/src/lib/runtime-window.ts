@@ -43,6 +43,22 @@ export type MqbState = {
       capture_keep_last?: number;
     }>;
   };
+  storage_security?: {
+    encrypted: boolean;
+    persistent: boolean;
+    keySource: "none" | "os-key-store" | "ephemeral-process" | "env";
+    configEncrypted: boolean;
+    messagesEncrypted: boolean;
+    messagesPersistent: boolean;
+    reason?: "key-store-unavailable" | "key-store-write-failed" | "cli-mode";
+    messageKeyHex?: string;
+    kid?: string;
+  };
+  storage_cache?: {
+    publisher_state?: Record<string, unknown>;
+    publisher_history?: unknown;
+    consumer_messages?: Record<string, unknown>;
+  };
   dirty_sections: Record<string, { buttonId: string; getValue: () => unknown; baseline: string }>;
   saved_sections: Record<string, unknown>;
   runtime_poll_timer?: number;
@@ -72,6 +88,8 @@ export function getMqbState(): MqbState {
         route_throughput: {},
         consumers: {},
       },
+      storage_security: w._mqb_storage_security,
+      storage_cache: w._mqb_storage_cache,
       dirty_sections: w._mqb_dirty_sections ?? {},
       saved_sections: w._mqb_saved_sections ?? {},
       runtime_poll_timer: w._mqb_runtime_poll_timer,
@@ -95,6 +113,8 @@ export function getMqbState(): MqbState {
   if (w._mqb_last_consumer_tab !== undefined) state.last_consumer_tab = w._mqb_last_consumer_tab;
   if (w._mqb_last_publisher_tab !== undefined) state.last_publisher_tab = w._mqb_last_publisher_tab;
   if (w._mqb_runtime_status !== undefined) state.runtime_status = w._mqb_runtime_status;
+  if (w._mqb_storage_security !== undefined) state.storage_security = w._mqb_storage_security;
+  if (w._mqb_storage_cache !== undefined) state.storage_cache = w._mqb_storage_cache;
   if (w._mqb_dirty_sections !== undefined) state.dirty_sections = w._mqb_dirty_sections;
   if (w._mqb_saved_sections !== undefined) state.saved_sections = w._mqb_saved_sections;
   if (w._mqb_runtime_poll_timer !== undefined) state.runtime_poll_timer = w._mqb_runtime_poll_timer;
@@ -114,6 +134,8 @@ export function getMqbState(): MqbState {
   w._mqb_last_consumer_tab = state.last_consumer_tab;
   w._mqb_last_publisher_tab = state.last_publisher_tab;
   w._mqb_runtime_status = state.runtime_status;
+  w._mqb_storage_security = state.storage_security;
+  w._mqb_storage_cache = state.storage_cache;
   w._mqb_dirty_sections = state.dirty_sections;
   w._mqb_saved_sections = state.saved_sections;
   w._mqb_runtime_poll_timer = state.runtime_poll_timer;

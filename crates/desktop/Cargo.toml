@@ -31,6 +31,8 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+hex = "0.4"
+uuid = { version = "1.23", features = ["v4"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

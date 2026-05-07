@@ -1,8 +1,14 @@
 use anyhow::Context;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use mq_bridge_app::config::{AppConfig, SecretReferenceSummary, SecretStore, load_config_at_path};
+use mq_bridge_app::config::{
+    AppConfig, ConfigSecurityMode, SecretReferenceSummary, SecretStore, load_config_at_path,
+};
+use mq_bridge_app::encrypted_config::{
+    CONFIG_MASTER_KEY_ENV, config_file_format_from_path, has_config_master_key,
+    read_config_security_mode_from_str, uses_encrypted_config_mode_label,
+};
 use mq_bridge_app::mq_bridge::{CanonicalMessage, Handled};
-use mq_bridge_app::ui_app::UiApp;
+use mq_bridge_app::ui_app::{StorageSecurityInfoResponse, UiApp, storage_security_for_cli};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -78,6 +84,127 @@ impl SecretStore for DesktopKeyringSecretStore {
         write_desktop_secret_metadata(&self.metadata_path, secrets.keys())?;
         Ok(())
     }
+}
+
+fn desktop_key_account(kind: &str, config_path: &Path) -> String {
+    format!("{kind}:{}", config_path.display())
+}
+
+fn generate_random_key_hex() -> String {
+    let mut bytes = [0u8; 32];
+    bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    hex::encode(bytes)
+}
+
+fn load_or_create_desktop_hex_key(
+    config_path: &Path,
+    service: &str,
+    kind: &str,
+) -> anyhow::Result<String> {
+    let account = desktop_key_account(kind, config_path);
+    let entry = keyring::Entry::new(service, &account)
+        .with_context(|| format!("Failed to open desktop config key entry '{account}'"))?;
+
+    match entry.get_password() {
+        Ok(value) => Ok(value),
+        Err(keyring::Error::NoEntry) => {
+            let value = generate_random_key_hex();
+            entry
+                .set_password(&value)
+                .with_context(|| format!("Failed to store desktop config key '{account}'"))?;
+            Ok(value)
+        }
+        Err(error) => Err(anyhow::anyhow!(
+            "Failed to load desktop config key '{}': {}",
+            account,
+            error
+        )),
+    }
+}
+
+fn load_or_create_desktop_config_key(config_path: &Path, service: &str) -> anyhow::Result<String> {
+    load_or_create_desktop_hex_key(config_path, service, "config-key")
+}
+
+fn load_or_create_desktop_message_key(config_path: &Path, service: &str) -> anyhow::Result<String> {
+    load_or_create_desktop_hex_key(config_path, service, "message-history-key")
+}
+
+fn storage_security_for_desktop(
+    config: &AppConfig,
+    message_key: Option<String>,
+    message_kid: Option<String>,
+    reason: Option<String>,
+) -> StorageSecurityInfoResponse {
+    match config.security_mode() {
+        ConfigSecurityMode::Unencrypted => StorageSecurityInfoResponse {
+            encrypted: false,
+            persistent: true,
+            key_source: "none".to_string(),
+            config_encrypted: false,
+            messages_encrypted: false,
+            messages_persistent: true,
+            reason: None,
+            message_key_hex: None,
+            kid: None,
+        },
+        ConfigSecurityMode::Balanced => StorageSecurityInfoResponse {
+            encrypted: false,
+            persistent: true,
+            key_source: "os-key-store".to_string(),
+            config_encrypted: false,
+            messages_encrypted: false,
+            messages_persistent: true,
+            reason: None,
+            message_key_hex: None,
+            kid: None,
+        },
+        ConfigSecurityMode::Sensitive => {
+            let mut info = storage_security_for_cli(config);
+            info.config_encrypted = true;
+            info.reason = reason;
+            info
+        }
+        ConfigSecurityMode::Durable => {
+            if let Some(message_key_hex) = message_key {
+                StorageSecurityInfoResponse {
+                    encrypted: true,
+                    persistent: true,
+                    key_source: "os-key-store".to_string(),
+                    config_encrypted: true,
+                    messages_encrypted: true,
+                    messages_persistent: true,
+                    reason,
+                    message_key_hex: Some(message_key_hex),
+                    kid: message_kid,
+                }
+            } else {
+                let mut info = storage_security_for_cli(config);
+                info.config_encrypted = true;
+                info.reason = reason;
+                info
+            }
+        }
+    }
+}
+
+fn read_saved_config_security_mode(config_path: &Path) -> anyhow::Result<Option<String>> {
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(config_path).with_context(|| {
+        format!(
+            "Failed to read desktop config file '{}' for security mode detection",
+            config_path.display()
+        )
+    })?;
+    let format = config_file_format_from_path(
+        config_path
+            .to_str()
+            .context("Desktop config path contains invalid UTF-8")?,
+    );
+    Ok(read_config_security_mode_from_str(&content, format))
 }
 
 #[derive(Serialize)]
@@ -257,18 +384,7 @@ async fn post_config_request(
     state: tauri::State<'_, DesktopState>,
     body_text: String,
 ) -> Result<BridgeResponse, String> {
-    let mut processed_body = body_text;
-    if !processed_body.trim().is_empty() {
-        if let Ok(mut config_value) = serde_json::from_str::<serde_json::Value>(&processed_body) {
-            if let Some(object) = config_value.as_object_mut() {
-                object.insert("extract_secrets".into(), serde_json::Value::Bool(true));
-                if let Ok(serialized) = serde_json::to_string(&config_value) {
-                    processed_body = serialized;
-                }
-            }
-        }
-    }
-    dispatch_ui_request(state, "POST", "/config", "", &processed_body).await
+    dispatch_ui_request(state, "POST", "/config", "", &body_text).await
 }
 
 #[tauri::command]
@@ -567,6 +683,22 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let config_path = desktop_config_path(app)?;
+            let saved_mode = read_saved_config_security_mode(&config_path)?;
+            if saved_mode
+                .as_deref()
+                .is_some_and(uses_encrypted_config_mode_label)
+            {
+                let config_key =
+                    load_or_create_desktop_config_key(&config_path, DESKTOP_SECRET_SERVICE)
+                        .context("Failed to load or create desktop config encryption key")?;
+                unsafe {
+                    std::env::set_var(CONFIG_MASTER_KEY_ENV, &config_key);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var(CONFIG_MASTER_KEY_ENV);
+                }
+            }
             let metadata_path = desktop_secret_metadata_path(&config_path);
             let secret_store = Arc::new(DesktopKeyringSecretStore::new(
                 DESKTOP_SECRET_SERVICE,
@@ -581,7 +713,43 @@ pub fn run() {
                     .to_string(),
             )
             .context("Failed to load desktop configuration")?;
-            config.extract_secrets = true;
+            if matches!(
+                config.security_mode(),
+                ConfigSecurityMode::Sensitive | ConfigSecurityMode::Durable
+            ) && !has_config_master_key()
+            {
+                let config_key =
+                    load_or_create_desktop_config_key(&config_path, DESKTOP_SECRET_SERVICE)
+                        .context("Failed to load or create desktop config encryption key")?;
+                unsafe {
+                    std::env::set_var(CONFIG_MASTER_KEY_ENV, &config_key);
+                }
+            }
+            let storage_security = if matches!(config.security_mode(), ConfigSecurityMode::Durable)
+            {
+                let message_key_account = desktop_key_account("message-history-key", &config_path);
+                match load_or_create_desktop_message_key(&config_path, DESKTOP_SECRET_SERVICE) {
+                    Ok(message_key_hex) => storage_security_for_desktop(
+                        &config,
+                        Some(message_key_hex),
+                        Some(message_key_account),
+                        None,
+                    ),
+                    Err(error) => {
+                        warn!(
+                            "failed to provision persistent desktop message history key: {error}"
+                        );
+                        storage_security_for_desktop(
+                            &config,
+                            None,
+                            None,
+                            Some("key-store-write-failed".to_string()),
+                        )
+                    }
+                }
+            } else {
+                storage_security_for_desktop(&config, None, None, None)
+            };
 
             init_logging(&config);
 
@@ -604,11 +772,12 @@ pub fn run() {
             })?;
 
             app.manage(DesktopState {
-                app: UiApp::new_with_secret_store(
+                app: UiApp::new_with_secret_store_and_storage_security(
                     config,
                     prometheus_handle,
                     config_file_path,
                     secret_store,
+                    storage_security,
                 ),
             });
 

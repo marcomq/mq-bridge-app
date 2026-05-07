@@ -59,17 +59,88 @@
 
 Use a workspace-based storage model as the long-term target.
 
-Workspace/domain data should live in the workspace config, not in `localStorage`. This includes publishers, consumers, routes, presets, request history, headers, payloads, and configured environment variables. `localStorage` should only keep UI preferences such as theme, layout, selected tab, collapsed panels, and recent workspace references.
+Workspace/domain data should still live in the workspace config where appropriate, but we no longer treat `localStorage` as UI-only state. Local browser/Tauri storage may be used for message history, traces, headers, payloads, and similar cached runtime data, but it should be encrypted at rest when the selected mode calls for it.
 
-Target storage modes:
+Threat model:
 
-- `unencrypted`: plain workspace config for debugging, examples, user has no keystore, and manual editing.
-- `balanced` default: plain workspace config, but explicit secrets such as passwords, tokens, API keys, and sensitive env values are stored in the OS key store. The config stores only references/placeholders.
-- `sensitive`: the complete workspace config is encrypted. A random workspace key is stored in the OS key store. The file contains encrypted data plus metadata only.
+- Encrypted local storage is for offline inspection after shutdown, similar to encrypted swap or encrypted temp files.
+- It is not meant to defend against malicious JavaScript, XSS, compromised frontend code, or arbitrary code execution inside the running app.
+
+User-facing storage/security modes should stay simple even if the internal implementation uses more detailed key-provider and encryption abstractions.
+
+CLI target modes:
+
+- `unencrypted`: config is plain, secrets may be stored inline, and messages/local storage are plain.
+- `env-secrets`: config is plain and sensitive values are extracted to env vars/placeholders. Messages/local storage are plain.
+- `env-secrets-temporary-messages`: config is plain, secrets are extracted to env vars/placeholders, and messages/local storage are encrypted with a random process key. Message history is intentionally lost after restart. This is the preferred CLI default.
+
+Tauri target modes:
+
+- `unencrypted`: config is plain, secrets may be stored inline, and messages/local storage are plain.
+- `keychain-secrets`: config is plain, sensitive values are stored in the OS key store/keychain, and messages/local storage are plain.
+- `encrypted-config-temporary-messages`: config is encrypted with a persistent random key stored in the OS key store/keychain, while messages/local storage are encrypted with a separate random process key and intentionally lost after restart. This is the preferred Tauri default when a usable key store exists.
+- `encrypted-config-persistent-messages`: config is encrypted with a persistent random key stored in the OS key store/keychain, and messages/local storage are encrypted with a separate persistent random key stored in the OS key store/keychain. This should be opt-in rather than the default.
+
+Fallbacks:
+
+- Do not assume the OS key store exists or is writable.
+- When no usable OS key store is available in Tauri, fall back to modes that are honest about persistence. Temporary encrypted messages with an ephemeral process key are acceptable; fake persistence is not.
+- The backend should expose storage/security status to the UI so the UI can explain whether message history is unencrypted, temporary, or persistently encrypted.
+
+Recommended runtime status shape:
+
+```ts
+type StorageSecurityInfo = {
+  encrypted: boolean;
+  persistent: boolean;
+  keySource: "none" | "os-key-store" | "ephemeral-process" | "env";
+  configEncrypted: boolean;
+  messagesEncrypted: boolean;
+  messagesPersistent: boolean;
+  reason?: "key-store-unavailable" | "key-store-write-failed" | "cli-mode";
+};
+```
+
+Important behavior:
+
+- If message decryption fails and the message key is ephemeral, clear the old encrypted message storage and continue with empty messages.
+- If config decryption fails with a persistent key, show a recoverable error and offer reset or migration options. Do not silently delete config.
+
+Recommended architecture:
+
+- Keep encryption and decryption out of scattered UI call sites.
+- Use a small storage/encryption abstraction with a mode enum, backend-exposed `StorageSecurityInfo`, key-provider abstraction, encryptor/decryptor abstraction, and encrypted JSON storage wrapper.
+- Message history storage can be more disposable than config storage. Config persistence must be stricter and more conservative.
+
+Encrypted storage format:
+
+- Use an algorithm-pluggable encrypted envelope from the beginning.
+- Prefer `nonce` over `iv` in the envelope naming.
+- Include version, algorithm id, key id, nonce, and ciphertext.
+- Bind ciphertext to its logical storage location with AAD when possible, for example `mq-bridge-app:localStorage:messages` or `mq-bridge-app:config`.
+
+Example:
+
+```ts
+type EncryptedEnvelope = {
+  v: number;
+  alg: "AES-256-GCM" | "AES-256-GCM-SIV" | "XCHACHA20-POLY1305";
+  kid: string;
+  nonce: string;
+  ciphertext: string;
+};
+```
+
+Algorithm guidance:
+
+- Avoid AES-CBC, unauthenticated AES-CTR, custom crypto constructions, and opaque \"secure localStorage\" libraries.
+- If encryption happens in frontend JS, start with AES-256-GCM via WebCrypto using a fresh random 96-bit nonce for each encryption.
+- If encryption happens in Rust/backend/Tauri, prefer an AEAD abstraction. AES-256-GCM-SIV is attractive if the crate support is solid; AES-256-GCM is an acceptable first step.
+- Keep the envelope algorithm-pluggable either way so key rotation and future algorithm upgrades stay possible.
 
 Saving should not blindly stop or restart routes. Compare current, saved, and applied runtime state. We should add manual triggers to restart routes or consumers.
 
-When changing persistence code, prefer moving app data toward the central workspace model instead of adding new independent `localStorage` storage.
+When changing persistence code, avoid introducing ad hoc storage paths. Reuse the central workspace/config model plus the shared encrypted storage abstraction instead of scattering one-off `localStorage` logic.
 
 ## XSS
 
