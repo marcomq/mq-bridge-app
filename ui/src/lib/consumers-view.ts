@@ -1143,6 +1143,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   saveCurrentConsumerAction = async () => {
       const activeElement = document.activeElement as HTMLElement | null;
       activeElement?.blur();
+      await Promise.resolve();
       const normalized = normalizeConsumerNames(config.consumers, currentIdx);
       const selectedName = normalized.selectedName;
       const selectedTab = activeSubtab;

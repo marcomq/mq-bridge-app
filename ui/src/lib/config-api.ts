@@ -58,11 +58,11 @@ export async function saveWholeConfig<T extends object>(
 
 export async function saveConfigSection<T extends object, K extends keyof T>(
   fetchImpl: typeof fetch,
+  currentConfig: T,
   sectionName: K,
   sectionValue: T[K],
 ): Promise<T> {
-  const serverConfig = await fetchConfigFromServer<T>(fetchImpl);
-  const nextConfig = { ...serverConfig, [sectionName]: sectionValue };
+  const nextConfig = { ...currentConfig, [sectionName]: sectionValue };
   await postConfig(fetchImpl, nextConfig);
   return fetchConfigFromServer<T>(fetchImpl);
 }

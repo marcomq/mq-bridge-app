@@ -362,6 +362,70 @@ describe("initConsumers", () => {
     expect(savedConsumers[0].output).toEqual({ mode: "none" });
   });
 
+  test("captures blur-driven consumer edits on the first save click", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "static",
+          endpoint: { middlewares: [{ metrics: {} }], static: "initial" },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    let formChange: ((updated: unknown) => void) | null = null;
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, _schema, _data, onChange) => {
+      formChange = onChange;
+      return Promise.resolve();
+    });
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, consumers: any[]) => ({ consumers }));
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    const activeInput = document.createElement("input");
+    document.body.appendChild(activeInput);
+    activeInput.focus();
+    activeInput.blur = () => {
+      queueMicrotask(() => {
+        formChange?.({
+          name: "static_renamed",
+          endpoint: { middlewares: [{ metrics: {} }], static: "changed" },
+          response: null,
+          output: { mode: "none" },
+        });
+      });
+    };
+
+    await saveCurrentConsumerAction();
+
+    const savedConsumers = (window.saveConfigSection as any).mock.calls.at(-1)?.[1];
+    expect(savedConsumers[0].name).toBe("static_renamed");
+    expect(savedConsumers[0].endpoint.static).toBe("changed");
+  });
+
   test("keeps publisher mode visible until a publisher is selected", async () => {
     const config = {
       consumers: [
@@ -1009,6 +1073,7 @@ describe("initConsumers", () => {
 
     await restoreConsumerStateFromView(1, { tab: "definition" });
     const savePromise = saveCurrentConsumerAction();
+    await Promise.resolve();
     resolveSave?.({
       consumers: [
         {

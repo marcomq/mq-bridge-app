@@ -630,16 +630,28 @@ const createScalarEndpointRenderer = (
     const store = context.store;
     const currentValue = store.getPath(dataPath);
     const suggestions = options.suggestions ? options.suggestions() : [];
+    const currentScalarValue =
+      typeof currentValue === "string"
+        ? currentValue
+        : (currentValue && typeof currentValue === "object" && !Array.isArray(currentValue) && typeof currentValue[type] === "string"
+            ? currentValue[type]
+            : (typeof node.defaultValue === "string" ? node.defaultValue : ""));
 
     return renderSvelteNode(ScalarEndpointInput, {
       title: String(node.title || options.title),
       description: String(node.description || ""),
-      value: typeof currentValue === "string"
-        ? currentValue
-        : (typeof node.defaultValue === "string" ? node.defaultValue : ""),
+      value: currentScalarValue,
       placeholder: options.placeholder,
       suggestions,
       onChange: (next: string) => {
+        const existing = store.getPath(dataPath);
+        if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+          store.setPath(dataPath, {
+            ...existing,
+            [type]: next,
+          });
+          return;
+        }
         store.setPath(dataPath, next);
       },
     });

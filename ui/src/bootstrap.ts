@@ -337,6 +337,7 @@ function installGlobals() {
       const appConfig = mqbApp.config<Record<string, unknown>>();
       const refreshedConfig = await persistConfigSection<Record<string, unknown>, string>(
         fetch,
+        appConfig,
         sectionName,
         sectionValue,
       );

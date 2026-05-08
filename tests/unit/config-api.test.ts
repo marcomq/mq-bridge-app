@@ -123,18 +123,32 @@ describe("config-api", () => {
     ).resolves.toEqual({ saved: true });
   });
 
-  test("saves one section against a fresh server snapshot", async () => {
+  test("saves one section against the current in-memory config", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce({ json: async () => ({ routes: {}, publishers: [] }) })
       .mockResolvedValueOnce({ ok: true, text: async () => "" })
-      .mockResolvedValueOnce({ json: async () => ({ routes: {}, publishers: [{ name: "pub" }] }) });
+      .mockResolvedValueOnce({ json: async () => ({ routes: {}, publishers: [{ name: "pub" }], consumers: [{ name: "c1" }] }) });
 
     await expect(
-      saveConfigSection(fetchImpl as unknown as typeof fetch, "publishers", [{ name: "pub" }]),
+      saveConfigSection(
+        fetchImpl as unknown as typeof fetch,
+        { routes: {}, publishers: [], consumers: [{ name: "c1" }] },
+        "publishers",
+        [{ name: "pub" }],
+      ),
     ).resolves.toEqual({
       routes: {},
       publishers: [{ name: "pub" }],
+      consumers: [{ name: "c1" }],
+    });
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, "/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        routes: {},
+        publishers: [{ name: "pub" }],
+        consumers: [{ name: "c1" }],
+      }),
     });
   });
 });
