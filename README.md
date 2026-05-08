@@ -34,7 +34,7 @@ The table below is intentionally broad. Exact feature sets vary by product and e
 | Basic HTTP/API requests | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Scripting | — | ✓ | ✓ | ✓ | ✓ |
 | Cookie jar | Not yet | ✓ | ✓ | ✓ | ~ |
-| Multipart forms | - | ✓ | ✓ | ✓ | ✓ |
+| Multipart forms | — | ✓ | ✓ | ✓ | ✓ |
 | Hex-level payload debugging | ✓ | — | — | — | — |
 | Broker pub/sub workflow | ✓ | MQTT | — | — | MQTT |
 | Long-lived consumers/routes | ✓ | — | — | — | — |
@@ -43,7 +43,7 @@ The table below is intentionally broad. Exact feature sets vary by product and e
 | Local-first workspace | ✓ | ~ | ✓ | ✓ | ~ |
 | Git-friendly config | ✓ | ~ | ✓ | ✓ | ~ |
 | Cloud sync by default | — | ✓ | — | Optional | Optional |
-| AI / agent features | — | ✓ | - | ~ | ~ |
+| AI / agent features | — | ✓ | — | ~ | ~ |
 | Encrypted config | ✓ | ~ | ~ | ~ | ~ |
 
 
