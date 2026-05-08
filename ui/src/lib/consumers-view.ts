@@ -199,6 +199,9 @@ function normalizeScalarConsumerEndpointValue(endpointType: string, value: unkno
   if (endpointType !== "static" && endpointType !== "ref") {
     return value;
   }
+  if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as any)[endpointType] === "string") {
+    return (value as any)[endpointType];
+  }
   return typeof value === "string" ? value : "";
 }
 
@@ -1064,9 +1067,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     (window as any)._mqb_form_mode = "consumer";
 
     await mqbApp.forms().init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated) => {
-      (updated as Record<string, unknown>).response = config.consumers[currentIdx]?.response || null;
-      (updated as Record<string, unknown>).output = config.consumers[currentIdx]?.output || { mode: "none" };
-      config.consumers[currentIdx] = normalizeConsumerConfigShape(updated as ConsumerConfig);
+      const data = (updated as any)?.root ? { ...(updated as any), ...(updated as any).root } : updated;
+      (data as Record<string, unknown>).response = config.consumers[currentIdx]?.response || null;
+      (data as Record<string, unknown>).output = config.consumers[currentIdx]?.output || { mode: "none" };
+      config.consumers[currentIdx] = normalizeConsumerConfigShape(data as ConsumerConfig);
       syncConsumersPanelState();
       mqbRuntime.refreshDirtySection("consumers");
     });

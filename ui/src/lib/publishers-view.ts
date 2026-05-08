@@ -339,6 +339,9 @@ function normalizeScalarEndpointValue(endpointType: string, value: unknown) {
     return value;
   }
 
+  if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as any)[endpointType] === "string") {
+    return (value as any)[endpointType];
+  }
   return typeof value === "string" ? value : "";
 }
 
@@ -1462,7 +1465,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     
     await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], (updated) => {
       const previousPublisher = publishers[idx];
-      const nextPublisher = normalizePublisherConfigShape(updated as PublisherConfig);
+      const data = (updated as any)?.root ? { ...(updated as any), ...(updated as any).root } : updated;
+      const nextPublisher = normalizePublisherConfigShape(data as PublisherConfig);
       const previousPublisherName = previousPublisher?.name || "";
       copyRequestBarFieldValues(previousPublisher, nextPublisher);
       publishers[idx] = nextPublisher;

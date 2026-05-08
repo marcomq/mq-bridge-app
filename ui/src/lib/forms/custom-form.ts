@@ -645,9 +645,9 @@ const createScalarEndpointRenderer = (
       suggestions,
       onChange: (next: string) => {
         const existing = store.getPath(dataPath);
-        if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+        if (node.type === "object" || (existing && typeof existing === "object" && !Array.isArray(existing) && type in existing)) {
           store.setPath(dataPath, {
-            ...existing,
+            ...(existing && typeof existing === "object" ? existing : {}),
             [type]: next,
           });
           return;

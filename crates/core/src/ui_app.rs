@@ -475,7 +475,7 @@ fn normalize_consumer_capture(
 enum ResolvedConsumerOutput {
     None,
     Publisher {
-        publisher_name: String,
+        _publisher_name: String,
         endpoint: Box<Endpoint>,
     },
     Response {
@@ -521,7 +521,7 @@ fn resolve_consumer_output(
             };
 
             Ok(ResolvedConsumerOutput::Publisher {
-                publisher_name: publisher_name.to_string(),
+                _publisher_name: publisher_name.to_string(),
                 endpoint: Box::new(publisher_config.endpoint.clone()),
             })
         }
@@ -1356,70 +1356,69 @@ impl UiApp {
             let message_sequences = self.consumer_message_sequences.clone();
             let resolved_output =
                 resolve_consumer_output(consumer, publishers).map_err(anyhow::Error::msg)?;
-            let output = match &resolved_output {
+            let output_for_route = match &resolved_output {
                 ResolvedConsumerOutput::None => Endpoint::null(),
                 ResolvedConsumerOutput::Publisher { endpoint, .. } => *endpoint.clone(),
                 ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
             };
 
-            let closure_name = name.clone();
-            let route =
-                Route::new(consumer.endpoint.clone(), output).with_handler(
-                    move |msg: CanonicalMessage| {
-                        let name = closure_name.clone();
-                        let log_channel = log_channel.clone();
-                        let message_sequences = message_sequences.clone();
-                        let resolved_output = resolved_output.clone();
-                        async move {
-                            let payload_json: serde_json::Value =
-                                serde_json::from_slice(&msg.payload).unwrap_or_else(|_| {
-                                    serde_json::Value::String(msg.get_payload_str().to_string())
-                                });
-                            let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
-
-                            let val = serde_json::json!({
-                                "id": id,
-                                "time": chrono::Local::now().to_rfc3339(),
-                                "metadata": msg.metadata.clone(),
-                                "payload": payload_json
+            let closure_name = name.clone(); // Clone for use in the closure
+            let route = Route::new(consumer.endpoint.clone(), output_for_route)
+                .with_options(consumer.options.clone())
+                .with_handler(move |msg: CanonicalMessage| {
+                    let name = closure_name.clone();
+                    let log_channel = log_channel.clone();
+                    let message_sequences = message_sequences.clone();
+                    let resolved_output = resolved_output.clone();
+                    async move {
+                        let payload_json: serde_json::Value = serde_json::from_slice(&msg.payload)
+                            .unwrap_or_else(|_| {
+                                serde_json::Value::String(msg.get_payload_str().to_string())
                             });
-                            if capture_enabled {
-                                let mut enriched = CanonicalMessage::from_type(&val)
-                                    .unwrap_or_else(|_| CanonicalMessage::from(""));
-                                enriched.metadata.insert("ui_source".into(), name.clone());
-                                log_channel.sender.send(vec![enriched]).await.map_err(|e| {
-                                    HandlerError::NonRetryable(anyhow!(e.to_string()))
-                                })?;
-                                {
-                                    let mut sequences = message_sequences.write().await;
-                                    let next = sequences.entry(name.clone()).or_insert(0);
-                                    *next += 1;
-                                }
+                        let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
+
+                        let val = serde_json::json!({
+                            "id": id,
+                            "time": chrono::Local::now().to_rfc3339(),
+                            "metadata": msg.metadata.clone(),
+                            "payload": payload_json
+                        });
+                        if capture_enabled {
+                            let mut enriched = CanonicalMessage::from_type(&val)
+                                .unwrap_or_else(|_| CanonicalMessage::from(""));
+                            enriched.metadata.insert("ui_source".into(), name.clone());
+
+                            // Use non-blocking send to avoid stalling the bridge when the UI capture buffer is full.
+                            // If it is full, we drop the oldest entry to maintain "last N" semantics.
+                            let msgs = vec![enriched];
+                            if log_channel.sender.try_send(msgs.clone()).is_err() {
+                                let _ = log_channel.receiver.try_recv();
+                                let _ = log_channel.sender.try_send(msgs);
                             }
 
-                            match resolved_output.clone() {
-                                ResolvedConsumerOutput::None => Ok(Handled::Ack),
-                                ResolvedConsumerOutput::Publisher { publisher_name, .. } => {
-                                    let mut forwarded = msg;
-                                    forwarded
-                                        .metadata
-                                        .insert("mqb_consumer_output".into(), publisher_name);
-                                    Ok(Handled::Publish(forwarded))
-                                }
-                                ResolvedConsumerOutput::Response { response } => {
-                                    if let Some(response_config) = response {
-                                        let mut response =
-                                            CanonicalMessage::from(response_config.payload);
-                                        response.metadata = response_config.headers;
-                                        Ok(Handled::Publish(response))
-                                    } else {
-                                        Ok(Handled::Ack)
-                                    }
+                            {
+                                let mut sequences = message_sequences.write().await;
+                                let next = sequences.entry(name.clone()).or_insert(0);
+                                *next += 1;
+                            }
+                        }
+
+                        match resolved_output.clone() {
+                            ResolvedConsumerOutput::None => Ok(Handled::Ack),
+                            ResolvedConsumerOutput::Publisher { .. } => Ok(Handled::Publish(msg)),
+                            ResolvedConsumerOutput::Response { response } => {
+                                if let Some(response_config) = response {
+                                    let mut response_msg =
+                                        CanonicalMessage::from(response_config.payload);
+                                    response_msg.metadata = response_config.headers;
+                                    Ok(Handled::Publish(response_msg))
+                                } else {
+                                    Ok(Handled::Ack)
                                 }
                             }
                         }
-                    },
-                );
+                    }
+                });
             let internal_route_name = format!("ui_collector_route_{name}");
             let handle = route.run(&internal_route_name).await?;
             handles.insert(name, handle);

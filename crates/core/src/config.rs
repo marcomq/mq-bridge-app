@@ -165,6 +165,8 @@ pub struct ConsumerConfig {
     pub output: ConsumerOutputConfig,
     #[serde(default)]
     pub message_capture: ConsumerMessageCaptureConfig,
+    #[serde(flatten, default)]
+    pub options: mq_bridge::models::RouteOptions,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
@@ -576,6 +578,7 @@ impl AppConfig {
                 response: None,
                 output,
                 message_capture: default_route_migrated_capture(),
+                options: route_config.route.options,
             });
         }
     }
