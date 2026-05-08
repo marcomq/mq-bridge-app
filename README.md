@@ -39,7 +39,7 @@ The table below is intentionally broad. Exact feature sets vary by product and e
 | Broker pub/sub workflow | ✓ | MQTT | — | — | MQTT |
 | Long-lived consumers/routes | ✓ | — | — | — | — |
 | Bridge traffic between protocols | ✓ | — | — | — | — |
-| Replay captured messages | ✓ |  ~ | — | — | ~ |
+| Replay messages | ✓ |  ~ | — | — | ~ |
 | Local-first workspace | ✓ | ~ | ✓ | ✓ | ~ |
 | Git-friendly config | ✓ | ~ | ✓ | ✓ | ~ |
 | Cloud sync by default | — | ✓ | — | Optional | Optional |
