@@ -14,8 +14,8 @@ use mq_bridge::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -27,6 +27,9 @@ fn generate_ephemeral_message_key() -> (String, String) {
     let kid = Uuid::new_v4().to_string();
     (hex::encode(bytes), kid)
 }
+
+static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
+    LazyLock::new(generate_ephemeral_message_key);
 
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
     match config.security_mode() {
@@ -61,7 +64,7 @@ pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoRespon
             kid: None,
         },
         ConfigSecurityMode::EnvTemporaryMessages | ConfigSecurityMode::TemporaryMessages => {
-            let (message_key_hex, kid) = generate_ephemeral_message_key();
+            let (message_key_hex, kid) = &*EPHEMERAL_MESSAGE_KEY;
             StorageSecurityInfoResponse {
                 target: "cli".to_string(),
                 encrypted: true,
@@ -74,12 +77,12 @@ pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoRespon
                 messages_encrypted: true,
                 messages_persistent: false,
                 reason: Some("cli-mode".to_string()),
-                message_key_hex: Some(message_key_hex),
-                kid: Some(kid),
+                message_key_hex: Some(message_key_hex.clone()),
+                kid: Some(kid.clone()),
             }
         }
         ConfigSecurityMode::Sensitive | ConfigSecurityMode::Durable => {
-            let (message_key_hex, kid) = generate_ephemeral_message_key();
+            let (message_key_hex, kid) = &*EPHEMERAL_MESSAGE_KEY;
             StorageSecurityInfoResponse {
                 target: "cli".to_string(),
                 encrypted: true,
@@ -92,8 +95,8 @@ pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoRespon
                 messages_encrypted: true,
                 messages_persistent: false,
                 reason: Some("cli-mode".to_string()),
-                message_key_hex: Some(message_key_hex),
-                kid: Some(kid),
+                message_key_hex: Some(message_key_hex.clone()),
+                kid: Some(kid.clone()),
             }
         }
     }
@@ -1094,12 +1097,6 @@ impl UiApp {
         new_config.migrate_legacy_security_mode();
         new_config.migrate_legacy_consumer_response();
 
-        if let Some(prepare) = &self.storage_save_prepare {
-            prepare(&new_config).map_err(|error| {
-                UpdateConfigError::Other(anyhow!("Failed to prepare encrypted storage: {error}"))
-            })?;
-        }
-
         let routes: HashMap<String, RouteConfig> = new_config
             .routes
             .drain()
@@ -1138,6 +1135,12 @@ impl UiApp {
                     "Consumer {}: validation failed: {}",
                     consumer.name, e
                 ))
+            })?;
+        }
+
+        if let Some(prepare) = &self.storage_save_prepare {
+            prepare(&new_config).map_err(|error| {
+                UpdateConfigError::Other(anyhow!("Failed to prepare encrypted storage: {error}"))
             })?;
         }
 
@@ -1638,6 +1641,20 @@ mod tests {
         assert!(!info.messages_persistent);
         assert!(info.message_key_hex.is_some());
         assert!(info.kid.is_some());
+    }
+
+    #[test]
+    fn storage_security_for_cli_reuses_ephemeral_message_key_within_process() {
+        let mut config = AppConfig::default();
+        config.config_security = Some(ConfigSecurity {
+            mode: ConfigSecurityMode::TemporaryMessages,
+        });
+
+        let first = storage_security_for_cli(&config);
+        let second = storage_security_for_cli(&config);
+
+        assert_eq!(first.message_key_hex, second.message_key_hex);
+        assert_eq!(first.kid, second.kid);
     }
 
     #[test]

@@ -1,3 +1,9 @@
+async function readResponseError(response: Response, fallbackLabel: string): Promise<Error> {
+  const body = await response.text().catch(() => "");
+  const detail = body || response.statusText || `${fallbackLabel} failed with status ${response.status}`;
+  return new Error(detail);
+}
+
 export async function fetchConfigFromServer<T>(fetchImpl: typeof fetch): Promise<T> {
   const response = await fetchImpl("/config", { cache: "no-store" });
   return response.json() as Promise<T>;
@@ -5,11 +11,17 @@ export async function fetchConfigFromServer<T>(fetchImpl: typeof fetch): Promise
 
 export async function fetchStorageSecurityFromServer<T>(fetchImpl: typeof fetch): Promise<T> {
   const response = await fetchImpl("/storage-security", { cache: "no-store" });
+  if (!response.ok) {
+    throw await readResponseError(response, "Fetching storage security");
+  }
   return response.json() as Promise<T>;
 }
 
 export async function fetchConfigRecoveryFromServer<T>(fetchImpl: typeof fetch): Promise<T> {
   const response = await fetchImpl("/config-recovery", { cache: "no-store" });
+  if (!response.ok) {
+    throw await readResponseError(response, "Fetching config recovery");
+  }
   return response.json() as Promise<T>;
 }
 
@@ -20,7 +32,7 @@ export async function postConfig(fetchImpl: typeof fetch, config: unknown): Prom
     body: JSON.stringify(config),
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw await readResponseError(response, "Posting config");
   }
 }
 
@@ -31,7 +43,7 @@ export async function postResetConfigRecovery<T>(fetchImpl: typeof fetch): Promi
     body: "{}",
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw await readResponseError(response, "Resetting config recovery");
   }
   return response.json() as Promise<T>;
 }

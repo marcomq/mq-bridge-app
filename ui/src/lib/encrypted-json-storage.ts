@@ -30,6 +30,9 @@ function hexToBytes(value: string) {
   if (normalized.length === 0 || normalized.length % 2 !== 0) {
     throw new Error("Invalid hex key length");
   }
+  if (!/^[0-9a-fA-F]+$/.test(normalized)) {
+    throw new Error("Invalid messageKeyHex value");
+  }
   const bytes = new Uint8Array(normalized.length / 2);
   for (let index = 0; index < normalized.length; index += 2) {
     bytes[index / 2] = parseInt(normalized.slice(index, index + 2), 16);

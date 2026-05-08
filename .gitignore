@@ -41,4 +41,7 @@ db
 /crates/desktop/gen
 /coverage
 config.yml
+
+# Serena + tokensave
+.serena
 .tokensave

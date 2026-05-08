@@ -143,11 +143,6 @@ describe("bootstrap runtime status sync", () => {
       config_security: { mode: "balanced" },
     });
     vi.mocked(fetchConfigRecoveryFromServer).mockResolvedValue(null);
-    vi.mocked(saveWholeConfig).mockResolvedValue({
-      consumers: [],
-      publishers: [],
-      config_security: { mode: "sensitive" },
-    });
     vi.mocked(fetchStorageSecurityFromServer).mockResolvedValueOnce({
       encrypted: false,
       persistent: true,

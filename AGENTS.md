@@ -164,6 +164,7 @@ Use a design-checkpoint workflow:
 5. After feedback, continue with the implementation. Run relevant tests/checks. Prefer checking only whether tests pass or fail; inspect detailed test output only when a test fails.
 
 The checkpoint is about design direction, not about asking permission for every small edit.
+Don't use this working style for fixing bugs - go ahead and fix  bugs if implementation is simple and straight forward. Just ask in case you aren't sure, for example if tests are failing and it isn't clear if the test or code is broken.
 
 ## Codebase navigation
 

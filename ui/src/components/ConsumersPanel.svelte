@@ -371,10 +371,19 @@
         >
           <div class="pane-top" id="cons-list-pane">
             <div class="msg-table-header">
-              <span class="msg-table-title" id="cons-live-title">
-                Incoming Messages:
-                <wa-badge variant={$consumersPanelState.liveStatusVariant}>{$consumersPanelState.liveStatusText}</wa-badge>
-              </span>
+              <div class="msg-table-title">
+                <span class="section-label section-label--inline" id="cons-live-title">Incoming Messages</span>
+                <wa-badge
+                  appearance="filled-outlined"
+                  class="consumer-live-badge"
+                  class:consumer-live-badge--success={$consumersPanelState.liveStatusVariant === "success"}
+                  class:consumer-live-badge--danger={$consumersPanelState.liveStatusVariant === "danger"}
+                  class:consumer-live-badge--neutral={$consumersPanelState.liveStatusVariant === "neutral"}
+                  variant={$consumersPanelState.liveStatusVariant}
+                >
+                  {$consumersPanelState.liveStatusText}
+                </wa-badge>
+              </div>
               <div class="consumer-message-controls">
                 <label class="consumer-message-control consumer-message-control--checkbox" for="cons-capture-enabled">
                   <input

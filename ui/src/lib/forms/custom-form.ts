@@ -646,18 +646,12 @@ const createScalarEndpointRenderer = (
   },
 });
 
-const appConfigRenderer = createCustomCollapsibleRenderer(ADVANCED_KEYS);
-
 const rootRenderer = {
   render: (node: SchemaNode, path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     const formMode = String((window as any)._mqb_form_mode || "");
 
     if (formMode === "publisher" || formMode === "consumer") {
       return createCustomCollapsibleRenderer(["name", "endpoint"]).render(node, path, elementId, dataPath, context);
-    }
-
-    if (formMode === "settings") {
-      return renderObject(context, node, elementId, false, dataPath);
     }
 
     return renderObject(context, node, elementId, false, dataPath);
@@ -762,6 +756,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   "mongodb",
   "mqtt",
   "http",
+  "static",
   "sled",
   "htmx",
   "ibmmq",

@@ -32,6 +32,7 @@ describe("config-api", () => {
 
   test("fetches storage security without cache", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
       json: async () => ({ messagesEncrypted: true }),
     });
 
@@ -43,6 +44,7 @@ describe("config-api", () => {
 
   test("fetches config recovery status without cache", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
       json: async () => ({ message: "needs recovery" }),
     });
 
@@ -61,6 +63,48 @@ describe("config-api", () => {
     await expect(postResetConfigRecovery(fetchImpl as unknown as typeof fetch)).resolves.toEqual({
       backup_path: "/tmp/config.yml.recovery.bak",
     });
+    expect(fetchImpl).toHaveBeenCalledWith("/config-recovery/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  });
+
+  test("throws response text when fetching storage security fails", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      text: async () => "storage down",
+    });
+
+    await expect(fetchStorageSecurityFromServer(fetchImpl as unknown as typeof fetch)).rejects.toThrow(
+      "storage down",
+    );
+  });
+
+  test("throws response text when fetching config recovery fails", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+      text: async () => "recovery unavailable",
+    });
+
+    await expect(fetchConfigRecoveryFromServer(fetchImpl as unknown as typeof fetch)).rejects.toThrow(
+      "recovery unavailable",
+    );
+  });
+
+  test("throws response text when config recovery reset fails", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      text: async () => "reset failed",
+    });
+
+    await expect(postResetConfigRecovery(fetchImpl as unknown as typeof fetch)).rejects.toThrow(
+      "reset failed",
+    );
     expect(fetchImpl).toHaveBeenCalledWith("/config-recovery/reset", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

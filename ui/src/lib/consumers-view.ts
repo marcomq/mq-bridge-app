@@ -120,6 +120,7 @@ const CONSUMER_TYPE_OPTIONS = [
   "mongodb",
   "zeromq",
   "file",
+  "static",
   "sled",
 ];
 
@@ -185,10 +186,20 @@ function getConsumerInputType(consumer: Partial<ConsumerConfig> | null | undefin
 }
 
 function createDefaultConsumerEndpoint(endpointType: string): Record<string, unknown> {
+  if (endpointType === "static" || endpointType === "ref") {
+    return { [endpointType]: "" };
+  }
   return {
     middlewares: defaultMetricsMiddleware(),
     [endpointType]: {},
   };
+}
+
+function normalizeScalarConsumerEndpointValue(endpointType: string, value: unknown): unknown {
+  if (endpointType !== "static" && endpointType !== "ref") {
+    return value;
+  }
+  return typeof value === "string" ? value : "";
 }
 
 function ensureConsumerEndpointDefaults(endpoint: unknown): Record<string, unknown> {
@@ -201,10 +212,19 @@ function ensureConsumerEndpointDefaults(endpoint: unknown): Record<string, unkno
     ...createDefaultConsumerEndpoint(endpointType),
     ...endpointRecord,
   };
+  normalized[endpointType] = normalizeScalarConsumerEndpointValue(endpointType, normalized[endpointType]);
   if (!("middlewares" in normalized)) {
     normalized.middlewares = defaultMetricsMiddleware();
   }
   return normalized;
+}
+
+function normalizeConsumerConfigShape(consumer: ConsumerConfig): ConsumerConfig {
+  consumer.endpoint = ensureConsumerEndpointDefaults(consumer.endpoint);
+  consumer.output = normalizeConsumerOutput(consumer.output, consumer.response);
+  consumer.message_capture = normalizeConsumerMessageCapture(consumer.message_capture);
+  consumer.response = consumer.output.mode === "response" ? consumer.output.response : null;
+  return consumer;
 }
 
 function splitConsumerListenAddress(rawUrl: string): { url: string; path?: string } {
@@ -1046,8 +1066,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     await mqbApp.forms().init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated) => {
       (updated as Record<string, unknown>).response = config.consumers[currentIdx]?.response || null;
       (updated as Record<string, unknown>).output = config.consumers[currentIdx]?.output || { mode: "none" };
-      config.consumers[currentIdx] = updated as ConsumerConfig;
-      syncLegacyConsumerResponse(config.consumers[currentIdx]);
+      config.consumers[currentIdx] = normalizeConsumerConfigShape(updated as ConsumerConfig);
       syncConsumersPanelState();
       mqbRuntime.refreshDirtySection("consumers");
     });
@@ -1127,27 +1146,15 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       const normalized = normalizeConsumerNames(config.consumers, currentIdx);
       const selectedName = normalized.selectedName;
       const selectedTab = activeSubtab;
-      config.consumers = (config.consumers || []).map((consumer) => ({
-        ...consumer,
-        endpoint: ensureConsumerEndpointDefaults(consumer.endpoint),
-        output: normalizeConsumerOutput(consumer.output, consumer.response),
-        message_capture: normalizeConsumerMessageCapture(consumer.message_capture),
-        response: normalizeConsumerOutput(consumer.output, consumer.response).mode === "response"
-          ? normalizeConsumerOutput(consumer.output, consumer.response).response
-          : null,
-      }));
+      config.consumers = (config.consumers || []).map((consumer) =>
+        normalizeConsumerConfigShape({ ...consumer }),
+      );
       const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
       if (!saved) return;
 
-      const normalizedSavedConsumers = (saved.consumers || []).map((consumer: ConsumerConfig) => ({
-        ...consumer,
-        endpoint: ensureConsumerEndpointDefaults(consumer.endpoint),
-        output: normalizeConsumerOutput(consumer.output, consumer.response),
-        message_capture: normalizeConsumerMessageCapture(consumer.message_capture),
-        response: normalizeConsumerOutput(consumer.output, consumer.response).mode === "response"
-          ? normalizeConsumerOutput(consumer.output, consumer.response).response
-          : null,
-      }));
+      const normalizedSavedConsumers = (saved.consumers || []).map((consumer: ConsumerConfig) =>
+        normalizeConsumerConfigShape({ ...consumer }),
+      );
       mqbApp.config<ConsumersAppConfig>().consumers = normalizedSavedConsumers;
       config.consumers = normalizedSavedConsumers;
       syncSavedConsumerNames(saved.consumers || []);
@@ -1353,10 +1360,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           hasNew = true;
         }
         const nowMs = Date.now();
-        const previousPollMs = consumerLastPolled[name] || nowMs;
-        const elapsedSec = (nowMs - previousPollMs) / 1000;
         consumerLastPolled[name] = nowMs;
-        consumerThroughput[name] = elapsedSec > 0 ? totalFetched / elapsedSec : 0;
         consumerMessageSequences[name] = nextSequence;
         if (hasNew) {
           saveMessages();

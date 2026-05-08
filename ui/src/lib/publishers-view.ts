@@ -313,6 +313,10 @@ function normalizePublisherSubtab(tab: string | undefined, fallback: PublisherSu
 }
 
 function createDefaultPublisherEndpoint(endpointType: string) {
+  if (endpointType === "static" || endpointType === "ref") {
+    return { [endpointType]: "" };
+  }
+
   const defaults: Record<string, Record<string, any>> = {
     http: defaultHttpConfig(),
     grpc: { url: "http://localhost:50051" },
@@ -328,6 +332,49 @@ function createDefaultPublisherEndpoint(endpointType: string) {
     ibmmq: { url: "localhost(1414)", queue: "DEV.QUEUE.1", topic: "topic://events" },
   };
   return { [endpointType]: cloneJson(defaults[endpointType] || {}) };
+}
+
+function normalizeScalarEndpointValue(endpointType: string, value: unknown) {
+  if (endpointType !== "static" && endpointType !== "ref") {
+    return value;
+  }
+
+  return typeof value === "string" ? value : "";
+}
+
+function normalizePublisherConfigShape(publisher: PublisherConfig): PublisherConfig {
+  if (!publisher?.endpoint || typeof publisher.endpoint !== "object") {
+    return publisher;
+  }
+
+  const endpointType = getEndpointType(publisher);
+  if (endpointType === "static" || endpointType === "ref") {
+    publisher.endpoint[endpointType] = normalizeScalarEndpointValue(
+      endpointType,
+      publisher.endpoint[endpointType],
+    );
+  }
+
+  return publisher;
+}
+
+function renameConsumerPublisherReferences(
+  consumers: ConsumerConfig[] | undefined,
+  previousPublisherName: string,
+  nextPublisherName: string,
+) {
+  if (!Array.isArray(consumers) || !previousPublisherName || previousPublisherName === nextPublisherName) {
+    return;
+  }
+
+  consumers.forEach((consumer) => {
+    if (consumer.output?.mode === "publisher" && consumer.output.publisher === previousPublisherName) {
+      consumer.output = {
+        ...consumer.output,
+        publisher: nextPublisherName,
+      };
+    }
+  });
 }
 
 function parseJsonSafe<T>(raw: string | null, fallback: T): T {
@@ -522,6 +569,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const ensureEndpointConfig = (publisher: PublisherConfig, endpointType: string) => {
     if (endpointType === "http") return ensureHttpConfig(publisher);
     publisher.endpoint ||= {};
+    if (endpointType === "static" || endpointType === "ref") {
+      publisher.endpoint[endpointType] = normalizeScalarEndpointValue(
+        endpointType,
+        publisher.endpoint[endpointType],
+      );
+      return publisher.endpoint as unknown as Record<string, any>;
+    }
     if (!publisher.endpoint[endpointType] || typeof publisher.endpoint[endpointType] !== "object") {
       publisher.endpoint[endpointType] = {};
     }
@@ -1408,9 +1462,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     
     await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], (updated) => {
       const previousPublisher = publishers[idx];
-      const nextPublisher = updated as PublisherConfig;
+      const nextPublisher = normalizePublisherConfigShape(updated as PublisherConfig);
+      const previousPublisherName = previousPublisher?.name || "";
       copyRequestBarFieldValues(previousPublisher, nextPublisher);
       publishers[idx] = nextPublisher;
+      renameConsumerPublisherReferences(config.consumers, previousPublisherName, nextPublisher.name);
       setMethodSelectMode(getEndpointType(publishers[idx]));
       syncPublishersPanelState();
       mqbRuntime.refreshDirtySection("publishers");
@@ -1459,7 +1515,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       comment: "",
     });
     initPublishers(config, schema);
-    setActiveItem(config.publishers.length - 1);
+    setActiveItem(config.publishers.length - 1, { tab: "definition" });
     void updateUIFromState();
   };
 
@@ -1502,6 +1558,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     activeElement?.blur();
     await Promise.resolve();
 
+    config.publishers = config.publishers.map((publisher) => normalizePublisherConfigShape(publisher));
     const selectedIdx = currentIdx;
     const selectedName = config.publishers[selectedIdx]?.name || null;
     const selectedTab = activeSubtab;

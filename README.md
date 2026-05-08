@@ -28,6 +28,7 @@ Supported integration types include **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **
 `mq-bridge-app` overlaps with API clients and collections tools like Postman, Bruno, ApiArc, and similar apps, but its center of gravity is different: it is designed around message bridging, runtime operation, and long-lived route management rather than just request composition.
 
 The table below is intentionally broad. Exact feature sets vary by product and edition, but it captures the main difference in emphasis.
+
 | Capability | mq-bridge | Postman | Bruno | Insomnia | Hoppscotch |
 | --- | --- | --- | --- | --- | --- |
 | Basic HTTP/API requests | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -42,8 +43,9 @@ The table below is intentionally broad. Exact feature sets vary by product and e
 | Local-first workspace | ✓ | ~ | ✓ | ✓ | ~ |
 | Git-friendly config | ✓ | ~ | ✓ | ✓ | ~ |
 | Cloud sync by default | — | ✓ | — | Optional | Optional |
-| AI / agent features | — | ✓ | ~ | ~ | ~ |
+| AI / agent features | — | ✓ | - | ~ | ~ |
 | Encrypted config | ✓ | ~ | ~ | ~ | ~ |
+
 
 In short:
 
@@ -58,7 +60,7 @@ In short:
 
 > **Note**: This project is currently in **Active Development**.
 
-It originally served as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. It may already work perfect and reliable for some use cases. The UI is a bit vibe coded and may not always work correctly. Always test by yourself before production usage.
+It originally served as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. It may already work reliably for some use cases. The UI is somewhat rough and may not work in all cases. Always test thoroughly before production use.
 
 ## Features
 
@@ -85,6 +87,8 @@ It originally served as the primary reference implementation and testbed for the
 
 ## Installation
 
+Prebuilt binaries are published on the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases), including the desktop Tauri bundles and CLI artifacts for supported platforms.
+
 ### MacOS Desktop App (Tauri)
 
 Because the desktop binaries are currently not notarized, macOS may report the application as "damaged" when you first try to open it. To fix this, you need to remove the quarantine attribute.
@@ -97,6 +101,14 @@ If the app is in a user-owned directory (e.g., `~/Downloads`), `sudo` is not req
 ```bash
 xattr -rd com.apple.quarantine ~/Downloads/mq-bridge.app
 ```
+
+### Windows
+
+Download the Windows installer or standalone executable from the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases). Tauri bundle artifacts are attached there for each release.
+
+### Linux
+
+Use the Linux bundle from the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases), such as AppImage, `.deb`, `.rpm`, or the unpacked archive, depending on your distribution and preferred install flow.
 
 ## Quick Start (UI)
 
@@ -136,7 +148,7 @@ docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app ghcr.io/marcomq/m
 
 ### Cargo CLI
 
-If you have Rust installed, you can install the application directly from source. This may take a some time, as it will compile all supported endpoint client libraries, except ibm-mq. For IBM MQ, you would need to install the client library first and install it with `--features=ibm-mq`.
+If you have Rust installed, you can install the application directly from source. This may take some time, as it will compile all supported endpoint client libraries, except ibm-mq. For IBM MQ, you would need to install the client library first and install it with `--features=ibm-mq`.
 
 ```bash
 cargo install mq-bridge-app
@@ -212,7 +224,7 @@ The Web UI is dynamically generated from the Rust configuration structures:
 
 ## Using as a Library
 
-Beyond running as a standalone application, the core logic is available as a library crate [mq-bridge](https://github.com/marcomq/_bridge) to interact with various message brokers using a unified API. This is useful for building custom applications that need to produce or consume messages without being tied to a specific broker's SDK.
+Beyond running as a standalone application, the core logic is available as a library crate [mq-bridge](https://github.com/marcomq/mq-bridge) to interact with various message brokers using a unified API. This is useful for building custom applications that need to produce or consume messages without being tied to a specific broker's SDK.
 
 The core of the library are the `MessageConsumer` and `MessagePublisher` traits, found in `mq_bridge::traits`.
 

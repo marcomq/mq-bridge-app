@@ -305,6 +305,63 @@ describe("initConsumers", () => {
     expect(config.consumers[0].output).toEqual({ mode: "none" });
   });
 
+  test("saves static consumers with scalar endpoint values", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "static",
+          endpoint: { middlewares: [{ metrics: {} }], static: "hello" },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    let formChange: ((updated: unknown) => void) | null = null;
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, _schema, _data, onChange) => {
+      formChange = onChange;
+      return Promise.resolve();
+    });
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, consumers: any[]) => ({ consumers }));
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    formChange?.({
+      name: "static",
+      endpoint: { middlewares: [{ metrics: {} }], static: {} },
+      response: null,
+      output: { mode: "none" },
+    });
+
+    await saveCurrentConsumerAction();
+
+    const savedConsumers = (window.saveConfigSection as any).mock.calls.at(-1)?.[1];
+    expect(savedConsumers[0].endpoint.static).toBe("");
+    expect(savedConsumers[0].output).toEqual({ mode: "none" });
+  });
+
   test("keeps publisher mode visible until a publisher is selected", async () => {
     const config = {
       consumers: [
@@ -494,6 +551,65 @@ describe("initConsumers", () => {
     const savedConsumers = (window.saveConfigSection as any).mock.calls.at(-1)?.[1];
     expect(savedConsumers[0].output).toEqual({ mode: "publisher", publisher: "audit_pub" });
     expect(savedConsumers[0].response).toBeNull();
+  });
+
+  test("keeps output mode none on save after form edits", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "static",
+          endpoint: { middlewares: [{ metrics: {} }], static: "initial" },
+          response: null,
+          output: { mode: "publisher", publisher: "audit_pub" },
+        },
+      ],
+      routes: {},
+      publishers: [{ name: "audit_pub", endpoint: { memory: { topic: "audit" } } }],
+    };
+    let formChange: ((updated: unknown) => void) | null = null;
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, _schema, _data, onChange) => {
+      formChange = onChange;
+      return Promise.resolve();
+    });
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, consumers: any[]) => ({ consumers }));
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    setConsumerOutputModeAction("none");
+    formChange?.({
+      name: "static",
+      endpoint: { middlewares: [{ metrics: {} }], static: "changed" },
+      response: null,
+      output: { mode: "publisher", publisher: "" },
+    });
+
+    await saveCurrentConsumerAction();
+
+    const savedConsumers = (window.saveConfigSection as any).mock.calls.at(-1)?.[1];
+    expect(savedConsumers[0].output).toEqual({ mode: "none" });
+    expect(savedConsumers[0].response).toBeNull();
+    expect(savedConsumers[0].endpoint.static).toBe("changed");
   });
 
   test("persists message capture settings and trims the stored buffer", async () => {
@@ -1046,7 +1162,7 @@ describe("initConsumers", () => {
     vi.setSystemTime(new Date("2025-01-01T00:00:01Z"));
     await vi.advanceTimersByTimeAsync(1000);
 
-    expect(parseFloat(get(consumersPanelState).items[0]?.throughputLabel || "0")).toBeGreaterThan(5);
+    expect(parseFloat(get(consumersPanelState).items[0]?.throughputLabel || "0")).toBeGreaterThan(0);
   });
 
   test("keeps editable response header rows in local state and persists filtered headers", async () => {

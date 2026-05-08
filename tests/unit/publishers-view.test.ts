@@ -245,6 +245,50 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).endpointType).toBe("HTTP");
     expect(get(publishersPanelState).methodValue).toBe("POST");
     expect(get(publishersPanelState).urlField.value).toBe("http://localhost:8080");
+    expect(get(publishersPanelState).activeSubtab).toBe("definition");
+  });
+
+  test("creates new static publishers on definition and saves scalar endpoint values", async () => {
+    const config = { publishers: [], routes: {}, consumers: [] };
+    let formChange: ((updated: unknown) => void) | null = null;
+    window.mqbChoose = vi.fn().mockResolvedValue("static");
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, _schema, _data, onChange) => {
+      formChange = onChange;
+      return Promise.resolve();
+    });
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
+
+    initPublishers(config, { properties: { publishers: { items: {} } } });
+
+    await addPublisherAction();
+
+    expect(config.publishers[0]).toMatchObject({
+      name: "static",
+      endpoint: { static: "" },
+      comment: "",
+    });
+    expect(get(publishersPanelState).activeSubtab).toBe("definition");
+
+    formChange?.({
+      name: "static",
+      endpoint: { static: {} },
+      comment: "",
+    });
+
+    await saveCurrentPublisherAction(document.getElementById("pub-save"));
+
+    expect(window.saveConfigSection).toHaveBeenCalledWith(
+      "publishers",
+      [
+        {
+          name: "static",
+          endpoint: { static: "" },
+          comment: "",
+        },
+      ],
+      false,
+      document.getElementById("pub-save"),
+    );
   });
 
   test("creates new queue and topic publishers with request bar defaults", async () => {
@@ -426,7 +470,14 @@ describe("initPublishers", () => {
         { name: "http", endpoint: { http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} } } },
       ],
       routes: {},
-      consumers: [],
+      consumers: [
+        {
+          name: "ingest_http",
+          endpoint: { http: { url: "http://localhost:8081", path: "/", method: "POST", custom_headers: {} } },
+          output: { mode: "publisher", publisher: "http" },
+          response: null,
+        },
+      ],
     };
     let formChange: ((updated: unknown) => void) | null = null;
     window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, _schema, _data, onChange) => {
@@ -469,6 +520,7 @@ describe("initPublishers", () => {
       false,
       document.getElementById("pub-save"),
     );
+    expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "renamed_http" });
     expect(window.fetchConfigFromServer).not.toHaveBeenCalled();
     expect(get(publishersPanelState).activeSubtab).toBe("definition");
     expect(get(publishersPanelState).items[0]?.name).toBe("renamed_http");

@@ -1,22 +1,28 @@
-fn main() {
-    // Read the current crate version from Cargo.toml
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cargo_version = env!("CARGO_PKG_VERSION");
     let config_path = "tauri.conf.json";
 
-    // Synchronize the version to tauri.conf.json if it differs
-    if let Ok(content) = std::fs::read_to_string(config_path) {
-        if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) {
-            if config["version"].as_str().unwrap() != cargo_version {
-                config["version"] = serde_json::Value::String(cargo_version.to_string());
-                let updated_content = serde_json::to_string_pretty(&config)
-                    .expect("Failed to format tauri.conf.json");
-                std::fs::write(config_path, updated_content)
-                    .expect("Failed to write tauri.conf.json");
-                // Optional: tell cargo to rerun if the config is manually changed
-                println!("cargo:rerun-if-changed={}", config_path);
-            }
+    println!("cargo:rerun-if-changed={config_path}");
+
+    let content = std::fs::read_to_string(config_path)
+        .map_err(|error| format!("Failed to read {config_path}: {error}"))?;
+    let mut config = serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|error| format!("Failed to parse {config_path}: {error}"))?;
+
+    match config["version"].as_str() {
+        Some(current_version) if current_version != cargo_version => {
+            config["version"] = serde_json::Value::String(cargo_version.to_string());
+            let updated_content = serde_json::to_string_pretty(&config)
+                .map_err(|error| format!("Failed to format {config_path}: {error}"))?;
+            std::fs::write(config_path, updated_content)
+                .map_err(|error| format!("Failed to write {config_path}: {error}"))?;
+        }
+        Some(_) => {}
+        None => {
+            return Err(format!("Missing string version field in {config_path}").into());
         }
     }
 
-    tauri_build::build()
+    tauri_build::build();
+    Ok(())
 }

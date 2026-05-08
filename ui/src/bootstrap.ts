@@ -63,13 +63,27 @@ async function maybeHandleConfigRecovery(fetchImpl: typeof fetch): Promise<void>
   );
 
   if (choice === "reset") {
-    const result = await postResetConfigRecovery<{ backup_path?: string }>(fetchImpl);
-    await mqbDialogs.alert(
-      result?.backup_path
-        ? `The unreadable config was backed up to:\n${result.backup_path}`
-        : "The unreadable config was reset.",
-      "Encrypted Config Reset",
-    );
+    while (true) {
+      try {
+        const result = await postResetConfigRecovery<{ backup_path?: string }>(fetchImpl);
+        await mqbDialogs.alert(
+          result?.backup_path
+            ? `The unreadable config was backed up to:\n${result.backup_path}`
+            : "The unreadable config was reset.",
+          "Encrypted Config Reset",
+        );
+        break;
+      } catch (error) {
+        console.error("Failed to reset encrypted config recovery state", error);
+        const retry = await mqbDialogs.confirm(
+          `Resetting the unreadable config failed: ${(error as Error).message}\n\nTry again?`,
+          "Encrypted Config Reset Failed",
+        );
+        if (!retry) {
+          break;
+        }
+      }
+    }
   }
 }
 
@@ -292,10 +306,8 @@ function installGlobals() {
   appWindow().saveConfig = async (silent = false, button = null) => {
     const doSave = async () => {
       const appConfig = mqbApp.config<Record<string, unknown>>();
-      const [refreshedConfig, refreshedStorageSecurity] = await Promise.all([
-        saveWholeConfig(fetch, appConfig),
-        fetchStorageSecurityFromServer(fetch).catch(() => null),
-      ]);
+      const refreshedConfig = await saveWholeConfig(fetch, appConfig);
+      const refreshedStorageSecurity = await fetchStorageSecurityFromServer(fetch).catch(() => null);
       Object.assign(appConfig, refreshedConfig);
       if (refreshedStorageSecurity) {
         const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
