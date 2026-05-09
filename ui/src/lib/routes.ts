@@ -33,7 +33,7 @@ export interface SplitRouteFormDataResult {
 }
 
 export function defaultMetricsMiddleware(): Array<{ metrics: Record<string, never> }> {
-  return [{ metrics: {} }];
+  return [];
 }
 
 export function isRouteEnabled(route: Pick<RouteDefinition, "enabled"> | null | undefined): boolean {
@@ -105,6 +105,7 @@ export function createRefInputEndpoint(refName: string): RouteEndpoint {
 export function createEmptyRouteConfig(): RouteDefinition {
   return {
     enabled: true,
+    batch_size: 128,
     input: { middlewares: defaultMetricsMiddleware(), null: null },
     output: { middlewares: defaultMetricsMiddleware(), null: null },
   };

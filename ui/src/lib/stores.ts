@@ -27,6 +27,8 @@ export interface ConsumersPanelState {
   items: ConsumerSidebarItem[];
   selectedIndex: number;
   activeSubtab: "definition" | "response" | "messages";
+  isNew: boolean;
+  deleteLabel: string;
   messageCaptureEnabled: boolean;
   messageCaptureKeepLast: number;
   responseEnabled: boolean;
@@ -53,6 +55,8 @@ export const consumersPanelState = writable<ConsumersPanelState>({
   items: [],
   selectedIndex: 0,
   activeSubtab: "messages",
+  isNew: false,
+  deleteLabel: "Delete",
   messageCaptureEnabled: true,
   messageCaptureKeepLast: 100,
   responseEnabled: false,
@@ -116,6 +120,8 @@ export interface PublishersPanelState {
   items: PublisherSidebarItem[];
   selectedIndex: number;
   activeSubtab: "payload" | "headers" | "history" | "presets" | "definition";
+  isNew: boolean;
+  deleteLabel: string;
   endpointType: string;
   methodVisible: boolean;
   methodValue: string;
@@ -144,6 +150,8 @@ export const publishersPanelState = writable<PublishersPanelState>({
   items: [],
   selectedIndex: 0,
   activeSubtab: "payload",
+  isNew: false,
+  deleteLabel: "Delete",
   endpointType: "",
   methodVisible: false,
   methodValue: "POST",

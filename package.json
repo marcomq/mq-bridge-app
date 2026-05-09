@@ -1,14 +1,14 @@
 {
   "name": "mq-bridge-app",
   "dependencies": {
-    "@awesome.me/webawesome": "^3.5.0",
+    "@awesome.me/webawesome": "^3.6.0",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/state": "^6.6.0",
-    "@codemirror/view": "^6.41.1",
+    "@codemirror/view": "^6.42.1",
     "codemirror": "^6.0.2",
     "split.js": "^1.6.5",
-    "vanilla-schema-forms": "^0.1.7"
+    "vanilla-schema-forms": "^0.1.8"
   },
   "scripts": {
     "build:ui": "vite build",

@@ -474,8 +474,16 @@ const envVarsRenderer = {
 
 const createCustomCollapsibleRenderer = (visibleKeys: string[]) => ({
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
-    fixNullBooleans(node, dataPath, context);
-    if (!node.properties) {
+    let resolvedNode = node;
+    if (!resolvedNode.properties && resolvedNode.$ref && context.store?.schema?.$defs) {
+      const defName = resolvedNode.$ref.split("/").pop();
+      if (defName && context.store.schema.$defs[defName]) {
+        resolvedNode = context.store.schema.$defs[defName];
+      }
+    }
+
+    fixNullBooleans(resolvedNode, dataPath, context);
+    if (!resolvedNode.properties) {
       return document.createDocumentFragment();
     }
 
@@ -483,7 +491,7 @@ const createCustomCollapsibleRenderer = (visibleKeys: string[]) => ({
     const hiddenProps: Record<string, unknown> = {};
     const primaryKeys = new Set(visibleKeys);
 
-    Object.entries(node.properties).forEach(([key, prop]) => {
+    Object.entries(resolvedNode.properties).forEach(([key, prop]) => {
       if (primaryKeys.has(key) || (prop as SchemaNode).required) {
         visibleProps[key] = prop;
       } else {
@@ -492,7 +500,7 @@ const createCustomCollapsibleRenderer = (visibleKeys: string[]) => ({
     });
 
     return renderSvelteNode(CollapsibleFields, {
-      description: String(node.description || ""),
+      description: String(resolvedNode.description || ""),
       visibleContent: createWrappedContainer(
         renderProperties(context, visibleProps, elementId, dataPath),
         "mqb-collapsible-visible-fields",
@@ -568,57 +576,10 @@ domRenderer.renderAdditionalPropertyRow = (
   removeClassName: `${rendererConfig.classes.buttonDanger} ${rendererConfig.triggers.removeAdditionalProperty} cons-response-header-delete`,
 });
 
-const ADVANCED_KEYS = [
-  "queue",
-  "group_id",
-  "topic",
-  "stream",
-  "subject",
-  "path",
-  "topic_arn",
-  "collection",
-  "queue_url",
-  "endpoint_url",
-  "routes",
-  "input",
-  "output",
-  "description",
-  "extract_secrets",
-];
-
-const CONSUMER_VISIBLE_ENDPOINT_KEYS: Record<string, string[]> = {
-  http: ["tls", "basic_auth", "path"],
-};
-
-const ENDPOINT_PRIMARY_KEYS: Record<string, string[]> = {
-  aws: ["queue_url", "topic_arn", "endpoint_url"],
-  kafka: ["url", "topic", "group_id", "tls", "basic_auth"],
-  nats: ["url", "subject", "stream", "tls", "basic_auth"],
-  file: ["path"],
-  static: [],
-  memory: ["topic"],
-  amqp: ["url", "queue", "topic", "tls", "basic_auth"],
-  mongodb: ["url", "database", "collection", "username", "password", "tls"],
-  mqtt: ["url", "topic", "tls", "basic_auth"],
-  http: ["url", "method", "path", "tls", "basic_auth", "custom_headers"],
-  sled: ["path", "tree"],
-  htmx: ["routes"],
-  ref: [],
-  ibmmq: ["url", "queue", "topic", "tls", "basic_auth"],
-  zeromq: ["url", "topic"],
-  switch: ["metadata_key", "cases", "default"],
-  response: [],
-  custom: [],
-};
-
 const createEndpointRenderer = (type: string) => ({
-  render: (node: SchemaNode, path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     fixNullBooleans(node, dataPath, context);
-    const formMode = String((window as any)._mqb_form_mode || "");
-    const visibleKeys = formMode === "consumer"
-      ? (CONSUMER_VISIBLE_ENDPOINT_KEYS[type] || ENDPOINT_PRIMARY_KEYS[type] || [])
-      : (ENDPOINT_PRIMARY_KEYS[type] || []);
-    return createCustomCollapsibleRenderer(visibleKeys).render(node, path, elementId, dataPath, context);
+    return renderObject(context, node, elementId, false, dataPath);
   },
 });
 
@@ -739,6 +700,14 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   env_vars: envVarsRenderer,
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
+  fanout: createTypeSelectArrayRenderer({
+    buttonLabel: "Add Endpoint",
+    itemLabel: "Endpoint",
+  }),
+  endpoints: createTypeSelectArrayRenderer({
+    buttonLabel: "Add Endpoint",
+    itemLabel: "Endpoint",
+  }),
   description: descriptionRenderer,
   "output.mode": { render: () => document.createDocumentFragment() },
   value: {
@@ -770,7 +739,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   "http",
   "static",
   "sled",
-  "htmx",
+  "sqlx",
   "ibmmq",
   "zeromq",
   "switch",

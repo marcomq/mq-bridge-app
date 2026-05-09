@@ -15,6 +15,7 @@ use mq_bridge::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::RwLock as StdRwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -156,7 +157,7 @@ pub struct UiApp {
     secret_store: Arc<dyn SecretStore>,
     ui_handles: Arc<RwLock<HashMap<String, RouteHandle>>>,
     throughput_samples: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
-    consumer_message_sequences: Arc<RwLock<HashMap<String, u64>>>,
+    consumer_message_sequences: Arc<RwLock<HashMap<String, Arc<AtomicU64>>>>,
     storage_security: Arc<StdRwLock<StorageSecurityInfoResponse>>,
     storage_security_resolver: Option<Arc<StorageSecurityResolver>>,
     storage_save_prepare: Option<Arc<StorageSavePrepare>>,
@@ -475,12 +476,19 @@ fn normalize_consumer_capture(
 enum ResolvedConsumerOutput {
     None,
     Publisher {
-        _publisher_name: String,
-        endpoint: Box<Endpoint>,
+        endpoint: Arc<Endpoint>,
     },
     Response {
-        response: Option<ConsumerResponseConfig>,
+        response: Option<Arc<ConsumerResponseConfig>>,
     },
+}
+
+struct CollectorContext {
+    name: String,
+    log_channel: mq_bridge::endpoints::memory::MemoryChannel,
+    counter: Arc<AtomicU64>,
+    output: ResolvedConsumerOutput,
+    capture_enabled: bool,
 }
 
 fn resolve_consumer_output(
@@ -499,7 +507,7 @@ fn resolve_consumer_output(
             }
 
             Ok(ResolvedConsumerOutput::Response {
-                response: normalize_consumer_response(response.clone()),
+                response: normalize_consumer_response(response.clone()).map(Arc::new),
             })
         }
         ConsumerOutputConfig::Publisher { publisher } => {
@@ -521,8 +529,7 @@ fn resolve_consumer_output(
             };
 
             Ok(ResolvedConsumerOutput::Publisher {
-                _publisher_name: publisher_name.to_string(),
-                endpoint: Box::new(publisher_config.endpoint.clone()),
+                endpoint: Arc::new(publisher_config.endpoint.clone()),
             })
         }
     }
@@ -1012,6 +1019,25 @@ impl UiApp {
 
         samples.retain(|route_name, _| metrics_enabled_routes.contains(route_name));
 
+        for (name, sequence) in self.consumer_message_sequences.read().await.iter() {
+            let total_messages = sequence.load(Ordering::Relaxed) as f64;
+            let throughput = if let Some(previous) = samples.get(name) {
+                let elapsed = now.duration_since(previous.observed_at).as_secs_f64();
+                if elapsed > 0.0 && total_messages >= previous.total_messages {
+                    (total_messages - previous.total_messages) / elapsed
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            samples.insert(
+                name.clone(),
+                RouteMetricSample { total_messages, observed_at: now },
+            );
+            route_throughput.insert(name.clone(), throughput);
+        }
+
         active_consumers.sort();
         active_consumers.dedup();
         let mut active_routes = active_routes;
@@ -1022,7 +1048,8 @@ impl UiApp {
         let mut consumers = HashMap::new();
         for consumer in &config.consumers {
             if let Some(snapshot) = self.consumer_status_snapshot(consumer).await {
-                let message_sequence = consumer_sequences.get(&consumer.name).copied().unwrap_or(0);
+                let message_sequence = consumer_sequences.get(&consumer.name)
+                    .map(|a| a.load(Ordering::Relaxed)).unwrap_or(0);
                 consumers.insert(
                     consumer.name.clone(),
                     ConsumerStatusSnapshot {
@@ -1127,7 +1154,7 @@ impl UiApp {
             let output_endpoint = match &resolved_output {
                 ResolvedConsumerOutput::None => Endpoint::null(),
                 ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
-                ResolvedConsumerOutput::Publisher { endpoint, .. } => *endpoint.clone(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => (*endpoint).as_ref().clone(),
             };
             let temp_route = Route::new(consumer.endpoint.clone(), output_endpoint);
             temp_route.check(&consumer.name, None).map_err(|e| {
@@ -1204,7 +1231,7 @@ impl UiApp {
             let output_endpoint = match &resolved_output {
                 ResolvedConsumerOutput::None => Endpoint::null(),
                 ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
-                ResolvedConsumerOutput::Publisher { endpoint, .. } => *endpoint.clone(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => (*endpoint).as_ref().clone(),
             };
             let route = Route::new(consumer.endpoint.clone(), output_endpoint);
             if route.is_ref() {
@@ -1348,69 +1375,84 @@ impl UiApp {
             let name = consumer.name.clone();
             let topic = format!("ui_collector_{name}");
             let capture_enabled = consumer.message_capture.enabled;
-            let capture_keep_last = consumer.message_capture.keep_last.max(1);
+            let original_capture_keep_last = consumer.message_capture.keep_last.max(1);
+            // Increase channel capacity by 10% to allow for some buffer before dropping messages
+            let channel_capacity = (original_capture_keep_last).max(1);
+
             let log_channel = mq_bridge::get_or_create_channel(&MemoryConfig::new(
                 &topic,
-                Some(capture_keep_last),
+                Some(channel_capacity),
             ));
-            let message_sequences = self.consumer_message_sequences.clone();
+            let sequence_counter = {
+                let mut sequences = self.consumer_message_sequences.write().await;
+                sequences.entry(name.clone()).or_insert_with(|| Arc::new(AtomicU64::new(0))).clone()
+            };
+
             let resolved_output =
                 resolve_consumer_output(consumer, publishers).map_err(anyhow::Error::msg)?;
             let output_for_route = match &resolved_output {
                 ResolvedConsumerOutput::None => Endpoint::null(),
-                ResolvedConsumerOutput::Publisher { endpoint, .. } => *endpoint.clone(),
+                ResolvedConsumerOutput::Publisher { endpoint, .. } => (*endpoint).as_ref().clone(),
                 ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
             };
 
-            let closure_name = name.clone(); // Clone for use in the closure
+            let context = Arc::new(CollectorContext {
+                name: name.clone(),
+                log_channel,
+                counter: sequence_counter,
+                output: resolved_output,
+                capture_enabled,
+            });
+
             let route = Route::new(consumer.endpoint.clone(), output_for_route)
                 .with_options(consumer.options.clone())
                 .with_handler(move |msg: CanonicalMessage| {
-                    let name = closure_name.clone();
-                    let log_channel = log_channel.clone();
-                    let message_sequences = message_sequences.clone();
-                    let resolved_output = resolved_output.clone();
+                    let ctx = Arc::clone(&context);
                     async move {
-                        let payload_json: serde_json::Value = serde_json::from_slice(&msg.payload)
-                            .unwrap_or_else(|_| {
-                                serde_json::Value::String(msg.get_payload_str().to_string())
-                            });
-                        let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
+                        ctx.counter.fetch_add(1, Ordering::Relaxed);
 
-                        let val = serde_json::json!({
-                            "id": id,
-                            "time": chrono::Local::now().to_rfc3339(),
-                            "metadata": msg.metadata.clone(),
-                            "payload": payload_json
-                        });
-                        if capture_enabled {
+                        if ctx.capture_enabled {
+                            let payload_json: serde_json::Value =
+                                serde_json::from_slice(&msg.payload).unwrap_or_else(|_| {
+                                    serde_json::Value::String(msg.get_payload_str().to_string())
+                                });
+                            let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
+
+                            let val = serde_json::json!({
+                                "id": id,
+                                "time": chrono::Local::now().to_rfc3339(),
+                                "metadata": msg.metadata.clone(),
+                                "payload": payload_json
+                            });
                             let mut enriched = CanonicalMessage::from_type(&val)
                                 .unwrap_or_else(|_| CanonicalMessage::from(""));
-                            enriched.metadata.insert("ui_source".into(), name.clone());
+                            enriched
+                                .metadata
+                                .insert("ui_source".into(), ctx.name.clone());
 
                             // Use non-blocking send to avoid stalling the bridge when the UI capture buffer is full.
-                            // If it is full, we drop the oldest entry to maintain "last N" semantics.
-                            let msgs = vec![enriched];
-                            if log_channel.sender.try_send(msgs.clone()).is_err() {
-                                let _ = log_channel.receiver.try_recv();
-                                let _ = log_channel.sender.try_send(msgs);
-                            }
-
-                            {
-                                let mut sequences = message_sequences.write().await;
-                                let next = sequences.entry(name.clone()).or_insert(0);
-                                *next += 1;
+                            // If it is full, we drop the oldest entry to maintain "last" semantics.
+                            let msgs_to_send = vec![enriched];
+                            if ctx.log_channel.sender.try_send(msgs_to_send.clone()).is_err() {
+                                let _ = ctx.log_channel.receiver.try_recv(); 
+                                let _ = ctx.log_channel.sender.try_send(msgs_to_send); 
                             }
                         }
 
-                        match resolved_output.clone() {
+                        match &ctx.output {
                             ResolvedConsumerOutput::None => Ok(Handled::Ack),
-                            ResolvedConsumerOutput::Publisher { .. } => Ok(Handled::Publish(msg)),
+                            ResolvedConsumerOutput::Publisher { endpoint, .. } => {
+                                if matches!(endpoint.endpoint_type, EndpointType::Null) {
+                                    Ok(Handled::Ack)
+                                } else {
+                                    Ok(Handled::Publish(msg))
+                                }
+                            },
                             ResolvedConsumerOutput::Response { response } => {
                                 if let Some(response_config) = response {
                                     let mut response_msg =
-                                        CanonicalMessage::from(response_config.payload);
-                                    response_msg.metadata = response_config.headers;
+                                        CanonicalMessage::from(response_config.payload.clone());
+                                    response_msg.metadata = response_config.headers.clone();
                                     Ok(Handled::Publish(response_msg))
                                 } else {
                                     Ok(Handled::Ack)

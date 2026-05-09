@@ -40,7 +40,7 @@ struct Args {
     schema: Option<String>,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     // Initialize the default crypto provider for rustls (required for rustls 0.23.0+)
     // This allows mq-bridge to create TLS configurations for secure endpoints.
