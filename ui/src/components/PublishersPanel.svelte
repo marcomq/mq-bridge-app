@@ -3,6 +3,8 @@
   import { activeMainTab, publishersPanelState } from "../lib/stores";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
   import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
+  import { onMount } from "svelte";
+  import { PUBLISHER_TYPE_OPTIONS } from "../lib/publishers-view";
   import {
     addPublisherAction,
     addPublisherMetadataRow,
@@ -42,6 +44,7 @@
   import { getMqbState, mqbDialogs } from "../lib/runtime-window";
 
   let filterText = $state("");
+  let addMenuOpen = $state(false);
   let historyFilterText = $state("");
   let presetFilterText = $state("");
   let copyFeedback = $state("");
@@ -57,11 +60,26 @@
     ),
   );
 
+  onMount(() => {
+    const handler = (e: MouseEvent) => {
+      if (addMenuOpen && !(e.target as HTMLElement).closest(".add-menu-container")) {
+        addMenuOpen = false;
+      }
+    };
+    window.addEventListener("click", handler);
+    return () => window.removeEventListener("click", handler);
+  });
+
   function openPublisher(originalIndex: number) {
     getMqbState().last_publisher_idx = originalIndex;
     (window as any)._mqb_last_publisher_idx = originalIndex;
     window.history.replaceState(null, "", `#publishers:${originalIndex}`);
     restorePublisherStateFromView(originalIndex);
+  }
+
+  function handleAdd(type: string) {
+    void addPublisherAction(type);
+    addMenuOpen = false;
   }
 
   function openHistoryRow(historyIndex: number) {
@@ -165,13 +183,26 @@
     <div class="sidebar">
       <div class="sidebar-header">
         <input class="sidebar-search" id="pub-filter" type="text" placeholder="Filter publishers…" bind:value={filterText} />
-        <wa-button size="small" appearance="outlined" class="icon-button" id="pub-add" title="Add publisher"
-          role="button"
-          tabindex="0"
-          onclick={addPublisherAction}
-          onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void addPublisherAction())}
-          >+</wa-button
-        >
+        <div class="add-menu-container">
+          <wa-button
+            size="small"
+            appearance="outlined"
+            class="icon-button"
+            id="pub-add"
+            title="Add publisher"
+            role="button"
+            tabindex="0"
+            onclick={() => (addMenuOpen = !addMenuOpen)}
+            onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => (addMenuOpen = !addMenuOpen))}
+            >+</wa-button>
+          {#if addMenuOpen}
+            <div class="add-menu">
+              {#each PUBLISHER_TYPE_OPTIONS as type}
+                <button type="button" onclick={() => handleAdd(type)}>{type.toUpperCase()}</button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       </div>
       <div class="sidebar-list" id="pub-list">
         <div class="sidebar-group-label">Saved</div>

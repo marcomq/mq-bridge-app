@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import {
+  addConsumerAction,
   addConsumerResponseHeader,
   copyCurrentConsumerAction,
   importAsyncApiToConsumerAction,
@@ -25,28 +26,7 @@ import {
   updateConsumerResponsePayload,
 } from "../../ui/src/lib/consumers-view";
 import { consumersPanelState } from "../../ui/src/lib/stores";
-
-function createHyperscriptNode(tag: string, props?: Record<string, unknown>, ...children: unknown[]) {
-  const element = document.createElement(tag);
-  Object.entries(props || {}).forEach(([key, value]) => {
-    if (key === "className") {
-      element.className = String(value);
-      return;
-    }
-
-    element.setAttribute(key, String(value));
-  });
-
-  children.flat().forEach((child) => {
-    if (child instanceof Node) {
-      element.appendChild(child);
-    } else if (child !== null && child !== undefined) {
-      element.appendChild(document.createTextNode(String(child)));
-    }
-  });
-
-  return element;
-}
+import { createHyperscriptNode, installBaseWindowStubs } from "./test-helpers";
 
 function mountConsumersDom() {
   document.body.innerHTML = `
@@ -84,20 +64,9 @@ function mountConsumersDom() {
 }
 
 function installConsumerWindowStubs() {
-  window.VanillaSchemaForms = {
-    h: createHyperscriptNode,
-    init: vi.fn().mockResolvedValue(undefined),
-  };
-  window.registerDirtySection = vi.fn();
-  window.refreshDirtySection = vi.fn().mockReturnValue(false);
-  window.markSectionSaved = vi.fn();
-  window.saveConfigSection = vi.fn().mockResolvedValue({});
+  installBaseWindowStubs();
   window.fetchConfigFromServer = vi.fn().mockResolvedValue({ consumers: [] });
-  window.mqbAlert = vi.fn().mockResolvedValue(undefined);
-  window.mqbConfirm = vi.fn().mockResolvedValue(true);
-  window.mqbPrompt = vi.fn().mockResolvedValue(null);
-  window.mqbChoose = vi.fn().mockResolvedValue(null);
-  window.switchMain = vi.fn();
+
   window.pollRuntimeStatus = vi.fn().mockImplementation(async () => {
     const current = (window._mqb_runtime_status || {
       active_consumers: [],
@@ -116,10 +85,7 @@ function installConsumerWindowStubs() {
     route_throughput: {},
     consumers: {},
   };
-  window._mqb_saved_sections = {};
   window.appConfig = { consumers: [], routes: {} };
-  window.appSchema = {};
-  window.initRoutes = vi.fn();
   window.initPublishers = vi.fn();
   window.Split = undefined;
   Object.defineProperty(window, "localStorage", {
@@ -213,6 +179,49 @@ describe("initConsumers", () => {
     const state = get(consumersPanelState);
     expect(state.hasConsumers).toBe(false);
     expect(state.items).toEqual([]);
+  });
+
+  test("creates new consumers with local defaults using hidden select", async () => {
+    const config = { consumers: [], routes: {}, publishers: [] };
+    const schema = {
+      properties: { consumers: { items: {} } },
+      $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+    };
+
+    await initConsumers(config, schema);
+
+    addConsumerAction();
+    const select = document.body.querySelector("select") as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    
+    select.value = "nats";
+    select.dispatchEvent(new Event("change"));
+    await Promise.resolve();
+
+    expect(config.consumers).toHaveLength(1);
+    expect(config.consumers[0].name).toBe("nats");
+    expect(config.consumers[0].endpoint).toMatchObject({
+      nats: { url: "nats://localhost:4222", subject: "events.created" },
+    });
+  });
+
+  test("cleans up add-select element on blur", async () => {
+    const config = { consumers: [], routes: {}, publishers: [] };
+    const schema = { properties: { consumers: { items: {} } } };
+    vi.useFakeTimers();
+
+    await initConsumers(config, schema);
+
+    addConsumerAction();
+    let select = document.body.querySelector("select") as HTMLSelectElement;
+    expect(select).not.toBeNull();
+
+    select.dispatchEvent(new Event("blur"));
+    vi.advanceTimersByTime(150);
+    
+    select = document.body.querySelector("select") as HTMLSelectElement;
+    expect(select).toBeNull();
+    vi.useRealTimers();
   });
 
   test("tracks response editor state for response-capable consumers", async () => {

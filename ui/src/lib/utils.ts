@@ -105,3 +105,20 @@ export function stringToUint8ArrayLatin1(str: string): Uint8Array {
   }
   return bytes;
 }
+
+export function normalizeMiddlewares(middlewares: unknown, endpointNormalizer: (endpoint: unknown) => Record<string, any>): any[] {
+  if (Array.isArray(middlewares)) {
+    return middlewares.map((middleware: any) => {
+      if (!middleware || typeof middleware !== "object" || Array.isArray(middleware)) {
+        return {};
+      }
+      if (middleware.dlq && typeof middleware.dlq === "object") {
+        middleware.dlq.endpoint = middleware.dlq.endpoint
+          ? endpointNormalizer(middleware.dlq.endpoint)
+          : { ref: "" };
+      }
+      return middleware;
+    });
+  }
+  return [];
+}

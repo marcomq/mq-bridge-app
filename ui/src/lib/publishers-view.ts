@@ -2,7 +2,7 @@ import {
   applyEndpointSchemaDefaults,
   nextUniqueName,
 } from "./routes";
-import { cloneJson } from "./utils";
+import { cloneJson, normalizeMiddlewares } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { publishersPanelState } from "./stores";
 import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
@@ -44,7 +44,7 @@ export let importAsyncApiToPublisherAction: (jsonText: string) => void | Promise
 export let importMqbToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let presetToPublisherAction: (presetIndex: number) => void | Promise<void> = () => {};
 export let selectPublisherSubtab: (tab: "payload" | "headers" | "history" | "presets" | "definition") => void = () => {};
-export let addPublisherAction: () => void | Promise<void> = () => {};
+export let addPublisherAction: (endpointType: string) => void | Promise<void> = () => {};
 export let copyCurrentPublisherAction: () => void | Promise<void> = () => {};
 export let editEnvironmentVarsAction: () => void | Promise<void> = () => {};
 export let cloneCurrentPublisherAction: () => void = () => {};
@@ -167,7 +167,7 @@ const ENDPOINT_TYPE_KEYS = [
 // Internal or structural types that should not appear in the "New Publisher" dialog.
 // We don't want to support ibmmq yet. But we want to support "static"
 const EXCLUDED_PUBLISHER_TYPES = new Set(["custom", "ref", "response", "reader", "ibmmq", "null"]);
-const PUBLISHER_TYPE_OPTIONS = ENDPOINT_TYPE_KEYS.filter(
+export const PUBLISHER_TYPE_OPTIONS = ENDPOINT_TYPE_KEYS.filter(
   (key) => !EXCLUDED_PUBLISHER_TYPES.has(key),
 );
 
@@ -305,9 +305,15 @@ function defaultHttpConfig() {
   };
 }
 
+function getEndpointTypeFromRecord(endpoint: Record<string, any>): string {
+  // Prioritize 'ref' or 'static' to avoid mis-detection if defaults are merged in
+  return ["ref", "static"].find(k => k in endpoint)
+    || ENDPOINT_TYPE_KEYS.find((key) => key in endpoint)
+    || "http";
+}
+
 function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined): string {
-  const endpoint = publisher?.endpoint || {};
-  return ENDPOINT_TYPE_KEYS.find((key) => key in endpoint) || "null";
+  return getEndpointTypeFromRecord(publisher?.endpoint || {});
 }
 
 function normalizePublisherSubtab(tab: string | undefined, fallback: PublisherSubtab = "payload"): PublisherSubtab {
@@ -315,8 +321,13 @@ function normalizePublisherSubtab(tab: string | undefined, fallback: PublisherSu
 }
 
 function createDefaultPublisherEndpoint(endpointType: string) {
+  const isScalar = endpointType === "static" || endpointType === "ref";
+  const base = {
+    middlewares: isScalar ? [] : [{ retry: {} }],
+  };
+
   if (endpointType === "static" || endpointType === "ref") {
-    return { [endpointType]: "" };
+    return { ...base, [endpointType]: "" };
   }
 
   const defaults: Record<string, Record<string, any>> = {
@@ -337,7 +348,7 @@ function createDefaultPublisherEndpoint(endpointType: string) {
     fanout: [{ ref: "" }],
   };
   return {
-    middlewares: [{ retry: {} }],
+    ...base,
     [endpointType]: cloneJson(defaults[endpointType] || {}),
   };
 }
@@ -353,6 +364,81 @@ function normalizeScalarEndpointValue(endpointType: string, value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
+function ensureRefOnlyEndpointDefaults(endpoint: unknown): Record<string, any> {
+  if (typeof endpoint === "string") {
+    return { ref: endpoint, middlewares: [] };
+  }
+  if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
+    return { ref: "", middlewares: [] };
+  }
+
+  const endpointRecord = endpoint as Record<string, any>;
+  // Handle potential 'root' wrapping from form library
+  const data = endpointRecord.root && typeof endpointRecord.root === "object" ? endpointRecord.root : endpointRecord;
+
+  return {
+    ref: typeof data.ref === "string" ? data.ref : "",
+    middlewares: normalizeMiddlewares(
+      data.middlewares,
+      ensureRefOnlyEndpointDefaults,
+    ),
+  };
+}
+
+function ensurePublisherEndpointDefaults(endpoint: unknown): Record<string, any> {
+  if (typeof endpoint === "string") {
+    return { ref: endpoint, middlewares: [] };
+  }
+  if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
+    return createDefaultPublisherEndpoint("http");
+  }
+
+  const endpointRecord = endpoint as Record<string, any>;
+  const data = endpointRecord.root && typeof endpointRecord.root === "object" ? endpointRecord.root : endpointRecord;
+  const endpointType = getEndpointTypeFromRecord(data);
+
+  const normalized: Record<string, any> = {
+    ...createDefaultPublisherEndpoint(endpointType),
+    ...cloneJson(data),
+  };
+
+  // Cleanup other endpoint keys to prevent pollution during polymorphic switching
+  const ALL_TYPE_KEYS = ["http", "grpc", "nats", "memory", "amqp", "kafka", "mqtt", "mongodb", "sqlx", "zeromq", "file", "static", "ref", "sled", "ibmmq", "switch", "fanout", "reader", "response", "custom", "null", "aws", "url", "topic", "subject", "queue", "path"];
+  ALL_TYPE_KEYS.forEach(k => {
+    if (k !== endpointType && k in normalized) {
+      delete normalized[k];
+    }
+  });
+
+  if (endpointType === "switch") {
+    const sw = normalized.switch;
+    if (sw && typeof sw === "object") {
+      if (!sw.metadata_key) sw.metadata_key = "type";
+      const rawCases = cloneJson(sw.cases || {});
+      const normalizedCases: Record<string, any> = {};
+      if (rawCases && typeof rawCases === "object" && !Array.isArray(rawCases)) {
+        for (const [k, v] of Object.entries(rawCases)) {
+          normalizedCases[k] = ensureRefOnlyEndpointDefaults(v);
+        }
+      }
+      sw.cases = normalizedCases;
+      if (sw.default === undefined) sw.default = { ref: "" };
+      sw.default = ensureRefOnlyEndpointDefaults(sw.default);
+    }
+  } else if (endpointType === "fanout") {
+    if (Array.isArray(normalized.fanout)) {
+      normalized.fanout = normalized.fanout.map((item: any) => ensureRefOnlyEndpointDefaults(item));
+    } else {
+      normalized.fanout = [{ ref: "" }];
+    }
+  }
+
+  normalized[endpointType] = normalizeScalarEndpointValue(endpointType, normalized[endpointType]);
+  normalized.middlewares = normalizeMiddlewares(normalized.middlewares, ensureRefOnlyEndpointDefaults);
+
+  return normalized;
+}
+
 function normalizePublisherConfigShape(publisher: PublisherConfig): PublisherConfig {
   if (!publisher) return publisher;
 
@@ -363,34 +449,56 @@ function normalizePublisherConfigShape(publisher: PublisherConfig): PublisherCon
     data = { ...rest, ...root };
   }
 
-  if (!data.endpoint || typeof data.endpoint !== "object") {
-    return data as PublisherConfig;
-  }
-
-  const endpointType = getEndpointType(data);
-
-  // Ensure switch has required fields
-  if (endpointType === "switch") {
-    const sw = data.endpoint.switch;
-    if (sw && typeof sw === "object") {
-      if (!sw.metadata_key) sw.metadata_key = "type";
-      if (!sw.cases) sw.cases = {};
-      if (sw.default === undefined) sw.default = { ref: "" };
-    }
-  } else if (endpointType === "fanout") {
-    if (!Array.isArray(data.endpoint.fanout)) {
-      data.endpoint.fanout = [{ ref: "" }];
-    }
-  }
-
-  if (endpointType === "static" || endpointType === "ref") {
-    data.endpoint[endpointType] = normalizeScalarEndpointValue(
-      endpointType,
-      data.endpoint[endpointType],
-    );
-  }
+  data.endpoint = ensurePublisherEndpointDefaults(data.endpoint);
 
   return data as PublisherConfig;
+}
+
+function forceRefOnlyEndpoints(itemSchema: any) {
+  if (!itemSchema.$defs) itemSchema.$defs = {};
+  if (!itemSchema.$defs.RefConfig) {
+    itemSchema.$defs.RefConfig = {
+      type: "object",
+      title: "",
+      properties: { ref: { type: "string" } },
+      required: ["ref"],
+      "wa-no-label": true,
+    };
+  }
+  if (!itemSchema.$defs.StaticConfig) {
+    itemSchema.$defs.StaticConfig = { type: "object", properties: { static: { type: "string" } }, required: ["static"] };
+  }
+
+  const forceRef = (obj: any) => {
+    if (!obj || typeof obj !== "object") return;
+    obj.$ref = "#/$defs/RefConfig";
+    delete obj.oneOf;
+    delete obj.anyOf;
+    delete obj.allOf;
+    delete obj.properties;
+    delete obj.enum;
+    delete obj.const;
+    delete obj.default;
+    // Ensure type is 'object' to match RefConfig and avoid type selection UI
+    obj.type = "object";
+  };
+
+  {
+    const dlq = itemSchema.$defs.DlqConfig;
+    if (dlq?.properties?.endpoint) forceRef(dlq.properties.endpoint);
+
+    const fanout = itemSchema.$defs.FanoutConfig || itemSchema.$defs.FanOutConfig;
+    if (fanout) {
+      const endpoints = fanout.items || fanout.properties?.endpoints?.items;
+      if (endpoints) forceRef(endpoints);
+    }
+
+    const sw = itemSchema.$defs.SwitchConfig;
+    if (sw?.properties) {
+      if (sw.properties.default) forceRef(sw.properties.default);
+      if (sw.properties.cases?.additionalProperties) forceRef(sw.properties.cases.additionalProperties);
+    }
+  }
 }
 
 function renameConsumerPublisherReferences(
@@ -448,8 +556,12 @@ function buildPublisherHistoryStore(history: PublisherHistoryItem[], updatedAt =
 export function initPublishers(config: PublishersAppConfig, schema: PublishersSchemaRoot) {
   mqbApp.setConfig(config as unknown as Record<string, any>);
   const container = document.getElementById("publishers-container") as HTMLElement | null;
-  const publishers = (config.publishers || []).map((p) => normalizePublisherConfigShape(p));
-  config.publishers = publishers;
+  const mappedPublishers = (config.publishers || []).map((p) => normalizePublisherConfigShape(p));
+  config.publishers ||= [];
+  if (config.publishers !== mappedPublishers) {
+    config.publishers.splice(0, config.publishers.length, ...mappedPublishers);
+  }
+  const publishers = config.publishers;
   const workspaceConfig = ensureWorkspaceCollections(config);
   const state = getMqbState();
   const storageSecurity = resolveStorageSecurity(state.storage_security, workspaceConfig);
@@ -611,13 +723,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const ensureEndpointConfig = (publisher: PublisherConfig, endpointType: string) => {
     if (endpointType === "http") return ensureHttpConfig(publisher);
     publisher.endpoint ||= {};
-    if (endpointType === "static" || endpointType === "ref") {
-      publisher.endpoint[endpointType] = normalizeScalarEndpointValue(
-        endpointType,
-        publisher.endpoint[endpointType],
-      );
-      return publisher.endpoint as unknown as Record<string, any>;
-    }
+
+    // Scalar and reference endpoints are configuration atoms and do not have technical sub-fields
+    if (endpointType === "static" || endpointType === "ref") return null;
+
     if (!publisher.endpoint[endpointType] || typeof publisher.endpoint[endpointType] !== "object") {
       publisher.endpoint[endpointType] = {};
     }
@@ -662,6 +771,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!descriptor) return;
     const endpointType = getEndpointType(publisher);
     const endpointConfig = ensureEndpointConfig(publisher, endpointType);
+    if (!endpointConfig) return;
 
     if (endpointType === "http" && descriptor.field === "url") {
       const trimmedValue = rawValue.trim();
@@ -725,14 +835,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       }
     }
     return { ok: true, code: response.status, label: "OK", text: `${endpointType.toUpperCase()} sent` };
-  };
-
-  const setMethodSelectMode = (endpointType: string) => {
-    if (endpointType === "http") {
-      currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
-      return;
-    }
-    currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
   };
 
   const getPublisherState = (name: string) => {
@@ -1022,15 +1124,15 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     jsonText: string,
     expectedKind: "postman" | "openapi" | "asyncapi",
   ) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
+    const activePublisher = publishers[currentIdx];
+    if (!activePublisher) return;
     const imported = extractImportedRequests(jsonText);
     if (imported.kind !== expectedKind) {
       throw new Error(`Selected file is not a valid ${expectedKind.toUpperCase()} JSON file.`);
     }
 
-    const activePublisherName = publisher.name;
-    const activeUrl = getCurrentPublisherUrl(publisher);
+    const activePublisherName = activePublisher.name;
+    const activeUrl = getCurrentPublisherUrl(activePublisher);
     const activePublisherPresets = getPublisherPresets(activePublisherName);
     let importedAsPresets = 0;
     let importedAsPublishers = 0;
@@ -1061,7 +1163,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         const publisher = requestToPublisher({
           ...first,
           name: groupName,
-        }, publisher);
+        }, activePublisher);
         config.publishers.push(publisher);
         const publisherPresets = getPublisherPresets(publisher.name);
         for (const request of requests) {
@@ -1088,7 +1190,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
           }
           importedAsPresets += 1;
         } else {
-          config.publishers.push(requestToPublisher(request, publisher));
+          config.publishers.push(requestToPublisher(request, activePublisher));
           importedAsPublishers += 1;
         }
       }
@@ -1458,8 +1560,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const updateStateFromUI = () => {
     if (publishers.length === 0) return;
     const publisher = publishers[currentIdx];
-    const endpointType = getEndpointType(publisher);
-    setMethodSelectMode(endpointType);
+    currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
     syncPublishersPanelState();
   };
 
@@ -1470,7 +1571,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     clearPublisherResponse();
 
     const publisher = publishers[idx];
-    setMethodSelectMode(getEndpointType(publisher));
+    currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
     renderHistory();
     updateUrlHash();
     syncPublishersPanelState();
@@ -1484,6 +1585,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       $defs: schema.$defs,
     });
     applyEndpointSchemaDefaults(itemSchema);
+    forceRefOnlyEndpoints(itemSchema);
     Object.entries(SCHEMA_REQUEST_BAR_FIELDS).forEach(([defName, fields]) => {
       const endpointSchema = itemSchema.$defs?.[defName];
       if (!endpointSchema?.properties) return;
@@ -1524,13 +1626,19 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     (window as any)._mqb_form_mode = "publisher";
     
     await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], (updated) => {
-      const previousPublisher = publishers[idx];
+      const current = publishers[idx];
       const nextPublisher = normalizePublisherConfigShape(updated as PublisherConfig);
-      const previousPublisherName = previousPublisher?.name || "";
-      copyRequestBarFieldValues(previousPublisher, nextPublisher);
+      const previousPublisherName = current?.name || "";
+      copyRequestBarFieldValues(current, nextPublisher);
+
+      // Preserve custom headers for HTTP (managed in the Headers tab)
+      if (getEndpointType(nextPublisher) === "http" && getEndpointType(current) === "http") {
+        nextPublisher.endpoint.http.custom_headers = current.endpoint.http.custom_headers;
+      }
+
       publishers[idx] = nextPublisher;
       renameConsumerPublisherReferences(config.consumers, previousPublisherName, nextPublisher.name);
-      setMethodSelectMode(getEndpointType(publishers[idx]));
+      currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
       syncPublishersPanelState();
       mqbRuntime.refreshDirtySection("publishers");
     });
@@ -1567,19 +1675,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     openConsumerAt(config.consumers.length - 1, "definition");
   };
 
-  const addPublisher = async () => {
-    const endpointType = await mqbDialogs.choose("Choose the endpoint type for the new publisher.", "Add Publisher", {
-      confirmLabel: "Create",
-      choices: PUBLISHER_TYPE_OPTIONS.map((type) => ({ value: type, label: type.toUpperCase() })),
-    });
-    if (!endpointType) return;
-    config.publishers.push({
-      name: nextUniqueName(endpointType, (config.publishers || []).map((publisher) => publisher.name)),
-      endpoint: createDefaultPublisherEndpoint(endpointType),
-      comment: "",
-    });
-    state.pending_publisher_restore = { idx: config.publishers.length - 1, tab: "definition" };
-    initPublishers(config, schema);
+  const addPublisher = (choice: string) => {
+    if (choice) {
+      config.publishers.push({
+        name: nextUniqueName(choice, (config.publishers || []).map((publisher) => publisher.name)),
+        endpoint: createDefaultPublisherEndpoint(choice),
+        comment: "",
+      });
+      state.pending_publisher_restore = { idx: config.publishers.length - 1, tab: "definition" };
+      (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
+      initPublishers(config, schema);
+    }
   };
 
   addPublisherAction = addPublisher;
@@ -1594,7 +1700,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       return;
     }
     config.publishers.push(cloned);
-    state.pending_publisher_restore = { idx: config.publishers.length - 1, tab: activeSubtab };
+    state.pending_publisher_restore = { idx: config.publishers.length - 1, tab: "definition" };
+    (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
     initPublishers(config, schema);
   };
 
@@ -1614,6 +1721,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
     if (isNew) {
       state.pending_publisher_restore = { idx: nextIdx, tab: "definition" };
+      (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
       initPublishers(config, schema);
       return;
     }
@@ -1624,6 +1732,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
     mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
     state.pending_publisher_restore = { idx: nextIdx, tab: "definition" };
+    (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
     initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>());
   };
 
@@ -1635,8 +1744,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const selectedIdx = currentIdx;
     const originalName = config.publishers[selectedIdx]?.name || null;
     const selectedTab = activeSubtab;
-
-    config.publishers = config.publishers.map((publisher) => normalizePublisherConfigShape(publisher));
+    const mapped = config.publishers.map((publisher) => normalizePublisherConfigShape(publisher));
+    config.publishers.splice(0, config.publishers.length, ...mapped);
     const selectedName = config.publishers[selectedIdx]?.name || originalName;
     const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
     if (!saved) return;
@@ -1654,7 +1763,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       normalizePublisherConfigShape({ ...publisher }),
     );
 
-    config.publishers = normalizedSavedPublishers;
+    config.publishers.splice(0, config.publishers.length, ...normalizedSavedPublishers);
     mqbApp.config<PublishersAppConfig>().publishers = normalizedSavedPublishers;
     mqbRuntime.markSectionSaved("publishers", normalizedSavedPublishers);
     const currentPublishers = mqbApp.config<PublishersAppConfig>().publishers || [];
@@ -1742,6 +1851,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (mqbRuntime.refreshDirtySection("publishers")) {
       const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
       if (!saved) return;
+    }
+
+    // If sending from the definition tab, switch to Body so the response is visible.
+    if (activeSubtab === "definition") {
+      selectPublisherSubtab("payload");
     }
 
     const publisher = publishers[currentIdx];
@@ -2137,7 +2251,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       throw new Error("Failed to save imported publishers.");
     }
 
-    config.publishers = saved.publishers;
+    config.publishers.splice(0, config.publishers.length, ...saved.publishers);
     mqbApp.config<PublishersAppConfig>().publishers = saved.publishers;
     initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
     const firstImportedName = importedPublishers[0]?.name;
@@ -2226,7 +2340,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
 
   if (publishers.length > 0) {
-    const pendingRestore = state.pending_publisher_restore || null;
+    const pendingRestore = state.pending_publisher_restore || (appWindow() as any)._mqb_pending_publisher_restore || null;
     state.pending_publisher_restore = null;
     (appWindow() as any)._mqb_pending_publisher_restore = null;
     const hashMatch = currentHash().match(/^#publishers:(\d+)$/);
@@ -2239,8 +2353,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         mqbRuntime.markSectionSaved("publishers", config.publishers);
       }
     });
-    activeSubtab = initialTab;
-    syncPublishersPanelState();
+    selectPublisherSubtab(initialTab);
   } else if (!hadUnsavedChangesBeforeInit) {
     mqbRuntime.markSectionSaved("publishers", config.publishers);
   }
@@ -2249,4 +2362,27 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   (appWindow() as any)._mqb_publishers_initialized = true;
   appWindow().restorePublisherState = restorePublisherState;
   restorePublisherStateFromView = restorePublisherState;
+
+  addPublisherAction = addPublisher;
+  showPublisherHistoryEntry = showPublisherHistoryEntry;
+  clearActivePublisherHistory = clearActivePublisherHistory;
+  copyPublisherResponse = copyPublisherResponse;
+  copyPublisherResponseJson = copyPublisherResponseJson;
+  copyPublisherAsCurl = copyPublisherAsCurl;
+  savePublisherHistoryAsPresetAction = savePublisherHistoryAsPresetAction;
+  resendPublisherHistoryAction = resendPublisherHistoryAction;
+  savePublisherPresetAction = savePublisherPresetAction;
+  exportPublisherPresetsAction = exportPublisherPresetsAction;
+  renamePublisherPresetAction = renamePublisherPresetAction;
+  applyPublisherPresetAction = applyPublisherPresetAction;
+  deletePublisherPresetAction = deletePublisherPresetAction;
+  importPostmanToPublisherAction = importPostmanToPublisherAction;
+  importOpenApiToPublisherAction = importOpenApiToPublisherAction;
+  importAsyncApiToPublisherAction = importAsyncApiToPublisherAction;
+  importMqbToPublisherAction = importMqbToPublisherAction;
+  presetToPublisherAction = presetToPublisherAction;
+  selectPublisherSubtab = selectPublisherSubtab;
+  editEnvironmentVarsAction = editEnvironmentVarsAction;
+  beautifyPublisherPayloadAction = beautifyPublisherPayloadAction;
+  sendPublisherAction = sendPublisherAction;
 }

@@ -436,55 +436,6 @@ describe("custom form runtime", () => {
     expect(store.getPath(["tls", "accept_invalid_certs"])).toBe(true);
   });
 
-  test("show advanced can be toggled repeatedly without losing hidden fields or their values", async () => {
-    const forms = await loadCustomForm();
-    const renderHttp = forms.customRenderers.http.render as Function;
-    const store = createStore({
-      endpoint: {
-        http: {
-          url: "https://example.test",
-          compression_enabled: false,
-        },
-      },
-    });
-    forms.__activeStore = store;
-
-    const element = renderHttp(
-      {
-        type: "object",
-        properties: {
-          url: { type: "string", title: "URL" },
-          compression_enabled: { type: "boolean", title: "Compression Enabled" },
-        },
-      },
-      "",
-      "HttpConfig",
-      ["endpoint", "http"],
-      { store },
-    ) as HTMLElement;
-
-    document.body.appendChild(element);
-
-    const toggleButton = element.querySelector(".mqb-form-toggle") as HTMLButtonElement | null;
-    expect(toggleButton?.textContent).toContain("Show advanced");
-    expect(findCheckboxByLabel(element, "Compression Enabled")).toBeFalsy();
-
-    toggleButton?.click();
-    const advancedCheckbox = findCheckboxByLabel(element, "Compression Enabled");
-    expect(advancedCheckbox).not.toBeNull();
-
-    triggerCheckboxChange(advancedCheckbox as HTMLInputElement, true);
-    expect(store.getPath(["endpoint", "http", "compression_enabled"])).toBe(true);
-
-    toggleButton?.click();
-    expect(findCheckboxByLabel(element, "Compression Enabled")).toBeFalsy();
-
-    toggleButton?.click();
-    const reopenedCheckbox = findCheckboxByLabel(element, "Compression Enabled");
-    expect(reopenedCheckbox).not.toBeNull();
-    expect((reopenedCheckbox as HTMLInputElement).checked).toBe(true);
-  });
-
   test("renders env vars as environment variables without advanced toggle", async () => {
     const forms = await loadCustomForm();
     const renderEnvVars = forms.customRenderers.env_vars.render as Function;

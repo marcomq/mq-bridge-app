@@ -1418,11 +1418,21 @@ impl UiApp {
                                 });
                             let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
 
+                            let (response_body, response_metadata) = match &ctx.output {
+                                ResolvedConsumerOutput::Response { response } => {
+                                    let r = response.as_deref();
+                                    (Some(r.map(|x| x.payload.clone()).unwrap_or_default()), Some(r.map(|x| x.headers.clone()).unwrap_or_default()))
+                                }
+                                _ => (None, None),
+                            };
+
                             let val = serde_json::json!({
                                 "id": id,
                                 "time": chrono::Local::now().to_rfc3339(),
                                 "metadata": msg.metadata.clone(),
-                                "payload": payload_json
+                                "payload": payload_json,
+                                "response": response_body,
+                                "response_metadata": response_metadata
                             });
                             let mut enriched = CanonicalMessage::from_type(&val)
                                 .unwrap_or_else(|_| CanonicalMessage::from(""));

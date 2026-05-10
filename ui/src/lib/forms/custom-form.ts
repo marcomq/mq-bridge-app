@@ -51,7 +51,15 @@ setConfig({
       const formMode = String((window as any)._mqb_form_mode || "");
       const fieldName = lowerPath.split(".").pop() || "";
 
-      if (formMode === "publisher" && ["url", "method", "queue", "topic", "database"].includes(fieldName)) {
+      if (formMode === "publisher" && ["url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
+        return false;
+      }
+
+      // These fields are handled by dedicated tabs or UI elements, so hide them from the main definition form.
+      // The customVisibility is for top-level properties of the consumer/publisher config, not nested endpoint properties.
+      // The `hidden: true` attributes in Svelte components are now redundant with this.
+      // The `custom_headers` field is now handled by the collapsible renderer.
+      if (formMode === "consumer" && ["output", "response", "message_capture"].includes(fieldName)) {
         return false;
       }
 
@@ -89,8 +97,8 @@ setConfig({
       "key",
       "value",
       "required",
-      "description",
       "routes",
+      "endpoint",
     ],
   },
 });
@@ -158,6 +166,28 @@ function formatLabel(node: SchemaNode, elementId: string) {
   return formatWebAwesomeLabel(node, elementId);
 }
 
+// Define basic fields for each endpoint type (keyed by the endpoint type string, not *Config)
+// Fields not in this list will be considered "advanced" and placed in a collapsible section.
+// For types like 'static', 'ref', 'switch', 'fanout', 'response', 'custom', 'null', they are handled by specific renderers or are complex polymorphic types that don't fit this simple basic/advanced split.
+const BASIC_ENDPOINT_FIELDS: Record<string, string[]> = {
+  http: ["url", "method", "path"],
+  kafka: ["url", "topic", "group_id"],
+  mqtt: ["url", "topic"],
+  grpc: ["url", "topic"],
+  amqp: ["url", "queue", "subscribe_mode", "exchange"],
+  nats: ["url", "subject", "stream"],
+  mongodb: ["url", "database", "collection", "change_stream"],
+  sqlx: ["url", "table"],
+  zeromq: ["url", "topic"],
+  file: ["path", "mode"],
+  memory: ["topic"],
+  sled: ["path", "tree"],
+  ibmmq: ["url", "queue", "topic"],
+  switch: ["metadata_key", "default", "cases"],
+  fanout: ["endpoints"],
+  aws: ["region", "access_key_id", "secret_access_key"], // Assuming these are basic for AWS, adjust if needed
+};
+
 const baseRenderBoolean = typeof domRenderer.renderBoolean === "function"
   ? domRenderer.renderBoolean.bind(domRenderer)
   : null;
@@ -206,12 +236,16 @@ domRenderer.renderFieldWrapper = (
       input.classList.add("field-input");
     }
 
-    const isTechnical = ["url", "brokers", "topic", "group", "key"].some((token) =>
+    const isTechnical = ["url", "brokers", "topic", "group"].some((token) =>
       elementId.toLowerCase().includes(token),
     );
     if (!isCheckbox && isTechnical) {
       input.style.fontFamily = "var(--font)";
     }
+  }
+
+  if (node["wa-no-label"] === true) {
+    inputElement.setAttribute("wa-no-label", "true");
   }
 
   if (node.type === "object" || node.type === "array" || node.oneOf) {
@@ -280,8 +314,16 @@ const getArrayItemLegend = (arrayItem: ParentNode | null) => {
 
 const updateArrayItemLabel = (arrayItem: ParentNode | null) => {
   const legend = getArrayItemLegend(arrayItem);
+  if (!(arrayItem instanceof Element) || !legend) return;
+
+  if (arrayItem.getAttribute("wa-no-label") === "true") {
+    legend.textContent = "";
+    legend.style.display = "none";
+    return;
+  }
+
   const nameField = getArrayItemNameField(arrayItem);
-  if (!(arrayItem instanceof Element) || !legend || !nameField) return;
+  if (!nameField) return;
 
   const currentLabel = String(legend.textContent || "").trim();
   const fallbackLabel = arrayItem.getAttribute("data-default-label") || currentLabel || "Item";
@@ -323,6 +365,10 @@ domRenderer.renderArrayItem = (content: Node, options?: { isRemovable?: boolean 
   const legend = element.querySelector("legend");
   if (legend?.textContent?.trim()) {
     element.setAttribute("data-default-label", legend.textContent.trim());
+  }
+
+  if (content instanceof HTMLElement && (content.hasAttribute("wa-no-label") || content.querySelector('[wa-no-label="true"]'))) {
+    element.setAttribute("wa-no-label", "true");
   }
 
   window.setTimeout(() => updateArrayItemLabel(element), 0);
@@ -472,51 +518,11 @@ const envVarsRenderer = {
   },
 };
 
-const createCustomCollapsibleRenderer = (visibleKeys: string[]) => ({
+const routeObjectRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
-    let resolvedNode = node;
-    if (!resolvedNode.properties && resolvedNode.$ref && context.store?.schema?.$defs) {
-      const defName = resolvedNode.$ref.split("/").pop();
-      if (defName && context.store.schema.$defs[defName]) {
-        resolvedNode = context.store.schema.$defs[defName];
-      }
-    }
-
-    fixNullBooleans(resolvedNode, dataPath, context);
-    if (!resolvedNode.properties) {
-      return document.createDocumentFragment();
-    }
-
-    const visibleProps: Record<string, unknown> = {};
-    const hiddenProps: Record<string, unknown> = {};
-    const primaryKeys = new Set(visibleKeys);
-
-    Object.entries(resolvedNode.properties).forEach(([key, prop]) => {
-      if (primaryKeys.has(key) || (prop as SchemaNode).required) {
-        visibleProps[key] = prop;
-      } else {
-        hiddenProps[key] = prop;
-      }
-    });
-
-    return renderSvelteNode(CollapsibleFields, {
-      description: String(resolvedNode.description || ""),
-      visibleContent: createWrappedContainer(
-        renderProperties(context, visibleProps, elementId, dataPath),
-        "mqb-collapsible-visible-fields",
-      ),
-      hiddenContent: Object.keys(hiddenProps).length > 0
-        ? createWrappedContainer(
-          renderProperties(context, hiddenProps, elementId, dataPath),
-          "mqb-collapsible-hidden-fields",
-        )
-        : null,
-      toggleLabel: "Show advanced",
-    });
+    return renderObject(context, node, elementId, false, dataPath);
   },
-});
-
-const routeObjectRenderer = createCustomCollapsibleRenderer(["input", "output"]);
+};
 
 const routesRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
@@ -571,15 +577,57 @@ domRenderer.renderAdditionalPropertyRow = (
 ) => renderSvelteNode(GenericAdditionalPropertyRow, {
   inputId: uniqueId || undefined,
   value: defaultKey,
-  placeholder: "Header name",
+  placeholder: "Key",
   valueContent: valueHtml,
-  removeClassName: `${rendererConfig.classes.buttonDanger} ${rendererConfig.triggers.removeAdditionalProperty} cons-response-header-delete`,
+  removeClassName: `${rendererConfig.classes.buttonDanger} ${rendererConfig.triggers.removeAdditionalProperty} mqb-ap-delete`,
 });
 
 const createEndpointRenderer = (type: string) => ({
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     fixNullBooleans(node, dataPath, context);
-    return renderObject(context, node, elementId, false, dataPath);
+
+    const basicFields = BASIC_ENDPOINT_FIELDS[type] || [];
+    const allProperties = node.properties || {};
+    const visibleProperties: Record<string, SchemaNode> = {};
+    const hiddenProperties: Record<string, SchemaNode> = {};
+
+    Object.keys(allProperties).forEach((key) => {
+      if (basicFields.includes(key)) visibleProperties[key] = allProperties[key];
+      else hiddenProperties[key] = allProperties[key];
+    });
+
+    const hiddenKeys = Object.keys(hiddenProperties);
+    const hasOneOf = Array.isArray(node.oneOf) && node.oneOf.length > 0;
+
+    if (hiddenKeys.length === 0 && !hasOneOf) {
+      return renderObject(context, node, elementId, false, dataPath);
+    }
+
+    const visibleFragment = renderProperties(context, visibleProperties, elementId, dataPath);
+    if (hasOneOf) {
+      const oneOfFragment = domRenderer.renderOneOf(node, elementId);
+      if (oneOfFragment) visibleFragment.prepend(oneOfFragment);
+    }
+
+    const visibleWrapper = createWrappedContainer(visibleFragment, "mqb-form-block");
+
+    const hiddenFragment = document.createDocumentFragment();
+    for (const key of hiddenKeys) {
+      const specialRenderer = (CUSTOM_RENDERERS as any)[key];
+      if (specialRenderer && typeof specialRenderer.render === "function") {
+        hiddenFragment.appendChild(specialRenderer.render(hiddenProperties[key], `${_path}.${key}`, `${elementId}.${key}`, [...dataPath, key], context));
+      } else {
+        hiddenFragment.appendChild(renderNode(context, hiddenProperties[key], `${elementId}.${key}`, false, [...dataPath, key]));
+      }
+    }
+    const hiddenWrapper = createWrappedContainer(hiddenFragment, "mqb-form-block");
+
+    return renderSvelteNode(CollapsibleFields, {
+      description: node.description,
+      visibleContent: visibleWrapper,
+      hiddenContent: hiddenWrapper,
+      toggleLabel: "Show advanced options",
+    });
   },
 });
 
@@ -599,14 +647,16 @@ const createScalarEndpointRenderer = (
             : (typeof node.defaultValue === "string" ? node.defaultValue : ""));
 
     return renderSvelteNode(ScalarEndpointInput, {
-      title: String(node.title || options.title),
+      title: node.title === "" ? "" : String(node.title || options.title),
       description: String(node.description || ""),
       value: currentScalarValue,
       placeholder: options.placeholder,
       suggestions,
       onChange: (next: string) => {
         const existing = store.getPath(dataPath);
-        if (node.type === "object" || (existing && typeof existing === "object" && !Array.isArray(existing) && type in existing)) {
+        const isEndpointObject = node.type === "object";
+
+        if (isEndpointObject || (existing && typeof existing === "object" && !Array.isArray(existing) && type in existing)) {
           store.setPath(dataPath, {
             ...(existing && typeof existing === "object" ? existing : {}),
             [type]: next,
@@ -620,16 +670,10 @@ const createScalarEndpointRenderer = (
 });
 
 const rootRenderer = {
-  render: (node: SchemaNode, path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
-    const formMode = String((window as any)._mqb_form_mode || "");
-
-    if (formMode === "publisher" || formMode === "consumer") {
-      return createCustomCollapsibleRenderer(["name", "endpoint"]).render(node, path, elementId, dataPath, context);
-    }
-
-    return renderObject(context, node, elementId, false, dataPath);
-  },
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) =>
+    createWrappedContainer(renderObject(context, node, elementId, false, dataPath), "mqb-form-block"),
 };
+
 
 const baseMiddlewaresRenderer = createTypeSelectArrayRenderer({
   buttonLabel: "Add Middleware",
@@ -700,14 +744,6 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   env_vars: envVarsRenderer,
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
-  fanout: createTypeSelectArrayRenderer({
-    buttonLabel: "Add Endpoint",
-    itemLabel: "Endpoint",
-  }),
-  endpoints: createTypeSelectArrayRenderer({
-    buttonLabel: "Add Endpoint",
-    itemLabel: "Endpoint",
-  }),
   description: descriptionRenderer,
   "output.mode": { render: () => document.createDocumentFragment() },
   value: {
@@ -740,6 +776,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   "static",
   "sled",
   "sqlx",
+  "grpc",
   "ibmmq",
   "zeromq",
   "switch",
@@ -766,6 +803,9 @@ CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
       ),
     ).sort((a, b) => a.localeCompare(b)),
 });
+
+CUSTOM_RENDERERS.RefConfig = CUSTOM_RENDERERS.ref;
+CUSTOM_RENDERERS.StaticConfig = CUSTOM_RENDERERS.static;
 
 CUSTOM_RENDERERS.AppConfig = rootRenderer;
 CUSTOM_RENDERERS.route = routeObjectRenderer;

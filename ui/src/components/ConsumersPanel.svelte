@@ -1,12 +1,14 @@
 <script lang="ts">
   import { activeMainTab, consumersPanelState } from "../lib/stores";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
-  import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
+  import PayloadDisplay from "./PayloadDisplay.svelte";
+  import { onMount } from "svelte";
   import {
     addConsumerAction,
     addConsumerResponseHeader,
     clearActiveConsumerHistory,
     cloneCurrentConsumerAction,
+    CONSUMER_TYPE_OPTIONS,
     copyCurrentConsumerAction,
     deleteCurrentConsumerAction,
     importAsyncApiToConsumerAction,
@@ -29,6 +31,7 @@
   import { getMqbState } from "../lib/runtime-window";
 
   let filterText = $state("");
+  let addMenuOpen = $state(false);
   let importInputEl = $state<HTMLInputElement | null>(null);
   let selectedImportKind = $state<"asyncapi" | "mqb">("asyncapi");
 
@@ -38,6 +41,16 @@
     ),
   );
 
+  onMount(() => {
+    const handler = (e: MouseEvent) => {
+      if (addMenuOpen && !(e.target as HTMLElement).closest(".add-menu-container")) {
+        addMenuOpen = false;
+      }
+    };
+    window.addEventListener("click", handler);
+    return () => window.removeEventListener("click", handler);
+  });
+
   function openConsumer(originalIndex: number) {
     getMqbState().last_consumer_idx = originalIndex;
     (window as any)._mqb_last_consumer_idx = originalIndex;
@@ -45,18 +58,9 @@
     restoreConsumerStateFromView(originalIndex);
   }
 
-  function openMessage(messageIndex: number) {
-    if ($consumersPanelState.currentConsumerName) {
-      showConsumerMessageDetails($consumersPanelState.currentConsumerName, messageIndex);
-    }
-  }
-
-  function toggleConsumer() {
-    toggleActiveConsumer();
-  }
-
-  function clearHistory() {
-    clearActiveConsumerHistory();
+  function handleAdd(type: string) {
+    void addConsumerAction(type);
+    addMenuOpen = false;
   }
 
   function setMessageCaptureEnabled(event: Event) {
@@ -68,32 +72,8 @@
   }
 
   async function copyMessageDetails() {
-    if (!$consumersPanelState.detailPayload) return;
-    await navigator.clipboard.writeText($consumersPanelState.detailPayload);
-  }
-
-  function addConsumer() {
-    addConsumerAction();
-  }
-
-  function copyCurrentConsumer() {
-    copyCurrentConsumerAction();
-  }
-
-  function cloneCurrentConsumer() {
-    cloneCurrentConsumerAction();
-  }
-
-  function saveCurrentConsumer() {
-    saveCurrentConsumerAction();
-  }
-
-  function deleteCurrentConsumer() {
-    deleteCurrentConsumerAction();
-  }
-
-  function openSubtab(tab: "definition" | "response" | "messages") {
-    selectConsumerSubtab(tab);
+    if (!$consumersPanelState.detailRequestPayload) return;
+    await navigator.clipboard.writeText($consumersPanelState.detailRequestPayload);
   }
 
   function setOutputMode(event: Event) {
@@ -138,18 +118,26 @@
     <div class="sidebar">
       <div class="sidebar-header">
         <input class="sidebar-search" id="cons-filter" type="text" placeholder="Filter consumers…" bind:value={filterText} />
-        <wa-button
-          size="small"
-          appearance="outlined"
-          class="icon-button"
-          id="cons-add"
-          title="Add consumer"
-          role="button"
-          tabindex="0"
-          onclick={addConsumer}
-          onkeydown={(event: KeyboardEvent) => handleActionKey(event, addConsumer)}
-          >+</wa-button
-        >
+        <div class="add-menu-container">
+          <wa-button
+            size="small"
+            appearance="outlined"
+            class="icon-button"
+            id="cons-add"
+            title="Add consumer"
+            role="button"
+            tabindex="0"
+            onclick={() => (addMenuOpen = !addMenuOpen)}
+            onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => (addMenuOpen = !addMenuOpen))}
+            >+</wa-button>
+          {#if addMenuOpen}
+            <div class="add-menu">
+              {#each CONSUMER_TYPE_OPTIONS as type}
+                <button type="button" onclick={() => handleAdd(type)}>{type.toUpperCase()}</button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       </div>
       <div class="sidebar-list" id="cons-list">
         <div class="sidebar-group-label">Saved</div>
@@ -198,7 +186,7 @@
             class="content-tab"
             data-target="cons-def-panel"
             id="ctab-def"
-            onclick={() => openSubtab("definition")}>Definition</button
+            onclick={() => selectConsumerSubtab("definition")}>Definition</button
           >
           <button
             type="button"
@@ -207,7 +195,7 @@
             data-target="cons-response-panel"
             id="cons-response-tab"
             style:display={$consumersPanelState.responseEnabled ? "flex" : "none"}
-            onclick={() => openSubtab("response")}
+            onclick={() => selectConsumerSubtab("response")}
           >
             Output
           </button>
@@ -217,7 +205,7 @@
             class="content-tab"
             data-target="cons-msg-panel"
             id="ctab-msg"
-            onclick={() => openSubtab("messages")}>Messages</button
+            onclick={() => selectConsumerSubtab("messages")}>Messages</button
           >
         </div>
         <div
@@ -236,8 +224,8 @@
                     id="cons-copy"
                     role="button"
                     tabindex="0"
-                    onclick={copyCurrentConsumer}
-                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, copyCurrentConsumer)}
+                    onclick={copyCurrentConsumerAction}
+                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, copyCurrentConsumerAction)}
                     >Copy to Publisher</wa-button
                   >
                   <wa-button
@@ -247,8 +235,8 @@
                     id="cons-clone"
                     role="button"
                     tabindex="0"
-                    onclick={cloneCurrentConsumer}
-                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentConsumer)}
+                    onclick={cloneCurrentConsumerAction}
+                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentConsumerAction)}
                     >Clone</wa-button
                   >
                 </div>
@@ -260,8 +248,8 @@
                     id="cons-save"
                     role="button"
                     tabindex="0"
-                    onclick={saveCurrentConsumer}
-                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, saveCurrentConsumer)}
+                    onclick={saveCurrentConsumerAction}
+                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, saveCurrentConsumerAction)}
                     >Save</wa-button
                   >
                   <wa-button
@@ -271,8 +259,8 @@
                     id="cons-delete"
                     role="button"
                     tabindex="0"
-                    onclick={deleteCurrentConsumer}
-                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, deleteCurrentConsumer)}
+                    onclick={deleteCurrentConsumerAction}
+                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, deleteCurrentConsumerAction)}
                     >Delete</wa-button
                   >
                 </div>
@@ -350,7 +338,7 @@
                     onRemove={removeConsumerResponseHeader}
                   />
                 </div>
-                <PayloadDisplay 
+                <PayloadDisplay
                   id="cons-response-payload"
                   label="Payload"
                   payload={$consumersPanelState.responsePayload}
@@ -416,8 +404,8 @@
                 id="cons-clear-history"
                 role="button"
                 tabindex="0"
-                onclick={clearHistory}
-                onkeydown={(event: KeyboardEvent) => handleActionKey(event, clearHistory)}>Clear</wa-button
+                onclick={clearActiveConsumerHistory}
+                onkeydown={(event: KeyboardEvent) => handleActionKey(event, clearActiveConsumerHistory)}>Clear</wa-button
               >
               <wa-button
                 variant={$consumersPanelState.toggleVariant}
@@ -427,8 +415,8 @@
                 disabled={$consumersPanelState.toggleBusy}
                 role="button"
                 tabindex={$consumersPanelState.toggleBusy ? "-1" : "0"}
-                onclick={toggleConsumer}
-                onkeydown={(event: KeyboardEvent) => handleActionKey(event, toggleConsumer)}
+                onclick={toggleActiveConsumer}
+                onkeydown={(event: KeyboardEvent) => handleActionKey(event, toggleActiveConsumer)}
               >
                 {$consumersPanelState.toggleLabel}
               </wa-button>
@@ -454,8 +442,8 @@
                         class:selected={message.selected}
                         style="cursor:zoom-in;"
                         tabindex="0"
-                        onclick={() => openMessage(message.messageIndex)}
-                        onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => openMessage(message.messageIndex))}
+                        onclick={() => showConsumerMessageDetails($consumersPanelState.currentConsumerName!, message.messageIndex)}
+                        onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => showConsumerMessageDetails($consumersPanelState.currentConsumerName!, message.messageIndex))}
                       >
                         <td class="text-muted small">{message.timeLabel}</td>
                         <td class="font-monospace small text-break text-truncate" style="max-width: 400px;">
@@ -483,10 +471,10 @@
               >
             </div>
             <div class="detail-body" id="cons-msg-details-content">
-              {#if $consumersPanelState.detailMetadata.length > 0}
+            {#if $consumersPanelState.detailRequestHeaders.length > 0}
                 <div class="response-meta-block">
                   <div class="section-label">Headers</div>
-                  {#each $consumersPanelState.detailMetadata as [key, value] (`${key}:${value}`)}
+                {#each $consumersPanelState.detailRequestHeaders as [key, value] (`${key}:${value}`)}
                     <div class="response-meta-row">
                       <span class="response-meta-key">{key}</span>
                       <span class="response-meta-value">{value}</span>
@@ -495,13 +483,33 @@
                 </div>
                 <div class="section-label">Body</div>
               {/if}
-              <PayloadDisplay 
+              <PayloadDisplay
                 id="cons-msg-payload"
                 label="Message Body"
-                payload={$consumersPanelState.detailPayload}
-                contentType={$consumersPanelState.detailContentType || ''}
+              payload={$consumersPanelState.detailRequestPayload}
+              contentType={$consumersPanelState.detailRequestContentType || ''}
                 readOnly={true}
               />
+            {#if $consumersPanelState.hasResponse}
+              <div class="response-meta-block" style="margin-top:16px;">
+                <div class="section-label">Response Headers</div>
+                {#each $consumersPanelState.detailResponseHeaders as [key, value] (`resp:${key}:${value}`)}
+                  <div class="response-meta-row">
+                    <span class="response-meta-key">{key}</span>
+                    <span class="response-meta-value">{value}</span>
+                  </div>
+                {:else}
+                  <div class="text-muted small" style="padding: 4px 8px;">No headers sent.</div>
+                {/each}
+              </div>
+                <PayloadDisplay
+                  id="cons-msg-response"
+                  label="Response Body"
+                payload={$consumersPanelState.detailResponsePayload}
+                contentType={$consumersPanelState.detailResponseContentType || ""}
+                  readOnly={true}
+                />
+              {/if}
             </div>
           </div>
         </div>
@@ -511,22 +519,6 @@
 </div>
 
 <style>
-  .subtle-link-btn {
-    background: none;
-    border: none;
-    padding: 0 5px;
-    margin: 0;
-    cursor: pointer;
-    color: var(--text-dim);
-    font-family: inherit;
-    font-size: 11px;
-    transition: color 0.2s;
-  }
-
-  .subtle-link-btn:hover {
-    color: var(--text-primary);
-  }
-
   .consumer-message-controls {
     display: inline-flex;
     align-items: center;
@@ -552,6 +544,4 @@
     padding: 4px 8px;
     min-height: 30px;
   }
-
-  /* No collapsible sections in ConsumersPanel, so no need for .section-label--collapsible here */
 </style>

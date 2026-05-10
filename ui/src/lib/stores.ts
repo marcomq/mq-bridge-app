@@ -45,8 +45,13 @@ export interface ConsumersPanelState {
   toggleBusy: boolean;
   messages: ConsumerLogItem[];
   detailInfo: string;
-  detailPayload: string;
-  detailMetadata: Array<[string, string]>;
+  detailRequestPayload: string;
+  detailRequestHeaders: Array<[string, string]>;
+  detailResponsePayload: string;
+  detailResponseHeaders: Array<[string, string]>;
+  detailRequestContentType: string;
+  detailResponseContentType: string;
+  hasResponse: boolean;
 }
 
 export const consumersPanelState = writable<ConsumersPanelState>({
@@ -73,15 +78,14 @@ export const consumersPanelState = writable<ConsumersPanelState>({
   toggleBusy: false,
   messages: [],
   detailInfo: "Select a message to view details",
-  detailPayload: "",
-  detailMetadata: [],
+  detailRequestPayload: "",
+  detailRequestHeaders: [],
+  detailResponsePayload: "",
+  detailResponseHeaders: [],
+  detailRequestContentType: "",
+  detailResponseContentType: "",
+  hasResponse: false,
 });
-
-export interface PublisherSidebarItem {
-  name: string;
-  endpointType: string;
-  originalIndex: number;
-}
 
 export interface PublisherHistoryRow {
   historyIndex: number;

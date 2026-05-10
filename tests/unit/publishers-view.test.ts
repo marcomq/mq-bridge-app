@@ -31,25 +31,7 @@ import {
   updatePublisherRequestField,
 } from "../../ui/src/lib/publishers-view";
 import { publishersPanelState } from "../../ui/src/lib/stores";
-
-function createHyperscriptNode(tag: string, props?: Record<string, unknown>, ...children: unknown[]) {
-  const element = document.createElement(tag);
-  Object.entries(props || {}).forEach(([key, value]) => {
-    if (key === "className") {
-      element.className = String(value);
-      return;
-    }
-    element.setAttribute(key, String(value));
-  });
-  children.flat().forEach((child) => {
-    if (child instanceof Node) {
-      element.appendChild(child);
-    } else if (child !== null && child !== undefined) {
-      element.appendChild(document.createTextNode(String(child)));
-    }
-  });
-  return element;
-}
+import { createHyperscriptNode, installBaseWindowStubs } from "./test-helpers";
 
 function mountPublishersDom() {
   document.body.innerHTML = `
@@ -109,25 +91,11 @@ function installPublisherWindowStubs() {
     ["mqb_publisher_state", "{}"],
     ["mqb_publisher_history", JSON.stringify({ version: 1, updated_at: 0, publishers: {} })],
   ]);
-  window.VanillaSchemaForms = {
-    h: createHyperscriptNode,
-    init: vi.fn().mockResolvedValue(undefined),
-  };
-  window.registerDirtySection = vi.fn();
-  window.refreshDirtySection = vi.fn().mockReturnValue(false);
-  window.markSectionSaved = vi.fn();
-  window.saveConfigSection = vi.fn().mockResolvedValue({});
+  installBaseWindowStubs();
   window.fetchConfigFromServer = vi.fn().mockResolvedValue({ publishers: [] });
-  window.mqbAlert = vi.fn().mockResolvedValue(undefined);
-  window.mqbConfirm = vi.fn().mockResolvedValue(true);
-  window.mqbPrompt = vi.fn().mockResolvedValue(null);
-  window.mqbChoose = vi.fn().mockResolvedValue(null);
-  window.switchMain = vi.fn();
-  window._mqb_saved_sections = {};
+
   let serverConfig: any = { publishers: [], routes: {}, consumers: [], presets: {}, env_vars: {}, history: {} };
   window.appConfig = serverConfig;
-  window.appSchema = {};
-  window.initRoutes = vi.fn();
   window.initConsumers = vi.fn();
   window.Split = vi.fn().mockReturnValue({});
   Object.defineProperty(window, "localStorage", {
@@ -221,11 +189,14 @@ describe("initPublishers", () => {
 
   test("creates new http publishers with usable local defaults", async () => {
     const config = { publishers: [], routes: {}, consumers: [] };
-    window.mqbChoose = vi.fn().mockResolvedValue("http");
 
     initPublishers(config, { properties: { publishers: { items: {} } } });
 
-    await addPublisherAction();
+    addPublisherAction();
+    const select = document.body.querySelector("select") as HTMLSelectElement;
+    select.value = "http";
+    select.dispatchEvent(new Event("change"));
+    await Promise.resolve();
 
     expect(config.publishers).toHaveLength(1);
     expect(config.publishers[0]).toMatchObject({
@@ -251,7 +222,6 @@ describe("initPublishers", () => {
   test("creates new static publishers on definition and saves scalar endpoint values", async () => {
     const config = { publishers: [], routes: {}, consumers: [] };
     let formChange: ((updated: unknown) => void) | null = null;
-    window.mqbChoose = vi.fn().mockResolvedValue("static");
     window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, _schema, _data, onChange) => {
       formChange = onChange;
       return Promise.resolve();
@@ -260,7 +230,11 @@ describe("initPublishers", () => {
 
     initPublishers(config, { properties: { publishers: { items: {} } } });
 
-    await addPublisherAction();
+    addPublisherAction();
+    const select = document.body.querySelector("select") as HTMLSelectElement;
+    select.value = "static";
+    select.dispatchEvent(new Event("change"));
+    await Promise.resolve();
 
     expect(config.publishers[0]).toMatchObject({
       name: "static",
@@ -293,12 +267,20 @@ describe("initPublishers", () => {
 
   test("creates new queue and topic publishers with request bar defaults", async () => {
     const config = { publishers: [], routes: {}, consumers: [] };
-    window.mqbChoose = vi.fn().mockResolvedValueOnce("amqp").mockResolvedValueOnce("kafka");
 
     initPublishers(config, { properties: { publishers: { items: {} } } });
 
-    await addPublisherAction();
-    await addPublisherAction();
+    addPublisherAction();
+    let select = document.body.querySelector("select") as HTMLSelectElement;
+    select.value = "amqp";
+    select.dispatchEvent(new Event("change"));
+    await Promise.resolve();
+
+    addPublisherAction();
+    select = document.body.querySelector("select") as HTMLSelectElement;
+    select.value = "kafka";
+    select.dispatchEvent(new Event("change"));
+    await Promise.resolve();
 
     expect(config.publishers[0]).toMatchObject({
       name: "amqp",
@@ -513,7 +495,14 @@ describe("initPublishers", () => {
       [
         {
           name: "renamed_http",
-          endpoint: { http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} } },
+          endpoint: {
+            http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} },
+            middlewares: [
+              {
+                retry: {},
+              },
+            ],
+          },
           comment: "",
         },
       ],
