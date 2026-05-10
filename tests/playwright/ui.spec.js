@@ -261,7 +261,7 @@ test("http publisher delivers a message to the http consumer within 2 seconds wi
   await page.locator("#ctab-msg").click();
   await page.locator("#cons-toggle").click();
   await expect(page.locator("#cons-toggle")).toHaveText("Stop");
-  await expect(page.locator("#cons-live-title")).toContainText("Connected");
+  await expect(page.locator("#cons-msg-panel")).toContainText("Connected");
 
   await page.goto("/#publishers:0");
   await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("http_local_publisher");

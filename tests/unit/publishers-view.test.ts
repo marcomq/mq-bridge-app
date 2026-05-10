@@ -192,11 +192,7 @@ describe("initPublishers", () => {
 
     initPublishers(config, { properties: { publishers: { items: {} } } });
 
-    addPublisherAction();
-    const select = document.body.querySelector("select") as HTMLSelectElement;
-    select.value = "http";
-    select.dispatchEvent(new Event("change"));
-    await Promise.resolve();
+    await addPublisherAction("http");
 
     expect(config.publishers).toHaveLength(1);
     expect(config.publishers[0]).toMatchObject({
@@ -230,11 +226,7 @@ describe("initPublishers", () => {
 
     initPublishers(config, { properties: { publishers: { items: {} } } });
 
-    addPublisherAction();
-    const select = document.body.querySelector("select") as HTMLSelectElement;
-    select.value = "static";
-    select.dispatchEvent(new Event("change"));
-    await Promise.resolve();
+    await addPublisherAction("static");
 
     expect(config.publishers[0]).toMatchObject({
       name: "static",
@@ -256,7 +248,10 @@ describe("initPublishers", () => {
       [
         {
           name: "static",
-          endpoint: { static: "" },
+          endpoint: {
+            middlewares: [],
+            static: "",
+          },
           comment: "",
         },
       ],
@@ -270,17 +265,8 @@ describe("initPublishers", () => {
 
     initPublishers(config, { properties: { publishers: { items: {} } } });
 
-    addPublisherAction();
-    let select = document.body.querySelector("select") as HTMLSelectElement;
-    select.value = "amqp";
-    select.dispatchEvent(new Event("change"));
-    await Promise.resolve();
-
-    addPublisherAction();
-    select = document.body.querySelector("select") as HTMLSelectElement;
-    select.value = "kafka";
-    select.dispatchEvent(new Event("change"));
-    await Promise.resolve();
+    await addPublisherAction("amqp");
+    await addPublisherAction("kafka");
 
     expect(config.publishers[0]).toMatchObject({
       name: "amqp",

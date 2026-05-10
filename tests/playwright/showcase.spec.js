@@ -107,7 +107,7 @@ test("Generate showcase video", async ({ page }) => {
   await page.locator("#cons-toggle").click();
   
   // Wait for connection status
-  await expect(page.locator("#cons-live-title")).toContainText("Connected");
+  await expect(page.locator("#cons-msg-panel")).toContainText("Connected");
   await expect(page.locator("#consumer-log-body")).toContainText("Waiting for messages");
   await pause();
 

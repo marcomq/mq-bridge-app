@@ -181,7 +181,7 @@ describe("initConsumers", () => {
     expect(state.items).toEqual([]);
   });
 
-  test("creates new consumers with local defaults using hidden select", async () => {
+  test("creates new consumers with local defaults", async () => {
     const config = { consumers: [], routes: {}, publishers: [] };
     const schema = {
       properties: { consumers: { items: {} } },
@@ -190,38 +190,13 @@ describe("initConsumers", () => {
 
     await initConsumers(config, schema);
 
-    addConsumerAction();
-    const select = document.body.querySelector("select") as HTMLSelectElement;
-    expect(select).not.toBeNull();
-    
-    select.value = "nats";
-    select.dispatchEvent(new Event("change"));
-    await Promise.resolve();
+    await addConsumerAction("nats");
 
     expect(config.consumers).toHaveLength(1);
     expect(config.consumers[0].name).toBe("nats");
     expect(config.consumers[0].endpoint).toMatchObject({
       nats: { url: "nats://localhost:4222", subject: "events.created" },
     });
-  });
-
-  test("cleans up add-select element on blur", async () => {
-    const config = { consumers: [], routes: {}, publishers: [] };
-    const schema = { properties: { consumers: { items: {} } } };
-    vi.useFakeTimers();
-
-    await initConsumers(config, schema);
-
-    addConsumerAction();
-    let select = document.body.querySelector("select") as HTMLSelectElement;
-    expect(select).not.toBeNull();
-
-    select.dispatchEvent(new Event("blur"));
-    vi.advanceTimersByTime(150);
-    
-    select = document.body.querySelector("select") as HTMLSelectElement;
-    expect(select).toBeNull();
-    vi.useRealTimers();
   });
 
   test("tracks response editor state for response-capable consumers", async () => {

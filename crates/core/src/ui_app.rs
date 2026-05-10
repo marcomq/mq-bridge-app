@@ -1033,7 +1033,10 @@ impl UiApp {
             };
             samples.insert(
                 name.clone(),
-                RouteMetricSample { total_messages, observed_at: now },
+                RouteMetricSample {
+                    total_messages,
+                    observed_at: now,
+                },
             );
             route_throughput.insert(name.clone(), throughput);
         }
@@ -1048,8 +1051,10 @@ impl UiApp {
         let mut consumers = HashMap::new();
         for consumer in &config.consumers {
             if let Some(snapshot) = self.consumer_status_snapshot(consumer).await {
-                let message_sequence = consumer_sequences.get(&consumer.name)
-                    .map(|a| a.load(Ordering::Relaxed)).unwrap_or(0);
+                let message_sequence = consumer_sequences
+                    .get(&consumer.name)
+                    .map(|a| a.load(Ordering::Relaxed))
+                    .unwrap_or(0);
                 consumers.insert(
                     consumer.name.clone(),
                     ConsumerStatusSnapshot {
@@ -1385,7 +1390,10 @@ impl UiApp {
             ));
             let sequence_counter = {
                 let mut sequences = self.consumer_message_sequences.write().await;
-                sequences.entry(name.clone()).or_insert_with(|| Arc::new(AtomicU64::new(0))).clone()
+                sequences
+                    .entry(name.clone())
+                    .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                    .clone()
             };
 
             let resolved_output =
@@ -1421,7 +1429,10 @@ impl UiApp {
                             let (response_body, response_metadata) = match &ctx.output {
                                 ResolvedConsumerOutput::Response { response } => {
                                     let r = response.as_deref();
-                                    (Some(r.map(|x| x.payload.clone()).unwrap_or_default()), Some(r.map(|x| x.headers.clone()).unwrap_or_default()))
+                                    (
+                                        Some(r.map(|x| x.payload.clone()).unwrap_or_default()),
+                                        Some(r.map(|x| x.headers.clone()).unwrap_or_default()),
+                                    )
                                 }
                                 _ => (None, None),
                             };
@@ -1443,9 +1454,14 @@ impl UiApp {
                             // Use non-blocking send to avoid stalling the bridge when the UI capture buffer is full.
                             // If it is full, we drop the oldest entry to maintain "last" semantics.
                             let msgs_to_send = vec![enriched];
-                            if ctx.log_channel.sender.try_send(msgs_to_send.clone()).is_err() {
-                                let _ = ctx.log_channel.receiver.try_recv(); 
-                                let _ = ctx.log_channel.sender.try_send(msgs_to_send); 
+                            if ctx
+                                .log_channel
+                                .sender
+                                .try_send(msgs_to_send.clone())
+                                .is_err()
+                            {
+                                let _ = ctx.log_channel.receiver.try_recv();
+                                let _ = ctx.log_channel.sender.try_send(msgs_to_send);
                             }
                         }
 
@@ -1457,7 +1473,7 @@ impl UiApp {
                                 } else {
                                     Ok(Handled::Publish(msg))
                                 }
-                            },
+                            }
                             ResolvedConsumerOutput::Response { response } => {
                                 if let Some(response_config) = response {
                                     let mut response_msg =
