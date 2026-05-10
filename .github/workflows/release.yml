@@ -380,6 +380,8 @@ jobs:
           const config = JSON.parse(fs.readFileSync('crates/desktop/tauri.conf.json', 'utf8'));
           // In Tauri v2, productName is a top-level property
           config.productName = "mq-bridge";
+          // Sync the version with the release metadata to ensure correct artifact naming
+          config.version = "${{ needs.metadata.outputs.cargo_version }}";
           fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
           EOF
 
