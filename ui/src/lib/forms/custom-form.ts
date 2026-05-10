@@ -166,6 +166,15 @@ function formatLabel(node: SchemaNode, elementId: string) {
   return formatWebAwesomeLabel(node, elementId);
 }
 
+function formatDescription(node: SchemaNode, _elementId: string) {
+  const description = String(node.description || "");
+  // Suppress technical internal descriptions that sometimes leak into the UI via shared schema refs
+  if (description.toLowerCase().includes("routeoptions")) {
+    return "";
+  }
+  return description;
+}
+
 // Define basic fields for each endpoint type (keyed by the endpoint type string, not *Config)
 // Fields not in this list will be considered "advanced" and placed in a collapsible section.
 // For types like 'static', 'ref', 'switch', 'fanout', 'response', 'custom', 'null', they are handled by specific renderers or are complex polymorphic types that don't fit this simple basic/advanced split.
@@ -211,7 +220,7 @@ if (baseRenderBoolean) {
 
     return renderSvelteNode(CheckboxField, {
       label: formatLabel(node, elementId),
-      description: String(node.description || ""),
+      description: formatDescription(node, elementId),
       labelFor: input.id || elementId,
       control: input,
     });
@@ -255,7 +264,7 @@ domRenderer.renderFieldWrapper = (
   if (isCheckbox) {
     return renderSvelteNode(CheckboxField, {
       label: formatLabel(node, elementId),
-      description: String(node.description || ""),
+      description: formatDescription(node, elementId),
       labelFor: input instanceof HTMLElement ? input.id : undefined,
       control: input,
     });
@@ -263,7 +272,7 @@ domRenderer.renderFieldWrapper = (
 
   return renderSvelteNode(FormField, {
     label: formatLabel(node, elementId),
-    description: String(node.description || ""),
+    description: formatDescription(node, elementId),
     labelFor: input instanceof HTMLElement ? input.id : undefined,
     control: inputElement,
     wrapperClass: wrapperClass || "",
@@ -287,7 +296,7 @@ const tlsBaseRenderer = {
 
     return renderSvelteNode(OptionalSectionField, {
       label: String(node.title || "Options"),
-      description: String(requiredNode.description || node.description || ""),
+      description: formatDescription(requiredNode, elementId) || formatDescription(node, elementId),
       checked: currentValue,
       inputId: checkboxId,
       onToggle: (nextChecked: boolean) => {
@@ -474,7 +483,7 @@ const customHeadersRenderer = {
 
     return renderSvelteNode(HeadersEditor, {
       title: String(node.title || "Custom Headers"),
-      description: String(node.description || ""),
+      description: formatDescription(node, _elementId),
       rows,
       onChange: (nextRows: Array<{ key: string; value: string }>) => {
         const nextValue = Object.fromEntries(
@@ -499,7 +508,7 @@ const envVarsRenderer = {
     return renderSvelteNode(HeadersEditor, {
       title: "Environment Variables",
       sectionLabel: "",
-      description: String(node.description || ""),
+      description: formatDescription(node, _elementId),
       keyPlaceholder: "Variable name",
       valuePlaceholder: "Value",
       addLabel: "Add Variable",
@@ -520,7 +529,11 @@ const envVarsRenderer = {
 
 const routeObjectRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
-    return renderObject(context, node, elementId, false, dataPath);
+    const originalDescription = node.description;
+    node.description = formatDescription(node, elementId);
+    const result = renderObject(context, node, elementId, false, dataPath);
+    node.description = originalDescription;
+    return result;
   },
 };
 
@@ -623,7 +636,7 @@ const createEndpointRenderer = (type: string) => ({
     const hiddenWrapper = createWrappedContainer(hiddenFragment, "mqb-form-block");
 
     return renderSvelteNode(CollapsibleFields, {
-      description: node.description,
+      description: formatDescription(node, elementId),
       visibleContent: visibleWrapper,
       hiddenContent: hiddenWrapper,
       toggleLabel: "Show advanced options",
@@ -670,8 +683,13 @@ const createScalarEndpointRenderer = (
 });
 
 const rootRenderer = {
-  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) =>
-    createWrappedContainer(renderObject(context, node, elementId, false, dataPath), "mqb-form-block"),
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    const originalDescription = node.description;
+    node.description = formatDescription(node, elementId);
+    const result = createWrappedContainer(renderObject(context, node, elementId, false, dataPath), "mqb-form-block");
+    node.description = originalDescription;
+    return result;
+  },
 };
 
 
@@ -758,7 +776,11 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
         content.append(props, ap, oneOf);
         return domRenderer.renderHeadlessObject(elementId, content);
       }
-      return renderObject(context, node, elementId, false, dataPath);
+      const originalDescription = node.description;
+      node.description = formatDescription(node, elementId);
+      const result = renderObject(context, node, elementId, false, dataPath);
+      node.description = originalDescription;
+      return result;
     },
   },
 };
