@@ -106,6 +106,13 @@
       target.value = "";
     }
   }
+
+  function formatThroughput(label: string) {
+    if (!label) return "";
+    // Replace digits with thousand separators using a thin space (\u2009)
+    // We wrap it in a span so we can style it to be "small" via CSS
+    return label.replace(/(\d)(?=(\d{3})+(?!\d))/g, '$1<span class="throughput-sep">\u2009</span>');
+  }
 </script>
 
 <div
@@ -152,7 +159,7 @@
             <span class={`proto-badge proto-${item.inputProto.toLowerCase()}`}>{item.inputProto}</span>
             <span class="item-name">{item.name}</span>
             <span class="msg-count" style="margin-left:auto;" title={`${item.messageCount} total messages`}>
-              {item.throughputLabel}
+              {@html formatThroughput(item.throughputLabel)}
             </span>
             <span class={`item-status ${item.statusClass}`}></span>
           </button>
@@ -542,5 +549,10 @@
     min-width: 72px;
     padding: 4px 8px;
     min-height: 30px;
+  }
+
+  :global(.throughput-sep) {
+    opacity: 0.4;
+    font-size: 0.9em;
   }
 </style>

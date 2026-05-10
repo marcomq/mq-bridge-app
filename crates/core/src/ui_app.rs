@@ -489,6 +489,8 @@ struct CollectorContext {
     counter: Arc<AtomicU64>,
     output: ResolvedConsumerOutput,
     capture_enabled: bool,
+    response_payload: Option<String>,
+    response_metadata: Option<String>,
 }
 
 fn resolve_consumer_output(
@@ -864,14 +866,46 @@ impl UiApp {
             let channel = mq_bridge::get_or_create_channel(&MemoryConfig::new(&topic, None));
             while let Ok(batch) = channel.receiver.try_recv() {
                 for m in batch {
-                    let source = m
-                        .metadata
-                        .get("ui_source")
-                        .cloned()
+                    let mut metadata = m.metadata.clone();
+                    let source = metadata
+                        .remove("ui_source")
                         .unwrap_or_else(|| "unknown".into());
-                    let body: serde_json::Value =
-                        serde_json::from_slice(&m.payload).unwrap_or_default();
-                    grouped_messages.entry(source).or_default().push_back(body);
+
+                    if let Some(capture_time_ms) = metadata.remove("ui_capture_time") {
+                        let id = fast_uuid_v7::format_uuid(m.message_id).to_string();
+                        let time = capture_time_ms
+                            .parse::<i64>()
+                            .ok()
+                            .and_then(|ts| chrono::DateTime::from_timestamp_millis(ts))
+                            .map(|dt| dt.to_rfc3339())
+                            .unwrap_or_default();
+
+                        let response = metadata.remove("ui_response_payload");
+                        let response_metadata_str = metadata.remove("ui_response_metadata");
+                        let response_metadata: Option<serde_json::Value> =
+                            response_metadata_str.and_then(|s| serde_json::from_str(&s).ok());
+
+                        let payload_json: serde_json::Value = serde_json::from_slice(&m.payload)
+                            .unwrap_or_else(|_| {
+                                serde_json::Value::String(m.get_payload_str().to_string())
+                            });
+
+                        grouped_messages
+                            .entry(source)
+                            .or_default()
+                            .push_back(serde_json::json!({
+                                "id": id,
+                                "time": time,
+                                "metadata": metadata,
+                                "payload": payload_json,
+                                "response": response,
+                                "response_metadata": response_metadata
+                            }));
+                    } else {
+                        let body: serde_json::Value =
+                            serde_json::from_slice(&m.payload).unwrap_or_default();
+                        grouped_messages.entry(source).or_default().push_back(body);
+                    }
                 }
             }
         }
@@ -1404,12 +1438,28 @@ impl UiApp {
                 ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
             };
 
+            let (response_payload, response_metadata) = match &resolved_output {
+                ResolvedConsumerOutput::Response { response } => {
+                    if let Some(r) = response {
+                        (
+                            Some(r.payload.clone()),
+                            serde_json::to_string(&r.headers).ok(),
+                        )
+                    } else {
+                        (None, None)
+                    }
+                }
+                _ => (None, None),
+            };
+
             let context = Arc::new(CollectorContext {
                 name: name.clone(),
                 log_channel,
                 counter: sequence_counter,
                 output: resolved_output,
                 capture_enabled,
+                response_payload,
+                response_metadata,
             });
 
             let route = Route::new(consumer.endpoint.clone(), output_for_route)
@@ -1420,48 +1470,28 @@ impl UiApp {
                         ctx.counter.fetch_add(1, Ordering::Relaxed);
 
                         if ctx.capture_enabled {
-                            let payload_json: serde_json::Value =
-                                serde_json::from_slice(&msg.payload).unwrap_or_else(|_| {
-                                    serde_json::Value::String(msg.get_payload_str().to_string())
-                                });
-                            let id = fast_uuid_v7::format_uuid(msg.message_id).to_string();
+                            let mut enriched = msg.clone();
+                            let meta = &mut enriched.metadata;
+                            meta.insert("ui_source".into(), ctx.name.clone());
+                            meta.insert(
+                                "ui_capture_time".into(),
+                                chrono::Utc::now().timestamp_millis().to_string(),
+                            );
 
-                            let (response_body, response_metadata) = match &ctx.output {
-                                ResolvedConsumerOutput::Response { response } => {
-                                    let r = response.as_deref();
-                                    (
-                                        Some(r.map(|x| x.payload.clone()).unwrap_or_default()),
-                                        Some(r.map(|x| x.headers.clone()).unwrap_or_default()),
-                                    )
-                                }
-                                _ => (None, None),
-                            };
-
-                            let val = serde_json::json!({
-                                "id": id,
-                                "time": chrono::Local::now().to_rfc3339(),
-                                "metadata": msg.metadata.clone(),
-                                "payload": payload_json,
-                                "response": response_body,
-                                "response_metadata": response_metadata
-                            });
-                            let mut enriched = CanonicalMessage::from_type(&val)
-                                .unwrap_or_else(|_| CanonicalMessage::from(""));
-                            enriched
-                                .metadata
-                                .insert("ui_source".into(), ctx.name.clone());
+                            if let Some(p) = &ctx.response_payload {
+                                meta.insert("ui_response_payload".into(), p.clone());
+                            }
+                            if let Some(m) = &ctx.response_metadata {
+                                meta.insert("ui_response_metadata".into(), m.clone());
+                            }
 
                             // Use non-blocking send to avoid stalling the bridge when the UI capture buffer is full.
                             // If it is full, we drop the oldest entry to maintain "last" semantics.
                             let msgs_to_send = vec![enriched];
-                            if ctx
-                                .log_channel
-                                .sender
-                                .try_send(msgs_to_send.clone())
-                                .is_err()
-                            {
+                            if let Err(e) = ctx.log_channel.sender.try_send(msgs_to_send) {
+                                let msgs = e.into_inner();
                                 let _ = ctx.log_channel.receiver.try_recv();
-                                let _ = ctx.log_channel.sender.try_send(msgs_to_send);
+                                let _ = ctx.log_channel.sender.try_send(msgs);
                             }
                         }
 
