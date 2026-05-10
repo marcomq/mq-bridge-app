@@ -481,7 +481,6 @@
                     </div>
                   {/each}
                 </div>
-                <div class="section-label">Body</div>
               {/if}
               <PayloadDisplay
                 id="cons-msg-payload"

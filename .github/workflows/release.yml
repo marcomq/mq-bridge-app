@@ -408,7 +408,7 @@ jobs:
       - name: Publish to crates.io
         shell: bash
         run: |
-          # Attempt to publish core; ignore errors (e.g. if 0.2.0 is already live)
+          # Attempt to publish core; ignore errors (e.g. if 0.2.2 is already live)
           cargo publish -p mq-bridge-app-core || true
           # Then publish the CLI crate
           cargo publish -p mq-bridge-app

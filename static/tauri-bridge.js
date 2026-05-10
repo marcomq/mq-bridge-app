@@ -57,7 +57,7 @@
         const method = normalizedInit.method.toUpperCase();
         const pathname = url.pathname.split('#')[0]; // Strip hash fragment for routing
         const queryParams = Object.fromEntries(url.searchParams.entries()); // Get query params as object
-        const body_text = await parseBody(normalizedInit) || '';
+        const bodyText = await parseBody(normalizedInit) || '';
 
         let commandName;
         let commandArgs = {};
@@ -75,7 +75,7 @@
                     commandName = 'get_config_request';
                 } else if (method === 'POST') {
                     commandName = 'post_config_request';
-                    commandArgs = { body_text };
+                    commandArgs = { bodyText };
                 }
                 break;
             case '/desktop-secrets':
@@ -103,7 +103,7 @@
                 break;
             case '/publish':
                 commandName = 'post_publish_request';
-                commandArgs = { body_text };
+                commandArgs = { bodyText };
                 break;
             case '/runtime-status':
                 commandName = 'get_runtime_status_request';
