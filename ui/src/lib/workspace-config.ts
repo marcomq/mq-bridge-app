@@ -23,6 +23,7 @@ export type PublisherPreset = {
 export type PresetsByPublisher = Record<string, PublisherPreset[]>;
 export type EnvVars = Record<string, string>;
 export type PublisherHistoryEntry = {
+  publisher_id?: string;
   name: string;
   payload: string;
   headers: HeaderRow[];
@@ -169,6 +170,7 @@ function sanitizeHistoryEntry(value: unknown, fallbackName = "", index = 0): Pub
     };
 
   return {
+    publisher_id: entry.publisher_id ? String(entry.publisher_id) : undefined,
     name: String(entry.name || fallbackName || `History entry ${index + 1}`),
     payload: String(entry.payload || ""),
     headers: mergedHeaders,

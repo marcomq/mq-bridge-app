@@ -433,9 +433,15 @@ fn normalize_consumer_output(
     let normalized_fallback = normalize_consumer_response(fallback_response);
 
     match output {
-        ConsumerOutputConfig::Publisher { publisher } => {
+        ConsumerOutputConfig::Publisher {
+            publisher,
+            publisher_id,
+        } => {
             let publisher = publisher.trim().to_string();
-            ConsumerOutputConfig::Publisher { publisher }
+            ConsumerOutputConfig::Publisher {
+                publisher,
+                publisher_id,
+            }
         }
         ConsumerOutputConfig::Response { response } => ConsumerOutputConfig::Response {
             response: normalize_consumer_response(response).or(normalized_fallback),
@@ -512,9 +518,13 @@ fn resolve_consumer_output(
                 response: normalize_consumer_response(response.clone()).map(Arc::new),
             })
         }
-        ConsumerOutputConfig::Publisher { publisher } => {
+        ConsumerOutputConfig::Publisher {
+            publisher,
+            publisher_id,
+        } => {
             let publisher_name = publisher.trim();
-            if publisher_name.is_empty() {
+            let publisher_id = publisher_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+            if publisher_name.is_empty() && publisher_id.is_none() {
                 return Err(UpdateConfigError::Validation(format!(
                     "Consumer {}: publisher output requires a selected publisher",
                     consumer.name
@@ -522,11 +532,15 @@ fn resolve_consumer_output(
             }
             let Some(publisher_config) = publishers
                 .iter()
-                .find(|candidate| candidate.name == publisher_name)
+                .find(|candidate| {
+                    publisher_id.is_some_and(|id| candidate.id == id)
+                        || (!publisher_name.is_empty() && candidate.name == publisher_name)
+                })
             else {
                 return Err(UpdateConfigError::Validation(format!(
                     "Consumer {}: referenced publisher not found: {}",
-                    consumer.name, publisher_name
+                    consumer.name,
+                    publisher_id.unwrap_or(publisher_name)
                 )));
             };
 
@@ -1228,28 +1242,6 @@ impl UiApp {
             mq_bridge::stop_route(&name).await;
         }
 
-        // Stability logic: If a publisher was renamed, migrate its top-level history
-        // history is currently a map keyed by name.
-        if let Some(history_map) = new_config.history.get_mut("publishers") {
-            if let Some(publishers_history) = history_map.as_object_mut() {
-                for old_pub in &old_config.publishers {
-                    let old_endpoint_key = endpoint_config_fingerprint(&old_pub.endpoint);
-                    // If the old publisher's name is missing in the new list, check if its endpoint moved to a new name
-                    if !new_config.publishers.iter().any(|p| p.name == old_pub.name) {
-                        if let Some(renamed_to) = new_config
-                            .publishers
-                            .iter()
-                            .find(|p| endpoint_config_fingerprint(&p.endpoint) == old_endpoint_key)
-                        {
-                            if let Some(h) = publishers_history.remove(&old_pub.name) {
-                                publishers_history.insert(renamed_to.name.clone(), h);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         {
             let mut handles = self.ui_handles.write().await;
             let mut collectors_to_remove = Vec::new();
@@ -1547,10 +1539,6 @@ impl UiApp {
         }
         Ok(())
     }
-}
-
-fn endpoint_config_fingerprint(endpoint: &Endpoint) -> Option<String> {
-    serde_json::to_string(endpoint).ok()
 }
 
 #[derive(Debug)]

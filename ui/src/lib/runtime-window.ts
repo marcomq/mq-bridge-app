@@ -14,7 +14,7 @@ function getSplit() {
 }
 
 function getVanillaSchemaForms() {
-  return VanillaSchemaForms;
+  return (appWindow() as any).VanillaSchemaForms || VanillaSchemaForms;
 }
 
 export function replaceHash(nextHash: string) {

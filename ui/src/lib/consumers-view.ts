@@ -59,6 +59,7 @@ type ConsumerStatus = {
 };
 
 type ConsumerConfig = {
+  id?: string;
   name: string;
   endpoint: Record<string, unknown>;
   comment?: string;
@@ -80,7 +81,7 @@ type ConsumerResponseConfig = {
 
 type ConsumerOutputConfig =
   | { mode: "none" }
-  | { mode: "publisher"; publisher: string }
+  | { mode: "publisher"; publisher: string; publisher_id?: string | null }
   | { mode: "response"; response: ConsumerResponseConfig | null };
 
 type ConsumerResponseHeaderRow = {
@@ -91,6 +92,7 @@ type ConsumerResponseHeaderRow = {
 };
 
 type PublisherConfig = {
+  id?: string;
   name: string;
   endpoint: Record<string, unknown>;
   comment?: string;
@@ -423,7 +425,11 @@ function normalizeConsumerOutput(
   const raw = output as Record<string, unknown>;
   if (raw.mode === "publisher") {
     const publisher = typeof raw.publisher === "string" ? String(raw.publisher).trim() : "";
-    return { mode: "publisher", publisher };
+    const publisher_id =
+      typeof raw.publisher_id === "string" && String(raw.publisher_id).trim()
+        ? String(raw.publisher_id).trim()
+        : undefined;
+    return { mode: "publisher", publisher, ...(publisher_id ? { publisher_id } : {}) };
   }
   if (raw.mode === "response") {
     return { mode: "response", response: normalizeConsumerResponse(raw.response) };
@@ -463,7 +469,11 @@ function getDefaultConsumerOutput(
     return { mode: "response", response: null };
   }
   if (publishers.length === 1) {
-    return { mode: "publisher", publisher: publishers[0].name };
+    return {
+      mode: "publisher",
+      publisher: publishers[0].name,
+      ...(publishers[0].id ? { publisher_id: publishers[0].id } : {}),
+    };
   }
   return { mode: "none" };
 }
@@ -536,6 +546,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     }
     return Array.isArray(config.publishers) ? config.publishers : [];
   };
+  const getPublisherStorageKey = (publisher: Partial<PublisherConfig> | null | undefined) =>
+    String(publisher?.id || publisher?.name || "").trim();
+  const getPublisherByName = (publisherName: string) =>
+    getAvailablePublishers().find((publisher) => String(publisher?.name || "").trim() === String(publisherName || "").trim());
+  const getConsumerStorageKey = (consumer: Partial<ConsumerConfig> | null | undefined) =>
+    String(consumer?.id || consumer?.name || "").trim();
 
   const getAvailablePublisherNames = (): string[] =>
     getAvailablePublishers()
@@ -591,6 +607,16 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     }
   }
 
+  consumerMessages = Object.fromEntries(
+    (config.consumers || []).map((consumer) => {
+      const storageKey = getConsumerStorageKey(consumer);
+      return [
+        storageKey,
+        consumerMessages[storageKey] || [],
+      ] as const;
+    }).filter(([storageKey]) => Boolean(storageKey)),
+  );
+
   const saveMessages = () => {
     if (sensitiveMode) return;
     if (encryptedMessages) {
@@ -600,12 +626,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
   };
 
-  const trimStoredMessages = (consumerName: string) => {
-    const consumer = (config.consumers || []).find((entry) => entry.name === consumerName);
+  const trimStoredMessages = (consumerKey: string) => {
+    const consumer = (config.consumers || []).find((entry) => getConsumerStorageKey(entry) === consumerKey);
     const capture = normalizeConsumerMessageCapture(consumer?.message_capture);
-    const currentMessages = consumerMessages[consumerName] || [];
+    const currentMessages = consumerMessages[consumerKey] || [];
     if (currentMessages.length > capture.keep_last) {
-      consumerMessages[consumerName] = currentMessages.slice(0, capture.keep_last);
+      consumerMessages[consumerKey] = currentMessages.slice(0, capture.keep_last);
       return true;
     }
     return false;
@@ -613,7 +639,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
   let trimmedExistingMessages = false;
   for (const consumer of config.consumers || []) {
-    trimmedExistingMessages = trimStoredMessages(consumer.name) || trimmedExistingMessages;
+    trimmedExistingMessages = trimStoredMessages(getConsumerStorageKey(consumer)) || trimmedExistingMessages;
   }
   if (trimmedExistingMessages) {
     saveMessages();
@@ -647,8 +673,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   const syncConsumersPanelState = () => {
-    const currentConsumerName = consumers[currentIdx]?.name || null;
-    const messages = currentConsumerName ? consumerMessages[currentConsumerName] || [] : [];
+    const currentConsumer = consumers[currentIdx] || null;
+    const currentConsumerName = currentConsumer?.name || null;
+    const currentConsumerKey = currentConsumer ? getConsumerStorageKey(currentConsumer) : null;
+    const messages = currentConsumerKey ? consumerMessages[currentConsumerKey] || [] : [];
     const status = currentConsumerName
       ? consumerStatus[currentConsumerName] || { running: false, status: { healthy: false } }
       : { running: false, status: { healthy: false } };
@@ -668,8 +696,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         : "neutral";
 
     const selectedMessage =
-      selectedMessageIndex !== null && currentConsumerName
-        ? (consumerMessages[currentConsumerName] || [])[selectedMessageIndex]
+      selectedMessageIndex !== null && currentConsumerKey
+        ? (consumerMessages[currentConsumerKey] || [])[selectedMessageIndex]
         : null;
     const detailRequestHeaders = selectedMessage
       ? Object.entries(selectedMessage.metadata || {}).sort(([a], [b]) => a.localeCompare(b))
@@ -705,7 +733,6 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       ? `Message from ${detailTime}${detailRequestHeaders.length > 0 ? ` (Metadata: ${detailRequestHeaders.map(([key]) => key).join(", ")})` : ""}`
       : "Select a message to view details";
 
-    const currentConsumer = consumers[currentIdx] || null;
     syncLegacyConsumerResponse(currentConsumer);
     const messageCapture = normalizeConsumerMessageCapture(currentConsumer?.message_capture);
     const responseSupported = consumerSupportsCustomResponse(currentConsumer);
@@ -736,7 +763,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           name: consumer.name,
           inputProto: getConsumerInputType(consumer).toUpperCase(),
           statusClass,
-          messageCount: consumerMessages[consumer.name]?.length || 0,
+          messageCount: consumerMessages[getConsumerStorageKey(consumer)]?.length || 0,
           throughputLabel: status?.running
             ? `${(consumerThroughput[consumer.name] || 0).toFixed(1)} msg/s`
             : "",
@@ -1019,7 +1046,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           : publisherOptions.length === 1
             ? publisherOptions[0]
             : "";
-      current.output = { mode: "publisher", publisher: preferredPublisher };
+      const preferredPublisherConfig = getPublisherByName(preferredPublisher);
+      current.output = {
+        mode: "publisher",
+        publisher: preferredPublisher,
+        ...(preferredPublisherConfig?.id ? { publisher_id: preferredPublisherConfig.id } : {}),
+      };
       current.response = null;
       if (activeSubtab !== "messages") activeSubtab = "response";
     } else {
@@ -1035,7 +1067,13 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const setCurrentConsumerOutputPublisher = (publisher: string) => {
     const current = config.consumers[currentIdx];
     if (!current) return;
-    current.output = { mode: "publisher", publisher: String(publisher || "").trim() };
+    const publisherName = String(publisher || "").trim();
+    const publisherConfig = getPublisherByName(publisherName);
+    current.output = {
+      mode: "publisher",
+      publisher: publisherName,
+      ...(publisherConfig?.id ? { publisher_id: publisherConfig.id } : {}),
+    };
     current.response = null;
     mqbRuntime.refreshDirtySection("consumers");
     syncConsumersPanelState();
@@ -1053,7 +1091,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const current = config.consumers[currentIdx];
     if (!current) return;
     current.message_capture = normalizeConsumerMessageCapture({ ...current.message_capture, keep_last: keepLast });
-    trimStoredMessages(current.name);
+    trimStoredMessages(getConsumerStorageKey(current));
     saveMessages();
     mqbRuntime.refreshDirtySection("consumers");
     syncConsumersPanelState();
@@ -1073,7 +1111,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   showConsumerMessageDetails = (name: string, msgIdx: number) => {
-    const message = (consumerMessages[name] || [])[msgIdx];
+    const consumer = (config.consumers || []).find((entry) => entry.name === name);
+    const message = (consumerMessages[getConsumerStorageKey(consumer)] || [])[msgIdx];
     if (!message) return;
     selectedMessageIndex = msgIdx;
     activeSubtab = "messages";
@@ -1145,7 +1184,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   const clearConsumerHistory = (name: string) => {
-    consumerMessages[name] = [];
+    const consumer = (config.consumers || []).find((entry) => entry.name === name);
+    consumerMessages[getConsumerStorageKey(consumer)] = [];
     saveMessages();
     syncConsumersPanelState();
   };
@@ -1167,6 +1207,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       if (itemSchema.properties?.[field]) {
         itemSchema.properties[field].hidden = true;
       }
+    }
+    if (itemSchema.properties?.id) {
+      itemSchema.properties.id.hidden = true;
     }
     const httpConfigSchema = itemSchema.$defs?.HttpConfig;
     if (httpConfigSchema?.properties?.custom_headers) {
@@ -1205,6 +1248,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
       // Preserve fields handled outside the JSON form (via sub-tabs and action buttons)
       if (current) {
+        normalized.id = current.id;
         normalized.output = current.output;
         normalized.response = current.response;
         normalized.message_capture = current.message_capture;
@@ -1475,11 +1519,13 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         const maxMessages = messageCapture.keep_last;
 
         for (const [sourceName, rawMessages] of Object.entries(data)) {
+          const sourceConsumer = (config.consumers || []).find((consumer) => consumer.name === sourceName);
+          const sourceKey = getConsumerStorageKey(sourceConsumer || { name: sourceName });
           const messages = Array.isArray(rawMessages)
             ? rawMessages.map((message) => normalizeConsumerMessage(message))
             : [];
-          consumerMessages[sourceName] = [...messages, ...(consumerMessages[sourceName] || [])].slice(0, maxMessages);
-          consumerMessages[sourceName].sort((a, b) => {
+          consumerMessages[sourceKey] = [...messages, ...(consumerMessages[sourceKey] || [])].slice(0, maxMessages);
+          consumerMessages[sourceKey].sort((a, b) => {
             const cmp = (b.time || "").localeCompare(a.time || "");
             return cmp !== 0 ? cmp : (b.id || "").localeCompare(a.id || "");
           });
@@ -1489,9 +1535,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           }
         }
 
+        const activeKey = getConsumerStorageKey(activeConsumer);
         if ((!data[name] || data[name].length === 0) && selectedMessages.length > 0) {
-          consumerMessages[name] = [...selectedMessages, ...(consumerMessages[name] || [])].slice(0, maxMessages);
-          consumerMessages[name].sort((a, b) => {
+          consumerMessages[activeKey] = [...selectedMessages, ...(consumerMessages[activeKey] || [])].slice(0, maxMessages);
+          consumerMessages[activeKey].sort((a, b) => {
             const cmp = (b.time || "").localeCompare(a.time || "");
             return cmp !== 0 ? cmp : (b.id || "").localeCompare(a.id || "");
           });

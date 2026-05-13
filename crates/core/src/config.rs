@@ -13,6 +13,7 @@ use mq_bridge::{
     models::{Endpoint, EndpointType, Middleware, SecretExtractor},
 };
 use schemars::JsonSchema;
+use uuid::Uuid;
 
 fn default_log_level() -> String {
     "info".to_string()
@@ -39,6 +40,10 @@ fn default_route_migrated_capture() -> ConsumerMessageCaptureConfig {
         enabled: false,
         keep_last: default_consumer_capture_keep_last(),
     }
+}
+
+fn generate_config_id() -> String {
+    Uuid::now_v7().to_string()
 }
 
 #[derive(
@@ -152,6 +157,8 @@ pub struct RouteConfig {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
 pub struct ConsumerConfig {
+    #[serde(default = "generate_config_id")]
+    pub id: String,
     pub name: String,
     pub endpoint: Endpoint,
     #[serde(default)]
@@ -182,6 +189,8 @@ pub enum ConsumerOutputConfig {
     None,
     Publisher {
         publisher: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        publisher_id: Option<String>,
     },
     Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,6 +221,8 @@ fn consumer_output_is_none(output: &ConsumerOutputConfig) -> bool {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone)]
 pub struct PublisherClient {
+    #[serde(default = "generate_config_id")]
+    pub id: String,
     pub name: String,
     pub endpoint: Endpoint,
     #[serde(default)]
@@ -468,6 +479,64 @@ pub fn load_config_at_path(
 }
 
 impl AppConfig {
+    fn ensure_entity_ids(&mut self) {
+        let mut known_ids = HashSet::new();
+
+        for publisher in &mut self.publishers {
+            if publisher.id.trim().is_empty() || !known_ids.insert(publisher.id.clone()) {
+                publisher.id = generate_config_id();
+                known_ids.insert(publisher.id.clone());
+            }
+        }
+
+        known_ids.clear();
+        for consumer in &mut self.consumers {
+            if consumer.id.trim().is_empty() || !known_ids.insert(consumer.id.clone()) {
+                consumer.id = generate_config_id();
+                known_ids.insert(consumer.id.clone());
+            }
+        }
+    }
+
+    fn normalize_consumer_publisher_outputs(&mut self) {
+        let publishers_by_id: HashMap<String, String> = self
+            .publishers
+            .iter()
+            .map(|publisher| (publisher.id.clone(), publisher.name.clone()))
+            .collect();
+        let publisher_ids_by_name: HashMap<String, String> = self
+            .publishers
+            .iter()
+            .map(|publisher| (publisher.name.clone(), publisher.id.clone()))
+            .collect();
+
+        for consumer in &mut self.consumers {
+            if let ConsumerOutputConfig::Publisher {
+                publisher,
+                publisher_id,
+            } = &mut consumer.output
+            {
+                let trimmed_name = publisher.trim().to_string();
+                let resolved_by_id = publisher_id
+                    .as_ref()
+                    .and_then(|id| publishers_by_id.get(id).cloned());
+
+                if let Some(name) = resolved_by_id {
+                    *publisher = name;
+                    continue;
+                }
+
+                if let Some(id) = publisher_ids_by_name.get(&trimmed_name) {
+                    *publisher = trimmed_name;
+                    *publisher_id = Some(id.clone());
+                } else {
+                    *publisher = trimmed_name;
+                    *publisher_id = None;
+                }
+            }
+        }
+    }
+
     fn uses_encrypted_config_mode(mode: ConfigSecurityMode) -> bool {
         matches!(
             mode,
@@ -527,61 +596,71 @@ impl AppConfig {
             self.default_tab = "consumers".to_string();
         }
 
-        if self.routes.is_empty() {
-            return;
-        }
+        if !self.routes.is_empty() {
+            let mut existing_publisher_names: HashSet<String> = self
+                .publishers
+                .iter()
+                .map(|publisher| publisher.name.clone())
+                .collect();
+            let mut existing_consumer_names: HashSet<String> = self
+                .consumers
+                .iter()
+                .map(|consumer| consumer.name.clone())
+                .collect();
+            let mut routes = std::mem::take(&mut self.routes);
 
-        let mut existing_publisher_names: HashSet<String> = self
-            .publishers
-            .iter()
-            .map(|publisher| publisher.name.clone())
-            .collect();
-        let mut existing_consumer_names: HashSet<String> = self
-            .consumers
-            .iter()
-            .map(|consumer| consumer.name.clone())
-            .collect();
-        let mut routes = std::mem::take(&mut self.routes);
+            for (route_name, route_config) in routes.drain() {
+                let normalized_route_name = normalized_config_name(&route_name);
+                let output =
+                    if matches!(route_config.route.output.endpoint_type, EndpointType::Null) {
+                        ConsumerOutputConfig::None
+                    } else if let Some(existing) = self.publishers.iter().find(|publisher| {
+                        endpoint_value(&publisher.endpoint)
+                            == endpoint_value(&route_config.route.output)
+                    }) {
+                        ConsumerOutputConfig::Publisher {
+                            publisher: existing.name.clone(),
+                            publisher_id: Some(existing.id.clone()),
+                        }
+                    } else {
+                        let publisher_name = next_unique_name(
+                            &format!("{normalized_route_name}_publisher"),
+                            &existing_publisher_names,
+                        );
+                        existing_publisher_names.insert(publisher_name.clone());
+                        let publisher = PublisherClient {
+                            id: generate_config_id(),
+                            name: publisher_name.clone(),
+                            endpoint: route_config.route.output.clone(),
+                            presets: Vec::new(),
+                            comment: String::new(),
+                        };
+                        let publisher_id = publisher.id.clone();
+                        self.publishers.push(publisher);
+                        ConsumerOutputConfig::Publisher {
+                            publisher: publisher_name,
+                            publisher_id: Some(publisher_id),
+                        }
+                    };
 
-        for (route_name, route_config) in routes.drain() {
-            let normalized_route_name = normalized_config_name(&route_name);
-            let output = if matches!(route_config.route.output.endpoint_type, EndpointType::Null) {
-                ConsumerOutputConfig::None
-            } else if let Some(existing) = self.publishers.iter().find(|publisher| {
-                endpoint_value(&publisher.endpoint) == endpoint_value(&route_config.route.output)
-            }) {
-                ConsumerOutputConfig::Publisher {
-                    publisher: existing.name.clone(),
-                }
-            } else {
-                let publisher_name = next_unique_name(
-                    &format!("{normalized_route_name}_publisher"),
-                    &existing_publisher_names,
-                );
-                existing_publisher_names.insert(publisher_name.clone());
-                self.publishers.push(PublisherClient {
-                    name: publisher_name.clone(),
-                    endpoint: route_config.route.output.clone(),
-                    presets: Vec::new(),
+                let consumer_name =
+                    next_unique_name(&normalized_route_name, &existing_consumer_names);
+                existing_consumer_names.insert(consumer_name.clone());
+                self.consumers.push(ConsumerConfig {
+                    id: generate_config_id(),
+                    name: consumer_name,
+                    endpoint: route_config.route.input,
                     comment: String::new(),
+                    response: None,
+                    output,
+                    message_capture: default_route_migrated_capture(),
+                    options: route_config.route.options,
                 });
-                ConsumerOutputConfig::Publisher {
-                    publisher: publisher_name,
-                }
-            };
-
-            let consumer_name = next_unique_name(&normalized_route_name, &existing_consumer_names);
-            existing_consumer_names.insert(consumer_name.clone());
-            self.consumers.push(ConsumerConfig {
-                name: consumer_name,
-                endpoint: route_config.route.input,
-                comment: String::new(),
-                response: None,
-                output,
-                message_capture: default_route_migrated_capture(),
-                options: route_config.route.options,
-            });
+            }
         }
+
+        self.ensure_entity_ids();
+        self.normalize_consumer_publisher_outputs();
     }
 
     pub fn save(&self, path: &str) -> Result<()> {
@@ -593,6 +672,8 @@ impl AppConfig {
         let mut config_to_save = self.clone();
         config_to_save.migrate_legacy_consumer_response();
         config_to_save.migrate_legacy_security_mode();
+        config_to_save.ensure_entity_ids();
+        config_to_save.normalize_consumer_publisher_outputs();
 
         // Sanitize route names to ensure compatibility with environment variables
         let sanitized_routes: HashMap<String, RouteConfig> = config_to_save
@@ -914,8 +995,15 @@ routes:
             assert_eq!(k.topic.as_deref(), Some("in_topic"));
         }
         match &consumer.output {
-            ConsumerOutputConfig::Publisher { publisher } => {
+            ConsumerOutputConfig::Publisher {
+                publisher,
+                publisher_id,
+            } => {
                 assert_eq!(publisher, "kafka_to_nats_publisher");
+                assert_eq!(
+                    publisher_id.as_deref(),
+                    Some(config.publishers[0].id.as_str())
+                );
             }
             other => panic!("expected publisher output, got {other:?}"),
         }
@@ -1025,7 +1113,7 @@ routes:
         assert_eq!(config.publishers.len(), 1);
         assert_eq!(config.consumers.len(), 1);
         match &config.consumers[0].output {
-            ConsumerOutputConfig::Publisher { publisher } => {
+            ConsumerOutputConfig::Publisher { publisher, .. } => {
                 assert_eq!(publisher, "existing_pub");
             }
             other => panic!("expected publisher output, got {other:?}"),
@@ -1077,7 +1165,7 @@ consumers:
         assert_eq!(config.consumers[0].message_capture.keep_last, 25);
 
         match &config.consumers[1].output {
-            ConsumerOutputConfig::Publisher { publisher } => {
+            ConsumerOutputConfig::Publisher { publisher, .. } => {
                 assert_eq!(publisher, "orders_pub");
             }
             other => panic!("expected publisher output, got {other:?}"),

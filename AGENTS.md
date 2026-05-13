@@ -166,27 +166,6 @@ Use a design-checkpoint workflow:
 The checkpoint is about design direction, not about asking permission for every small edit.
 Don't use this working style for fixing bugs - go ahead and fix  bugs if implementation is simple and straight forward. Just ask in case you aren't sure, for example if tests are failing and it isn't clear if the test or code is broken.
 
-## Codebase navigation
-
-Use the `tokensave` MCP, if available, before broad file exploration when you need to understand project structure, symbol relationships, call sites, or likely impact areas. If it is not available, fall back to targeted search and reading only the relevant files.
-
-Prefer tokensave for:
-- finding symbols, structs, traits, functions, and modules
-- finding callers/callees and related files
-- estimating the impact of a change
-- locating likely test files
-- avoiding repeated grep/read exploration across the repository
-
-After tokensave identifies relevant files or symbols, read the actual source files before editing them. Do not rely on summaries alone for implementation details.
-
-For Rust changes, prefer checking:
-- trait definitions and implementations
-- feature-gated code paths
-- public API usage
-- tests and examples affected by the change
-
-Avoid reading many unrelated files when a targeted tokensave query can narrow the scope first.
-
 ## UI direction
 
 Prefer small, boring, understandable UI code over clever abstractions.
