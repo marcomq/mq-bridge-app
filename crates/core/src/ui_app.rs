@@ -523,20 +523,20 @@ fn resolve_consumer_output(
             publisher_id,
         } => {
             let publisher_name = publisher.trim();
-            let publisher_id = publisher_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+            let publisher_id = publisher_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty());
             if publisher_name.is_empty() && publisher_id.is_none() {
                 return Err(UpdateConfigError::Validation(format!(
                     "Consumer {}: publisher output requires a selected publisher",
                     consumer.name
                 )));
             }
-            let Some(publisher_config) = publishers
-                .iter()
-                .find(|candidate| {
-                    publisher_id.is_some_and(|id| candidate.id == id)
-                        || (!publisher_name.is_empty() && candidate.name == publisher_name)
-                })
-            else {
+            let Some(publisher_config) = publishers.iter().find(|candidate| {
+                publisher_id.is_some_and(|id| candidate.id == id)
+                    || (!publisher_name.is_empty() && candidate.name == publisher_name)
+            }) else {
                 return Err(UpdateConfigError::Validation(format!(
                     "Consumer {}: referenced publisher not found: {}",
                     consumer.name,
@@ -890,7 +890,7 @@ impl UiApp {
                         let time = capture_time_ms
                             .parse::<i64>()
                             .ok()
-                            .and_then(|ts| chrono::DateTime::from_timestamp_millis(ts))
+                            .and_then(chrono::DateTime::from_timestamp_millis)
                             .map(|dt| dt.to_rfc3339())
                             .unwrap_or_default();
 
@@ -1220,9 +1220,7 @@ impl UiApp {
 
         if let Some(prepare) = &self.storage_save_prepare {
             prepare(&new_config).map_err(|error| {
-                UpdateConfigError::Other(anyhow!(
-                    "Failed to prepare encrypted storage: {error}"
-                ))
+                UpdateConfigError::Other(anyhow!("Failed to prepare encrypted storage: {error}"))
             })?;
         }
 
