@@ -146,26 +146,6 @@ When changing persistence code, avoid introducing ad hoc storage paths. Reuse th
 
 Make sure we don't print user / network input as html in UI, as we need to be protected against XSS. There also should be a basic protection against CSRF in browser mode.
 
-## Working style for Codex agents
-
-For non-trivial implementation or refactoring tasks, do not jump directly to a complete implementation.
-
-Use a design-checkpoint workflow:
-
-1. Explore the relevant code first. Follow the Codebase navigation guidance below.
-2. Before implementing the main change, explain the intended solution shape:
-   - target architecture
-   - data flow
-   - files/components likely to change
-   - what will be removed or replaced
-   - known tradeoffs or risks
-3. For larger changes, provide a small sketch or partial example if it helps clarify the approach. Mark it clearly as unfinished. Do not perform the main implementation yet.
-4. Stop and wait for user feedback before writing the main implementation.
-5. After feedback, continue with the implementation. Run relevant tests/checks. Prefer checking only whether tests pass or fail; inspect detailed test output only when a test fails.
-
-The checkpoint is about design direction, not about asking permission for every small edit.
-Don't use this working style for fixing bugs - go ahead and fix  bugs if implementation is simple and straight forward. Just ask in case you aren't sure, for example if tests are failing and it isn't clear if the test or code is broken.
-
 ## UI direction
 
 Prefer small, boring, understandable UI code over clever abstractions.
@@ -176,23 +156,9 @@ Keep the visual style minimal and unobtrusive. Prefer simple native-like control
 
 When changing forms, preserve keyboard usability and avoid hidden persistence side effects.
 
-## Optional review tools
-
-If the CodeRabbit CLI is installed and authenticated, it may be used for an additional local review of non-trivial diffs before finalizing.
-
-Prefer agent-readable output when used from an AI coding agent:
-
-```sh
-cr --agent --type uncommitted
-```
-
-Do not make CodeRabbit mandatory. If it is unavailable, unauthenticated, rate-limited, or not useful for the current task, continue with normal local checks.
-
-After running CodeRabbit, summarize only actionable findings and decide whether they should be applied.
-
 ## Operational Notes
 
-- Dev backend script: `scripts/dev-backend.mjs`
+- Dev backend script: `dev/scripts/dev-backend.mjs`
 - Playwright uses a temporary config file in `/tmp` for deterministic test setup.
 - CLI defaults auto-enable UI/metrics when no persisted config exists.
 

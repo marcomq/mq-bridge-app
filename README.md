@@ -54,7 +54,7 @@ In short:
 
 ## Screenshot
 
-![mq-bridge UI - publishers](docs/images/Screen1.jpg)
+![mq-bridge UI - publishers](dev/images/Screen1.jpg)
 
 # Status
 
@@ -174,7 +174,7 @@ cargo install mq-bridge-app
     ```
 2.  **Build and run with configuration:**
     ```bash
-    cargo run --release -- --config config/file-to-http.yml
+    cargo run --release -- --config dev/config/file-to-http.yml
     ```
 3.  **Configure the application:**
     Create a `config.yml` file in the project root or set environment variables. See the Configuration section for details. Or you start right away without and use the UI to define the `config.yml`
@@ -218,7 +218,7 @@ This approach showcases the library's ability to handle request-reply patterns a
 
 The Web UI is dynamically generated from the Rust configuration structures:
 
-1.  **Schema Generation**: The backend uses `schemars` to generate a JSON Schema for the `AppConfig` struct at runtime. This is exposed via `/schema.json`. It is also available via CLI: `mq-bridge-app --schema config/schema.json`
+1.  **Schema Generation**: The backend uses `schemars` to generate a JSON Schema for the `AppConfig` struct at runtime. This is exposed via `/schema.json`. It is also available via CLI: `mq-bridge-app --schema dev/config/schema.json`
 2.  **Dynamic Form**: The frontend uses [vanilla-schema-forms](https://github.com/marcomq/vanilla-schema-forms) to render a complete configuration form based solely on this schema.
 3.  **No UI Code Changes**: When new features or configuration options are added to the Rust code (e.g., a new middleware), the schema updates automatically, and the UI reflects these changes without requiring any frontend code modifications.
 

@@ -29,7 +29,58 @@ import * as VanillaSchemaForms from "vanilla-schema-forms";
 type SchemaNode = Record<string, any>;
 type RendererContext = Record<string, any>;
 
+function withRendererDefaults(context: RendererContext): RendererContext {
+  const config = context.config || {};
+  const storeData = context.store?.data;
+  return {
+    ...context,
+    data: context.data ?? storeData ?? {},
+    onChange: context.onChange || ((nextData: any) => {
+      if (!context.store || !context.store.data || !nextData || typeof nextData !== "object") {
+        return;
+      }
+      const target = context.store.data;
+      Object.keys(target).forEach((key) => {
+        delete target[key];
+      });
+      Object.assign(target, structuredClone(nextData));
+    }),
+    nodeRegistry: context.nodeRegistry || new Map(),
+    dataPathRegistry: context.dataPathRegistry || new Map(),
+    elementIdToDataPath: context.elementIdToDataPath || new Map(),
+    customRenderers: context.customRenderers || {},
+    rootNode: context.rootNode || {},
+    uiState: context.uiState || {
+      disclosures: new Map(),
+      oneOfBranches: new Map(),
+      oneOfSelection: new Map(),
+    },
+    config: {
+      ...config,
+      layout: {
+        groups: {},
+        ...(config.layout || {}),
+      },
+      visibility: {
+        hiddenPaths: [],
+        hiddenKeys: [],
+        customVisibility: () => true,
+        ...(config.visibility || {}),
+      },
+      sorting: {
+        defaultRenderLast: [],
+        defaultPriority: [],
+        perObjectPriority: {},
+        ...(config.sorting || {}),
+      },
+    },
+  };
+}
+
 const forms = (window as any).VanillaSchemaForms || VanillaSchemaForms;
+const renderPropertiesCompat = typeof (forms as any).renderProperties === "function"
+  ? (forms as any).renderProperties.bind(forms)
+  : renderProperties;
 
 Object.assign(forms.rendererConfig.classes, {
   buttonPrimary: "wa-native-button wa-native-button--brand",
@@ -177,6 +228,13 @@ function formatDescription(node: SchemaNode, _elementId: string) {
   return description;
 }
 
+function parseElementPath(pathLike: string): Array<string | number> {
+  return String(pathLike || "")
+    .split(".")
+    .filter(Boolean)
+    .map((segment) => (/^\d+$/.test(segment) ? Number(segment) : segment));
+}
+
 // Define basic fields for each endpoint type (keyed by the endpoint type string, not *Config)
 // Fields not in this list will be considered "advanced" and placed in a collapsible section.
 // For types like 'static', 'ref', 'switch', 'fanout', 'response', 'custom', 'null', they are handled by specific renderers or are complex polymorphic types that don't fit this simple basic/advanced split.
@@ -219,6 +277,12 @@ if (baseRenderBoolean) {
 
     sanitizeCheckboxControl(input, rendered);
     input.classList.add("wa-checkbox");
+    input.addEventListener("change", () => {
+      const activeStore = (forms as any).__activeStore;
+      if (activeStore?.setPath) {
+        activeStore.setPath(parseElementPath(input.name || elementId), input.checked);
+      }
+    });
 
     return renderSvelteNode(CheckboxField, {
       label: formatLabel(node, elementId),
@@ -282,11 +346,16 @@ domRenderer.renderFieldWrapper = (
   });
 };
 
+if (forms.domRenderer && forms.domRenderer !== domRenderer) {
+  Object.assign(forms.domRenderer, domRenderer);
+}
+
 const tlsBaseRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    const renderContext = withRendererDefaults(context);
     const requiredNode = node.properties?.required;
     if (!requiredNode) {
-      return renderObject(context, node, elementId, false, dataPath);
+      return renderObject(renderContext, node, elementId, false, dataPath);
     }
 
     const valuePath = [...dataPath, "required"];
@@ -305,7 +374,7 @@ const tlsBaseRenderer = {
         context.store.setPath(valuePath, nextChecked);
       },
       content: createWrappedContainer(
-        renderProperties(context, restProperties, elementId, dataPath),
+        renderPropertiesCompat(renderContext, restProperties, elementId, dataPath),
         "mqb-optional-section-fields",
       ),
     });
@@ -618,7 +687,7 @@ const createEndpointRenderer = (type: string) => ({
       return renderObject(context, node, elementId, false, dataPath);
     }
 
-    const visibleFragment = renderProperties(context, visibleProperties, elementId, dataPath);
+    const visibleFragment = renderPropertiesCompat(context, visibleProperties, elementId, dataPath);
     if (hasOneOf) {
       const oneOfFragment = domRenderer.renderOneOf(node, elementId);
       if (oneOfFragment) visibleFragment.prepend(oneOfFragment);
@@ -790,7 +859,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
     render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
       if (elementId.startsWith("Routes.")) {
         const props = node.properties
-          ? renderProperties(context, node.properties, elementId, dataPath)
+          ? renderPropertiesCompat(context, node.properties, elementId, dataPath)
           : document.createDocumentFragment();
         const ap = domRenderer.renderAdditionalProperties(node, elementId);
         const oneOf = domRenderer.renderOneOf(node, elementId);

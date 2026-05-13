@@ -8,7 +8,7 @@ module.exports = mergeConfig(
       environment: "node",
       include: ["../tests/unit/**/*.test.ts"],
       coverage: {
-        enabled: true,
+        enabled: false,
         reporter: ["text", "html"],
       },
     },
