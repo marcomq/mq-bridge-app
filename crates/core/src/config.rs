@@ -87,8 +87,6 @@ pub struct AppConfig {
     pub consumers: Vec<ConsumerConfig>,
     #[serde(default)]
     pub publishers: Vec<PublisherClient>,
-    #[serde(default)]
-    pub presets: HashMap<String, Vec<PublisherPreset>>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub history: HashMap<String, serde_json::Value>,
     #[serde(default, alias = "envVars")]
@@ -216,6 +214,8 @@ fn consumer_output_is_none(output: &ConsumerOutputConfig) -> bool {
 pub struct PublisherClient {
     pub name: String,
     pub endpoint: Endpoint,
+    #[serde(default)]
+    pub presets: Vec<PublisherPreset>,
     #[serde(default)]
     pub comment: String,
 }
@@ -562,6 +562,7 @@ impl AppConfig {
                 self.publishers.push(PublisherClient {
                     name: publisher_name.clone(),
                     endpoint: route_config.route.output.clone(),
+                    presets: Vec::new(),
                     comment: String::new(),
                 });
                 ConsumerOutputConfig::Publisher {
@@ -614,8 +615,9 @@ impl AppConfig {
             mode,
             ConfigSecurityMode::Balanced | ConfigSecurityMode::EnvTemporaryMessages
         ) {
-            let secrets = config_to_save.extract_secrets();
-            secret_store.store(&secrets)?;
+            // Extract secrets from config_to_save (modifies it) and store them externally.
+            let secrets_to_store = config_to_save.extract_secrets();
+            secret_store.store(&secrets_to_store)?;
         }
         config_to_save.config_security = Some(ConfigSecurity { mode });
         config_to_save.extract_secrets = false;

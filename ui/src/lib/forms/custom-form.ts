@@ -10,39 +10,41 @@ import OptionalSectionField from "./OptionalSectionField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
 import { mqbApp } from "../runtime-window";
+import {
+  createTypeSelectArrayRenderer,
+  domRenderer,
+  formatWebAwesomeLabel,
+  hydrateNodeWithData,
+  renderNode,
+  renderObject,
+  renderProperties,
+  rendererConfig,
+  setConfig,
+  setCustomRenderers,
+  setI18n,
+} from "vanilla-schema-forms";
+import * as VanillaSchemaForms from "vanilla-schema-forms";
+
 
 type SchemaNode = Record<string, any>;
 type RendererContext = Record<string, any>;
 
-const forms = window.VanillaSchemaForms as any;
+const forms = (window as any).VanillaSchemaForms || VanillaSchemaForms;
 
-const {
-  renderObject,
-  renderProperties,
-  domRenderer,
-  setI18n,
-  setConfig,
-  setCustomRenderers,
-  renderNode,
-  createTypeSelectArrayRenderer,
-  formatWebAwesomeLabel,
-  hydrateNodeWithData,
-  rendererConfig,
-} = forms;
-
-Object.assign(rendererConfig.classes, {
+Object.assign(forms.rendererConfig.classes, {
   buttonPrimary: "wa-native-button wa-native-button--brand",
   buttonSecondary: "wa-native-button wa-native-button--neutral",
   buttonDanger: "wa-native-button wa-native-button--danger",
+  checkboxRow: "mqb-checkbox-row",
 });
 
-setI18n({
+forms.setI18n({
   keys: {
     Map_of_Route: "Routes",
   },
 });
 
-setConfig({
+forms.setConfig({
   visibility: {
     hiddenPaths: ["publishers", "consumers", "routes", "presets", "history"],
     customVisibility: (node: SchemaNode, path: string) => {
@@ -648,9 +650,8 @@ const createScalarEndpointRenderer = (
   type: "static" | "ref",
   options: { title: string; placeholder: string; suggestions?: () => string[] },
 ) => ({
-  render: (node: SchemaNode, _path: string, _elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
-    const store = context.store;
-    const currentValue = store.getPath(dataPath);
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    const currentValue = getPathValue(context.data, dataPath);
     const suggestions = options.suggestions ? options.suggestions() : [];
     const currentScalarValue =
       typeof currentValue === "string"
@@ -665,18 +666,23 @@ const createScalarEndpointRenderer = (
       value: currentScalarValue,
       placeholder: options.placeholder,
       suggestions,
+      name: elementId,
       onChange: (next: string) => {
-        const existing = store.getPath(dataPath);
+        const existing = getPathValue(context.data, dataPath);
         const isEndpointObject = node.type === "object";
 
+        let updated;
         if (isEndpointObject || (existing && typeof existing === "object" && !Array.isArray(existing) && type in existing)) {
-          store.setPath(dataPath, {
+          updated = {
             ...(existing && typeof existing === "object" ? existing : {}),
             [type]: next,
-          });
-          return;
+          };
+        } else {
+          updated = next;
         }
-        store.setPath(dataPath, next);
+        const newData = structuredClone(context.data);
+        setPathValue(newData, dataPath, updated);
+        context.onChange(newData);
       },
     });
   },
@@ -740,12 +746,28 @@ const middlewaresRenderer = {
   },
 };
 
+const getPathValue = (root: any, path: Array<string | number>) => path.reduce((current, segment) => current?.[segment], root);
+
+const setPathValue = (root: any, path: Array<string | number>, value: unknown) => {
+  let cursor = root;
+  path.slice(0, -1).forEach((segment, index) => {
+    const nextSegment = path[index + 1];
+    if (cursor[segment] === undefined || cursor[segment] === null) {
+      cursor[segment] = typeof nextSegment === "number" ? [] : {};
+    }
+    cursor = cursor[segment];
+  });
+  cursor[path[path.length - 1]] = value;
+};
+
+const getName = (dataPath: Array<string | number>) => dataPath.map(String).join('.');
+
 const descriptionRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>) => {
     const textarea = document.createElement("textarea");
     textarea.className = rendererConfig.classes.input;
     textarea.id = elementId;
-    textarea.name = forms.getName(dataPath);
+    textarea.name = getName(dataPath);
     textarea.rows = 3;
     textarea.value = node.defaultValue !== undefined ? String(node.defaultValue) : "";
     if (node.readOnly) textarea.disabled = true;
@@ -833,4 +855,4 @@ CUSTOM_RENDERERS.AppConfig = rootRenderer;
 CUSTOM_RENDERERS.route = routeObjectRenderer;
 CUSTOM_RENDERERS.root = rootRenderer;
 
-setCustomRenderers(CUSTOM_RENDERERS);
+forms.setCustomRenderers(CUSTOM_RENDERERS);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "@awesome.me/webawesome/dist/components/details/details.js";
   import { activeMainTab, consumersPanelState } from "../lib/stores";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
   import PayloadDisplay from "./PayloadDisplay.svelte";
@@ -479,16 +480,17 @@
             </div>
             <div class="detail-body" id="cons-msg-details-content">
             {#if $consumersPanelState.detailRequestHeaders.length > 0}
-                <div class="response-meta-block">
-                  <div class="section-label">Headers</div>
+              <wa-details summary="Message Headers" open class="response-meta-block" icon-placement="start">
+                <span slot="expand-icon">▸</span>
+                <span slot="collapse-icon">▸</span>
                 {#each $consumersPanelState.detailRequestHeaders as [key, value] (`${key}:${value}`)}
-                    <div class="response-meta-row">
-                      <span class="response-meta-key">{key}</span>
-                      <span class="response-meta-value">{value}</span>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
+                  <div class="response-meta-row">
+                    <span class="response-meta-key">{key}</span>
+                    <span class="response-meta-value">{value}</span>
+                  </div>
+                {/each}
+              </wa-details>
+            {/if}
               <PayloadDisplay
                 id="cons-msg-payload"
                 label="Message Body"
@@ -497,8 +499,9 @@
                 readOnly={true}
               />
             {#if $consumersPanelState.hasResponse}
-              <div class="response-meta-block" style="margin-top:16px;">
-                <div class="section-label">Response Headers</div>
+              <wa-details summary="Response Headers" open class="response-meta-block" icon-placement="start" style="margin-top:16px;">
+                <span slot="expand-icon">▸</span>
+                <span slot="collapse-icon">▸</span>
                 {#each $consumersPanelState.detailResponseHeaders as [key, value] (`resp:${key}:${value}`)}
                   <div class="response-meta-row">
                     <span class="response-meta-key">{key}</span>
@@ -507,7 +510,7 @@
                 {:else}
                   <div class="text-muted small" style="padding: 4px 8px;">No headers sent.</div>
                 {/each}
-              </div>
+              </wa-details>
                 <PayloadDisplay
                   id="cons-msg-response"
                   label="Response Body"

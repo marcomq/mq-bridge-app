@@ -304,7 +304,7 @@ function installGlobals() {
   };
 
   appWindow().saveConfig = async (silent = false, button = null) => {
-    const doSave = async () => {
+    const doSave = async (): Promise<Record<string, unknown> | null> => {
       const appConfig = mqbApp.config<Record<string, unknown>>();
       const refreshedConfig = await saveWholeConfig(fetch, appConfig);
       const refreshedStorageSecurity = await fetchStorageSecurityFromServer(fetch).catch(() => null);
@@ -315,11 +315,11 @@ function installGlobals() {
         (appWindow() as any)._mqb_storage_security = normalizedStorageSecurity;
       }
       appWindow().markSectionSaved("config", appConfig);
-      return true;
+      return refreshedConfig;
     };
 
     if (button) {
-      return Boolean(await runSaveButtonAction(button, doSave));
+      return await runSaveButtonAction(button, doSave);
     }
 
     try {
@@ -328,7 +328,7 @@ function installGlobals() {
       if (!silent) {
         await mqbDialogs.alert(`Error saving: ${(error as Error).message}`);
       }
-      return false;
+      return null;
     }
   };
 

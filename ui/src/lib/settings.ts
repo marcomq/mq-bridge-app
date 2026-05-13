@@ -140,7 +140,7 @@ function renderStorageSecurityNotice() {
   const formActions = document.getElementById("form-actions");
   const state = getMqbState();
   const info = state.storage_security;
-  if (!formActions || !info) return;
+  if (!formActions || !info || !info.messagesEncrypted) return;
 
   let notice = document.getElementById("js-storage-security-note");
   if (!notice) {

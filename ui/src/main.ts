@@ -3,6 +3,11 @@ import App from "./App.svelte";
 import { bootstrapApp } from "./bootstrap";
 import { appWindow, mqbDialogs } from "./lib/runtime-window";
 
+// Register global styles and common components
+import "@awesome.me/webawesome/dist/components/dialog/dialog.js";
+import "@awesome.me/webawesome/dist/components/icon/icon.js";
+import "@awesome.me/webawesome/dist/components/badge/badge.js";
+
 const target = document.getElementById("app");
 
 if (!target) {

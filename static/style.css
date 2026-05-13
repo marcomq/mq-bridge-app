@@ -51,7 +51,7 @@ body {
     --tab-h: 28px;
     --sidebar-w: 220px;
     --topbar-h: 36px;
-    --font: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Geist Mono', monospace, system-ui, -apple-system, sans-serif;
+    --font: 'Geist Mono', monospace, system-ui, -apple-system, sans-serif;
     --font-ui: system-ui, -apple-system, sans-serif;
 }
 
@@ -78,13 +78,13 @@ body {
 }
 @font-face {
     font-family: 'Geist Mono';
-    src: url('/vendor/fonts/GeistMono-Regular.woff2') format('woff2');
+    src: url('/assets/fonts/GeistMono-Regular.woff2') format('woff2');
     font-weight: 400;
 }
 
 @font-face {
     font-family: 'Geist Mono';
-    src: url('/vendor/fonts/GeistMono-Medium.woff2') format('woff2');
+    src: url('/assets/fonts/GeistMono-Medium.woff2') format('woff2');
     font-weight: 500;
 }
 
@@ -682,6 +682,10 @@ button.content-tab:focus-visible {
 .request-field--wide {
     flex: 1 1 320px;
 }
+.request-bar input, .request-bar select {
+    height: 32px;
+}
+
 
 .request-field-label,
 .section-label {
@@ -1924,9 +1928,8 @@ wa-button.is-dirty::part(base) {
 }
 
 .response-meta-block {
-    margin-bottom: 12px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--border);
+    margin-bottom: 5px;
+    padding-bottom: 5px;
 }
 
 .response-meta-row {
@@ -2015,4 +2018,18 @@ wa-button.is-dirty::part(base) {
 .kv-input:focus {
     background: var(--bg-surface);
     border-color: var(--border);
+}
+
+wa-details::part(base) {
+    border-radius: 5px;
+}
+
+wa-details::part(header) {
+    padding: 5px;
+    padding-left: 15px;
+}
+
+wa-details::part(content) {
+    padding-top: 2px;
+    padding-bottom: 5px;
 }

@@ -27,8 +27,6 @@ module.exports = defineConfig({
   resolve: {
     alias: {
       // Map absolute paths in index.html to the physical /static folder
-      "/vendor": resolve(__dirname, "static/vendor"),
-      "/vanilla-schema-forms.js": resolve(__dirname, "static/vanilla-schema-forms.js"),
       "/style.css": resolve(__dirname, "static/style.css"),
     },
   },
@@ -54,7 +52,7 @@ module.exports = defineConfig({
   },
   build: {
     emptyOutDir: false,
-    chunkSizeWarningLimit: 1000,
+    chunkSizeWarningLimit: 2000,
     outDir: resolve(__dirname, "static"),
     copyPublicDir: false,
     rollupOptions: {

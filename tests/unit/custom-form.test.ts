@@ -134,11 +134,11 @@ function createFakeForms() {
 
   forms.domRenderer.renderBoolean = (node: SchemaNode, elementId: string, inputName: string) => {
     const wrapper = document.createElement("div");
-    wrapper.className = "mb-3 form-check";
+    wrapper.className = "mqb-checkbox-row";
 
     const input = document.createElement("input");
     input.type = "checkbox";
-    input.className = "form-check-input";
+    input.className = "wa-checkbox";
     input.id = elementId;
     input.name = inputName;
     input.checked = Boolean(getPathValue(forms.__activeStore?.data, parseNamePath(inputName)) ?? node.defaultValue);
@@ -495,7 +495,7 @@ describe("custom form runtime", () => {
       "",
       "tls",
       ["tls"],
-      { store },
+      { store, layout: {} },
     ) as HTMLElement;
 
     document.body.appendChild(element);

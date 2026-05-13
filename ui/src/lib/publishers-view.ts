@@ -25,6 +25,8 @@ import {
 import { setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
 
+let renameCausedTopLevelConfigChange = false;
+
 export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showPublisherHistoryEntry: (historyIndex: number) => void | Promise<void> = () => {};
 export let clearActivePublisherHistory: () => void = () => {};
@@ -1625,10 +1627,57 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     state.form_mode = "publisher";
     (window as any)._mqb_form_mode = "publisher";
     
-    await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], (updated) => {
+    await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], async (updated) => {
+      let historyMigrated = false;
+      let presetsMigrated = false; // Moved declaration to a higher scope
       const current = publishers[idx];
-      const nextPublisher = normalizePublisherConfigShape(updated as PublisherConfig);
+      const updatedPublisher = updated as PublisherConfig;
       const previousPublisherName = current?.name || "";
+      const nextPublisherName = updatedPublisher.name;
+
+      // 1. Merge form updates into a clone of current to preserve fields not in the form (like presets)
+      const mergedPublisher = {
+        ...current,
+        ...updatedPublisher,
+        endpoint: {
+          ...current.endpoint,
+          ...updatedPublisher.endpoint,
+        }
+      };
+
+      // 2. Handle rename-driven metadata migration (History and Cache)
+      if (previousPublisherName && nextPublisherName && previousPublisherName !== nextPublisherName) {
+        // Migrate History keys in the config and flat history list
+        historyMigrated = true;
+        if (config.history?.publishers && config.history.publishers[previousPublisherName]) {
+          config.history.publishers[nextPublisherName] = config.history.publishers[previousPublisherName];
+          delete config.history.publishers[previousPublisherName];
+        }
+        history.forEach(item => {
+          if (item.name === previousPublisherName) item.name = nextPublisherName;
+        });
+
+        // Check if presets exist for the old name before attempting to migrate
+        if (config.presets && config.presets[previousPublisherName]) {
+          config.presets[nextPublisherName] = config.presets[previousPublisherName];
+          delete config.presets[previousPublisherName];
+          presetsMigrated = true;
+        }
+
+        // Migrate UI ephemeral state (payload, unsaved headers)
+        if (appState[previousPublisherName]) {
+          appState[nextPublisherName] = appState[previousPublisherName];
+          delete appState[previousPublisherName];
+          await saveAppState(); // Ensure appState is persisted immediately
+        }
+        renameConsumerPublisherReferences(config.consumers, previousPublisherName, nextPublisherName);
+      }
+
+      if (historyMigrated || presetsMigrated) {
+        renameCausedTopLevelConfigChange = true;
+      }
+
+      const nextPublisher = normalizePublisherConfigShape(mergedPublisher);
       copyRequestBarFieldValues(current, nextPublisher);
 
       // Preserve custom headers for HTTP (managed in the Headers tab)
@@ -1748,34 +1797,54 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     config.publishers.splice(0, config.publishers.length, ...mapped);
     const selectedName = config.publishers[selectedIdx]?.name || originalName;
     const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
-    if (!saved) return;
+    if (!saved) {
+      // If saveConfigSection failed, we should not proceed with re-initializing
+      return;
+    }
 
-    const savedPublishers = Array.isArray((saved as PublishersAppConfig).publishers)
-      ? (saved as PublishersAppConfig).publishers
-      : config.publishers;
+    let refreshedConfig: PublishersAppConfig | null = null;
+    if (renameCausedTopLevelConfigChange) {
+      // If a rename caused changes to presets or history, save the whole config
+      refreshedConfig = await mqbRuntime.saveConfig(false, button);
+      renameCausedTopLevelConfigChange = false; // Reset the flag
+    } else {
+      // Otherwise, save only the publishers section (already done by saveConfigSection above, but we need the refreshed config)
+      refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
+    }
 
-    if (originalName && selectedName && originalName !== selectedName && appState[originalName]) {
+    if (!refreshedConfig) return;
+
+    // Update local config with the refreshed data from the backend
+    mqbApp.setConfig(refreshedConfig);
+
+    // Await saving appState (payload/headers cache) if a rename occurred
+    if (originalName && selectedName && originalName !== selectedName && appState[originalName]) { // This block was moved from the form's onChange to here
       appState[selectedName] = { ...appState[originalName] };
       delete appState[originalName];
       saveAppState();
     }
-    const normalizedSavedPublishers = (savedPublishers || []).map((publisher: PublisherConfig) =>
+    const normalizedSavedPublishers = (refreshedConfig.publishers || []).map((publisher: PublisherConfig) =>
       normalizePublisherConfigShape({ ...publisher }),
     );
-
-    config.publishers.splice(0, config.publishers.length, ...normalizedSavedPublishers);
-    mqbApp.config<PublishersAppConfig>().publishers = normalizedSavedPublishers;
-    mqbRuntime.markSectionSaved("publishers", normalizedSavedPublishers);
-    const currentPublishers = mqbApp.config<PublishersAppConfig>().publishers || [];
-    const refreshedIdx = currentPublishers.findIndex((publisher: PublisherConfig) => publisher.name === selectedName);
+    
+    // Mark sections as saved
+    if (refreshedConfig.presets) {
+      mqbRuntime.markSectionSaved("presets", refreshedConfig.presets);
+    }
+    if (refreshedConfig.history) {
+      mqbRuntime.markSectionSaved("history", refreshedConfig.history);
+    }
+    mqbRuntime.markSectionSaved("publishers", refreshedConfig.publishers);
+    const currentPublishers = mqbApp.config<PublishersAppConfig>().publishers || []; // Use the updated mqbApp.config()
+    const refreshedIdx = currentPublishers.findIndex((publisher: PublisherConfig) => publisher.name === selectedName); // Find index in the updated list
     const pendingRestore = {
-      idx: refreshedIdx === -1 ? Math.min(selectedIdx, Math.max(currentPublishers.length - 1, 0)) : refreshedIdx,
+      idx: refreshedIdx === -1 ? Math.min(selectedIdx, Math.max(currentPublishers.length - 1, 0)) : refreshedIdx, // Ensure index is valid
       tab: selectedTab,
     };
     getMqbState().pending_publisher_restore = pendingRestore;
     rememberPublisherView(pendingRestore.idx, selectedTab);
     (appWindow() as any)._mqb_pending_publisher_restore = pendingRestore;
-    initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>());
+    initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>()); // Re-initialize with the fully updated config
   };
 
   addPublisherMetadataRow = () => {

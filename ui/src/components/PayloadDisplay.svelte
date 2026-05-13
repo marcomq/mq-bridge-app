@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import CodeEditor from "./CodeEditor.svelte";
   import { formatPayload, type PayloadViewMode } from "../lib/payload-format";
 
@@ -11,6 +12,7 @@
     readOnly = true,
     label = "",
     onChange = (_value: string) => {},
+    extra,
   }: {
     id?: string;
     payload?: string | Uint8Array | null;
@@ -18,14 +20,67 @@
     readOnly?: boolean;
     label?: string;
     onChange?: (value: string) => void;
+    extra?: Snippet;
   } = $props();
 
   let currentViewMode = $state<PayloadViewMode>("auto");
   let showWhitespace = $state(false);
   let showLineEndings = $state(false);
   let wrapLines = $state(true);
+  let isFocused = $state(false);
 
-  let formattedPayload = $derived(formatPayload(payload, currentViewMode, contentType));
+  // Simple XML beautifier as a fallback since the core formatter doesn't seem to handle it yet
+  function beautifyXml(xml: string) {
+    const PADDING = '  ';
+    // Remove existing whitespace between tags to normalize before formatting
+    const cleanXml = xml.replace(/>\s*</g, '><').trim();
+    const reg = /(>)(<)(\/*)/g;
+    let pad = 0;
+    const formatted = cleanXml.replace(reg, '$1\n$2$3');
+    const lines = formatted.split('\n');
+    let result = '';
+    for (let node of lines) {
+      let indent = 0;
+      if (node.match(/.+<\/\w[^>]*>$/)) {
+        indent = 0;
+      } else if (node.match(/^<\/\w/)) {
+        if (pad !== 0) pad -= 1;
+      } else if (node.match(/^<\w[^>]*[^\/]>.*$/)) {
+        indent = 1;
+      } else {
+        indent = 0;
+      }
+
+      result += PADDING.repeat(pad) + node + '\n';
+      pad += indent;
+    }
+    return result.trim();
+  }
+
+  // Helper to convert the human-readable hex editor text back to its decoded string representation
+  function parseHexViewToText(input: string): string | null {
+    const lines = input.split(/\r?\n/);
+    let cleanedHex = "";
+    for (const line of lines) {
+      let hexPart = line.split("|")[0] || "";
+      // Strip address prefix (e.g., "00000000: ")
+      hexPart = hexPart.replace(/^[0-9a-fA-F]+:\s*/, "");
+      cleanedHex += hexPart.replace(/\s/g, "");
+    }
+
+    if (cleanedHex === "") return "";
+
+    // Only process even length (complete byte pairs)
+    const validHex = cleanedHex.length % 2 === 0 ? cleanedHex : cleanedHex.slice(0, -1);
+    if (!validHex) return null;
+    const hexBytes = validHex.match(/.{1,2}/g) || [];
+    return new TextDecoder().decode(new Uint8Array(hexBytes.map(byte => parseInt(byte, 16))));
+  }
+
+  let formattedPayload = $derived.by(() => {
+    const base = formatPayload(payload, currentViewMode, contentType);
+    return base;
+  });
 
   // New state to hold user's raw hex input when actively editing
   let userHexInput: string | null = $state(null);
@@ -37,17 +92,8 @@
     if (currentViewMode === "hex") {
       isEditingHex = true;
       userHexInput = newValue;
-      try {
-        // Strip the ASCII preview and clean whitespace from the hex part
-        const hexPart = newValue.split("|")[0] || "";
-        const cleanedHex = hexPart.replace(/\s/g, "");
-        // Only sync back to store if we have complete byte pairs (even length)
-        if (cleanedHex.length > 0 && cleanedHex.length % 2 === 0) {
-          onChange(cleanedHex);
-        }
-      } catch (e) {
-        /* ignore partial hex while typing */
-      }
+      const text = parseHexViewToText(newValue);
+      if (text !== null) onChange(text);
     } else {
       isEditingHex = false;
       userHexInput = null;
@@ -56,16 +102,40 @@
   }
 
   function handleEditorBlur() {
-    if (currentViewMode === "hex" && isEditingHex && userHexInput !== null) {
-      try {
-        const hexPart = userHexInput.split("|")[0] || "";
-        const cleanedHex = hexPart.replace(/\s/g, "");
-        if (cleanedHex.length > 0) {
-          onChange(cleanedHex);
-        }
-      } catch (e) {
-        console.error("Failed to commit hex on blur", e);
-      }
+    if (currentViewMode === "hex" && isEditingHex && userHexInput !== null && !readOnly) {
+      const text = parseHexViewToText(userHexInput);
+      if (text !== null) onChange(text);
+    }
+    isEditingHex = false;
+    userHexInput = null;
+  }
+
+  function handleBeautify() {
+    if (readOnly) return;
+    let text = "";
+    if (isEditingHex && userHexInput !== null) {
+      text = parseHexViewToText(userHexInput) || "";
+    } else {
+      // Decode binary payload if necessary
+      const data = payload;
+      text = typeof data === 'string' ? data : (data ? new TextDecoder().decode(data) : '');
+    }
+    if (!text) return;
+
+    // Use current view mode as primary language indicator, fall back to detection
+    const lang = (currentViewMode === 'json' || currentViewMode === 'xml') 
+      ? currentViewMode 
+      : formattedPayload.language;
+    const lowerLang = (lang || '').toLowerCase();
+
+    if (lowerLang === 'xml') {
+      onChange(beautifyXml(text));
+      currentViewMode = 'xml';
+    } else if (lowerLang === 'json' || lowerLang === 'json-auto') {
+      try { 
+        onChange(JSON.stringify(JSON.parse(text), null, 2)); 
+        currentViewMode = 'json';
+      } catch (e) {}
     }
     isEditingHex = false;
     userHexInput = null;
@@ -91,6 +161,27 @@
     };
     input.click();
   }
+
+  function handleExportFile() {
+    const data = typeof payload === 'string' ? new TextEncoder().encode(payload) : (payload || new Uint8Array());
+    const blob = new Blob([data], { type: contentType || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `payload-${id || 'data'}.bin`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleCopyBinary() {
+    const bytes = typeof payload === 'string' ? new TextEncoder().encode(payload) : (payload || new Uint8Array());
+    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    try {
+      await navigator.clipboard.writeText(hex);
+    } catch (err) {
+      console.error("Failed to copy binary hex", err);
+    }
+  }
 </script>
 
 <div {id} class="payload-display-container">
@@ -115,8 +206,20 @@
         <input type="checkbox" bind:checked={wrapLines} /> <span>Wrap</span>
       </label>
 
+      <div class="toolbar-divider"></div>
+      {#if !readOnly && (formattedPayload.language?.includes('json') || formattedPayload.language?.includes('xml'))}
+        <button class="toolbar-btn" type="button" onclick={handleBeautify} title="Format JSON/XML content">
+          Beautify
+        </button>
+      {/if}
+      {@render extra?.()}
+      <button class="toolbar-btn" type="button" onclick={handleCopyBinary} title="Copy as hex digits">
+        Copy Bin
+      </button>
+      <button class="toolbar-btn" type="button" onclick={handleExportFile} title="Save to file">
+        Export
+      </button>
       {#if !readOnly}
-        <div class="toolbar-divider"></div>
         <button class="toolbar-btn" type="button" onclick={handleImportFile} title="Load from file">
           Import
         </button>
@@ -127,10 +230,21 @@
   <div class="payload-content">
     <CodeEditor
       id={id ? `${id}-editor` : ""}
-      value={isEditingHex && userHexInput !== null ? userHexInput : formattedPayload.formatted}
-      language={formattedPayload.language}
+      value={
+        isEditingHex && userHexInput !== null 
+          ? userHexInput 
+          : (currentViewMode === 'hex' 
+              ? formattedPayload.formatted 
+              : (typeof payload === 'string' 
+                  ? payload 
+                  : (payload ? new TextDecoder().decode(payload) : "")))
+      }
+      language={currentViewMode === 'auto' ? 'json-auto' : 
+                (currentViewMode === 'hex' ? 'text' : currentViewMode)}
+      useLinter={currentViewMode === 'json' || currentViewMode === 'xml'}
       onChange={handleEditorChange}
-      onBlur={handleEditorBlur}
+      onBlur={() => { isFocused = false; handleEditorBlur(); }}
+      onFocus={() => isFocused = true}
       readOnly={readOnly}
       wrapLines={wrapLines}
       showWhitespace={showWhitespace}

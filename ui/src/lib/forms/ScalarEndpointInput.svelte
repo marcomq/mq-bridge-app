@@ -5,6 +5,7 @@
     value: string;
     placeholder?: string;
     suggestions?: string[];
+    name?: string;
     onChange: (next: string) => void;
   }
 
@@ -14,6 +15,7 @@
     value,
     placeholder = "",
     suggestions = [],
+    name,
     onChange,
   }: Props = $props();
 
@@ -34,6 +36,7 @@
         id={`${uid}-value`}
         class="field-input"
         type="text"
+        name={name}
         value={value}
         placeholder={placeholder}
         list={suggestions.length > 0 ? `${uid}-suggestions` : undefined}

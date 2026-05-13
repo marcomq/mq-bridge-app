@@ -1206,7 +1206,9 @@ impl UiApp {
 
         if let Some(prepare) = &self.storage_save_prepare {
             prepare(&new_config).map_err(|error| {
-                UpdateConfigError::Other(anyhow!("Failed to prepare encrypted storage: {error}"))
+                UpdateConfigError::Other(anyhow!(
+                    "Failed to prepare encrypted storage: {error}"
+                ))
             })?;
         }
 
@@ -1224,6 +1226,28 @@ impl UiApp {
 
         for name in routes_to_stop {
             mq_bridge::stop_route(&name).await;
+        }
+
+        // Stability logic: If a publisher was renamed, migrate its top-level history
+        // history is currently a map keyed by name.
+        if let Some(history_map) = new_config.history.get_mut("publishers") {
+            if let Some(publishers_history) = history_map.as_object_mut() {
+                for old_pub in &old_config.publishers {
+                    let old_endpoint_key = endpoint_config_fingerprint(&old_pub.endpoint);
+                    // If the old publisher's name is missing in the new list, check if its endpoint moved to a new name
+                    if !new_config.publishers.iter().any(|p| p.name == old_pub.name) {
+                        if let Some(renamed_to) = new_config
+                            .publishers
+                            .iter()
+                            .find(|p| endpoint_config_fingerprint(&p.endpoint) == old_endpoint_key)
+                        {
+                            if let Some(h) = publishers_history.remove(&old_pub.name) {
+                                publishers_history.insert(renamed_to.name.clone(), h);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         {
@@ -1524,6 +1548,11 @@ impl UiApp {
         Ok(())
     }
 }
+
+fn endpoint_config_fingerprint(endpoint: &Endpoint) -> Option<String> {
+    serde_json::to_string(endpoint).ok()
+}
+
 #[derive(Debug)]
 pub enum UpdateConfigError {
     Validation(String),

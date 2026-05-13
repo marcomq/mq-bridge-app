@@ -2,6 +2,8 @@
   import { get } from "svelte/store";
   import { activeMainTab, publishersPanelState } from "../lib/stores";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
+  import "@awesome.me/webawesome/dist/components/button/button.js";
+  import "@awesome.me/webawesome/dist/components/details/details.js";
   import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
   import { onMount } from "svelte";
   import { PUBLISHER_TYPE_OPTIONS } from "../lib/publishers-view";
@@ -49,8 +51,6 @@
   let presetFilterText = $state("");
   let copyFeedback = $state("");
   let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
-  let showRequestMeta = $state(true);
-  let showResponseMeta = $state(true);
   let importInputEl: HTMLInputElement | null = null;
   let selectedImportKind = $state<"postman" | "openapi" | "asyncapi" | "mqb">("postman");
 
@@ -332,14 +332,6 @@
                 readOnly={false}
                 onChange={updatePublisherPayload}
               >
-                <wa-button slot="extra" appearance="outlined" size="small"
-                  variant="neutral"
-                  role="button"
-                  tabindex="0"
-                  onkeydown={(event: KeyboardEvent) => handleActionKey(event, beautifyPublisherPayloadAction)}
-                  onclick={beautifyPublisherPayloadAction}>
-                  Beautify
-                </wa-button>
               </PayloadDisplay>
             </div>
             <div
@@ -639,35 +631,14 @@
                 onkeydown={(event: KeyboardEvent) => handleActionKey(event, copyAsCurl)}
                 >curl</span
               >
-              <span
-                style="margin-left:10px; cursor:pointer; color:var(--text-dim)"
-                role="button"
-                tabindex="0"
-                onclick={() => (showRequestMeta = !showRequestMeta)}
-                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => { showRequestMeta = !showRequestMeta; })}
-                >{showRequestMeta ? "hide req" : "show req"}</span
-              >
-              <span
-                style="margin-left:10px; cursor:pointer; color:var(--text-dim)"
-                role="button"
-                tabindex="0"
-                onclick={() => (showResponseMeta = !showResponseMeta)}
-                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => { showResponseMeta = !showResponseMeta; })}
-                >{showResponseMeta ? "hide resp hdrs" : "show resp hdrs"}</span
-              >
             </div>
             <div class="detail-body" id="pub-response">
-              {#if showRequestMeta && ($publishersPanelState.requestRows.length > 0 || $publishersPanelState.requestHeaders.length > 0)}
-                <div class="response-meta-block">
-                  <div class="section-label">Request
-                  <span
-                    class="section-hide"
-                    role="button"
-                    tabindex="0"
-                    onclick={() => (showRequestMeta = !showRequestMeta)}
-                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => { showRequestMeta = !showRequestMeta; })}
-                    >{showRequestMeta ? " (hide)" : "show req"}</span
-                  ></div> 
+              {#if $publishersPanelState.requestRows.length > 0 || $publishersPanelState.requestHeaders.length > 0}
+                <wa-details summary="Request" open 
+                  class="response-meta-block" 
+                  icon-placement="start">
+                  <span slot="expand-icon">▸</span>
+                  <span slot="collapse-icon">▸</span>
                   {#each $publishersPanelState.requestRows as [key, value] (`req:${key}:${value}`)}
                     <div class="response-meta-row">
                       <span class="response-meta-key">{key}</span>
@@ -683,26 +654,21 @@
                       </div>
                     {/each}
                   {/if}
-                </div>
+                </wa-details>
               {/if}
-              {#if showResponseMeta && $publishersPanelState.responseHeaders.length > 0}
-                <div class="response-meta-block">
-                  <div class="section-label">Response Headers
-                    <span
-                      class="section-hide"
-                      role="button"
-                      tabindex="0"
-                      onclick={() => (showResponseMeta = !showResponseMeta)}
-                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => { showResponseMeta = !showResponseMeta; })}
-                      >{showResponseMeta ? " (hide)" : "show resp hdrs"}</span
-                    ></div>
+              {#if $publishersPanelState.responseHeaders.length > 0}
+                <wa-details summary="Response Headers" open 
+                  class="response-meta-block" 
+                  icon-placement="start">
+                    <span slot="expand-icon">▸</span>
+                    <span slot="collapse-icon">▸</span>
                     {#each $publishersPanelState.responseHeaders as [key, value] (`resp:${key}:${value}`)}
                     <div class="response-meta-row">
                       <span class="response-meta-key">{key}</span>
                       <span class="response-meta-value">{value}</span>
                     </div>
                   {/each}
-                </div>
+                </wa-details>
               {/if}
               <PayloadDisplay 
                 id="pub-actual-payload"

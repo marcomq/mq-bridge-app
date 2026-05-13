@@ -1,9 +1,20 @@
+import Split from "split.js";
+import * as VanillaSchemaForms from "vanilla-schema-forms";
+
 export function appWindow() {
   return window;
 }
 
 export function currentHash() {
   return appWindow().location.hash;
+}
+
+function getSplit() {
+  return Split;
+}
+
+function getVanillaSchemaForms() {
+  return VanillaSchemaForms;
 }
 
 export function replaceHash(nextHash: string) {
@@ -238,10 +249,10 @@ export const mqbApp = {
     },
   },
   split() {
-    return appWindow().Split;
+    return getSplit();
   },
   forms() {
-    return appWindow().VanillaSchemaForms;
+    return getVanillaSchemaForms();
   },
   isDesktop() {
     return Boolean(appWindow().__MQB_DESKTOP__);

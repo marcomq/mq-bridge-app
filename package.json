@@ -4,8 +4,10 @@
     "@awesome.me/webawesome": "^3.6.0",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-xml": "^6.1.0",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.42.1",
+    "buffer": "^6.0.3",
     "codemirror": "^6.0.2",
     "split.js": "^1.6.5",
     "vanilla-schema-forms": "^0.1.8"
@@ -19,11 +21,7 @@
     "test:unit:watch": "vitest",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
-    "vendor:js": "node scripts/vendor.mjs js",
-    "vendor:webawesome": "node scripts/vendor.mjs webawesome",
-    "vendor:split": "node scripts/vendor.mjs split",
-    "vendor": "node scripts/vendor.mjs all",
-    "update:ui-vendor": "npm update @awesome.me/webawesome split.js && npm run vendor"
+    "update:ui-vendor": "npm update @awesome.me/webawesome split.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
