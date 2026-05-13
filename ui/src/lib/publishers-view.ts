@@ -2,7 +2,7 @@ import {
   applyEndpointSchemaDefaults,
   nextUniqueName,
 } from "./routes";
-import { cloneJson, normalizeMiddlewares } from "./utils";
+import { cloneJson } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { publishersPanelState } from "./stores";
 import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
@@ -14,16 +14,30 @@ import {
 import {
   ensureWorkspaceCollections,
   isSensitiveConfig,
-  type ConfigSecurity,
-  type EnvVars,
-  type PublisherHistoryEntry,
-  type PublisherHistoryStore,
-  type PresetsByPublisher,
-  type PublisherPreset,
   sanitizePublisherHistory,
 } from "./workspace-config";
 import { setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
+import {
+  ensureRefOnlyEndpointDefaults,
+  getEndpointType as getEndpointTypeFromEndpointRecord,
+  normalizeMiddlewares,
+  normalizeScalarEndpointValue,
+  prunePolymorphicEndpointKeys,
+} from "./endpoint-utils";
+import { readJson, removeKey, writeJson } from "./storage";
+import { getEntityStorageKey } from "./entity-key";
+import { forceRefOnlyEndpoints } from "./schema-utils";
+import type {
+  ConsumerConfig,
+  ConsumerOutputConfig,
+  PublisherConfig,
+  PublisherHistoryItem,
+  PublishersAppConfig,
+  PublishersSchemaRoot,
+  PublisherState,
+  PublisherResponseState,
+} from "./panel-types";
 
 export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
 export let showPublisherHistoryEntry: (historyIndex: number) => void | Promise<void> = () => {};
@@ -59,73 +73,6 @@ export let removePublisherMetadataRow: (index: number) => void = () => {};
 export let updatePublisherPayload: (value: string) => void = () => {};
 export let updatePublisherMethod: (value: string) => void = () => {};
 export let updatePublisherRequestField: (fieldId: "pub-extra-1" | "pub-extra-2" | "pub-url", value: string) => void = () => {};
-
-type PublisherConfig = {
-  id?: string;
-  name: string;
-  endpoint: Record<string, any>;
-  comment?: string;
-};
-
-type ConsumerOutputConfig =
-  | { mode: "none" }
-  | { mode: "publisher"; publisher: string; publisher_id?: string | null }
-  | { mode: "response"; response?: unknown };
-
-type ConsumerConfig = {
-  id?: string;
-  name: string;
-  endpoint: Record<string, any>;
-  comment?: string;
-  response?: unknown;
-  output?: ConsumerOutputConfig | null;
-  batch_size?: number;
-};
-
-type PublisherHistoryItem = PublisherHistoryEntry;
-
-type PublishersAppConfig = {
-  publishers: PublisherConfig[];
-  consumers?: ConsumerConfig[];
-  routes?: Record<string, unknown>;
-  presets?: PresetsByPublisher;
-  env_vars?: EnvVars;
-  history?: PublisherHistoryStore;
-  config_security?: ConfigSecurity;
-};
-
-type PublishersSchemaRoot = {
-  properties?: {
-    publishers?: {
-      items?: Record<string, any>;
-    };
-  };
-  $defs?: Record<string, any>;
-};
-
-type PublisherState = {
-  payload: string;
-  headers?: Array<{
-    id: number;
-    key: string;
-    value: string;
-    enabled: boolean;
-  }>;
-};
-
-type PublisherResponseState = {
-  responseVisible?: boolean;
-  responseTabLabel?: string;
-  responseStatusLabel?: string;
-  responseStatusText?: string;
-  responseStatusColor?: string;
-  responseDurationLabel?: string;
-  responseSizeLabel?: string;
-  requestRows?: Array<[string, string]>;
-  requestHeaders?: Array<[string, string]>;
-  responseHeaders?: Array<[string, string]>;
-  responsePayload?: string;
-};
 
 type RequestBarFieldDescriptor = {
   inputId: "pub-extra-1" | "pub-extra-2" | "pub-url";
@@ -313,15 +260,8 @@ function defaultHttpConfig() {
   };
 }
 
-function getEndpointTypeFromRecord(endpoint: Record<string, any>): string {
-  // Prioritize 'ref' or 'static' to avoid mis-detection if defaults are merged in
-  return ["ref", "static"].find(k => k in endpoint)
-    || ENDPOINT_TYPE_KEYS.find((key) => key in endpoint)
-    || "http";
-}
-
 function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined): string {
-  return getEndpointTypeFromRecord(publisher?.endpoint || {});
+  return getEndpointTypeFromEndpointRecord(publisher?.endpoint || {});
 }
 
 function normalizePublisherSubtab(tab: string | undefined, fallback: PublisherSubtab = "payload"): PublisherSubtab {
@@ -361,38 +301,6 @@ function createDefaultPublisherEndpoint(endpointType: string) {
   };
 }
 
-function normalizeScalarEndpointValue(endpointType: string, value: unknown) {
-  if (endpointType !== "static" && endpointType !== "ref") {
-    return value;
-  }
-
-  if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as any)[endpointType] === "string") {
-    return (value as any)[endpointType];
-  }
-  return typeof value === "string" ? value : "";
-}
-
-function ensureRefOnlyEndpointDefaults(endpoint: unknown): Record<string, any> {
-  if (typeof endpoint === "string") {
-    return { ref: endpoint, middlewares: [] };
-  }
-  if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
-    return { ref: "", middlewares: [] };
-  }
-
-  const endpointRecord = endpoint as Record<string, any>;
-  // Handle potential 'root' wrapping from form library
-  const data = endpointRecord.root && typeof endpointRecord.root === "object" ? endpointRecord.root : endpointRecord;
-
-  return {
-    ref: typeof data.ref === "string" ? data.ref : "",
-    middlewares: normalizeMiddlewares(
-      data.middlewares,
-      ensureRefOnlyEndpointDefaults,
-    ),
-  };
-}
-
 function ensurePublisherEndpointDefaults(endpoint: unknown): Record<string, any> {
   if (typeof endpoint === "string") {
     return { ref: endpoint, middlewares: [] };
@@ -403,20 +311,14 @@ function ensurePublisherEndpointDefaults(endpoint: unknown): Record<string, any>
 
   const endpointRecord = endpoint as Record<string, any>;
   const data = endpointRecord.root && typeof endpointRecord.root === "object" ? endpointRecord.root : endpointRecord;
-  const endpointType = getEndpointTypeFromRecord(data);
+  const endpointType = getEndpointTypeFromEndpointRecord(data);
 
   const normalized: Record<string, any> = {
     ...createDefaultPublisherEndpoint(endpointType),
     ...cloneJson(data),
   };
 
-  // Cleanup other endpoint keys to prevent pollution during polymorphic switching
-  const ALL_TYPE_KEYS = ["http", "grpc", "nats", "memory", "amqp", "kafka", "mqtt", "mongodb", "sqlx", "zeromq", "file", "static", "ref", "sled", "ibmmq", "switch", "fanout", "reader", "response", "custom", "null", "aws", "url", "topic", "subject", "queue", "path"];
-  ALL_TYPE_KEYS.forEach(k => {
-    if (k !== endpointType && k in normalized) {
-      delete normalized[k];
-    }
-  });
+  prunePolymorphicEndpointKeys(normalized, endpointType);
 
   if (endpointType === "switch") {
     const sw = normalized.switch;
@@ -462,53 +364,6 @@ function normalizePublisherConfigShape(publisher: PublisherConfig): PublisherCon
   return data as PublisherConfig;
 }
 
-function forceRefOnlyEndpoints(itemSchema: any) {
-  if (!itemSchema.$defs) itemSchema.$defs = {};
-  if (!itemSchema.$defs.RefConfig) {
-    itemSchema.$defs.RefConfig = {
-      type: "object",
-      title: "",
-      properties: { ref: { type: "string" } },
-      required: ["ref"],
-      "wa-no-label": true,
-    };
-  }
-  if (!itemSchema.$defs.StaticConfig) {
-    itemSchema.$defs.StaticConfig = { type: "object", properties: { static: { type: "string" } }, required: ["static"] };
-  }
-
-  const forceRef = (obj: any) => {
-    if (!obj || typeof obj !== "object") return;
-    obj.$ref = "#/$defs/RefConfig";
-    delete obj.oneOf;
-    delete obj.anyOf;
-    delete obj.allOf;
-    delete obj.properties;
-    delete obj.enum;
-    delete obj.const;
-    delete obj.default;
-    // Ensure type is 'object' to match RefConfig and avoid type selection UI
-    obj.type = "object";
-  };
-
-  {
-    const dlq = itemSchema.$defs.DlqConfig;
-    if (dlq?.properties?.endpoint) forceRef(dlq.properties.endpoint);
-
-    const fanout = itemSchema.$defs.FanoutConfig || itemSchema.$defs.FanOutConfig;
-    if (fanout) {
-      const endpoints = fanout.items || fanout.properties?.endpoints?.items;
-      if (endpoints) forceRef(endpoints);
-    }
-
-    const sw = itemSchema.$defs.SwitchConfig;
-    if (sw?.properties) {
-      if (sw.properties.default) forceRef(sw.properties.default);
-      if (sw.properties.cases?.additionalProperties) forceRef(sw.properties.cases.additionalProperties);
-    }
-  }
-}
-
 function syncConsumerPublisherReferences(
   consumers: ConsumerConfig[] | undefined,
   previousPublisherName: string,
@@ -535,16 +390,6 @@ function syncConsumerPublisherReferences(
       };
     }
   });
-}
-
-function parseJsonSafe<T>(raw: string | null, fallback: T): T {
-  if (!raw) return fallback;
-  try {
-    const parsed = JSON.parse(raw);
-    return (parsed ?? fallback) as T;
-  } catch {
-    return fallback;
-  }
 }
 
 function flattenPublisherHistory(store: PublisherHistoryStore): PublisherHistoryItem[] {
@@ -581,27 +426,41 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   }
   const publishers = config.publishers;
   const getPublisherStorageKey = (publisher: Partial<PublisherConfig> | null | undefined) =>
-    String(publisher?.id || publisher?.name || "").trim();
+    getEntityStorageKey(publisher);
+  const matchesHistoryPublisher = (
+    item: Partial<PublisherHistoryItem> | null | undefined,
+    publisher: Partial<PublisherConfig> | null | undefined,
+  ) => {
+    const publisherKey = getPublisherStorageKey(publisher);
+    if (!publisherKey) {
+      return false;
+    }
+    const historyPublisherId = String(item?.publisher_id || "").trim();
+    if (historyPublisherId) {
+      return historyPublisherId === publisherKey;
+    }
+    return String(item?.name || "").trim() === String(publisher?.name || "").trim();
+  };
   const workspaceConfig = ensureWorkspaceCollections(config);
   const state = getMqbState();
   const storageSecurity = resolveStorageSecurity(state.storage_security, workspaceConfig);
   const encryptedMessages = hasEncryptedMessages(storageSecurity);
   const sensitiveMode = isSensitiveConfig(workspaceConfig) && !encryptedMessages;
-  if (sensitiveMode && typeof localStorage.removeItem === "function") {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(HISTORY_KEY);
+  if (sensitiveMode) {
+    removeKey(STORAGE_KEY);
+    removeKey(HISTORY_KEY);
   }
   const preloadedStorage = getMqbState().storage_cache;
   let appState = sensitiveMode
     ? {}
     : encryptedMessages && preloadedStorage?.publisher_state
       ? (preloadedStorage.publisher_state as Record<string, PublisherState>)
-      : parseJsonSafe<Record<string, PublisherState>>(localStorage.getItem(STORAGE_KEY), {});
+      : readJson<Record<string, PublisherState>>(STORAGE_KEY, {});
   const localHistoryStore = sensitiveMode
     ? sanitizePublisherHistory({})
     : encryptedMessages && preloadedStorage?.publisher_history
       ? sanitizePublisherHistory(preloadedStorage.publisher_history)
-      : sanitizePublisherHistory(parseJsonSafe<unknown>(localStorage.getItem(HISTORY_KEY), {}));
+      : sanitizePublisherHistory(readJson<unknown>(HISTORY_KEY, {}));
   const configHistoryStore = sanitizePublisherHistory(workspaceConfig.history);
   let historyStore = localHistoryStore.updated_at >= configHistoryStore.updated_at
     ? localHistoryStore
@@ -610,11 +469,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   let presets = workspaceConfig.presets;
   let envVars = workspaceConfig.env_vars;
 
-  let savedPublisherNames = new Set(
+  let savedPublisherKeys = new Set(
     ((Array.isArray(state.saved_sections?.publishers) ? state.saved_sections.publishers : publishers) || [])
-      .map((p: PublisherConfig) => p.name),
+      .map((publisher: PublisherConfig) => getPublisherStorageKey(publisher))
+      .filter(Boolean),
   );
-  const isSavedPublisher = (name: string) => savedPublisherNames.has(name);
+  const isSavedPublisher = (publisher: Partial<PublisherConfig> | null | undefined) =>
+    savedPublisherKeys.has(getPublisherStorageKey(publisher));
 
   const emptyAlert = document.getElementById("pub-empty-alert") as HTMLElement | null;
   const mainUi = document.getElementById("pub-main-ui") as HTMLElement | null;
@@ -658,7 +519,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       void setStoredJson(STORAGE_KEY, appState, storageSecurity);
       return;
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+    writeJson(STORAGE_KEY, appState);
   };
   const syncHistoryToConfig = async (silent = true) => {
     historyStore = buildPublisherHistoryStore(history);
@@ -680,7 +541,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     history = history.slice(0, 1000);
     historyStore = buildPublisherHistoryStore(history);
     if (!sensitiveMode && !encryptedMessages) {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(historyStore));
+      writeJson(HISTORY_KEY, historyStore);
     } else if (encryptedMessages) {
       void setStoredJson(HISTORY_KEY, historyStore, storageSecurity);
     }
@@ -1245,8 +1106,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   const syncPublishersPanelState = (responseState?: PublisherResponseState) => {
     const activePublisher = publishers[currentIdx];
-    const activePublisherKey = getPublisherStorageKey(activePublisher);
-    const filteredHistory = history.filter((item) => activePublisherKey && item.publisher_id === activePublisherKey);
+    const filteredHistory = history.filter((item) => matchesHistoryPublisher(item, activePublisher));
     const endpointType = activePublisher ? getEndpointType(activePublisher) : "";
     const layout = getRequestBarLayout(endpointType);
     const getFieldState = (inputId: "pub-extra-1" | "pub-extra-2" | "pub-url", fallbackLabel: string) => {
@@ -1283,8 +1143,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       })),
       selectedIndex: currentIdx,
       activeSubtab,
-      isNew: activeName ? !isSavedPublisher(activeName) : false,
-      deleteLabel: (activeName && !isSavedPublisher(activeName)) ? "Cancel" : "Delete",
+      isNew: activePublisher ? !isSavedPublisher(activePublisher) : false,
+      deleteLabel: (activePublisher && !isSavedPublisher(activePublisher)) ? "Cancel" : "Delete",
       endpointType: endpointType === "ibmmq" ? "MQ" : endpointType.toUpperCase(),
       methodVisible: endpointType === "http" && !!layout.showMethod,
       methodValue: currentMethodValue,
@@ -1750,7 +1610,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const publisher = config.publishers[currentIdx];
     if (!publisher) return;
 
-    const isNew = !isSavedPublisher(publisher.name);
+    const isNew = !isSavedPublisher(publisher);
     const confirmMsg = isNew ? "Discard this new publisher?" : "Delete this publisher?";
     const confirmTitle = isNew ? "Discard Publisher" : "Delete Publisher";
 
@@ -2117,7 +1977,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   savePublisherHistoryAsPresetAction = async (historyIndex: number) => {
     const item = history[historyIndex];
     if (!item) return;
-    const publisher = publishers.find((candidate) => item.publisher_id && getPublisherStorageKey(candidate) === item.publisher_id);
+    const publisher = publishers.find((candidate) => matchesHistoryPublisher(item, candidate));
     if (!publisher) return;
 
     const publisherPresets = getPublisherPresets(publisher);
@@ -2340,9 +2200,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   showPublisherHistoryEntry = async (historyIndex: number) => {
     const item = history[historyIndex];
     if (!item) return;
-    const publisherIdx = publishers.findIndex((candidate) =>
-      item.publisher_id && getPublisherStorageKey(candidate) === item.publisher_id,
-    );
+    const publisherIdx = publishers.findIndex((candidate) => matchesHistoryPublisher(item, candidate));
     if (publisherIdx === -1) return;
 
     const state = getPublisherState(publishers[publisherIdx]);

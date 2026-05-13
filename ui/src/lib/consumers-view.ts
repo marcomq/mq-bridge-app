@@ -8,15 +8,37 @@ import {
   normalizeConsumerNames,
   normalizeConsumerResponse,
   sanitizeConsumerName,
-  normalizeMiddlewares as sharedNormalizeMiddlewares,
 } from "./utils";
 import { extractImportedRequests } from "./import-export";
 import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { consumersPanelState } from "./stores";
 import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
-import { ensureWorkspaceCollections, isSensitiveConfig, type ConfigSecurity } from "./workspace-config";
+import { ensureWorkspaceCollections, isSensitiveConfig } from "./workspace-config";
 import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
+import {
+  ensureRefOnlyEndpointDefaults,
+  getEndpointType,
+  normalizeMiddlewares,
+  normalizeScalarEndpointValue,
+  prunePolymorphicEndpointKeys,
+  type EndpointRecord,
+} from "./endpoint-utils";
+import { readJson, removeKey, writeJson } from "./storage";
+import { getEntityStorageKey } from "./entity-key";
+import { forceRefOnlyEndpoints } from "./schema-utils";
+import type {
+  ConsumerConfig,
+  ConsumerMessage,
+  ConsumerMessageCaptureConfig,
+  ConsumerOutputConfig,
+  ConsumerResponseConfig,
+  ConsumerResponseHeaderRow,
+  ConsumerStatus,
+  ConsumersAppConfig,
+  ConsumersSchemaRoot,
+  PublisherConfig,
+} from "./panel-types";
 
 export let restoreConsumerStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => { };
 export let showConsumerMessageDetails: (name: string, msgIdx: number) => void = () => { };
@@ -39,80 +61,6 @@ export let removeConsumerResponseHeader: (index: number) => void = () => { };
 export let updateConsumerResponsePayload: (value: string) => void = () => { };
 export let importAsyncApiToConsumerAction: (jsonText: string) => void | Promise<void> = () => { };
 export let importMqbToConsumerAction: (jsonText: string) => void | Promise<void> = () => { };
-
-type ConsumerMessage = {
-  id?: string;
-  payload: unknown;
-  metadata?: Record<string, string>;
-  time?: string;
-  response?: unknown;
-  response_metadata?: Record<string, string>;
-};
-
-type ConsumerStatus = {
-  running: boolean;
-  unsaved?: boolean;
-  status: {
-    healthy: boolean;
-    error?: string;
-  };
-};
-
-type ConsumerConfig = {
-  id?: string;
-  name: string;
-  endpoint: Record<string, unknown>;
-  comment?: string;
-  response?: unknown;
-  output?: ConsumerOutputConfig | null;
-  message_capture?: ConsumerMessageCaptureConfig;
-  batch_size?: number;
-};
-
-type ConsumerMessageCaptureConfig = {
-  enabled: boolean;
-  keep_last: number;
-};
-
-type ConsumerResponseConfig = {
-  headers: Record<string, string>;
-  payload: string;
-};
-
-type ConsumerOutputConfig =
-  | { mode: "none" }
-  | { mode: "publisher"; publisher: string; publisher_id?: string | null }
-  | { mode: "response"; response: ConsumerResponseConfig | null };
-
-type ConsumerResponseHeaderRow = {
-  id: number;
-  key: string;
-  value: string;
-  enabled: boolean;
-};
-
-type PublisherConfig = {
-  id?: string;
-  name: string;
-  endpoint: Record<string, unknown>;
-  comment?: string;
-};
-
-type ConsumersAppConfig = {
-  consumers: ConsumerConfig[];
-  publishers?: PublisherConfig[];
-  routes?: Record<string, unknown>;
-  config_security?: ConfigSecurity;
-};
-
-type ConsumersSchemaRoot = {
-  properties?: {
-    consumers?: {
-      items?: Record<string, any>;
-    };
-  };
-  $defs?: Record<string, any>;
-};
 
 const MSG_STORAGE_KEY = "mqb_consumer_messages";
 export const CONSUMER_TYPE_OPTIONS = [
@@ -236,61 +184,20 @@ function createDefaultConsumerEndpoint(endpointType: string): Record<string, unk
   };
 }
 
-function normalizeScalarConsumerEndpointValue(endpointType: string, value: unknown): unknown {
-  if (endpointType !== "static" && endpointType !== "ref") {
-    return value;
-  }
-  if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as any)[endpointType] === "string") {
-    return (value as any)[endpointType];
-  }
-  return typeof value === "string" ? value : "";
-}
-
-function ensureRefOnlyEndpointDefaults(endpoint: unknown): Record<string, any> {
-  if (typeof endpoint === "string") {
-    return { ref: endpoint, middlewares: [] };
-  }
-  if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
-    return { ref: "", middlewares: [] };
-  }
-
-  const endpointRecord = endpoint as Record<string, any>;
-  // Handle potential 'root' wrapping from form library
-  const data = endpointRecord.root && typeof endpointRecord.root === "object" ? endpointRecord.root : endpointRecord;
-
-  return {
-    ref: typeof data.ref === "string" ? data.ref : "",
-    middlewares: sharedNormalizeMiddlewares(
-      data.middlewares,
-      ensureRefOnlyEndpointDefaults,
-    ),
-  };
-}
-
 function ensureConsumerEndpointDefaults(endpoint: unknown): Record<string, unknown> {
   if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
     return createDefaultConsumerEndpoint("http");
   }
-  const endpointRecord = endpoint as Record<string, any>;
-  const data = endpointRecord.root && typeof endpointRecord.root === "object" ? endpointRecord.root : endpointRecord;
-
-  // Prioritize 'ref' or 'static' to avoid mis-detection if defaults are merged in
-  const endpointType = ["ref", "static"].find(k => k in data)
-    || Object.keys(data).find((key) => key !== "middlewares")
-    || "http";
+  const endpointRecord = endpoint as EndpointRecord & { root?: unknown };
+  const data = endpointRecord.root && typeof endpointRecord.root === "object" ? endpointRecord.root as EndpointRecord : endpointRecord;
+  const endpointType = getEndpointType(data);
 
   const normalized: Record<string, any> = {
     ...createDefaultConsumerEndpoint(endpointType),
     ...cloneJson(data),
   };
 
-  // Cleanup other endpoint keys to prevent pollution during polymorphic switching
-  const ALL_TYPE_KEYS = ["http", "grpc", "nats", "memory", "amqp", "kafka", "mqtt", "mongodb", "sqlx", "zeromq", "file", "static", "ref", "sled", "ibmmq", "switch", "fanout", "reader", "response", "custom", "null", "aws", "url", "topic", "subject", "queue", "path"];
-  ALL_TYPE_KEYS.forEach(k => {
-    if (k !== endpointType && k in normalized) {
-      delete normalized[k];
-    }
-  });
+  prunePolymorphicEndpointKeys(normalized, endpointType);
 
   if (endpointType === "switch") {
     const sw = normalized.switch as any;
@@ -317,12 +224,8 @@ function ensureConsumerEndpointDefaults(endpoint: unknown): Record<string, unkno
     }
   }
 
-  normalized[endpointType] = normalizeScalarConsumerEndpointValue(endpointType, normalized[endpointType]);
-
-  normalized.middlewares = sharedNormalizeMiddlewares(
-    normalized.middlewares,
-    ensureRefOnlyEndpointDefaults,
-  );
+  normalized[endpointType] = normalizeScalarEndpointValue(endpointType, normalized[endpointType]);
+  normalized.middlewares = normalizeMiddlewares(normalized.middlewares, ensureRefOnlyEndpointDefaults);
 
   return normalized;
 }
@@ -339,53 +242,6 @@ function normalizeConsumerConfigShape(consumer: ConsumerConfig): ConsumerConfig 
   data.message_capture = normalizeConsumerMessageCapture(data.message_capture);
   data.response = data.output.mode === "response" ? data.output.response : null;
   return data as ConsumerConfig;
-}
-
-function forceRefOnlyEndpoints(itemSchema: any) {
-  if (!itemSchema.$defs) itemSchema.$defs = {};
-  if (!itemSchema.$defs.RefConfig) {
-    itemSchema.$defs.RefConfig = {
-      type: "object",
-      title: "",
-      properties: { ref: { type: "string" } },
-      required: ["ref"],
-      "wa-no-label": true,
-    };
-  }
-  if (!itemSchema.$defs.StaticConfig) {
-    itemSchema.$defs.StaticConfig = { type: "object", properties: { static: { type: "string" } }, required: ["static"] };
-  }
-
-  const forceRef = (obj: any) => {
-    if (!obj || typeof obj !== "object") return;
-    obj.$ref = "#/$defs/RefConfig";
-    delete obj.oneOf;
-    delete obj.anyOf;
-    delete obj.allOf;
-    delete obj.properties;
-    delete obj.enum;
-    delete obj.const;
-    delete obj.default;
-    // Ensure type is 'object' to match RefConfig and avoid type selection UI
-    obj.type = "object";
-  };
-
-  {
-    const dlq = itemSchema.$defs.DlqConfig;
-    if (dlq?.properties?.endpoint) forceRef(dlq.properties.endpoint);
-
-    const fanout = itemSchema.$defs.FanoutConfig || itemSchema.$defs.FanOutConfig;
-    if (fanout) {
-      const endpoints = fanout.items || fanout.properties?.endpoints?.items;
-      if (endpoints) forceRef(endpoints);
-    }
-
-    const sw = itemSchema.$defs.SwitchConfig;
-    if (sw?.properties) {
-      if (sw.properties.default) forceRef(sw.properties.default);
-      if (sw.properties.cases?.additionalProperties) forceRef(sw.properties.cases.additionalProperties);
-    }
-  }
 }
 
 function splitConsumerListenAddress(rawUrl: string): { url: string; path?: string } {
@@ -493,8 +349,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const storageSecurity = resolveStorageSecurity(getMqbState().storage_security, workspaceConfig);
   const encryptedMessages = hasEncryptedMessages(storageSecurity);
   const sensitiveMode = isSensitiveConfig(workspaceConfig) && !encryptedMessages;
-  if (sensitiveMode && typeof localStorage.removeItem === "function") {
-    localStorage.removeItem(MSG_STORAGE_KEY);
+  if (sensitiveMode) {
+    removeKey(MSG_STORAGE_KEY);
   }
   const mappedConsumers = (config.consumers || []).map((c) => normalizeConsumerConfigShape(c));
   config.consumers ||= [];
@@ -528,9 +384,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   let selectedMessageIndex: number | null = null;
   let pendingToggle: { name: string; action: "start" | "stop" } | null = null;
   let nextResponseHeaderId = 1;
-  let savedConsumerNames = new Set(
+  const getConsumerStorageKey = (consumer: Partial<ConsumerConfig> | null | undefined) =>
+    getEntityStorageKey(consumer);
+  let savedConsumerKeys = new Set(
     ((Array.isArray(state.saved_sections?.consumers) ? state.saved_sections.consumers : consumers) || [])
-      .map((consumer: ConsumerConfig) => consumer.name),
+      .map((consumer: ConsumerConfig) => getConsumerStorageKey(consumer))
+      .filter(Boolean),
   );
   const initialConsumersSnapshot = cloneJson(config.consumers);
   const settleInitialDirtyBaseline = () => {
@@ -547,11 +406,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     return Array.isArray(config.publishers) ? config.publishers : [];
   };
   const getPublisherStorageKey = (publisher: Partial<PublisherConfig> | null | undefined) =>
-    String(publisher?.id || publisher?.name || "").trim();
+    getEntityStorageKey(publisher);
   const getPublisherByName = (publisherName: string) =>
     getAvailablePublishers().find((publisher) => String(publisher?.name || "").trim() === String(publisherName || "").trim());
-  const getConsumerStorageKey = (consumer: Partial<ConsumerConfig> | null | undefined) =>
-    String(consumer?.id || consumer?.name || "").trim();
 
   const getAvailablePublisherNames = (): string[] =>
     getAvailablePublishers()
@@ -592,19 +449,15 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       )
       : {};
   } else if (!sensitiveMode) {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(MSG_STORAGE_KEY) || "{}");
-      consumerMessages = parsed && typeof parsed === "object"
-        ? Object.fromEntries(
-          Object.entries(parsed as Record<string, unknown>).map(([name, messages]) => [
-            name,
-            Array.isArray(messages) ? messages.map((message) => normalizeConsumerMessage(message)) : [],
-          ]),
-        )
-        : {};
-    } catch {
-      consumerMessages = {};
-    }
+    const parsed = readJson<Record<string, unknown>>(MSG_STORAGE_KEY, {});
+    consumerMessages = parsed && typeof parsed === "object"
+      ? Object.fromEntries(
+        Object.entries(parsed as Record<string, unknown>).map(([name, messages]) => [
+          name,
+          Array.isArray(messages) ? messages.map((message) => normalizeConsumerMessage(message)) : [],
+        ]),
+      )
+      : {};
   }
 
   consumerMessages = Object.fromEntries(
@@ -623,7 +476,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       void setStoredJson(MSG_STORAGE_KEY, consumerMessages, storageSecurity);
       return;
     }
-    localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(consumerMessages));
+    writeJson(MSG_STORAGE_KEY, consumerMessages);
   };
 
   const trimStoredMessages = (consumerKey: string) => {
@@ -653,12 +506,17 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const consumerViewState: Record<number, { responseHeaders: ConsumerResponseHeaderRow[] }> = {};
 
   const syncSavedConsumerNames = (source: ConsumerConfig[]) => {
-    savedConsumerNames = new Set((source || []).map((consumer) => consumer.name));
+    savedConsumerKeys = new Set(
+      (source || [])
+        .map((consumer) => getConsumerStorageKey(consumer))
+        .filter(Boolean),
+    );
   };
   syncSavedConsumerNames(
     Array.isArray(state.saved_sections?.consumers) ? state.saved_sections.consumers : consumers,
   );
-  const isSavedConsumer = (name: string) => savedConsumerNames.has(name);
+  const isSavedConsumer = (consumer: Partial<ConsumerConfig> | null | undefined) =>
+    savedConsumerKeys.has(getConsumerStorageKey(consumer));
 
   const getConsumerResponseRows = (index: number) => {
     if (!consumerViewState[index]) {
@@ -772,8 +630,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       }),
       selectedIndex: currentIdx,
       activeSubtab,
-      isNew: currentConsumerName ? !isSavedConsumer(currentConsumerName) : false,
-      deleteLabel: (currentConsumerName && !isSavedConsumer(currentConsumerName)) ? "Cancel" : "Delete",
+      isNew: currentConsumer ? !isSavedConsumer(currentConsumer) : false,
+      deleteLabel: (currentConsumer && !isSavedConsumer(currentConsumer)) ? "Cancel" : "Delete",
       messageCaptureEnabled: messageCapture.enabled,
       messageCaptureKeepLast: messageCapture.keep_last,
       responseEnabled: Boolean(currentConsumer),
@@ -835,7 +693,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
     for (const consumer of config.consumers || []) {
       const name = consumer.name;
-      if (!isSavedConsumer(name)) {
+      if (!isSavedConsumer(consumer)) {
         consumerStatus[name] = { running: false, status: { healthy: false }, unsaved: true };
         continue;
       }
@@ -1137,7 +995,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
     if (
       action === "start" &&
-      (!isSavedConsumer(targetName) || mqbRuntime.refreshDirtySection("consumers") || normalizedNamesChanged)
+      (!isSavedConsumer(consumers.find((consumer) => consumer.name === targetName)) || mqbRuntime.refreshDirtySection("consumers") || normalizedNamesChanged)
     ) {
       const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
       if (!saved?.consumers) return;
@@ -1235,7 +1093,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       dlqConfig.properties.endpoint.default = { ref: "" };
     }
 
-    if (consumers[currentIdx] && isSavedConsumer(consumers[currentIdx].name)) {
+    if (consumers[currentIdx] && isSavedConsumer(consumers[currentIdx])) {
       await refreshConsumerStatuses();
     }
 
@@ -1313,7 +1171,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const consumer = config.consumers[currentIdx];
     if (!consumer) return;
 
-    const isNew = !isSavedConsumer(consumer.name);
+    const isNew = !isSavedConsumer(consumer);
     if (!(await mqbDialogs.confirm(
       isNew ? "Discard this new consumer?" : "Delete this consumer?",
       isNew ? "Discard Consumer" : "Delete Consumer",
