@@ -276,7 +276,7 @@ async fn test_web_ui_serves_custom_static_assets() {
 }
 
 #[tokio::test]
-async fn test_web_ui_post_config_deploys_enabled_route() {
+async fn test_web_ui_post_config_migrates_legacy_route_to_consumer_config() {
     let _guard = test_mutex().lock().await;
     stop_all_routes().await;
 
@@ -297,9 +297,21 @@ async fn test_web_ui_post_config_deploys_enabled_route() {
 
     sleep(Duration::from_millis(200)).await;
     let routes = mq_bridge_app::mq_bridge::list_routes();
-    assert!(routes.contains(&route_name));
+    assert!(!routes.contains(&route_name));
 
-    mq_bridge_app::mq_bridge::stop_route(&route_name).await;
+    let config_json = read_json_response(port, "/config").await;
+    assert_eq!(config_json["consumers"][0]["name"], route_name);
+    assert_eq!(
+        config_json["publishers"][0]["name"],
+        format!("{route_name}_publisher")
+    );
+    assert!(
+        config_json["routes"]
+            .as_object()
+            .map(|routes| routes.is_empty())
+            .unwrap_or(true)
+    );
+
     server.abort();
     stop_all_routes().await;
     let _ = std::fs::remove_file(config_file);
@@ -447,7 +459,7 @@ async fn test_web_ui_collects_http_consumer_messages_and_updates_runtime_status(
 }
 
 #[tokio::test]
-async fn test_web_ui_post_config_accepts_disabled_route_without_deploying_it() {
+async fn test_web_ui_post_config_accepts_disabled_route_and_migrates_it() {
     let _guard = test_mutex().lock().await;
     stop_all_routes().await;
 
@@ -471,7 +483,13 @@ async fn test_web_ui_post_config_accepts_disabled_route_without_deploying_it() {
     assert!(!routes.contains(&route_name));
 
     let config_json = read_json_response(port, "/config").await;
-    assert_eq!(config_json["routes"][&route_name]["enabled"], false);
+    assert_eq!(config_json["consumers"][0]["name"], route_name);
+    assert!(
+        config_json["routes"]
+            .as_object()
+            .map(|routes| routes.is_empty())
+            .unwrap_or(true)
+    );
 
     server.abort();
     stop_all_routes().await;
@@ -508,7 +526,7 @@ async fn test_web_ui_rejects_cross_origin_post_requests() {
 }
 
 #[tokio::test]
-async fn test_web_ui_can_disable_existing_route_and_runtime_status_updates() {
+async fn test_web_ui_legacy_route_payload_does_not_create_active_runtime_routes() {
     let _guard = test_mutex().lock().await;
     stop_all_routes().await;
 
@@ -530,7 +548,7 @@ async fn test_web_ui_can_disable_existing_route_and_runtime_status_updates() {
     sleep(Duration::from_millis(200)).await;
     let runtime_before = read_json_response(port, "/runtime-status").await;
     assert!(
-        runtime_before["active_routes"]
+        !runtime_before["active_routes"]
             .as_array()
             .unwrap()
             .iter()
@@ -559,6 +577,9 @@ async fn test_web_ui_can_disable_existing_route_and_runtime_status_updates() {
             .iter()
             .any(|name| name == &serde_json::Value::String(route_name.clone()))
     );
+
+    let config_json = read_json_response(port, "/config").await;
+    assert_eq!(config_json["consumers"][0]["name"], route_name);
 
     server.abort();
     stop_all_routes().await;

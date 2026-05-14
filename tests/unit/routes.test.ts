@@ -62,11 +62,12 @@ describe("routes helpers", () => {
         },
       },
       properties: {
+        id: { type: "string" },
         enabled: { type: "boolean" },
         description: { type: "string" },
         input: { type: "object" },
       },
-      required: ["name", "enabled", "description", "input"],
+      required: ["name", "id", "enabled", "description", "input"],
     };
 
     applyEndpointSchemaDefaults(routeSchema);

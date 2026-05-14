@@ -10,6 +10,7 @@ export interface RouteEndpoint {
 }
 
 export interface RouteDefinition {
+  id?: string;
   enabled: boolean;
   input: RouteEndpoint;
   output: RouteEndpoint;
@@ -71,13 +72,14 @@ export function applyEndpointSchemaDefaults(routeSchema: RouteSchema): void {
 
   const properties = routeSchema.properties;
   if (properties && typeof properties === "object") {
+    delete properties.id;
     delete properties.enabled;
     delete properties.description;
   }
 
   if (Array.isArray(routeSchema.required)) {
     routeSchema.required = routeSchema.required.filter(
-      (key) => key !== "enabled" && key !== "description",
+      (key) => key !== "id" && key !== "enabled" && key !== "description",
     );
   }
 }

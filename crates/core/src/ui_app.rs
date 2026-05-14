@@ -1,7 +1,6 @@
 use crate::config::{
     AppConfig, ConfigSecurityMode, ConsumerConfig, ConsumerMessageCaptureConfig,
-    ConsumerOutputConfig, ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, RouteConfig,
-    SecretStore,
+    ConsumerOutputConfig, ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, SecretStore,
 };
 use crate::encrypted_config::has_config_master_key;
 use anyhow::{Result, anyhow};
@@ -379,19 +378,11 @@ fn parse_route_metric_totals(metrics_text: &str) -> HashMap<(String, String), f6
     totals
 }
 
-fn route_has_metrics(route: &Route) -> bool {
-    let has_metrics = |endpoint: &Endpoint| {
-        endpoint
-            .middlewares
-            .iter()
-            .any(|middleware| matches!(middleware, mq_bridge::models::Middleware::Metrics(_)))
-    };
-
-    has_metrics(&route.input) || has_metrics(&route.output)
-}
-
-fn route_is_active(route_config: &RouteConfig) -> bool {
-    route_config.enabled && !matches!(route_config.route.input.endpoint_type, EndpointType::Null)
+fn consumer_runtime_id_to_name(consumers: &[ConsumerConfig]) -> HashMap<String, String> {
+    consumers
+        .iter()
+        .map(|consumer| (consumer.id.clone(), consumer.name.clone()))
+        .collect()
 }
 
 fn endpoint_supports_consumer_response(endpoint: &Endpoint) -> bool {
@@ -1004,27 +995,27 @@ impl UiApp {
 
         // Consumers may run as internal collector routes even when ui_handles does not currently
         // track them (for example after restarts). Surface those as active consumers too.
+        let config = self.config.read().await;
+        let consumer_ids_to_names = consumer_runtime_id_to_name(&config.consumers);
         let consumer_route_names: Vec<String> = mq_bridge::list_routes()
             .into_iter()
-            .filter_map(|name| {
-                name.strip_prefix("ui_collector_route_")
-                    .map(|consumer_name| consumer_name.to_string())
+            .filter_map(|runtime_id| {
+                runtime_id
+                    .strip_prefix("ui_collector_route_")
+                    .map(|consumer_id| {
+                        consumer_ids_to_names
+                            .get(consumer_id)
+                            .cloned()
+                            .unwrap_or_else(|| consumer_id.to_string())
+                    })
             })
             .collect();
         active_consumers.extend(consumer_route_names);
-
         let active_routes: Vec<String> = mq_bridge::list_routes()
             .into_iter()
             .filter(|name| name != "web_ui" && !name.starts_with("ui_collector_route_"))
             .collect();
-
-        let config = self.config.read().await;
-        let metrics_enabled_routes: HashSet<String> = config
-            .routes
-            .iter()
-            .filter(|(_, route)| route.enabled && route_has_metrics(&route.route))
-            .map(|(name, _)| name.clone())
-            .collect();
+        let metrics_enabled_routes: HashSet<String> = HashSet::new();
         drop(config);
 
         let route_totals = parse_route_metric_totals(&self.metrics_handle.render());
@@ -1174,14 +1165,7 @@ impl UiApp {
         mut new_config: AppConfig,
     ) -> std::result::Result<(), UpdateConfigError> {
         tracing::info!("Received new configuration via Web UI. Reloading...");
-        new_config.migrate_legacy_security_mode();
-        new_config.migrate_legacy_consumer_response();
-
-        let routes: HashMap<String, RouteConfig> = new_config
-            .routes
-            .drain()
-            .map(|(k, v)| (k.trim().replace(' ', "_").to_lowercase(), v))
-            .collect();
+        new_config.migrate_legacy_routes();
         let consumers: Vec<crate::config::ConsumerConfig> = new_config
             .consumers
             .drain(..)
@@ -1194,14 +1178,6 @@ impl UiApp {
             })
             .collect();
 
-        for (name, route) in &routes {
-            if !route.enabled {
-                continue;
-            }
-            route.route.check(name, None).map_err(|e| {
-                UpdateConfigError::Validation(format!("Route {name}: validation failed: {e}"))
-            })?;
-        }
         for consumer in &consumers {
             let resolved_output = resolve_consumer_output(consumer, &new_config.publishers)?;
             let output_endpoint = match &resolved_output {
@@ -1225,20 +1201,6 @@ impl UiApp {
         }
 
         let old_config = self.config.read().await.clone();
-
-        let mut routes_to_stop = Vec::new();
-        for name in old_config.routes.keys() {
-            if !routes.contains_key(name)
-                || serde_json::to_value(&old_config.routes[name]).unwrap()
-                    != serde_json::to_value(&routes[name]).unwrap()
-            {
-                routes_to_stop.push(name.clone());
-            }
-        }
-
-        for name in routes_to_stop {
-            mq_bridge::stop_route(&name).await;
-        }
 
         {
             let mut handles = self.ui_handles.write().await;
@@ -1270,15 +1232,6 @@ impl UiApp {
             }
         }
 
-        for route in routes.values() {
-            if route.enabled && route.route.is_ref() {
-                route.route.register_output_endpoint(None).map_err(|e| {
-                    UpdateConfigError::RegisterOutputEndpoint(format!(
-                        "register_output_endpoint failed: {e}"
-                    ))
-                })?;
-            }
-        }
         for consumer in &consumers {
             let resolved_output = resolve_consumer_output(consumer, &new_config.publishers)?;
             let output_endpoint = match &resolved_output {
@@ -1295,27 +1248,6 @@ impl UiApp {
                 })?;
             }
         }
-
-        for (name, route) in &routes {
-            if !route_is_active(route) {
-                continue;
-            }
-            let should_deploy = if let Some(old_route) = old_config.routes.get(name) {
-                serde_json::to_value(old_route).unwrap() != serde_json::to_value(route).unwrap()
-            } else {
-                true
-            };
-
-            if should_deploy {
-                route.route.deploy(name).await.map_err(|e| {
-                    UpdateConfigError::DeployRouteFailed(format!(
-                        "Failed to deploy route {name}: {e}"
-                    ))
-                })?;
-            }
-        }
-
-        new_config.routes = routes.clone();
         new_config.consumers = consumers.clone();
 
         let config_file = &*self.config_file_path;
@@ -1531,7 +1463,7 @@ impl UiApp {
                         }
                     }
                 });
-            let internal_route_name = format!("ui_collector_route_{name}");
+            let internal_route_name = format!("ui_collector_route_{}", consumer.id);
             let handle = route.run(&internal_route_name).await?;
             handles.insert(name, handle);
         }
@@ -1544,7 +1476,6 @@ pub enum UpdateConfigError {
     Validation(String),
     UnsupportedCustomResponses(String),
     RegisterOutputEndpoint(String),
-    DeployRouteFailed(String),
     Other(anyhow::Error),
 }
 
@@ -1553,8 +1484,7 @@ impl std::fmt::Display for UpdateConfigError {
         match self {
             Self::Validation(message)
             | Self::UnsupportedCustomResponses(message)
-            | Self::RegisterOutputEndpoint(message)
-            | Self::DeployRouteFailed(message) => write!(f, "{message}"),
+            | Self::RegisterOutputEndpoint(message) => write!(f, "{message}"),
             Self::Other(error) => write!(f, "{error}"),
         }
     }

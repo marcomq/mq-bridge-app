@@ -3,6 +3,7 @@ import ArrayItemRow from "./ArrayItemRow.svelte";
 import BasicAuthEditor from "./BasicAuthEditor.svelte";
 import CheckboxField from "./CheckboxField.svelte";
 import CollapsibleFields from "./CollapsibleFields.svelte";
+import Endpoint from "./Endpoint.svelte";
 import FormField from "./FormField.svelte";
 import GenericAdditionalPropertyRow from "./GenericAdditionalPropertyRow.svelte";
 import HeadersEditor from "./HeadersEditor.svelte";
@@ -63,7 +64,6 @@ function withRendererDefaults(context: RendererContext): RendererContext {
       },
       visibility: {
         hiddenPaths: [],
-        hiddenKeys: [],
         customVisibility: () => true,
         ...(config.visibility || {}),
       },
@@ -98,13 +98,14 @@ forms.setI18n({
 forms.setConfig({
   visibility: {
     hiddenPaths: ["publishers", "consumers", "routes", "presets", "history"],
+    hiddenKeys: ["id"],
     customVisibility: (node: SchemaNode, path: string) => {
       const description = String(node.description || "");
       const lowerPath = path.toLowerCase();
       const formMode = String((window as any)._mqb_form_mode || "");
       const fieldName = lowerPath.split(".").pop() || "";
 
-      if (formMode === "publisher" && ["url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
+      if (formMode === "publisher" && ["id", "url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
         return false;
       }
 
@@ -112,7 +113,7 @@ forms.setConfig({
       // The customVisibility is for top-level properties of the consumer/publisher config, not nested endpoint properties.
       // The `hidden: true` attributes in Svelte components are now redundant with this.
       // The `custom_headers` field is now handled by the collapsible renderer.
-      if (formMode === "consumer" && ["output", "response", "message_capture"].includes(fieldName)) {
+      if (formMode === "consumer" && ["id", "output", "response", "message_capture"].includes(fieldName)) {
         return false;
       }
 
@@ -135,7 +136,6 @@ forms.setConfig({
       "input",
       "output",
       "name",
-      "id",
       "title",
       "type",
       "enabled",
@@ -254,6 +254,7 @@ const BASIC_ENDPOINT_FIELDS: Record<string, string[]> = {
   ibmmq: ["url", "queue", "topic"],
   switch: ["metadata_key", "default", "cases"],
   fanout: ["endpoints"],
+  websocket: ["url"],
   aws: ["region", "access_key_id", "secret_access_key"], // Assuming these are basic for AWS, adjust if needed
 };
 
@@ -818,6 +819,23 @@ const middlewaresRenderer = {
 const getPathValue = (root: any, path: Array<string | number>) => path.reduce((current, segment) => current?.[segment], root);
 
 const setPathValue = (root: any, path: Array<string | number>, value: unknown) => {
+  if (path.length === 0) {
+    if (Array.isArray(root) && Array.isArray(value)) {
+      root.splice(0, root.length, ...value);
+      return;
+    }
+
+    if (root && typeof root === "object" && value && typeof value === "object" && !Array.isArray(value)) {
+      Object.keys(root).forEach((key) => {
+        delete root[key];
+      });
+      Object.assign(root, value);
+      return;
+    }
+
+    throw new Error("Cannot replace root form value with a non-object payload");
+  }
+
   let cursor = root;
   path.slice(0, -1).forEach((segment, index) => {
     const nextSegment = path[index + 1];
@@ -845,8 +863,58 @@ const descriptionRenderer = {
   },
 };
 
+const endpointRenderer = {
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    // Primary publisher and consumer endpoint definitions should use the full object editor
+    // instead of being rendered as a reference to another publisher.
+    // Use _path for more robust matching of nested elements.
+    const isPrimaryDefinition =
+      elementId === "root.endpoint" ||
+      elementId === "input" ||
+      elementId === "output" ||
+      /^publishers\.\d+\.endpoint$/i.test(_path) || /^consumers\.\d+\.(input|output|endpoint)$/i.test(_path);
+
+    if (isPrimaryDefinition) {
+      return renderObject(context, node, elementId, false, dataPath);
+    }
+
+    const currentValue = getPathValue(context.data, dataPath);
+    const currentScalarValue =
+      typeof currentValue === "string"
+        ? currentValue
+        : (currentValue && typeof currentValue === "object" && !Array.isArray(currentValue) && typeof currentValue.ref === "string"
+            ? currentValue.ref
+            : (typeof node.defaultValue === "string" ? node.defaultValue : ""));
+
+    return renderSvelteNode(Endpoint, {
+      title: node.title === "" ? "" : String(node.title || "Ref Endpoint"),
+      description: String(node.description || ""),
+      value: currentScalarValue,
+      name: elementId,
+      onChange: (next: string) => {
+        const existing = getPathValue(context.data, dataPath);
+        const isEndpointObject = node.type === "object";
+
+        let updated;
+        if (isEndpointObject || (existing && typeof existing === "object" && !Array.isArray(existing) && 'ref' in existing)) {
+          updated = {
+            ...(existing && typeof existing === "object" ? existing : {}),
+            ref: next,
+          };
+        } else {
+          updated = next;
+        }
+        const newData = structuredClone(context.data);
+        setPathValue(newData, dataPath, updated);
+        context.onChange(newData);
+      },
+    });
+  },
+};
+
 const CUSTOM_RENDERERS: Record<string, unknown> = {
   Route: routeObjectRenderer,
+  Endpoint: endpointRenderer,
   tls: tlsRenderer,
   basic_auth: basicAuthRenderer,
   custom_headers: customHeadersRenderer,
@@ -854,6 +922,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,
+  "root.endpoint": renderObject,
   "output.mode": { render: () => document.createDocumentFragment() },
   value: {
     render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
@@ -888,6 +957,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   "http",
   "static",
   "sled",
+  "websocket",
   "sqlx",
   "grpc",
   "ibmmq",
@@ -919,6 +989,7 @@ CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
 
 CUSTOM_RENDERERS.RefConfig = CUSTOM_RENDERERS.ref;
 CUSTOM_RENDERERS.StaticConfig = CUSTOM_RENDERERS.static;
+CUSTOM_RENDERERS.EndpointConfig = endpointRenderer;
 
 CUSTOM_RENDERERS.AppConfig = rootRenderer;
 CUSTOM_RENDERERS.route = routeObjectRenderer;

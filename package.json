@@ -15,7 +15,7 @@
   "scripts": {
     "build:ui": "vite build",
     "dev": "concurrently -k -n backend,ui -c yellow,cyan \"npm:dev:backend\" \"npm:dev:ui\"",
-    "dev:backend": "node scripts/dev-backend.mjs",
+    "dev:backend": "node dev/scripts/dev-backend.mjs",
     "dev:ui": "vite --host 127.0.0.1 --port 39092",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",

@@ -843,21 +843,8 @@ fn init_logging(config: &AppConfig) {
 }
 
 async fn deploy_routes(config: &mut AppConfig) -> anyhow::Result<()> {
-    if config.routes.is_empty() && config.consumers.is_empty() {
+    if config.consumers.is_empty() {
         return Ok(());
-    }
-
-    for route in config.routes.values() {
-        if route.enabled && route.route.is_ref() {
-            route.route.register_output_endpoint(None)?;
-        }
-    }
-
-    for (name, route) in &config.routes {
-        if !route.enabled {
-            continue;
-        }
-        route.route.deploy(name).await?;
     }
 
     Ok(())
