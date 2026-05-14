@@ -30,6 +30,10 @@ export function setStorageBackend(backend: StorageBackend): void {
   activeBackend = backend;
 }
 
+export function getStorageBackend(): StorageBackend {
+  return activeBackend;
+}
+
 export function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = activeBackend.getItem(key);

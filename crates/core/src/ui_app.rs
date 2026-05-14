@@ -11,7 +11,7 @@ use mq_bridge::route::RouteHandle;
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::RwLock as StdRwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -168,6 +168,7 @@ pub struct UiApp {
 struct RouteMetricSample {
     total_messages: f64,
     observed_at: Instant,
+    smoothed_throughput: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -340,42 +341,34 @@ fn is_same_origin_request(msg: &CanonicalMessage) -> bool {
     true
 }
 
-fn extract_label_value(segment: &str, label: &str) -> Option<String> {
-    let pattern = format!(r#"{label}=""#);
-    let start = segment.find(&pattern)? + pattern.len();
-    let remainder = &segment[start..];
-    let end = remainder.find('"')?;
-    Some(remainder[..end].to_string())
-}
+const THROUGHPUT_EMA_ALPHA: f64 = 0.5;
 
-fn parse_route_metric_totals(metrics_text: &str) -> HashMap<(String, String), f64> {
-    let mut totals = HashMap::new();
-
-    for line in metrics_text.lines() {
-        if !line.starts_with("queue_messages_processed_total{") {
-            continue;
-        }
-
-        let Some(labels_end) = line.find('}') else {
-            continue;
-        };
-        let labels = &line["queue_messages_processed_total{".len()..labels_end];
-        let value_str = line[labels_end + 1..].trim();
-        let Ok(value) = value_str.parse::<f64>() else {
-            continue;
+fn next_route_metric_sample(
+    previous: Option<RouteMetricSample>,
+    total_messages: f64,
+    observed_at: Instant,
+) -> RouteMetricSample {
+    let smoothed_throughput = if let Some(previous) = previous {
+        let elapsed = observed_at
+            .duration_since(previous.observed_at)
+            .as_secs_f64();
+        let current_throughput = if elapsed > 0.0 {
+            (total_messages - previous.total_messages).max(0.0) / elapsed
+        } else {
+            0.0
         };
 
-        let Some(route) = extract_label_value(labels, "route") else {
-            continue;
-        };
-        let Some(endpoint) = extract_label_value(labels, "endpoint") else {
-            continue;
-        };
+        THROUGHPUT_EMA_ALPHA * current_throughput
+            + (1.0 - THROUGHPUT_EMA_ALPHA) * previous.smoothed_throughput
+    } else {
+        0.0
+    };
 
-        totals.insert((route, endpoint), value);
+    RouteMetricSample {
+        total_messages,
+        observed_at,
+        smoothed_throughput,
     }
-
-    totals
 }
 
 fn consumer_runtime_id_to_name(consumers: &[ConsumerConfig]) -> HashMap<String, String> {
@@ -1015,69 +1008,18 @@ impl UiApp {
             .into_iter()
             .filter(|name| name != "web_ui" && !name.starts_with("ui_collector_route_"))
             .collect();
-        let metrics_enabled_routes: HashSet<String> = HashSet::new();
         drop(config);
 
-        let route_totals = parse_route_metric_totals(&self.metrics_handle.render());
         let now = Instant::now();
         let mut samples = self.throughput_samples.write().await;
         let mut route_throughput = HashMap::new();
 
-        for route_name in &metrics_enabled_routes {
-            let input_total = route_totals
-                .get(&(route_name.clone(), "input".to_string()))
-                .copied();
-            let output_total = route_totals
-                .get(&(route_name.clone(), "output".to_string()))
-                .copied();
-            let Some(total_messages) = input_total.or(output_total) else {
-                route_throughput.insert(route_name.clone(), 0.0);
-                continue;
-            };
-
-            let throughput = if let Some(previous) = samples.get(route_name) {
-                let elapsed = now.duration_since(previous.observed_at).as_secs_f64();
-                if elapsed > 0.0 && total_messages >= previous.total_messages {
-                    (total_messages - previous.total_messages) / elapsed
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-
-            samples.insert(
-                route_name.clone(),
-                RouteMetricSample {
-                    total_messages,
-                    observed_at: now,
-                },
-            );
-            route_throughput.insert(route_name.clone(), throughput);
-        }
-
-        samples.retain(|route_name, _| metrics_enabled_routes.contains(route_name));
-
         for (name, sequence) in self.consumer_message_sequences.read().await.iter() {
             let total_messages = sequence.load(Ordering::Relaxed) as f64;
-            let throughput = if let Some(previous) = samples.get(name) {
-                let elapsed = now.duration_since(previous.observed_at).as_secs_f64();
-                if elapsed > 0.0 && total_messages >= previous.total_messages {
-                    (total_messages - previous.total_messages) / elapsed
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            samples.insert(
-                name.clone(),
-                RouteMetricSample {
-                    total_messages,
-                    observed_at: now,
-                },
-            );
-            route_throughput.insert(name.clone(), throughput);
+            let next_sample =
+                next_route_metric_sample(samples.get(name).copied(), total_messages, now);
+            samples.insert(name.clone(), next_sample);
+            route_throughput.insert(name.clone(), next_sample.smoothed_throughput);
         }
 
         active_consumers.sort();
@@ -1563,6 +1505,46 @@ mod tests {
                 kid: None,
             },
         }
+    }
+
+    #[test]
+    fn next_route_metric_sample_starts_with_zero_throughput() {
+        let now = Instant::now();
+
+        let sample = next_route_metric_sample(None, 42.0, now);
+
+        assert_eq!(sample.total_messages, 42.0);
+        assert_eq!(sample.observed_at, now);
+        assert_eq!(sample.smoothed_throughput, 0.0);
+    }
+
+    #[test]
+    fn next_route_metric_sample_applies_ema_to_instantaneous_throughput() {
+        let start = Instant::now();
+        let previous = RouteMetricSample {
+            total_messages: 10.0,
+            observed_at: start,
+            smoothed_throughput: 4.0,
+        };
+
+        let next = next_route_metric_sample(Some(previous), 18.0, start + Duration::from_secs(2));
+
+        // Instantaneous throughput is (18 - 10) / 2 = 4.0, so the EMA stays at 4.0.
+        assert_eq!(next.smoothed_throughput, 4.0);
+    }
+
+    #[test]
+    fn next_route_metric_sample_clamps_negative_throughput_before_smoothing() {
+        let start = Instant::now();
+        let previous = RouteMetricSample {
+            total_messages: 10.0,
+            observed_at: start,
+            smoothed_throughput: 6.0,
+        };
+
+        let next = next_route_metric_sample(Some(previous), 8.0, start + Duration::from_secs(1));
+
+        assert_eq!(next.smoothed_throughput, 3.0);
     }
 
     #[tokio::test]

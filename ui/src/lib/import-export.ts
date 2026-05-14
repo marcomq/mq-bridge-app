@@ -11,7 +11,7 @@ import {
   type PresetsByPublisher,
   type PublisherPreset,
 } from "./workspace-config";
-import { setStoredJson } from "./encrypted-json-storage";
+import { removeStoredJson, setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
 
 export type ImportedRequest = PublisherPreset;
@@ -522,12 +522,12 @@ async function saveImportedConfig(config: Record<string, unknown>) {
   const history = sanitizePublisherHistory(nextConfig.history);
   nextConfig.history = history;
   const storageSecurity = resolveStorageSecurity((window as any)._mqb_storage_security, nextConfig);
-  if (typeof window.localStorage?.setItem === "function" && hasEncryptedMessages(storageSecurity)) {
+  if (hasEncryptedMessages(storageSecurity)) {
     await setStoredJson(PUBLISHER_HISTORY_KEY, history, storageSecurity);
-  } else if (typeof window.localStorage?.setItem === "function" && !isSensitiveConfig(nextConfig)) {
-    window.localStorage.setItem(PUBLISHER_HISTORY_KEY, JSON.stringify(history));
-  } else if (typeof window.localStorage?.removeItem === "function") {
-    window.localStorage.removeItem(PUBLISHER_HISTORY_KEY);
+  } else if (!isSensitiveConfig(nextConfig)) {
+    await setStoredJson(PUBLISHER_HISTORY_KEY, history, storageSecurity);
+  } else {
+    removeStoredJson(PUBLISHER_HISTORY_KEY);
   }
   mqbApp.setConfig(nextConfig);
 }

@@ -197,7 +197,7 @@
             >+</wa-button>
           {#if addMenuOpen}
             <div class="add-menu">
-              {#each PUBLISHER_TYPE_OPTIONS as type}
+              {#each PUBLISHER_TYPE_OPTIONS as type (type)}
                 <button type="button" onclick={() => handleAdd(type)}>{type.toUpperCase()}</button>
               {/each}
             </div>
@@ -479,7 +479,13 @@
                       </tr>
                     {:else}
                       {#each filteredPresetRows as preset (preset.presetIndex)}
-                        <tr>
+                        <tr
+                          class="preset-row"
+                          role="button"
+                          tabindex="0"
+                          onclick={() => applyPublisherPresetAction(preset.presetIndex)}
+                          onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => applyPublisherPresetAction(preset.presetIndex))}
+                        >
                           <td>{preset.name}</td>
                           <td>{preset.endpointType}</td>
                           <td class="preview">{preset.methodLabel ? `${preset.methodLabel} ` : ""}{preset.targetSummary}</td>
@@ -492,17 +498,14 @@
                                 variant="neutral"
                                 role="button"
                                 tabindex="0"
-                                onclick={() => applyPublisherPresetAction(preset.presetIndex)}
-                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => applyPublisherPresetAction(preset.presetIndex))}
-                              >Apply</wa-button>
-                              <wa-button
-                                size="small"
-                                appearance="outlined"
-                                variant="neutral"
-                                role="button"
-                                tabindex="0"
-                                onclick={() => void renamePublisherPresetAction(preset.presetIndex)}
-                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void renamePublisherPresetAction(preset.presetIndex))}
+                                onclick={(event) => {
+                                  event.stopPropagation();
+                                  void renamePublisherPresetAction(preset.presetIndex);
+                                }}
+                                onkeydown={(event: KeyboardEvent) => {
+                                  event.stopPropagation();
+                                  handleActionKey(event, () => void renamePublisherPresetAction(preset.presetIndex));
+                                }}
                               >Rename</wa-button>
                               <wa-button
                                 size="small"
@@ -510,8 +513,14 @@
                                 variant="neutral"
                                 role="button"
                                 tabindex="0"
-                                onclick={() => void presetToPublisherAction(preset.presetIndex)}
-                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void presetToPublisherAction(preset.presetIndex))}
+                                onclick={(event) => {
+                                  event.stopPropagation();
+                                  void presetToPublisherAction(preset.presetIndex);
+                                }}
+                                onkeydown={(event: KeyboardEvent) => {
+                                  event.stopPropagation();
+                                  handleActionKey(event, () => void presetToPublisherAction(preset.presetIndex));
+                                }}
                               >To Publisher</wa-button>
                               <wa-button
                                 size="small"
@@ -519,8 +528,14 @@
                                 variant="danger"
                                 role="button"
                                 tabindex="0"
-                                onclick={() => deletePublisherPresetAction(preset.presetIndex)}
-                                onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => deletePublisherPresetAction(preset.presetIndex))}
+                                onclick={(event) => {
+                                  event.stopPropagation();
+                                  deletePublisherPresetAction(preset.presetIndex);
+                                }}
+                                onkeydown={(event: KeyboardEvent) => {
+                                  event.stopPropagation();
+                                  handleActionKey(event, () => deletePublisherPresetAction(preset.presetIndex));
+                                }}
                               >Delete</wa-button>
                             </div>
                           </td>

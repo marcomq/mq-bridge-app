@@ -24,6 +24,7 @@ describe("storage-security", () => {
       "unencrypted",
       "balanced",
       "env_temporary_messages",
+      "sensitive",
     ]);
   });
 
@@ -99,6 +100,23 @@ describe("storage-security", () => {
         encrypted: true,
         persistent: false,
         configEncrypted: false,
+        messagesEncrypted: true,
+        messagesPersistent: false,
+        keySource: "ephemeral-process",
+      }),
+    );
+  });
+
+  test("falls back to encrypted config and temporary encrypted messages for sensitive mode", () => {
+    expect(
+      fallbackStorageSecurity({
+        config_security: { mode: "sensitive" },
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        encrypted: true,
+        persistent: false,
+        configEncrypted: true,
         messagesEncrypted: true,
         messagesPersistent: false,
         keySource: "ephemeral-process",

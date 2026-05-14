@@ -270,6 +270,7 @@ describe("settings", () => {
       "unencrypted",
       "balanced",
       "env_temporary_messages",
+      "sensitive",
     ]);
   });
 

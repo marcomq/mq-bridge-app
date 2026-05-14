@@ -8,6 +8,7 @@ import FormField from "./FormField.svelte";
 import GenericAdditionalPropertyRow from "./GenericAdditionalPropertyRow.svelte";
 import HeadersEditor from "./HeadersEditor.svelte";
 import OptionalSectionField from "./OptionalSectionField.svelte";
+import PasswordField from "./PasswordField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
 import { mqbApp } from "../runtime-window";
@@ -98,14 +99,13 @@ forms.setI18n({
 forms.setConfig({
   visibility: {
     hiddenPaths: ["publishers", "consumers", "routes", "presets", "history"],
-    hiddenKeys: ["id"],
     customVisibility: (node: SchemaNode, path: string) => {
       const description = String(node.description || "");
       const lowerPath = path.toLowerCase();
       const formMode = String((window as any)._mqb_form_mode || "");
       const fieldName = lowerPath.split(".").pop() || "";
 
-      if (formMode === "publisher" && ["id", "url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
+      if (formMode === "publisher" && ["id", "presets", "url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
         return false;
       }
 
@@ -113,7 +113,7 @@ forms.setConfig({
       // The customVisibility is for top-level properties of the consumer/publisher config, not nested endpoint properties.
       // The `hidden: true` attributes in Svelte components are now redundant with this.
       // The `custom_headers` field is now handled by the collapsible renderer.
-      if (formMode === "consumer" && ["id", "output", "response", "message_capture"].includes(fieldName)) {
+      if (formMode === "consumer" && ["id", "presets", "output",  "response", "message_capture"].includes(fieldName)) {
         return false;
       }
 
@@ -303,6 +303,12 @@ domRenderer.renderFieldWrapper = (
   const input = (inputElement.querySelector?.("input, select, textarea") as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null)
     || inputElement;
   const isCheckbox = input instanceof HTMLInputElement && input.type === "checkbox";
+  const isPassword = input instanceof HTMLInputElement && node.format === "password";
+
+  if (isPassword) {
+    input.type = "password";
+    input.autocomplete = input.autocomplete || "current-password";
+  }
 
   if (input?.classList) {
     if (isCheckbox) {
@@ -334,6 +340,20 @@ domRenderer.renderFieldWrapper = (
       description: formatDescription(node, elementId),
       labelFor: input instanceof HTMLElement ? input.id : undefined,
       control: input,
+    });
+  }
+
+  if (isPassword) {
+    return renderSvelteNode(PasswordField, {
+      label: formatLabel(node, elementId),
+      description: formatDescription(node, elementId),
+      labelFor: input instanceof HTMLElement ? input.id : undefined,
+      control: inputElement,
+      fieldName: elementId,
+      wrapperClass: wrapperClass || "",
+      required: Boolean(node.required),
+      maskedLabel: "Show",
+      visibleLabel: "Hide",
     });
   }
 
@@ -750,9 +770,7 @@ const createScalarEndpointRenderer = (
         } else {
           updated = next;
         }
-        const newData = structuredClone(context.data);
-        setPathValue(newData, dataPath, updated);
-        context.onChange(newData);
+        commitPathValue(context, dataPath, updated);
       },
     });
   },
@@ -849,6 +867,21 @@ const setPathValue = (root: any, path: Array<string | number>, value: unknown) =
 
 const getName = (dataPath: Array<string | number>) => dataPath.map(String).join('.');
 
+const commitPathValue = (
+  context: RendererContext,
+  dataPath: Array<string | number>,
+  value: unknown,
+) => {
+  if (context.store && typeof context.store.setPath === "function") {
+    context.store.setPath(dataPath, value);
+    return;
+  }
+
+  const newData = structuredClone(context.data);
+  setPathValue(newData, dataPath, value);
+  context.onChange(newData);
+};
+
 const descriptionRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>) => {
     const textarea = document.createElement("textarea");
@@ -904,9 +937,7 @@ const endpointRenderer = {
         } else {
           updated = next;
         }
-        const newData = structuredClone(context.data);
-        setPathValue(newData, dataPath, updated);
-        context.onChange(newData);
+        commitPathValue(context, dataPath, updated);
       },
     });
   },

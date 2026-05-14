@@ -1,4 +1,5 @@
 import { hasEncryptedMessages, hasTemporaryEncryptedMessages, type StorageSecurityInfo } from "./storage-security";
+import { getStorageBackend } from "./storage";
 
 type EncryptedEnvelope = {
   v: number;
@@ -103,7 +104,8 @@ export async function getStoredJson<T>(
   security: StorageSecurityInfo,
   options: { clearOnFailure?: boolean } = {},
 ) {
-  const raw = localStorage.getItem(storageKey);
+  const storage = getStorageBackend();
+  const raw = storage.getItem(storageKey);
   if (!raw) return fallback;
 
   if (!hasEncryptedMessages(security)) {
@@ -119,17 +121,22 @@ export async function getStoredJson<T>(
   } catch {
     const shouldClear = options.clearOnFailure ?? hasTemporaryEncryptedMessages(security);
     if (shouldClear) {
-      localStorage.removeItem(storageKey);
+      storage.removeItem(storageKey);
     }
     return fallback;
   }
 }
 
 export async function setStoredJson(storageKey: string, value: unknown, security: StorageSecurityInfo) {
+  const storage = getStorageBackend();
   if (!hasEncryptedMessages(security)) {
-    localStorage.setItem(storageKey, JSON.stringify(value));
+    storage.setItem(storageKey, JSON.stringify(value));
     return;
   }
   const encrypted = await encryptJson(`mq-bridge-app:localStorage:${storageKey}`, value, security);
-  localStorage.setItem(storageKey, encrypted);
+  storage.setItem(storageKey, encrypted);
+}
+
+export function removeStoredJson(storageKey: string) {
+  getStorageBackend().removeItem(storageKey);
 }

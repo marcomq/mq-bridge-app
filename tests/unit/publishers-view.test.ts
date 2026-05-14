@@ -237,7 +237,7 @@ describe("initPublishers", () => {
 
     formChange?.({
       name: "static",
-      endpoint: { static: {} },
+      endpoint: { static: "hello world" },
       comment: "",
     });
 
@@ -250,7 +250,7 @@ describe("initPublishers", () => {
           name: "static",
           endpoint: {
             middlewares: [],
-            static: "",
+            static: "hello world",
           },
           comment: "",
         },

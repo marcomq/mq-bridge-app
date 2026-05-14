@@ -146,6 +146,12 @@ export function storageModeOptions(info: StorageSecurityInfo): StorageModeOption
       detail: "Plain config with env placeholders and encrypted message history cleared after restart.",
       available: true,
     },
+    {
+      value: "sensitive",
+      title: "Sensitive",
+      detail: "Encrypted config with temporary encrypted message history cleared after restart.",
+      available: true,
+    },
   ];
 }
 
