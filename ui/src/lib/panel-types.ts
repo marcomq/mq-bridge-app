@@ -49,6 +49,13 @@ export type PublisherConfig = {
   name: string;
   endpoint: Record<string, unknown>;
   comment?: string;
+  payload?: string;
+  headers?: Array<{
+    key: string;
+    value: string;
+    enabled: boolean;
+  }>;
+  sort_order?: number;
 };
 
 export type ConsumerResponseHeaderRow = {
@@ -95,10 +102,10 @@ export type PublishersAppConfig = {
   publishers: PublisherConfig[];
   consumers?: ConsumerConfig[];
   routes?: Record<string, unknown>;
-  presets?: PresetsByPublisher;
   env_vars?: EnvVars;
   history?: PublisherHistoryStore;
   config_security?: ConfigSecurity;
+  presets?: PresetsByPublisher;
 };
 
 export type ConsumersSchemaRoot = {

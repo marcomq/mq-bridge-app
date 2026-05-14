@@ -1,5 +1,5 @@
 type ConsumerTab = "definition" | "response" | "messages";
-type PublisherTab = "payload" | "headers" | "history" | "definition" | "presets";
+type PublisherTab = "payload" | "headers" | "history" | "definition";
 import { appWindow, getMqbState, replaceHash } from "./runtime-window";
 
 function switchOrRun(mainTab: "consumers" | "publishers", callback: () => void, fallback?: () => void) {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { get } from "svelte/store";
   import { activeMainTab, publishersPanelState } from "../lib/stores";
+  import type { PublisherTreeNode } from "../lib/publisher-grouping";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
   import "@awesome.me/webawesome/dist/components/button/button.js";
   import "@awesome.me/webawesome/dist/components/details/details.js";
@@ -17,21 +18,16 @@
     copyPublisherResponseJson,
     copyPublisherAsCurl,
     copyCurrentPublisherAction,
-    savePublisherPresetAction,
-    renamePublisherPresetAction,
-    savePublisherHistoryAsPresetAction,
-    exportPublisherPresetsAction,
     importAsyncApiToPublisherAction,
     importMqbToPublisherAction,
     importOpenApiToPublisherAction,
     importPostmanToPublisherAction,
-    presetToPublisherAction,
-    applyPublisherPresetAction,
-    deletePublisherPresetAction,
     resendPublisherHistoryAction,
     deleteCurrentPublisherAction,
     removePublisherMetadataRow,
     restorePublisherStateFromView,
+    saveCurrentPublisherVariantAction,
+    savePublisherHistoryAsPublisherAction,
     saveCurrentPublisherAction,
     selectPublisherSubtab,
     sendPublisherAction,
@@ -48,17 +44,108 @@
   let filterText = $state("");
   let addMenuOpen = $state(false);
   let historyFilterText = $state("");
-  let presetFilterText = $state("");
   let copyFeedback = $state("");
   let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   let importInputEl: HTMLInputElement | null = null;
+  let publishersContainerEl: HTMLDivElement | null = null;
   let selectedImportKind = $state<"postman" | "openapi" | "asyncapi" | "mqb">("postman");
+  let expandedGroupIds = $state<Set<string>>(new Set());
+  let knownGroupIds = $state<Set<string>>(new Set());
+  let sidebarWidth = $state<number | null>(null);
 
-  const visibleItems = $derived(
-    $publishersPanelState.items.filter((item) =>
-      item.name.toLowerCase().includes(filterText.trim().toLowerCase()),
-    ),
-  );
+  type VisibleTreeRow =
+    | { kind: "group"; id: string; label: string; depth: number; expanded: boolean; endpointType?: string; tooltip?: string }
+    | { kind: "publisher"; id: string; label: string; depth: number; endpointType: string; publisherIndex: number; tooltip?: string };
+
+  function collectDefaultExpanded(nodes: PublisherTreeNode[], depth = 0, acc = new Set<string>()) {
+    for (const node of nodes) {
+      if (node.kind === "group") {
+        acc.add(node.id);
+        collectDefaultExpanded(node.children, depth + 1, acc);
+      }
+    }
+    return acc;
+  }
+
+  function filterTree(nodes: PublisherTreeNode[], query: string): PublisherTreeNode[] {
+    const q = query.trim().toLowerCase();
+    if (!q) return nodes;
+
+    const result: PublisherTreeNode[] = [];
+    for (const node of nodes) {
+      if (node.kind === "publisher") {
+        const matches = node.label.toLowerCase().includes(q)
+          || node.publisher.name.toLowerCase().includes(q)
+          || String(node.tooltip || "").toLowerCase().includes(q);
+        if (matches) {
+          result.push(node);
+        }
+        continue;
+      }
+
+      const children = filterTree(node.children, query);
+      if (children.length > 0 || node.label.toLowerCase().includes(q) || String(node.tooltip || "").toLowerCase().includes(q)) {
+        result.push({ ...node, children });
+      }
+    }
+    return result;
+  }
+
+  function flattenTree(nodes: PublisherTreeNode[], depth = 0): VisibleTreeRow[] {
+    const rows: VisibleTreeRow[] = [];
+    for (const node of nodes) {
+      if (node.kind === "group") {
+        const expanded = expandedGroupIds.has(node.id);
+        rows.push({
+          kind: "group",
+          id: node.id,
+          label: node.label,
+          depth,
+          expanded,
+          endpointType: node.endpointType,
+          tooltip: node.tooltip,
+        });
+        if (expanded) {
+          rows.push(...flattenTree(node.children, depth + 1));
+        }
+        continue;
+      }
+
+      rows.push({
+        kind: "publisher",
+        id: node.id,
+        label: node.label,
+        depth,
+        endpointType: node.endpointType,
+        publisherIndex: node.publisherIndex,
+        tooltip: node.tooltip,
+      });
+    }
+    return rows;
+  }
+
+  $effect(() => {
+    const defaults = collectDefaultExpanded($publishersPanelState.groupedItems || []);
+    const nextKnown = new Set(knownGroupIds);
+    const merged = new Set(expandedGroupIds);
+    let changed = false;
+
+    for (const groupId of defaults) {
+      if (!nextKnown.has(groupId)) {
+        nextKnown.add(groupId);
+        merged.add(groupId);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      knownGroupIds = nextKnown;
+      expandedGroupIds = merged;
+    }
+  });
+
+  const visibleTreeRows = $derived.by(() =>
+    flattenTree(filterTree($publishersPanelState.groupedItems || [], filterText)));
 
   onMount(() => {
     const handler = (e: MouseEvent) => {
@@ -125,21 +212,7 @@
       );
     }),
   );
-  const filteredPresetRows = $derived(
-    $publishersPanelState.presetRows.filter((row) => {
-      const q = presetFilterText.trim().toLowerCase();
-      if (!q) return true;
-      return (
-        row.name.toLowerCase().includes(q) ||
-        row.endpointType.toLowerCase().includes(q) ||
-        row.methodLabel.toLowerCase().includes(q) ||
-        row.targetSummary.toLowerCase().includes(q) ||
-        row.bodyPreview.toLowerCase().includes(q)
-      );
-    }),
-  );
-
-  function openSubtab(tab: "payload" | "headers" | "history" | "presets" | "definition") {
+  function openSubtab(tab: "payload" | "headers" | "history" | "definition") {
     selectPublisherSubtab(tab);
   }
 
@@ -166,21 +239,53 @@
 
       // Force a fresh restore pass so sidebar + detail always reflect imported state.
       const selectedIndex = get(publishersPanelState).selectedIndex || 0;
-      void restorePublisherStateFromView(selectedIndex, { tab: "presets" });
+      void restorePublisherStateFromView(selectedIndex, { tab: "definition" });
 
       await mqbDialogs.alert("✅ Import completed successfully.", "Import Success");
-      openSubtab("presets");
+      openSubtab("definition");
     } catch (error) {
       await mqbDialogs.alert(`Import failed: ${(error as Error).message}`, "Import");
     } finally {
       if (target) target.value = "";
     }
   }
+
+  function toggleGroup(groupId: string) {
+    const next = new Set(expandedGroupIds);
+    if (next.has(groupId)) {
+      next.delete(groupId);
+    } else {
+      next.add(groupId);
+    }
+    expandedGroupIds = next;
+  }
+
+  function startSidebarResize(event: MouseEvent) {
+    event.preventDefault();
+    const containerRect = publishersContainerEl?.getBoundingClientRect();
+    if (!containerRect) return;
+
+    const minWidth = 220;
+    const maxWidth = Math.max(minWidth, Math.min(640, Math.floor(containerRect.width * 0.6)));
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const nextWidth = Math.min(maxWidth, Math.max(minWidth, moveEvent.clientX - containerRect.left));
+      sidebarWidth = nextWidth;
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 </script>
 
 <div class:active={$activeMainTab === "publishers"} class="tab-content-panel" id="tab-publishers">
-  <div id="publishers-container" style="display:contents">
-    <div class="sidebar">
+  <div bind:this={publishersContainerEl} id="publishers-container" class="publishers-layout">
+    <div class="sidebar" style={`width:${sidebarWidth ?? 280}px;`}>
       <div class="sidebar-header">
         <input class="sidebar-search" id="pub-filter" type="text" placeholder="Filter publishers…" bind:value={filterText} />
         <div class="add-menu-container">
@@ -206,18 +311,39 @@
       </div>
       <div class="sidebar-list" id="pub-list">
         <div class="sidebar-group-label">Saved</div>
-        {#each visibleItems as item (item.name)}
-          <button
-            type="button"
-            class:active={$publishersPanelState.selectedIndex === item.originalIndex}
-            class="sidebar-item pub-item"
-            data-idx={item.originalIndex}
-            onclick={() => openPublisher(item.originalIndex)}
-          >
-            <span class={`proto-badge proto-${item.endpointType.toLowerCase()}`}>{item.endpointType}</span>
-            <span class="item-name">{item.name}</span>
-            <span class="item-status status-off"></span>
-          </button>
+        {#each visibleTreeRows as row (row.id)}
+          {#if row.kind === "group"}
+            <button
+              type="button"
+              class="sidebar-item sidebar-item--group"
+              title={row.tooltip}
+              onclick={() => toggleGroup(row.id)}
+              onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => toggleGroup(row.id))}
+            >
+              <span class="tree-guide" aria-hidden="true" style={`width:${row.depth * 14}px;`}></span>
+              {#if row.depth === 0 && row.endpointType}
+                <span class={`proto-badge proto-${row.endpointType.toLowerCase()}`}>{row.endpointType}</span>
+              {/if}
+              <span class="tree-caret">{row.expanded ? "▾" : "▸"}</span>
+              <span class="item-name">{row.label}</span>
+            </button>
+          {:else}
+            <button
+              type="button"
+              class:active={$publishersPanelState.selectedIndex === row.publisherIndex}
+              class="sidebar-item pub-item"
+              data-idx={row.publisherIndex}
+              title={row.tooltip}
+              onclick={() => openPublisher(row.publisherIndex)}
+            >
+              <span class="tree-guide" aria-hidden="true" style={`width:${row.depth * 14}px;`}></span>
+              {#if row.depth === 0}
+                <span class={`proto-badge proto-${row.endpointType.toLowerCase()}`}>{row.endpointType}</span>
+              {/if}
+              <span class="item-name">{row.label}</span>
+              <span class="item-status status-off"></span>
+            </button>
+          {/if}
         {/each}
       </div>
       <div class="sidebar-import-actions">
@@ -242,6 +368,13 @@
         />
       </div>
     </div>
+    <button
+      type="button"
+      class="sidebar-resizer"
+      aria-label="Resize publisher sidebar"
+      tabindex="0"
+      onmousedown={startSidebarResize}
+    ></button>
     <div class="main-content">
       <div id="pub-empty-alert" class="empty-state" style:display={$publishersPanelState.hasPublishers ? "none" : "block"}>
         No publishers configured. Click "+" to create one.
@@ -305,7 +438,6 @@
           <button type="button" class:active={$publishersPanelState.activeSubtab === "payload"} class="content-tab" data-target="pub-payload-pane" id="ctab-payload" onclick={() => openSubtab("payload")}>Body</button>
           <button type="button" class:active={$publishersPanelState.activeSubtab === "headers"} class="content-tab" data-target="pub-meta-pane" onclick={() => openSubtab("headers")}>Headers</button>
           <button type="button" class:active={$publishersPanelState.activeSubtab === "history"} class="content-tab" data-target="pub-history-pane" onclick={() => openSubtab("history")}>History</button>
-          <button type="button" class:active={$publishersPanelState.activeSubtab === "presets"} class="content-tab" data-target="pub-presets-pane" onclick={() => openSubtab("presets")}>Presets</button>
           <div style="flex:1"></div>
           <div
             class="content-tab"
@@ -409,9 +541,9 @@
                                 variant="neutral"
                                 role="button"
                                 tabindex="0"
-                                onclick={(event: MouseEvent) => { event.stopPropagation(); void savePublisherHistoryAsPresetAction(row.historyIndex); }}
-                                onkeydown={(event: KeyboardEvent) => { event.stopPropagation(); handleActionKey(event, () => void savePublisherHistoryAsPresetAction(row.historyIndex)); }}
-                              >Save Preset</wa-button>
+                                onclick={(event: MouseEvent) => { event.stopPropagation(); void savePublisherHistoryAsPublisherAction(row.historyIndex); }}
+                                onkeydown={(event: KeyboardEvent) => { event.stopPropagation(); handleActionKey(event, () => void savePublisherHistoryAsPublisherAction(row.historyIndex)); }}
+                              >Save As Publisher</wa-button>
                               <wa-button
                                 size="small"
                                 appearance="outlined"
@@ -422,121 +554,6 @@
                                 onkeydown={(event: KeyboardEvent) => { event.stopPropagation(); handleActionKey(event, () => void resendPublisherHistoryAction(row.historyIndex)); }}
                               >Resend</wa-button>
                               </span>
-                            </div>
-                          </td>
-                        </tr>
-                      {/each}
-                    {/if}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div
-              class="pane-top"
-              id="pub-presets-pane"
-              style="flex-direction:column;"
-              style:display={$publishersPanelState.activeSubtab === "presets" ? "flex" : "none"}
-            >
-              <div class="section-toolbar">
-                <span class="section-label">Request Presets</span>
-                <input class="sidebar-search" style="max-width:220px;" placeholder="Filter presets..." bind:value={presetFilterText} />
-                <wa-button
-                  variant="neutral"
-                  appearance="outlined"
-                  size="small"
-                  role="button"
-                  tabindex="0"
-                  onclick={exportPublisherPresetsAction}
-                  onkeydown={(event: KeyboardEvent) => handleActionKey(event, exportPublisherPresetsAction)}
-                >Export Presets</wa-button>
-                <wa-button
-                  variant="neutral"
-                  appearance="outlined"
-                  size="small"
-                  role="button"
-                  tabindex="0"
-                  onclick={savePublisherPresetAction}
-                  onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void savePublisherPresetAction())}
-                >Save Current</wa-button>
-              </div>
-              <div style="overflow:auto;flex:1;">
-                <table class="msg-table">
-                  <thead>
-                    <tr>
-                      <th style="width: 200px;">Name</th>
-                      <th style="width: 90px;">Type</th>
-                      <th>Request</th>
-                      <th style="width: 115px;">Body Preview</th>
-                      <th style="width: 340px;">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {#if filteredPresetRows.length === 0}
-                      <tr>
-                        <td colspan="5" style="text-align:center;padding:20px;color:var(--text-dim);">
-                          No presets saved.
-                        </td>
-                      </tr>
-                    {:else}
-                      {#each filteredPresetRows as preset (preset.presetIndex)}
-                        <tr
-                          class="preset-row"
-                          role="button"
-                          tabindex="0"
-                          onclick={() => applyPublisherPresetAction(preset.presetIndex)}
-                          onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => applyPublisherPresetAction(preset.presetIndex))}
-                        >
-                          <td>{preset.name}</td>
-                          <td>{preset.endpointType}</td>
-                          <td class="preview">{preset.methodLabel ? `${preset.methodLabel} ` : ""}{preset.targetSummary}</td>
-                          <td class="preview">{preset.bodyPreview}</td>
-                          <td>
-                            <div style="display:flex; gap:6px;">
-                              <wa-button
-                                size="small"
-                                appearance="outlined"
-                                variant="neutral"
-                                role="button"
-                                tabindex="0"
-                                onclick={(event) => {
-                                  event.stopPropagation();
-                                  void renamePublisherPresetAction(preset.presetIndex);
-                                }}
-                                onkeydown={(event: KeyboardEvent) => {
-                                  event.stopPropagation();
-                                  handleActionKey(event, () => void renamePublisherPresetAction(preset.presetIndex));
-                                }}
-                              >Rename</wa-button>
-                              <wa-button
-                                size="small"
-                                appearance="outlined"
-                                variant="neutral"
-                                role="button"
-                                tabindex="0"
-                                onclick={(event) => {
-                                  event.stopPropagation();
-                                  void presetToPublisherAction(preset.presetIndex);
-                                }}
-                                onkeydown={(event: KeyboardEvent) => {
-                                  event.stopPropagation();
-                                  handleActionKey(event, () => void presetToPublisherAction(preset.presetIndex));
-                                }}
-                              >To Publisher</wa-button>
-                              <wa-button
-                                size="small"
-                                appearance="outlined"
-                                variant="danger"
-                                role="button"
-                                tabindex="0"
-                                onclick={(event) => {
-                                  event.stopPropagation();
-                                  deletePublisherPresetAction(preset.presetIndex);
-                                }}
-                                onkeydown={(event: KeyboardEvent) => {
-                                  event.stopPropagation();
-                                  handleActionKey(event, () => deletePublisherPresetAction(preset.presetIndex));
-                                }}
-                              >Delete</wa-button>
                             </div>
                           </td>
                         </tr>
@@ -577,6 +594,16 @@
                       tabindex="0"
                       >Clone</wa-button
                     >
+                    <wa-button
+                      variant="neutral"
+                      appearance="outlined"
+                      size="small"
+                      id="pub-save-variant"
+                      onclick={saveCurrentPublisherVariantAction}
+                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void saveCurrentPublisherVariantAction())}
+                      role="button"
+                      tabindex="0"
+                    >Save As New</wa-button>
                   </div>
                   <div class="toolbar-divider" aria-hidden="true"></div>
                   <div class="editor-action-cluster">

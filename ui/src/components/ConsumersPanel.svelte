@@ -34,7 +34,9 @@
   let filterText = $state("");
   let addMenuOpen = $state(false);
   let importInputEl = $state<HTMLInputElement | null>(null);
+  let consumersContainerEl = $state<HTMLDivElement | null>(null);
   let selectedImportKind = $state<"asyncapi" | "mqb">("asyncapi");
+  let sidebarWidth = $state<number | null>(null);
 
   const visibleItems = $derived(
     $consumersPanelState.items.filter((item) =>
@@ -110,9 +112,29 @@
 
   function formatThroughput(label: string) {
     if (!label) return "";
-    // Replace digits with thousand separators using a thin space (\u2009)
-    // We wrap it in a span so we can style it to be "small" via CSS
-    return label.replace(/(\d)(?=(\d{3})+(?!\d))/g, '$1<span class="throughput-sep">\u2009</span>');
+    return label.replace(/(\d)(?=(\d{3})+(?!\d))/g, "$1\u2009");
+  }
+
+  function startSidebarResize(event: MouseEvent) {
+    event.preventDefault();
+    const containerRect = consumersContainerEl?.getBoundingClientRect();
+    if (!containerRect) return;
+
+    const minWidth = 220;
+    const maxWidth = Math.max(minWidth, Math.min(640, Math.floor(containerRect.width * 0.6)));
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const nextWidth = Math.min(maxWidth, Math.max(minWidth, moveEvent.clientX - containerRect.left));
+      sidebarWidth = nextWidth;
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }
 </script>
 
@@ -122,8 +144,8 @@
   id="tab-consumers"
   style="width: 100%"
 >
-  <div id="consumers-container" style="display:contents">
-    <div class="sidebar">
+  <div bind:this={consumersContainerEl} id="consumers-container" class="publishers-layout">
+    <div class="sidebar" style={`width:${sidebarWidth ?? 280}px;`}>
       <div class="sidebar-header">
         <input class="sidebar-search" id="cons-filter" type="text" placeholder="Filter consumers…" bind:value={filterText} />
         <div class="add-menu-container">
@@ -140,7 +162,7 @@
             >+</wa-button>
           {#if addMenuOpen}
             <div class="add-menu">
-              {#each CONSUMER_TYPE_OPTIONS as type}
+              {#each CONSUMER_TYPE_OPTIONS as type (type)}
                 <button type="button" onclick={() => handleAdd(type)}>{type.toUpperCase()}</button>
               {/each}
             </div>
@@ -160,7 +182,7 @@
             <span class={`proto-badge proto-${item.inputProto.toLowerCase()}`}>{item.inputProto}</span>
             <span class="item-name">{item.name}</span>
             <span class="msg-count" style="margin-left:auto;" title={`${item.messageCount} total messages`}>
-              {@html formatThroughput(item.throughputLabel)}
+              {formatThroughput(item.throughputLabel)}
             </span>
             <span class={`item-status ${item.statusClass}`}></span>
           </button>
@@ -182,6 +204,13 @@
         />
       </div>
     </div>
+    <button
+      type="button"
+      class="sidebar-resizer"
+      aria-label="Resize consumer sidebar"
+      tabindex="0"
+      onmousedown={startSidebarResize}
+    ></button>
     <div class="main-content">
       <div id="cons-empty-alert" class="empty-state" style:display={$consumersPanelState.hasConsumers ? "none" : "block"}>
         No consumers configured. Click "+" to create one.

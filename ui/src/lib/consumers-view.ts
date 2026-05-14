@@ -1241,7 +1241,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         direction: "vertical",
         sizes: [40, 60],
         minSize: 100,
-        gutterSize: 4,
+        gutterSize: 3,
         elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
           "flex-basis": `calc(${size}% - ${gutterSize}px)`,
         }),

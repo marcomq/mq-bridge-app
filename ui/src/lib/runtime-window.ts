@@ -41,7 +41,7 @@ export type MqbState = {
   last_consumer_idx?: number;
   last_publisher_idx?: number;
   last_consumer_tab?: "definition" | "response" | "messages";
-  last_publisher_tab?: "payload" | "headers" | "history" | "presets" | "definition";
+  last_publisher_tab?: "payload" | "headers" | "history" | "definition";
   runtime_status: {
     active_consumers: string[];
     active_routes: string[];

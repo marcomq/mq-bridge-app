@@ -86,7 +86,7 @@
           <button
             class="wa-native-button wa-native-button--neutral"
             type="button"
-            title="Export app config + presets + env vars"
+            title="Export app config + env vars"
             onclick={exportFullBundle}>Export</button
           >
           <button

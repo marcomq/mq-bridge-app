@@ -226,9 +226,15 @@ pub struct PublisherClient {
     pub name: String,
     pub endpoint: Endpoint,
     #[serde(default)]
-    pub presets: Vec<PublisherPreset>,
-    #[serde(default)]
     pub comment: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub payload: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<PublisherPresetHeader>,
+    #[serde(default, alias = "sortOrder", skip_serializing_if = "Option::is_none")]
+    pub sort_order: Option<i32>,
+    #[serde(default, alias = "presets", skip_serializing)]
+    pub legacy_presets: Vec<PublisherPreset>,
 }
 
 fn next_unique_name(base: &str, existing: &HashSet<String>) -> String {
@@ -248,6 +254,150 @@ fn next_unique_name(base: &str, existing: &HashSet<String>) -> String {
 
 fn endpoint_value(endpoint: &Endpoint) -> serde_json::Value {
     serde_json::to_value(endpoint).unwrap_or(serde_json::Value::Null)
+}
+
+fn endpoint_type_name_from_value(value: &serde_json::Value) -> String {
+    value.as_object()
+        .and_then(|object| {
+            object
+                .keys()
+                .find(|key| key.as_str() != "middlewares")
+                .cloned()
+        })
+        .unwrap_or_else(|| "http".to_string())
+}
+
+fn apply_legacy_preset_to_endpoint(endpoint: &Endpoint, preset: &PublisherPreset) -> Endpoint {
+    let mut value = endpoint_value(endpoint);
+    let endpoint_type = preset
+        .endpoint_type
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| endpoint_type_name_from_value(&value));
+    let request_fields = &preset.request_fields;
+
+    if let Some(endpoint_object) = value.as_object_mut() {
+        let endpoint_config = endpoint_object
+            .entry(endpoint_type.clone())
+            .or_insert_with(|| serde_json::json!({}));
+
+        if !endpoint_config.is_object() {
+            *endpoint_config = serde_json::json!({});
+        }
+
+        if let Some(endpoint_config_object) = endpoint_config.as_object_mut() {
+            if endpoint_type == "http" {
+                let raw_url = request_fields
+                    .get("url")
+                    .cloned()
+                    .or_else(|| preset.url.clone())
+                    .unwrap_or_default();
+                if !raw_url.trim().is_empty() {
+                    if let Ok(parsed) = url::Url::parse(&raw_url) {
+                        endpoint_config_object.insert(
+                            "url".to_string(),
+                            serde_json::Value::String(parsed.origin().ascii_serialization()),
+                        );
+                        endpoint_config_object.insert(
+                            "path".to_string(),
+                            serde_json::Value::String(format!(
+                                "{}{}",
+                                parsed.path(),
+                                parsed
+                                    .query()
+                                    .map(|query| format!("?{query}"))
+                                    .unwrap_or_default()
+                            )),
+                        );
+                    } else if let Some((base, path)) = raw_url.split_once('/') {
+                        endpoint_config_object.insert(
+                            "url".to_string(),
+                            serde_json::Value::String(base.to_string()),
+                        );
+                        endpoint_config_object.insert(
+                            "path".to_string(),
+                            serde_json::Value::String(format!("/{path}")),
+                        );
+                    } else {
+                        endpoint_config_object.insert(
+                            "url".to_string(),
+                            serde_json::Value::String(raw_url.clone()),
+                        );
+                    }
+                }
+
+                endpoint_config_object.insert(
+                    "method".to_string(),
+                    serde_json::Value::String(
+                        preset
+                            .method
+                            .clone()
+                            .unwrap_or_else(|| "POST".to_string())
+                            .to_uppercase(),
+                    ),
+                );
+                endpoint_config_object.insert(
+                    "custom_headers".to_string(),
+                    serde_json::Value::Object(
+                        preset
+                            .headers
+                            .iter()
+                            .filter(|header| header.enabled && !header.key.trim().is_empty())
+                            .map(|header| {
+                                (
+                                    header.key.trim().to_string(),
+                                    serde_json::Value::String(header.value.clone()),
+                                )
+                            })
+                            .collect(),
+                    ),
+                );
+            } else {
+                for (key, value) in request_fields {
+                    endpoint_config_object
+                        .insert(key.clone(), serde_json::Value::String(value.clone()));
+                }
+            }
+        }
+    }
+
+    serde_json::from_value(value).unwrap_or_else(|_| endpoint.clone())
+}
+
+fn migrate_legacy_publisher_presets(publishers: &mut Vec<PublisherClient>) {
+    let mut existing_names = publishers
+        .iter()
+        .map(|publisher| publisher.name.clone())
+        .collect::<HashSet<_>>();
+    let snapshot = publishers.clone();
+    let mut migrated = Vec::new();
+
+    for publisher in &snapshot {
+        for preset in &publisher.legacy_presets {
+            let base_name = if preset.name.trim().is_empty() {
+                publisher.name.clone()
+            } else {
+                format!("{} - {}", publisher.name, preset.name.trim())
+            };
+            let next_name = next_unique_name(&base_name, &existing_names);
+            existing_names.insert(next_name.clone());
+            migrated.push(PublisherClient {
+                id: generate_config_id(),
+                name: next_name,
+                endpoint: apply_legacy_preset_to_endpoint(&publisher.endpoint, preset),
+                comment: publisher.comment.clone(),
+                payload: preset.payload.clone(),
+                headers: preset.headers.clone(),
+                sort_order: None,
+                legacy_presets: Vec::new(),
+            });
+        }
+    }
+
+    publishers
+        .iter_mut()
+        .for_each(|publisher| publisher.legacy_presets.clear());
+    publishers.extend(migrated);
 }
 
 pub trait SecretStore: Send + Sync {
@@ -586,6 +736,7 @@ impl AppConfig {
     pub fn migrate_legacy_routes(&mut self) {
         self.migrate_legacy_security_mode();
         self.migrate_legacy_consumer_response();
+        migrate_legacy_publisher_presets(&mut self.publishers);
 
         if self.default_tab.trim() == "routes" {
             self.default_tab = "consumers".to_string();
@@ -627,8 +778,11 @@ impl AppConfig {
                             id: generate_config_id(),
                             name: publisher_name.clone(),
                             endpoint: route_config.route.output.clone(),
-                            presets: Vec::new(),
                             comment: String::new(),
+                            payload: String::new(),
+                            headers: Vec::new(),
+                            sort_order: None,
+                            legacy_presets: Vec::new(),
                         };
                         let publisher_id = publisher.id.clone();
                         self.publishers.push(publisher);

@@ -59,16 +59,8 @@ describe("import-export", () => {
 
     expect(result.importedKind).toBe("mqb-presets");
     expect(result.importedPresetCount).toBe(1);
-    expect(window.appConfig.presets).toEqual({
-      orders_http: [{
-        name: "preset_1",
-        method: "POST",
-        url: "https://api.local/orders",
-        payload: "{\"order\":1}",
-        headers: [],
-        request_fields: { url: "https://api.local/orders" },
-      }],
-    });
+    expect(window.appConfig.presets).toEqual({});
+    expect(window.appConfig.publishers.map((row: any) => row.name)).toContain("orders_http - preset_1");
     expect(window.appConfig.env_vars).toEqual({
       baseUrl: "https://api.local",
     });
@@ -85,14 +77,15 @@ describe("import-export", () => {
 
     expect(result.importedKind).toBe("postman");
     expect(result.importedPresetCount).toBe(1);
-    const presets = window.appConfig.presets;
-    expect(presets.orders_http[0]).toMatchObject({
-      name: "Create order",
-      endpoint_type: "http",
-      method: "POST",
-      url: "https://api.test/orders",
-      request_fields: { url: "https://api.test/orders" },
+    const importedPublisher = window.appConfig.publishers.find((row: any) => row.name === "orders_http - Create order");
+    expect(importedPublisher).toMatchObject({
+      name: "orders_http - Create order",
       payload: "{\"order\":1}",
+    });
+    expect(importedPublisher.endpoint.http).toMatchObject({
+      method: "POST",
+      url: "https://api.test",
+      path: "/orders",
     });
   });
 
@@ -106,13 +99,14 @@ describe("import-export", () => {
     });
 
     expect(result.importedKind).toBe("openapi");
-    const presets = window.appConfig.presets;
-    expect(presets.orders_http[0]).toMatchObject({
-      name: "Create order",
-      endpoint_type: "http",
+    const importedPublisher = window.appConfig.publishers.find((row: any) => row.name === "orders_http - Create order");
+    expect(importedPublisher).toMatchObject({
+      name: "orders_http - Create order",
+    });
+    expect(importedPublisher.endpoint.http).toMatchObject({
       method: "POST",
-      url: "${baseUrl}/orders",
-      request_fields: { url: "${baseUrl}/orders" },
+      url: "${baseUrl}",
+      path: "/orders",
     });
     expect(window.appConfig.env_vars.baseUrl).toBe("https://openapi.example");
   });
@@ -127,13 +121,14 @@ describe("import-export", () => {
     });
 
     expect(result.importedKind).toBe("asyncapi");
-    const presets = window.appConfig.presets;
-    expect(presets.orders_http[0]).toMatchObject({
-      name: "Publish order created",
-      endpoint_type: "http",
+    const importedPublisher = window.appConfig.publishers.find((row: any) => row.name === "orders_http - Publish order created");
+    expect(importedPublisher).toMatchObject({
+      name: "orders_http - Publish order created",
+    });
+    expect(importedPublisher.endpoint.http).toMatchObject({
       method: "POST",
-      url: "${baseUrl}/orders/created",
-      request_fields: { url: "${baseUrl}/orders/created" },
+      url: "${baseUrl}",
+      path: "/orders/created",
     });
     expect(window.appConfig.env_vars.baseUrl).toBe("mqtt://broker.local:1883");
   });
@@ -228,7 +223,7 @@ describe("import-export", () => {
     expect(window.appConfig.consumers).toEqual([]);
     expect(window.appConfig.routes).toBeUndefined();
     expect(window.appConfig.default_tab).toBe("publishers");
-    expect(window.appConfig.presets.keep_me).toHaveLength(1);
+    expect(window.appConfig.presets).toEqual({});
     expect(window.appConfig.env_vars.baseUrl).toBe("http://x");
     expect(window.appConfig.history).toMatchObject({ version: 1, publishers: {} });
   });

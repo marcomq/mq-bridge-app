@@ -1,6 +1,7 @@
 import { writable } from "svelte/store";
 import type { MainTab, RuntimeStatus } from "./runtime-status";
 import { EMPTY_RUNTIME_STATUS } from "./runtime-status";
+import type { PublisherTreeNode } from "./publisher-grouping";
 
 export const activeMainTab = writable<MainTab>("publishers");
 export const runtimeStatusStore = writable<RuntimeStatus>(EMPTY_RUNTIME_STATUS);
@@ -96,13 +97,10 @@ export interface PublisherHistoryRow {
   pinned: boolean;
 }
 
-export interface PublisherPresetRow {
-  presetIndex: number;
+export interface PublisherSidebarItem {
   name: string;
   endpointType: string;
-  methodLabel: string;
-  targetSummary: string;
-  bodyPreview: string;
+  originalIndex: number;
 }
 
 export interface PublisherRequestFieldState {
@@ -122,8 +120,9 @@ export interface PublisherHeaderRow {
 export interface PublishersPanelState {
   hasPublishers: boolean;
   items: PublisherSidebarItem[];
+  groupedItems: PublisherTreeNode[];
   selectedIndex: number;
-  activeSubtab: "payload" | "headers" | "history" | "presets" | "definition";
+  activeSubtab: "payload" | "headers" | "history" | "definition";
   isNew: boolean;
   deleteLabel: string;
   endpointType: string;
@@ -146,12 +145,12 @@ export interface PublishersPanelState {
   responseHeaders: Array<[string, string]>;
   responsePayload: string;
   historyRows: PublisherHistoryRow[];
-  presetRows: PublisherPresetRow[];
 }
 
 export const publishersPanelState = writable<PublishersPanelState>({
   hasPublishers: false,
   items: [],
+  groupedItems: [],
   selectedIndex: 0,
   activeSubtab: "payload",
   isNew: false,
@@ -176,5 +175,4 @@ export const publishersPanelState = writable<PublishersPanelState>({
   responseHeaders: [],
   responsePayload: "",
   historyRows: [],
-  presetRows: [],
 });

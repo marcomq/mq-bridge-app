@@ -21,7 +21,6 @@ type ExportBundle = {
   version: 1;
   exportedAt: string;
   config: Record<string, unknown>;
-  presets: PresetsByPublisher;
   envVars: EnvVars;
 };
 
@@ -52,7 +51,6 @@ export function exportFullBundle() {
     version: 1,
     exportedAt: new Date().toISOString(),
     config,
-    presets: sanitizePresets(config.presets),
     envVars: sanitizeEnvVars(config.env_vars),
   };
   triggerJsonDownload(`mqb-export-${isoDateCompact()}.json`, bundle);
@@ -516,7 +514,8 @@ export function extractImportedRequests(text: string): {
 }
 
 async function saveImportedConfig(config: Record<string, unknown>) {
-  const refreshed = await saveWholeConfig(fetch, config);
+  const normalizedConfig = ensureWorkspaceCollections(config);
+  const refreshed = await saveWholeConfig(fetch, normalizedConfig);
   const nextConfig = { ...(refreshed as Record<string, unknown>) };
   delete nextConfig.routes;
   const history = sanitizePublisherHistory(nextConfig.history);

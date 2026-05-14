@@ -8,16 +8,17 @@ import { publishersPanelState } from "./stores";
 import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 import {
   extractImportedRequests,
-  exportPresetsForPublisher,
   importFromJsonText,
 } from "./import-export";
 import {
   ensureWorkspaceCollections,
   isSensitiveConfig,
   sanitizePublisherHistory,
+  type PublisherPreset,
 } from "./workspace-config";
 import { setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
+import { buildPublisherTree } from "./publisher-grouping";
 import {
   ensureRefOnlyEndpointDefaults,
   getEndpointType as getEndpointTypeFromEndpointRecord,
@@ -45,19 +46,21 @@ export let clearActivePublisherHistory: () => void = () => {};
 export let copyPublisherResponse: () => void = () => {};
 export let copyPublisherResponseJson: () => void = () => {};
 export let copyPublisherAsCurl: () => void = () => {};
+export let savePublisherHistoryAsPublisherAction: (historyIndex: number) => void | Promise<void> = () => {};
 export let savePublisherHistoryAsPresetAction: (historyIndex: number) => void | Promise<void> = () => {};
 export let resendPublisherHistoryAction: (historyIndex: number) => void | Promise<void> = () => {};
+export let importPostmanToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
+export let importOpenApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
+export let importAsyncApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
+export let importMqbToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
+export let saveCurrentPublisherVariantAction: () => void | Promise<void> = () => {};
 export let savePublisherPresetAction: () => void | Promise<void> = () => {};
 export let exportPublisherPresetsAction: () => void = () => {};
 export let renamePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
 export let applyPublisherPresetAction: (presetIndex: number) => void = () => {};
 export let deletePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
-export let importPostmanToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
-export let importOpenApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
-export let importAsyncApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
-export let importMqbToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let presetToPublisherAction: (presetIndex: number) => void | Promise<void> = () => {};
-export let selectPublisherSubtab: (tab: "payload" | "headers" | "history" | "presets" | "definition") => void = () => {};
+export let selectPublisherSubtab: (tab: string) => void = () => {};
 export let addPublisherAction: (endpointType: string) => void | Promise<void> = () => {};
 export let copyCurrentPublisherAction: () => void | Promise<void> = () => {};
 export let editEnvironmentVarsAction: () => void | Promise<void> = () => {};
@@ -86,13 +89,13 @@ type RequestBarLayout = {
   fields: RequestBarFieldDescriptor[];
 };
 
-type PublisherSubtab = "payload" | "headers" | "history" | "presets" | "definition";
+type PublisherSubtab = "payload" | "headers" | "history" | "definition";
 
 const STORAGE_KEY = "mqb_publisher_state";
 const HISTORY_KEY = "mqb_publisher_history";
 
 const HTTP_METHOD_OPTIONS = ["POST", "GET", "PUT", "DELETE"];
-const PUBLISHER_SUBTABS = new Set<PublisherSubtab>(["payload", "headers", "history", "presets", "definition"]);
+const PUBLISHER_SUBTABS = new Set<PublisherSubtab>(["payload", "headers", "history", "definition"]);
 const REQUEST_BAR_METADATA_PREFIX = "request_bar.";
 
 const ENDPOINT_TYPE_KEYS = [
@@ -265,6 +268,9 @@ function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined)
 }
 
 function normalizePublisherSubtab(tab: string | undefined, fallback: PublisherSubtab = "payload"): PublisherSubtab {
+  if (tab === "presets") {
+    return "definition";
+  }
   return PUBLISHER_SUBTABS.has(tab as PublisherSubtab) ? (tab as PublisherSubtab) : fallback;
 }
 
@@ -466,7 +472,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     ? localHistoryStore
     : configHistoryStore;
   let history = flattenPublisherHistory(historyStore).slice(0, 1000);
-  let presets = workspaceConfig.presets;
   let envVars = workspaceConfig.env_vars;
 
   let savedPublisherKeys = new Set(
@@ -483,7 +488,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     return;
   }
 
-  container.style.display = "contents";
+  container.style.display = "flex";
   let currentIdx = 0;
   let activeSubtab: PublisherSubtab = "payload";
   let pubSplit: unknown;
@@ -550,14 +555,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
   };
   const persistWorkspaceCollections = async (silent = true) => {
-    workspaceConfig.presets = presets;
     workspaceConfig.env_vars = envVars;
     workspaceConfig.history = historyStore;
     const nextConfig = mqbApp.config<PublishersAppConfig>();
-    nextConfig.presets = presets;
     nextConfig.env_vars = envVars;
     nextConfig.history = historyStore;
-    await mqbRuntime.saveConfigSection("presets", presets, silent);
     await mqbRuntime.saveConfigSection("env_vars", envVars, silent);
   };
   const applyEnvVars = (value: string) =>
@@ -568,7 +570,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const openPublisherAt = (idx: number, tab = "definition") => {
     openPublisherByIndex(
       idx,
-      tab as "payload" | "headers" | "history" | "presets" | "definition",
+      tab as "payload" | "headers" | "history" | "definition",
       restorePublisherStateFromView,
       () => {
         void initPublishers(config, schema);
@@ -721,10 +723,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const getPublisherState = (publisher: PublisherConfig | null | undefined) => {
     const storageKey = getPublisherStorageKey(publisher);
     if (!storageKey) {
-      return { payload: '{\n  "hello": "world"\n}' };
+      return { payload: String(publisher?.payload || '{\n  "hello": "world"\n}') };
     }
     if (!appState[storageKey]) {
-      appState[storageKey] = { payload: '{\n  "hello": "world"\n}' };
+      appState[storageKey] = { payload: String(publisher?.payload || '{\n  "hello": "world"\n}') };
     }
     return appState[storageKey];
   };
@@ -787,12 +789,22 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!publisher) return [];
     const state = getPublisherState(publisher);
     if (!Array.isArray(state.headers)) {
-      const httpConfig = getEndpointType(publisher) === "http" ? ensureHttpConfig(publisher) : null;
-      state.headers = sortEntries(httpConfig?.custom_headers).map(([key, value]) => ({
+      const savedHeaders = Array.isArray(publisher.headers)
+        ? publisher.headers
+        : sortEntries(getEndpointType(publisher) === "http" ? ensureHttpConfig(publisher)?.custom_headers : {})
+            .map(([key, value]) => ({ key: String(key), value: String(value), enabled: true }));
+      if (getEndpointType(publisher) === "http" && Array.isArray(publisher.headers)) {
+        ensureHttpConfig(publisher).custom_headers = Object.fromEntries(
+          publisher.headers
+            .filter((row) => row.enabled !== false && String(row.key || "").trim().length > 0)
+            .map((row) => [String(row.key).trim(), String(row.value || "")]),
+        );
+      }
+      state.headers = savedHeaders.map((row) => ({
         id: nextPublisherHeaderId++,
-        key: String(key),
-        value: String(value),
-        enabled: true,
+        key: String(row.key || ""),
+        value: String(row.value || ""),
+        enabled: row.enabled !== false,
       }));
       saveAppState();
     } else {
@@ -804,15 +816,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
     syncNextPublisherHeaderId();
     return state.headers;
-  };
-
-  const getPublisherPresets = (publisher: PublisherConfig | undefined) => {
-    const storageKey = getPublisherStorageKey(publisher);
-    if (!storageKey) return [];
-    if (!Array.isArray(presets[storageKey])) {
-      presets[storageKey] = [];
-    }
-    return presets[storageKey];
   };
 
   const getCurrentPublisherUrl = (publisher: PublisherConfig) => {
@@ -837,145 +840,31 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
   };
 
-  const getPresetEndpointType = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) =>
-    preset.endpoint_type || (fallbackPublisher ? getEndpointType(fallbackPublisher) : "http");
+  const getImportedRequestEndpointType = (request: PublisherPreset, fallbackPublisher?: PublisherConfig) =>
+    request.endpoint_type || (fallbackPublisher ? getEndpointType(fallbackPublisher) : "http");
 
-  const getPresetRequestFields = (preset: PublisherPreset) => {
-    const nextFields = { ...(preset.request_fields || {}) };
-    if (preset.url && !nextFields.url) {
-      nextFields.url = preset.url;
+  const getImportedRequestFields = (request: PublisherPreset) => {
+    const nextFields = { ...(request.request_fields || {}) };
+    if (request.url && !nextFields.url) {
+      nextFields.url = request.url;
     }
     return nextFields;
   };
 
-  const getPresetRequestFieldValue = (preset: PublisherPreset, field: string) =>
-    String(getPresetRequestFields(preset)[field] || "");
+  const getImportedRequestFieldValue = (request: PublisherPreset, field: string) =>
+    String(getImportedRequestFields(request)[field] || "");
 
-  const getPresetMethodValue = (preset: PublisherPreset) =>
-    String(preset.method || "").toUpperCase();
+  const getImportedRequestMethodValue = (request: PublisherPreset) =>
+    String(request.method || "").toUpperCase();
 
-  const createPresetFromPublisherState = (
-    publisher: PublisherConfig,
-    presetName: string,
-    payload: string,
-    headers: Array<{ key: string; value: string; enabled: boolean }>,
-  ): PublisherPreset => {
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    const request_fields = Object.fromEntries(
-      layout.fields.map((descriptor) => [descriptor.field, getRequestBarFieldValue(publisher, descriptor).trim()]),
-    );
-
-    return {
-      name: presetName,
-      payload: payload || "",
-      headers: (headers || []).map((row) => ({
-        key: String(row.key || ""),
-        value: String(row.value || ""),
-        enabled: row.enabled !== false,
-      })),
-      endpoint_type: endpointType,
-      method: layout.showMethod ? (currentMethodValue || "POST") : undefined,
-      url: request_fields.url || undefined,
-      request_fields,
-    };
-  };
-
-  const createPresetFromHistoryItem = (
-    publisher: PublisherConfig,
-    item: PublisherHistoryItem,
-    presetName: string,
-  ): PublisherPreset => {
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    const requestMetadata = item.requestMetadata || {};
-    const requestFields = item.request_fields || {};
-    const request_fields = Object.fromEntries(
-      layout.fields.map((descriptor) => {
-        const value = requestFields[descriptor.field]
-          ?? requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
-          ?? requestMetadata[`request_bar.${descriptor.inputId}`]
-          ?? (descriptor.field === "url" ? String(item.url || "") : "");
-        return [descriptor.field, String(value || "")];
-      }),
-    );
-
-    return {
-      name: presetName,
-      payload: item.payload || "",
-      headers: (item.headers?.length ? item.headers : item.metadata || []).map((row: any) => ({
-        key: String(row.key ?? row.k ?? ""),
-        value: String(row.value ?? row.v ?? ""),
-        enabled: row.enabled !== false,
-      })),
-      endpoint_type: endpointType,
-      method: layout.showMethod ? String(item.method || requestMetadata.http_method || currentMethodValue || "POST") : undefined,
-      url: request_fields.url || undefined,
-      request_fields,
-    };
-  };
-
-  const applyPresetToPublisher = (publisher: PublisherConfig, preset: PublisherPreset) => {
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    const requestFields = getPresetRequestFields(preset);
-
-    if (layout.showMethod && preset.method) {
-      currentMethodValue = getPresetMethodValue(preset) || "POST";
-      if (endpointType === "http") {
-        publisher.endpoint.http ||= {};
-        publisher.endpoint.http.method = currentMethodValue;
-      }
-    }
-
-    layout.fields.forEach((descriptor) => {
-      setRequestBarFieldValue(publisher, descriptor, String(requestFields[descriptor.field] || ""));
-    });
-
-    getPublisherState(publisher).payload = preset.payload || "";
-
-    if (endpointType === "http") {
-      const rows = (preset.headers || []).map((header, index) => ({
-        id: nextPublisherHeaderId + index,
-        key: String(header.key || ""),
-        value: String(header.value || ""),
-        enabled: header.enabled !== false,
-      }));
-      nextPublisherHeaderId += rows.length;
-      updatePublisherConfigFromMetadataRows(rows);
-      return;
-    }
-
-    persistConfigState();
-  };
-
-  const summarizePresetRequest = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
-    const endpointType = getPresetEndpointType(preset, fallbackPublisher);
-    const layout = getRequestBarLayout(endpointType);
-    const requestFields = getPresetRequestFields(preset);
-    const targetSummary = layout.fields
-      .map((descriptor) => {
-        const value = String(requestFields[descriptor.field] || "").trim();
-        return value ? `${descriptor.label}: ${value}` : "";
-      })
-      .filter(Boolean)
-      .join(" | ");
-
-    return {
-      endpointType,
-      methodLabel: layout.showMethod ? (getPresetMethodValue(preset) || "POST") : "",
-      targetSummary,
-    };
-  };
-
-  const requestToPublisher = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
+  const requestToPublisher = (request: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
     const currentNames = (config.publishers || []).map((publisher) => publisher.name);
-    const endpointType = getPresetEndpointType(preset, fallbackPublisher);
-    const baseName = String(preset.name || endpointType).trim().replace(/\s+/g, "_").toLowerCase() || endpointType;
+    const endpointType = getImportedRequestEndpointType(request, fallbackPublisher);
+    const baseName = String(request.name || endpointType).trim() || endpointType;
     const name = nextUniqueName(baseName, currentNames);
-    const requestFields = getPresetRequestFields(preset);
+    const requestFields = getImportedRequestFields(request);
     const customHeaders = Object.fromEntries(
-      (preset.headers || [])
+      (request.headers || [])
         .filter((row) => row.enabled !== false && String(row.key || "").trim())
         .map((row) => [String(row.key).trim(), String(row.value || "")]),
     );
@@ -991,20 +880,59 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     });
     if (endpointType === "http") {
       const httpConfig = ensureHttpConfig(publisher);
-      httpConfig.method = getPresetMethodValue(preset) || "POST";
+      httpConfig.method = getImportedRequestMethodValue(request) || "POST";
       httpConfig.custom_headers = customHeaders;
     }
-    const headerRows = (preset.headers || []).map((row) => ({
+    const headerRows = (request.headers || []).map((row) => ({
       id: nextPublisherHeaderId++,
       key: String(row.key || ""),
       value: String(row.value || ""),
       enabled: row.enabled !== false,
     }));
     appState[getPublisherStorageKey(publisher)] = {
-      payload: preset.payload || "",
+      payload: request.payload || "",
       headers: headerRows,
     };
+    publisher.payload = request.payload || "";
+    publisher.headers = headerRows.map(({ key, value, enabled }) => ({ key, value, enabled }));
     return publisher;
+  };
+
+  const createPublisherVariantFromCurrentState = async (publisher: PublisherConfig) => {
+    const nextName = await mqbDialogs.prompt("Choose a name for the saved publisher variant.", "Save Publisher Variant", {
+      confirmLabel: "Save",
+      value: nextUniqueName(`${publisher.name} copy`, (config.publishers || []).map((row) => row.name)),
+      placeholder: "publisher_name",
+    });
+    if (!nextName) return null;
+
+    const cloned = normalizePublisherConfigShape(cloneJson(publisher));
+    cloned.id = undefined;
+    cloned.name = nextName.trim();
+    cloned.payload = getPublisherState(publisher).payload || "";
+    const nextState = structuredClone(getPublisherState(publisher));
+    appState[getPublisherStorageKey(cloned)] = nextState;
+    cloned.headers = (nextState.headers || []).map(({ key, value, enabled }) => ({ key, value, enabled }));
+    return cloned;
+  };
+
+  const createPublisherVariantFromHistoryItem = async (publisher: PublisherConfig, item: PublisherHistoryItem) => {
+    const nextName = await mqbDialogs.prompt("Choose a name for the saved publisher variant.", "Save Publisher Variant", {
+      confirmLabel: "Save",
+      value: nextUniqueName(`${publisher.name} history`, (config.publishers || []).map((row) => row.name)),
+      placeholder: "publisher_name",
+    });
+    if (!nextName) return null;
+
+    const cloned = normalizePublisherConfigShape(cloneJson(publisher));
+    cloned.id = undefined;
+    cloned.name = nextName.trim();
+    const state = getPublisherState(cloned);
+    state.payload = item.payload || "";
+    applyHistoryRequestToPublisher(cloned, item);
+    cloned.payload = state.payload;
+    cloned.headers = getPublisherHeaderRows(cloned).map(({ key, value, enabled }) => ({ key, value, enabled }));
+    return cloned;
   };
 
   const importRequestsIntoPublishers = async (
@@ -1018,69 +946,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       throw new Error(`Selected file is not a valid ${expectedKind.toUpperCase()} JSON file.`);
     }
 
-    const activePublisherName = activePublisher.name;
-    const activeUrl = getCurrentPublisherUrl(activePublisher);
-    const activePublisherPresets = getPublisherPresets(activePublisher);
-    let importedAsPresets = 0;
     let importedAsPublishers = 0;
 
-    if (expectedKind === "postman") {
-      const grouped = new Map<string, typeof imported.requests>();
-      for (const request of imported.requests) {
-        const reqUrl = getPresetRequestFieldValue(request, "url").trim();
-        if (reqUrl && reqUrl === activeUrl) {
-          const preset = structuredClone(request);
-          const existingIndex = activePublisherPresets.findIndex((row) => row.name === preset.name);
-          if (existingIndex >= 0) {
-            activePublisherPresets[existingIndex] = preset;
-          } else {
-            activePublisherPresets.push(preset);
-          }
-          importedAsPresets += 1;
-          continue;
-        }
-        const groupKey = String(request.group || request.name || "Imported Postman Group");
-        if (!grouped.has(groupKey)) grouped.set(groupKey, []);
-        grouped.get(groupKey)!.push(request);
-      }
-
-      for (const [groupName, requests] of grouped.entries()) {
-        const first = requests[0];
-        if (!first) continue;
-        const publisher = requestToPublisher({
-          ...first,
-          name: groupName,
-        }, activePublisher);
-        config.publishers.push(publisher);
-        const publisherPresets = getPublisherPresets(publisher);
-        for (const request of requests) {
-          const preset = structuredClone(request);
-          const existingIndex = publisherPresets.findIndex((row) => row.name === preset.name);
-          if (existingIndex >= 0) {
-            publisherPresets[existingIndex] = preset;
-          } else {
-            publisherPresets.push(preset);
-          }
-        }
-        importedAsPublishers += 1;
-      }
-    } else {
-      for (const request of imported.requests) {
-        const requestUrl = getPresetRequestFieldValue(request, "url").trim();
-        if (requestUrl && requestUrl === activeUrl) {
-          const preset = structuredClone(request);
-          const existingIndex = activePublisherPresets.findIndex((row) => row.name === preset.name);
-          if (existingIndex >= 0) {
-            activePublisherPresets[existingIndex] = preset;
-          } else {
-            activePublisherPresets.push(preset);
-          }
-          importedAsPresets += 1;
-        } else {
-          config.publishers.push(requestToPublisher(request, activePublisher));
-          importedAsPublishers += 1;
-        }
-      }
+    for (const request of imported.requests) {
+      config.publishers.push(requestToPublisher(request, activePublisher));
+      importedAsPublishers += 1;
     }
 
     envVars = { ...envVars, ...(imported.envVars || {}) };
@@ -1096,12 +966,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
-    const activeIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex((item) => item.name === activePublisherName);
+    const firstImportedName = imported.requests[0]?.name;
+    const activeIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex((item) => item.name === firstImportedName);
     if (activeIdx >= 0) {
-      restorePublisherStateFromView(activeIdx, { tab: "presets" });
+      restorePublisherStateFromView(activeIdx, { tab: "definition" });
     }
 
-    return { importedAsPresets, importedAsPublishers };
+    return { importedAsPublishers };
   };
 
   const syncPublishersPanelState = (responseState?: PublisherResponseState) => {
@@ -1119,28 +990,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       };
     };
     const metadataRows = endpointType === "http" && activePublisher ? getPublisherHeaderRows(activePublisher) : [];
-    const presetRows = activePublisher
-      ? getPublisherPresets(activePublisher).map((preset, presetIndex) => {
-          const summary = summarizePresetRequest(preset, activePublisher);
-          return {
-            presetIndex,
-            name: preset.name,
-            endpointType: summary.endpointType.toUpperCase(),
-            methodLabel: summary.methodLabel,
-            targetSummary: summary.targetSummary,
-            bodyPreview: (preset.payload || "").replace(/\s+/g, " ").trim().substring(0, 80),
-          };
-        })
-      : [];
     const requestPayload = activePublisher ? getPublisherState(activePublisher).payload : "";
+    const sidebarItems = publishers.map((publisher, index) => ({
+      name: publisher.name,
+      endpointType: getEndpointType(publisher).toUpperCase(),
+      originalIndex: index,
+    }));
 
     publishersPanelState.update((current: any) => ({
       hasPublishers: publishers.length > 0,
-      items: publishers.map((publisher, index) => ({
-        name: publisher.name,
-        endpointType: getEndpointType(publisher).toUpperCase(),
-        originalIndex: index,
-      })),
+      items: sidebarItems,
+      groupedItems: buildPublisherTree(publishers),
       selectedIndex: currentIdx,
       activeSubtab,
       isNew: activePublisher ? !isSavedPublisher(activePublisher) : false,
@@ -1177,7 +1037,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
           pinned: Boolean(item.pinned),
         };
       }),
-      presetRows,
     }));
   };
 
@@ -1645,7 +1504,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const selectedIdx = currentIdx;
     const originalName = config.publishers[selectedIdx]?.name || null;
     const selectedTab = activeSubtab;
-    const mapped = config.publishers.map((publisher) => normalizePublisherConfigShape(publisher));
+    const mapped = config.publishers.map((publisher) => {
+      const nextPublisher = normalizePublisherConfigShape(publisher);
+      nextPublisher.payload = getPublisherState(nextPublisher).payload || "";
+      nextPublisher.headers = getPublisherHeaderRows(nextPublisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
+      return nextPublisher;
+    });
     config.publishers.splice(0, config.publishers.length, ...mapped);
     const selectedName = config.publishers[selectedIdx]?.name || originalName;
     const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
@@ -1670,10 +1534,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       normalizePublisherConfigShape({ ...publisher }),
     );
     
-    // Mark sections as saved
-    if (refreshedConfig.presets) {
-      mqbRuntime.markSectionSaved("presets", refreshedConfig.presets);
-    }
     if (refreshedConfig.history) {
       mqbRuntime.markSectionSaved("history", refreshedConfig.history);
     }
@@ -1753,7 +1613,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
   };
   selectPublisherSubtab = (tab) => {
-    activeSubtab = tab;
+    activeSubtab = normalizePublisherSubtab(tab, activeSubtab);
     rememberPublisherView(currentIdx, activeSubtab);
     syncPublishersPanelState();
   };
@@ -1974,34 +1834,18 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     void navigator.clipboard.writeText(curlCommand);
   };
 
-  savePublisherHistoryAsPresetAction = async (historyIndex: number) => {
+  savePublisherHistoryAsPublisherAction = async (historyIndex: number) => {
     const item = history[historyIndex];
     if (!item) return;
     const publisher = publishers.find((candidate) => matchesHistoryPublisher(item, candidate));
     if (!publisher) return;
 
-    const publisherPresets = getPublisherPresets(publisher);
-    const suggestedName = nextUniqueName(
-      `${publisher.name}_history`,
-      publisherPresets.map((preset) => preset.name),
-    );
+    const variant = await createPublisherVariantFromHistoryItem(publisher, item);
+    if (!variant) return;
 
-    const presetName = await mqbDialogs.prompt("Choose a name for this request preset.", "Save Preset", {
-      confirmLabel: "Save",
-      value: suggestedName,
-      placeholder: "preset_name",
-    });
-    if (!presetName) return;
-
-    const existingIndex = publisherPresets.findIndex((preset) => preset.name === presetName);
-    const preset = createPresetFromHistoryItem(publisher, item, presetName);
-    if (existingIndex >= 0) {
-      publisherPresets[existingIndex] = preset;
-    } else {
-      publisherPresets.push(preset);
-    }
-    await persistWorkspaceCollections(true);
-    syncPublishersPanelState();
+    config.publishers.push(variant);
+    saveAppState();
+    await saveCurrentPublisherAction();
   };
 
   resendPublisherHistoryAction = async (historyIndex: number) => {
@@ -2009,92 +1853,16 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     await sendPublisherAction();
   };
 
-  savePublisherPresetAction = async () => {
+  saveCurrentPublisherVariantAction = async () => {
     const publisher = publishers[currentIdx];
     if (!publisher) return;
 
-    const presetName = await mqbDialogs.prompt("Choose a name for this request preset.", "Save Preset", {
-      confirmLabel: "Save",
-      value: nextUniqueName(`${publisher.name}_preset`, getPublisherPresets(publisher).map((preset) => preset.name)),
-      placeholder: "preset_name",
-    });
-    if (!presetName) return;
+    const variant = await createPublisherVariantFromCurrentState(publisher);
+    if (!variant) return;
 
-    const payload = getPublisherState(publisher).payload || "";
-    const headers = getEndpointType(publisher) === "http"
-      ? getPublisherHeaderRows(publisher).map((row) => ({ key: row.key, value: row.value, enabled: row.enabled }))
-      : [];
-
-    const publisherPresets = getPublisherPresets(publisher);
-    const existingIndex = publisherPresets.findIndex((preset) => preset.name === presetName);
-    const preset = createPresetFromPublisherState(publisher, presetName, payload, headers);
-    if (existingIndex >= 0) {
-      publisherPresets[existingIndex] = preset;
-    } else {
-      publisherPresets.push(preset);
-    }
-    await persistWorkspaceCollections(true);
-    syncPublishersPanelState();
-  };
-
-  exportPublisherPresetsAction = () => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    exportPresetsForPublisher(getPublisherStorageKey(publisher));
-  };
-
-  renamePublisherPresetAction = async (presetIndex: number) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const publisherPresets = getPublisherPresets(publisher);
-    const preset = publisherPresets[presetIndex];
-    if (!preset) return;
-
-    const nextName = await mqbDialogs.prompt("Rename preset", "Rename Preset", {
-      confirmLabel: "Rename",
-      value: preset.name,
-      placeholder: "preset_name",
-    });
-    if (!nextName) return;
-    const trimmed = nextName.trim();
-    if (!trimmed || trimmed === preset.name) return;
-
-    const existingIndex = publisherPresets.findIndex((row, idx) => idx !== presetIndex && row.name === trimmed);
-    if (existingIndex >= 0) {
-      const confirmed = await mqbDialogs.confirm(
-        `A preset named "${trimmed}" already exists. Overwrite it?`,
-        "Overwrite Preset",
-      );
-      if (!confirmed) return;
-      publisherPresets.splice(existingIndex, 1);
-    }
-
-    preset.name = trimmed;
-    await persistWorkspaceCollections(true);
-    syncPublishersPanelState();
-  };
-
-  applyPublisherPresetAction = (presetIndex: number) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const publisherPresets = getPublisherPresets(publisher);
-    const preset = publisherPresets[presetIndex];
-    if (!preset) return;
-
-    applyPresetToPublisher(publisher, preset);
-
-    activeSubtab = "payload";
-    rememberPublisherView(currentIdx, activeSubtab);
-    syncPublishersPanelState();
-  };
-
-  deletePublisherPresetAction = async (presetIndex: number) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const publisherPresets = getPublisherPresets(publisher);
-    publisherPresets.splice(presetIndex, 1);
-    await persistWorkspaceCollections(true);
-    syncPublishersPanelState();
+    config.publishers.push(variant);
+    saveAppState();
+    await saveCurrentPublisherAction();
   };
 
   importPostmanToPublisherAction = async (jsonText: string) => {
@@ -2117,16 +1885,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     if (type === "mqb-presets") {
-      const publisher = publishers[currentIdx];
-      const targetPublisherName = getPublisherStorageKey(publisher);
       const result = await importFromJsonText(jsonText, {
         includeConfig: false,
         includePresets: true,
-        targetPublisherName,
+        targetPublisherName: "",
       });
-      const refreshedWorkspace = ensureWorkspaceCollections(mqbApp.config<PublishersAppConfig>());
-      presets = refreshedWorkspace.presets;
-      envVars = refreshedWorkspace.env_vars;
+      envVars = ensureWorkspaceCollections(mqbApp.config<PublishersAppConfig>()).env_vars;
       syncPublishersPanelState();
       return result;
     }
@@ -2177,24 +1941,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       restorePublisherStateFromView(idx, { tab: "definition" });
     }
     return { importedKind: type, importedPublishers: importedPublishers.length };
-  };
-
-  presetToPublisherAction = async (presetIndex: number) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const publisherPresets = getPublisherPresets(publisher);
-    const preset = publisherPresets[presetIndex];
-    if (!preset) return;
-
-    config.publishers.push(requestToPublisher(preset, publisher));
-    saveAppState();
-    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
-    if (!saved) return;
-
-    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
-    mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
-    state.pending_publisher_restore = { idx: mqbApp.config<PublishersAppConfig>().publishers.length - 1, tab: "definition" };
-    initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
   };
 
   showPublisherHistoryEntry = async (historyIndex: number) => {
@@ -2286,18 +2032,20 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   copyPublisherResponse = copyPublisherResponse;
   copyPublisherResponseJson = copyPublisherResponseJson;
   copyPublisherAsCurl = copyPublisherAsCurl;
-  savePublisherHistoryAsPresetAction = savePublisherHistoryAsPresetAction;
+  savePublisherHistoryAsPublisherAction = savePublisherHistoryAsPublisherAction;
+  savePublisherHistoryAsPresetAction = savePublisherHistoryAsPublisherAction;
   resendPublisherHistoryAction = resendPublisherHistoryAction;
-  savePublisherPresetAction = savePublisherPresetAction;
-  exportPublisherPresetsAction = exportPublisherPresetsAction;
-  renamePublisherPresetAction = renamePublisherPresetAction;
-  applyPublisherPresetAction = applyPublisherPresetAction;
-  deletePublisherPresetAction = deletePublisherPresetAction;
+  saveCurrentPublisherVariantAction = saveCurrentPublisherVariantAction;
+  savePublisherPresetAction = saveCurrentPublisherVariantAction;
+  exportPublisherPresetsAction = () => {};
+  renamePublisherPresetAction = async () => {};
+  applyPublisherPresetAction = () => {};
+  deletePublisherPresetAction = async () => {};
   importPostmanToPublisherAction = importPostmanToPublisherAction;
   importOpenApiToPublisherAction = importOpenApiToPublisherAction;
   importAsyncApiToPublisherAction = importAsyncApiToPublisherAction;
   importMqbToPublisherAction = importMqbToPublisherAction;
-  presetToPublisherAction = presetToPublisherAction;
+  presetToPublisherAction = async () => {};
   selectPublisherSubtab = selectPublisherSubtab;
   editEnvironmentVarsAction = editEnvironmentVarsAction;
   beautifyPublisherPayloadAction = beautifyPublisherPayloadAction;
