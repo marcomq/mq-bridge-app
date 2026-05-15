@@ -526,7 +526,6 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
   const consumerStatus: Record<string, ConsumerStatus> = {};
   const consumerThroughput: Record<string, number> = {};
-  const consumerRateSamples: Record<string, { timestampMs: number; total: number }> = {};
   const consumerMessageSequences: Record<string, number> = {};
   const consumerLastPolled: Record<string, number> = {};
   const consumerViewState: Record<number, { responseHeaders: ConsumerResponseHeaderRow[] }> = {};
@@ -712,9 +711,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const runtimeConsumers =
       (getMqbState().runtime_status?.consumers || {}) as Record<
         string,
-        { running?: boolean; status?: { healthy?: boolean; error?: string }; message_sequence?: number }
+        { running?: boolean; status?: { healthy?: boolean; error?: string }; message_sequence?: number; throughput?: number }
       >;
-    const nowMs = Date.now();
 
     for (const existingKey of Object.keys(consumerStatus)) {
       if (!(config.consumers || []).some((consumer) => {
@@ -724,7 +722,6 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       })) {
         delete consumerStatus[existingKey];
         delete consumerThroughput[existingKey];
-        delete consumerRateSamples[existingKey];
         delete consumerMessageSequences[existingKey];
         delete consumerLastPolled[existingKey];
       }
@@ -748,19 +745,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       };
 
       if (consumerStatus[consumerKey].running) {
-        const currentSeq = runtimeConsumer?.message_sequence || 0;
-        const prevSample = consumerRateSamples[consumerKey];
-        if (prevSample) {
-          const elapsedSec = (nowMs - prevSample.timestampMs) / 1000;
-          if (elapsedSec >= 0.8) {
-            const delta = Math.max(0, currentSeq - prevSample.total);
-            consumerThroughput[consumerKey] = delta / elapsedSec;
-            consumerRateSamples[consumerKey] = { timestampMs: nowMs, total: currentSeq };
-          }
-        } else {
-          consumerRateSamples[consumerKey] = { timestampMs: nowMs, total: currentSeq };
-          consumerThroughput[consumerKey] = 0;
-        }
+        consumerThroughput[consumerKey] = runtimeConsumer?.throughput || 0;
       } else {
         consumerThroughput[consumerKey] = 0;
       }

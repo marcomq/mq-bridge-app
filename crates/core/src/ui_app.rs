@@ -11,7 +11,7 @@ use mq_bridge::route::RouteHandle;
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::RwLock as StdRwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -183,6 +183,7 @@ pub struct RuntimeStatusResponse {
 pub struct ConsumerStatusSnapshot {
     pub running: bool,
     pub status: mq_bridge::traits::EndpointStatus,
+    pub throughput: f64,
     pub message_sequence: u64,
     pub capture_enabled: bool,
     pub capture_keep_last: usize,
@@ -344,32 +345,37 @@ fn is_same_origin_request(msg: &CanonicalMessage) -> bool {
     true
 }
 
-const THROUGHPUT_EMA_ALPHA: f64 = 0.5;
+/// Time constant for throughput smoothing (EMA) in seconds.
+/// A value of 2.0s means it will take approximately 9-10s to decay to ~1% of its value.
+const THROUGHPUT_TAU: f64 = 2.0;
+/// Frequency of throughput calculations.
+const THROUGHPUT_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
 
 fn next_route_metric_sample(
     previous: Option<RouteMetricSample>,
     total_messages: f64,
     observed_at: Instant,
 ) -> RouteMetricSample {
-    let smoothed_throughput = if let Some(previous) = previous {
+    let smoothed_throughput = if let Some(previous_sample) = previous {
         let elapsed = observed_at
-            .duration_since(previous.observed_at)
+            .duration_since(previous_sample.observed_at)
             .as_secs_f64();
         if elapsed > 0.0 {
-            let current_throughput = (total_messages - previous.total_messages).max(0.0) / elapsed;
-            THROUGHPUT_EMA_ALPHA * current_throughput
-                + (1.0 - THROUGHPUT_EMA_ALPHA) * previous.smoothed_throughput
+            let current_rate = (total_messages - previous_sample.total_messages).max(0.0) / elapsed;
+
+            // Time-weighted alpha: alpha = 1 - exp(-delta_t / tau)
+            let alpha = 1.0 - (-elapsed / THROUGHPUT_TAU).exp();
+            alpha * current_rate + (1.0 - alpha) * previous_sample.smoothed_throughput
         } else {
-            previous.smoothed_throughput
+            previous_sample.smoothed_throughput
         }
     } else {
         0.0
     };
-
     RouteMetricSample {
         total_messages,
         observed_at,
-        smoothed_throughput,
+        smoothed_throughput, // First observation: we have no previous throughput to smooth, so start at 0.
     }
 }
 
@@ -391,7 +397,7 @@ fn encode_collector_route_key(consumer_key: &str) -> String {
 }
 
 fn decode_collector_route_key(encoded: &str) -> Option<String> {
-    if encoded.len() % 2 != 0 {
+    if encoded.len().is_multiple_of(2) {
         return None;
     }
 
@@ -575,6 +581,31 @@ fn resolve_consumer_output(
     }
 }
 
+/// Spawns a background task to periodically update throughput metrics for all active consumers.
+fn spawn_throughput_updater(
+    throughput_samples_arc: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
+    consumer_message_sequences_arc: Arc<RwLock<HashMap<String, Arc<AtomicU64>>>>,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(THROUGHPUT_UPDATE_INTERVAL);
+
+        loop {
+            interval.tick().await; // Wait for the next interval tick
+            let now = Instant::now();
+
+            let consumer_sequences = consumer_message_sequences_arc.read().await.clone();
+            let mut samples = throughput_samples_arc.write().await;
+
+            for (consumer_key, sequence) in consumer_sequences.iter() {
+                let total_messages = sequence.load(Ordering::Relaxed) as f64;
+                let previous_sample = samples.get(consumer_key).copied();
+                let next_sample = next_route_metric_sample(previous_sample, total_messages, now);
+                samples.insert(consumer_key.clone(), next_sample);
+            }
+        }
+    });
+}
+
 impl UiApp {
     pub fn new(
         initial_config: AppConfig,
@@ -673,7 +704,7 @@ impl UiApp {
         runtime_hooks: UiAppRuntimeHooks,
     ) -> Self {
         initial_config.migrate_legacy_security_mode();
-        Self {
+        let app = Self {
             config: Arc::new(RwLock::new(initial_config)),
             metrics_handle,
             config_file_path: Arc::new(config_file_path),
@@ -686,7 +717,14 @@ impl UiApp {
             storage_save_prepare: runtime_hooks.storage_save_prepare,
             config_recovery: Arc::new(StdRwLock::new(runtime_hooks.config_recovery)),
             config_recovery_reset: runtime_hooks.config_recovery_reset,
-        }
+        };
+
+        spawn_throughput_updater(
+            Arc::clone(&app.throughput_samples),
+            Arc::clone(&app.consumer_message_sequences),
+        );
+
+        app
     }
 
     pub async fn get_config(&self) -> AppConfig {
@@ -1067,6 +1105,7 @@ impl UiApp {
     }
 
     pub async fn runtime_status(&self) -> RuntimeStatusResponse {
+        let config = self.config.read().await;
         let mut active_consumers: Vec<String> =
             self.ui_handles.read().await.keys().cloned().collect();
 
@@ -1082,21 +1121,18 @@ impl UiApp {
             .collect();
         active_consumers.extend(consumer_route_ids);
         let active_routes: Vec<String> = mq_bridge::list_routes()
-            .into_iter()
+            .into_iter() // Filter out internal UI routes
             .filter(|name| name != "web_ui" && !name.starts_with("ui_collector_route_"))
             .collect();
 
-        let now = Instant::now();
-        let mut samples = self.throughput_samples.write().await;
-        let mut route_throughput = HashMap::new();
-
-        for (name, sequence) in self.consumer_message_sequences.read().await.iter() {
-            let total_messages = sequence.load(Ordering::Relaxed) as f64;
-            let next_sample =
-                next_route_metric_sample(samples.get(name).copied(), total_messages, now);
-            samples.insert(name.clone(), next_sample);
-            route_throughput.insert(name.clone(), next_sample.smoothed_throughput);
-        }
+        let samples_guard = self.throughput_samples.read().await;
+        let active_consumer_keys: HashSet<String> =
+            config.consumers.iter().map(consumer_runtime_key).collect();
+        let route_throughput: HashMap<String, f64> = samples_guard
+            .iter()
+            .filter(|(key, _)| active_consumer_keys.contains(*key))
+            .map(|(key, sample)| (key.clone(), sample.smoothed_throughput))
+            .collect();
 
         active_consumers.sort();
         active_consumers.dedup();
@@ -1104,7 +1140,6 @@ impl UiApp {
         active_routes.sort();
 
         let consumer_sequences = self.consumer_message_sequences.read().await.clone();
-        let config = self.config.read().await;
         let mut consumers = HashMap::new();
         for consumer in &config.consumers {
             let consumer_key = consumer_runtime_key(consumer);
@@ -1117,9 +1152,14 @@ impl UiApp {
                     .get(&consumer_key)
                     .map(|a| a.load(Ordering::Relaxed))
                     .unwrap_or(0);
+                let throughput = samples_guard
+                    .get(&consumer_key)
+                    .map(|s| s.smoothed_throughput)
+                    .unwrap_or(0.0);
                 consumers.insert(
                     consumer_key,
                     ConsumerStatusSnapshot {
+                        throughput,
                         message_sequence,
                         capture_enabled: consumer.message_capture.enabled,
                         capture_keep_last: consumer.message_capture.keep_last,
@@ -1190,6 +1230,7 @@ impl UiApp {
         Some(ConsumerStatusSnapshot {
             running,
             status,
+            throughput: 0.0,
             message_sequence: 0,
             capture_enabled: consumer.message_capture.enabled,
             capture_keep_last: consumer.message_capture.keep_last,

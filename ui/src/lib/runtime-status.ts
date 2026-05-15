@@ -6,6 +6,7 @@ export interface RuntimeConsumerState {
     healthy: boolean;
     error?: string;
   };
+  throughput: number;
   message_sequence: number;
   capture_enabled: boolean;
   capture_keep_last: number;
@@ -117,6 +118,7 @@ export function createRuntimeStatusPoller({
                   healthy: Boolean(rawStatus.healthy),
                   ...(typeof rawStatus.error === "string" && rawStatus.error ? { error: rawStatus.error } : {}),
                 },
+                throughput: typeof rawConsumer.throughput === "number" ? rawConsumer.throughput : 0,
                 message_sequence:
                   typeof rawConsumer.message_sequence === "number"
                     ? rawConsumer.message_sequence
