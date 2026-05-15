@@ -194,9 +194,37 @@ describe("initConsumers", () => {
     await addConsumerAction("nats");
 
     expect(config.consumers).toHaveLength(1);
-    expect(config.consumers[0].name).toBe("nats");
+    expect(config.consumers[0].name).toBe("");
+    expect(config.consumers[0].id).toEqual(expect.any(String));
     expect(config.consumers[0].endpoint).toMatchObject({
       nats: { url: "nats://localhost:4222", subject: "events.created" },
+    });
+  });
+
+  test("includes fallback endpoint metadata for unnamed consumers in the sidebar state", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "",
+          endpoint: { http: { url: "https://api.test", path: "/events", method: "POST" } },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    const schema = {
+      properties: { consumers: { items: {} } },
+      $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+    };
+
+    await initConsumers(config, schema);
+
+    const state = get(consumersPanelState);
+    expect(state.items[0]).toMatchObject({
+      name: "",
+      displayName: "POST api.test /events",
     });
   });
 
@@ -454,7 +482,10 @@ describe("initConsumers", () => {
     setConsumerOutputModeAction("publisher");
 
     expect(get(consumersPanelState).outputMode).toBe("publisher");
-    expect(get(consumersPanelState).publisherOptions).toEqual(["orders_pub", "audit_pub"]);
+    expect(get(consumersPanelState).publisherOptions).toEqual([
+      { value: "orders_pub", label: "orders_pub" },
+      { value: "audit_pub", label: "audit_pub" },
+    ]);
     expect(get(consumersPanelState).selectedPublisher).toBe("");
     expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "" });
   });
@@ -503,7 +534,9 @@ describe("initConsumers", () => {
 
     setConsumerOutputModeAction("publisher");
 
-    expect(get(consumersPanelState).publisherOptions).toEqual(["orders_pub"]);
+    expect(get(consumersPanelState).publisherOptions).toEqual([
+      { value: "orders_pub", label: "orders_pub" },
+    ]);
     expect(get(consumersPanelState).selectedPublisher).toBe("orders_pub");
     expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "orders_pub" });
   });
@@ -714,7 +747,8 @@ describe("initConsumers", () => {
       expect.stringContaining("message-9"),
     );
     const persistedPayload = (window.localStorage.setItem as any).mock.calls.at(-1)?.[1] as string;
-    expect(JSON.parse(persistedPayload).orders_http).toHaveLength(10);
+    const persistedMessages = JSON.parse(persistedPayload);
+    expect(Object.values(persistedMessages)[0]).toHaveLength(10);
   });
 
   test("skips message fetches when capture is disabled", async () => {
@@ -775,7 +809,7 @@ describe("initConsumers", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer=orders_http");
+    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer_id=orders_http");
     expect(get(consumersPanelState).messageCaptureEnabled).toBe(false);
     expect(get(consumersPanelState).messageCaptureKeepLast).toBe(10);
   });
@@ -862,7 +896,7 @@ describe("initConsumers", () => {
       await Promise.resolve();
 
       expect(get(consumersPanelState).items[0]?.statusClass).toBe("status-ok");
-      expect(globalThis.fetch).not.toHaveBeenCalledWith("/consumer-status?consumer=orders_http");
+      expect(globalThis.fetch).not.toHaveBeenCalledWith("/consumer-status?consumer_id=orders_http");
     } finally {
       setTimeoutSpy.mockRestore();
     }
@@ -1525,7 +1559,7 @@ describe("initConsumers", () => {
       false,
       document.getElementById("cons-save"),
     );
-    expect(globalThis.fetch).toHaveBeenCalledWith("/consumer-start?consumer=orders_http", { method: "POST" });
+    expect(globalThis.fetch).toHaveBeenCalledWith("/consumer-start?consumer_id=orders_http", { method: "POST" });
 
     startRequest.resolve({ ok: true });
     await Promise.resolve();
@@ -1599,18 +1633,22 @@ describe("initConsumers", () => {
     expect(window.saveConfigSection).toHaveBeenCalledWith(
       "consumers",
       [
-        {
-          name: "Memory_Consumer_2",
+        expect.objectContaining({
+          id: expect.any(String),
+          name: "Mémory Consumer 2",
           endpoint: { middlewares: [{ metrics: {} }], memory: {} },
           message_capture: { enabled: true, keep_last: 100 },
           output: { mode: "none" },
           response: null,
-        },
+        }),
       ],
       false,
       document.getElementById("cons-save"),
     );
-    expect(fetchMock).toHaveBeenCalledWith("/consumer-start?consumer=Memory_Consumer_2", { method: "POST" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/consumer-start\?consumer_id=consumer_/),
+      { method: "POST" },
+    );
 
     startRequest.resolve({ ok: true });
     await Promise.resolve();
@@ -1785,7 +1823,7 @@ describe("initConsumers", () => {
       },
     );
 
-    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer=memory_consumer%202");
+    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer_id=memory_consumer%202");
   });
 
   test("freezes the initial saved baseline before later local edits", async () => {
@@ -1837,13 +1875,14 @@ describe("initConsumers", () => {
       await vi.runOnlyPendingTimersAsync();
 
       expect(window.markSectionSaved).toHaveBeenCalledWith("consumers", [
-        {
+        expect.objectContaining({
+          id: expect.any(String),
           name: "saved_http",
           endpoint: { middlewares: [{ metrics: {} }], http: {} },
           message_capture: { enabled: true, keep_last: 100 },
           output: { mode: "none" },
           response: null,
-        },
+        }),
       ]);
     } finally {
       vi.useRealTimers();

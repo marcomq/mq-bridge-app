@@ -274,13 +274,17 @@ test("http publisher delivers a message to the http consumer within 2 seconds wi
   await expect((await publishResponsePromise).ok()).toBeTruthy();
 
   const messagesResponsePromise = page.waitForResponse(
-    (response) => response.url().includes("/messages?consumer=http_consumer") && response.request().method() === "GET",
+    (response) => response.url().includes("/messages?consumer_id=") && response.request().method() === "GET",
   );
   await page.goto("/#consumers:0");
   await page.locator("#ctab-msg").click();
   await expect
     .poll(async () =>
-      page.evaluate(() => (window._mqb_runtime_status?.consumers?.http_consumer?.message_sequence ?? 0)),
+      page.evaluate(() =>
+        Math.max(
+          0,
+          ...Object.values(window._mqb_runtime_status?.consumers || {}).map((consumer) => consumer?.message_sequence ?? 0),
+        )),
     )
     .toBeGreaterThan(0);
   await expect((await messagesResponsePromise).ok()).toBeTruthy();
@@ -305,7 +309,7 @@ test("publisher can be copied to a new consumer", async ({ page }) => {
   await page.locator("#pub-copy").click();
   const input = page.locator(".mqb-dialog-input");
   await expect(input).toBeVisible();
-  await expect(input).toHaveValue(/http/);
+  await expect(input).toHaveValue("");
   await input.fill("copied_http_consumer");
   await page.locator("wa-button", { hasText: "Create" }).click();
 
@@ -333,7 +337,7 @@ test("consumer can be copied to a new publisher for review", async ({ page }) =>
 
 test("publisher delete can be saved and stays deleted after reload", async ({ page }) => {
   await openPublisherDefinition(page, 3);
-  await expect(page.getByRole("textbox", { name: "Name *" })).toHaveValue("mongo_publisher");
+  await expect(page.getByRole("textbox", { name: "Name" })).toHaveValue("mongo_publisher");
 
   await page.locator("#pub-delete").click();
   await page.locator("wa-button", { hasText: "Continue" }).click();

@@ -197,7 +197,8 @@ describe("initPublishers", () => {
 
     expect(config.publishers).toHaveLength(1);
     expect(config.publishers[0]).toMatchObject({
-      name: "http",
+      id: expect.any(String),
+      name: "",
       endpoint: {
         http: {
           url: "http://localhost:8080",
@@ -230,7 +231,8 @@ describe("initPublishers", () => {
     await addPublisherAction("static");
 
     expect(config.publishers[0]).toMatchObject({
-      name: "static",
+      id: expect.any(String),
+      name: "",
       endpoint: { static: "" },
       comment: "",
     });
@@ -248,6 +250,7 @@ describe("initPublishers", () => {
       "publishers",
       [
         {
+          id: expect.any(String),
           name: "static",
           endpoint: {
             middlewares: [],
@@ -272,7 +275,8 @@ describe("initPublishers", () => {
     await addPublisherAction("kafka");
 
     expect(config.publishers[0]).toMatchObject({
-      name: "amqp",
+      id: expect.any(String),
+      name: "",
       endpoint: {
         amqp: {
           url: "amqp://guest:guest@localhost:5672/%2f",
@@ -281,7 +285,8 @@ describe("initPublishers", () => {
       },
     });
     expect(config.publishers[1]).toMatchObject({
-      name: "kafka",
+      id: expect.any(String),
+      name: "",
       endpoint: {
         kafka: {
           url: "localhost:9092",
@@ -484,7 +489,8 @@ describe("initPublishers", () => {
     expect(window.saveConfigSection).toHaveBeenCalledWith(
       "publishers",
       [
-        {
+        expect.objectContaining({
+          id: expect.any(String),
           name: "renamed_http",
           endpoint: {
             http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} },
@@ -497,12 +503,16 @@ describe("initPublishers", () => {
           comment: "",
           payload: "{}",
           headers: [],
-        },
+        }),
       ],
       false,
       document.getElementById("pub-save"),
     );
-    expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "renamed_http" });
+    expect(config.consumers[0].output).toEqual({
+      mode: "publisher",
+      publisher: "renamed_http",
+      publisher_id: expect.any(String),
+    });
     expect(window.fetchConfigFromServer).not.toHaveBeenCalled();
     expect(get(publishersPanelState).activeSubtab).toBe("definition");
     expect(get(publishersPanelState).items[0]?.name).toBe("renamed_http");
@@ -786,6 +796,7 @@ describe("initPublishers", () => {
 
     expect(config.publishers).toHaveLength(2);
     expect(config.publishers[1]).toMatchObject({
+      id: expect.any(String),
       name: "orders_http - preset_a",
       payload: "{\"id\":42}",
       headers: [{ key: "x-test", value: "yes", enabled: true }],
@@ -840,6 +851,7 @@ describe("initPublishers", () => {
 
     expect(config.publishers).toHaveLength(2);
     expect(config.publishers[1]).toMatchObject({
+      id: expect.any(String),
       name: "events_kafka - orders_created",
       payload: "{\"id\":42}",
     });
@@ -995,13 +1007,14 @@ describe("initPublishers", () => {
     await sendPublisherAction();
 
     const history = JSON.parse(window.localStorage.getItem("mqb_publisher_history") || "{}");
-    expect(history.publishers.events_kafka[0].requestMetadata).toMatchObject({
+    const historyKey = Object.keys(history.publishers)[0];
+    expect(history.publishers[historyKey][0].requestMetadata).toMatchObject({
       "request_bar.topic": "orders.created",
       "request_bar.pub-extra-1": "orders.created",
       "request_bar.url": "kafka-a:9092,kafka-b:9092",
       "request_bar.pub-url": "kafka-a:9092,kafka-b:9092",
     });
-    expect(history.publishers.events_kafka[0].request_fields).toMatchObject({
+    expect(history.publishers[historyKey][0].request_fields).toMatchObject({
       topic: "orders.created",
       url: "kafka-a:9092,kafka-b:9092",
     });
@@ -1043,21 +1056,17 @@ describe("initPublishers", () => {
 
     const historyCall = (window.saveConfigSection as any).mock.calls.find((call: any[]) => call[0] === "history");
     expect(historyCall).toBeTruthy();
-    expect(historyCall[1]).toMatchObject({
-      version: 1,
-      publishers: {
-        events_kafka: [
-          expect.objectContaining({
-            endpoint_type: "kafka",
-            payload: "event",
-            request_fields: expect.objectContaining({
-              topic: "orders.created",
-              url: "kafka-a:9092,kafka-b:9092",
-            }),
-          }),
-        ],
-      },
-    });
+    expect(historyCall[1]).toMatchObject({ version: 1 });
+    expect(Object.keys(historyCall[1].publishers || {})).toHaveLength(1);
+    const firstHistoryEntries = Object.values(historyCall[1].publishers)[0] as any[];
+    expect(firstHistoryEntries[0]).toEqual(expect.objectContaining({
+      endpoint_type: "kafka",
+      payload: "event",
+      request_fields: expect.objectContaining({
+        topic: "orders.created",
+        url: "kafka-a:9092,kafka-b:9092",
+      }),
+    }));
     expect(historyCall[2]).toBe(true);
   });
 

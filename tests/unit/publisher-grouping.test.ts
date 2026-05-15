@@ -29,8 +29,8 @@ describe("publisher grouping", () => {
     expect(flattenLabels(tree)).toEqual([
       "HTTP api.test",
       "/admin/users/",
-      "GET /admin/users/ (list users)",
-      "GET /admin/users/{id}/ (get user)",
+      "list users",
+      "get user",
     ]);
   });
 
@@ -47,9 +47,9 @@ describe("publisher grouping", () => {
       : null;
     expect(pathGroup?.label).toBe("/users/{id}/");
     expect(pathGroup?.children.map((node) => node.label)).toEqual([
-      "GET /users/{id}/ (get user)",
-      "PATCH /users/{id}/ (patch user)",
-      "DELETE /users/{id}/ (delete user)",
+      "get user",
+      "patch user",
+      "delete user",
     ]);
   });
 
@@ -92,8 +92,8 @@ describe("publisher grouping", () => {
       ? usersGroup.children[0]
       : null;
     expect(pathGroup?.children.map((node) => node.label)).toEqual([
-      "GET /users/{id}/ (get user)",
-      "DELETE /users/{id}/ (delete user)",
+      "get user",
+      "delete user",
     ]);
   });
 
@@ -108,8 +108,8 @@ describe("publisher grouping", () => {
       ? usersGroup.children[0]
       : null;
     expect(pathGroup?.children.map((node) => node.label)).toEqual([
-      "POST /users/ (alpha)",
-      "POST /users/ (beta)",
+      "alpha",
+      "beta",
     ]);
   });
 
@@ -137,7 +137,7 @@ describe("publisher grouping", () => {
       { name: "append file", endpoint: { file: { path: "" } } },
     ] as PublisherConfig[]);
 
-    expect(flattenLabels(tree)).toEqual(["FILE Ungrouped", "append file (append file)", "write file (write file)"]);
+    expect(flattenLabels(tree)).toEqual(["FILE Ungrouped", "append file", "write file"]);
   });
 
   test("keeps exact path leaves alongside deeper child paths", () => {
@@ -150,9 +150,9 @@ describe("publisher grouping", () => {
     expect(flattenLabels(tree)).toEqual([
       "HTTP api.test",
       "/order/",
-      "GET /order/ (order a)",
-      "POST /order/ (order b)",
-      "GET /order/1/ (order item)",
+      "order a",
+      "order b",
+      "order item",
     ]);
   });
 });

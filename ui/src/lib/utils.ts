@@ -2,6 +2,57 @@ import { nextUniqueName } from "./routes";
 
 export type ThemePreference = "auto" | "light" | "dark";
 
+export const BASIC_ENDPOINT_FIELDS: Record<string, string[]> = {
+  http: ["method", "url", "path"],
+  kafka: ["url", "topic", "group_id"],
+  mqtt: ["url", "topic"],
+  grpc: ["url", "topic"],
+  amqp: ["url", "queue", "subscribe_mode", "exchange"],
+  nats: ["url", "subject", "stream"],
+  mongodb: ["url", "database", "collection", "change_stream"],
+  sqlx: ["url", "table"],
+  zeromq: ["url", "topic"],
+  file: ["path", "mode"],
+  memory: ["topic"],
+  sled: ["path", "tree"],
+  ibmmq: ["connection_manager", "queue", "topic"],
+  switch: ["metadata_key", "default", "cases"],
+  fanout: ["endpoints"],
+  websocket: ["url"],
+  aws: ["region", "access_key_id", "secret_access_key"],
+  static: ["static"],
+  ref: ["ref"],
+};
+
+const KNOWN_ENDPOINT_ROOT_KEYS = new Set([
+  "http",
+  "grpc",
+  "nats",
+  "memory",
+  "amqp",
+  "kafka",
+  "mqtt",
+  "mongodb",
+  "sqlx",
+  "zeromq",
+  "file",
+  "static",
+  "ref",
+  "sled",
+  "ibmmq",
+  "switch",
+  "fanout",
+  "reader",
+  "response",
+  "custom",
+  "null",
+  "aws",
+]);
+
+function getEndpointType(endpoint: Record<string, unknown>): string {
+  return Object.keys(endpoint).find((key) => key !== "middlewares" && KNOWN_ENDPOINT_ROOT_KEYS.has(key)) || "http";
+}
+
 export function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -61,6 +112,54 @@ export function normalizeConsumerResponse(response: unknown): { headers: Record<
     : "";
 
   return Object.keys(headers).length > 0 || payload.trim() ? { headers, payload } : null;
+}
+
+function sanitizeUrlHost(rawUrl: string) {
+  const value = String(rawUrl || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.host;
+  } catch {
+    return value.replace(/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//, "");
+  }
+}
+
+function normalizePathValue(rawPath: string) {
+  const value = String(rawPath || "").trim();
+  if (!value) return "";
+  return value.startsWith("/") ? value : `/${value}`;
+}
+
+export function getEntityDisplayLabel(
+  name: string | undefined,
+  endpoint: Record<string, unknown>,
+  endpointType?: string,
+) {
+  const title = String(name || "").trim();
+  if (title) return title;
+
+  const type = String(endpointType || getEndpointType(endpoint)).trim().toLowerCase();
+  const endpointData = (endpoint as Record<string, unknown>)[type];
+  const data = endpointData && typeof endpointData === "object" && !Array.isArray(endpointData)
+    ? endpointData as Record<string, unknown>
+    : endpoint;
+  const fields = BASIC_ENDPOINT_FIELDS[type] || [];
+
+  const values = fields.map((field) => {
+    const rawValue = data[field];
+    if (field === "url") {
+      return sanitizeUrlHost(String(rawValue || ""));
+    }
+    if (field === "path") {
+      return normalizePathValue(String(rawValue || ""));
+    }
+    return String(rawValue || "").trim();
+  }).filter(Boolean);
+
+  return values.join(" ").trim() || type.toUpperCase();
 }
 
 export function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {

@@ -38,10 +38,15 @@
   let selectedImportKind = $state<"asyncapi" | "mqb">("asyncapi");
   let sidebarWidth = $state<number | null>(null);
 
+  function getConsumerLabel(item: any) {
+    return String(item.displayName || item.name || item.inputProto || "Unnamed Consumer").trim();
+  }
+
   const visibleItems = $derived(
-    $consumersPanelState.items.filter((item) =>
-      item.name.toLowerCase().includes(filterText.trim().toLowerCase()),
-    ),
+    $consumersPanelState.items.filter((item) => {
+      const label = getConsumerLabel(item).toLowerCase();
+      return label.includes(filterText.trim().toLowerCase());
+    }),
   );
 
   onMount(() => {
@@ -171,7 +176,7 @@
       </div>
       <div class="sidebar-list" id="cons-list">
         <div class="sidebar-group-label">Saved</div>
-        {#each visibleItems as item (item.name)}
+        {#each visibleItems as item (item.originalIndex)}
           <button
             type="button"
             class:active={$consumersPanelState.selectedIndex === item.originalIndex}
@@ -180,7 +185,7 @@
             onclick={() => openConsumer(item.originalIndex)}
           >
             <span class={`proto-badge proto-${item.inputProto.toLowerCase()}`}>{item.inputProto}</span>
-            <span class="item-name">{item.name}</span>
+            <span class="item-name">{getConsumerLabel(item)}</span>
             <span class="msg-count" style="margin-left:auto;" title={`${item.messageCount} total messages`}>
               {formatThroughput(item.throughputLabel)}
             </span>
@@ -269,12 +274,12 @@
                     variant="neutral"
                     appearance="outlined"
                     size="small"
-                    id="cons-clone"
+                    id="cons-save-variant"
                     role="button"
                     tabindex="0"
                     onclick={cloneCurrentConsumerAction}
                     onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentConsumerAction)}
-                    >Clone</wa-button
+                    >Save As New</wa-button
                   >
                 </div>
                 <div class="toolbar-divider" aria-hidden="true"></div>
@@ -353,8 +358,8 @@
                         onchange={setOutputPublisher}
                       >
                         <option value="">Select a publisher…</option>
-                        {#each $consumersPanelState.publisherOptions as publisher (publisher)}
-                          <option value={publisher}>{publisher}</option>
+                        {#each $consumersPanelState.publisherOptions as publisher (publisher.value)}
+                          <option value={publisher.value}>{publisher.label}</option>
                         {/each}
                       </select>
                     </div>
@@ -477,10 +482,20 @@
                     {#each $consumersPanelState.messages as message (message.messageIndex)}
                       <tr
                         class:selected={message.selected}
-                        style="cursor:zoom-in;"
+                        style="cursor:pointer;"
                         tabindex="0"
-                        onclick={() => showConsumerMessageDetails($consumersPanelState.currentConsumerName!, message.messageIndex)}
-                        onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => showConsumerMessageDetails($consumersPanelState.currentConsumerName!, message.messageIndex))}
+                        onclick={() => {
+                          if ($consumersPanelState.currentConsumerKey) {
+                            showConsumerMessageDetails($consumersPanelState.currentConsumerKey, message.messageIndex);
+                          } else {
+                            console.warn("Cannot show message details: currentConsumerKey is not set.");
+                          }
+                        }}
+                        onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => {
+                          if ($consumersPanelState.currentConsumerKey) {
+                            showConsumerMessageDetails($consumersPanelState.currentConsumerKey, message.messageIndex);
+                          }
+                        })}
                       >
                         <td class="text-muted small">{message.timeLabel}</td>
                         <td class="font-monospace small text-break text-truncate" style="max-width: 400px;">
@@ -512,7 +527,7 @@
               <wa-details summary="Message Headers" open class="response-meta-block" icon-placement="start">
                 <span slot="expand-icon">▸</span>
                 <span slot="collapse-icon">▸</span>
-                {#each $consumersPanelState.detailRequestHeaders as [key, value] (`${key}:${value}`)}
+                {#each $consumersPanelState.detailRequestHeaders as [key, value], i (`${key}:${value}-${i}`)}
                   <div class="response-meta-row">
                     <span class="response-meta-key">{key}</span>
                     <span class="response-meta-value">{value}</span>
@@ -531,7 +546,7 @@
               <wa-details summary="Response Headers" open class="response-meta-block" icon-placement="start" style="margin-top:16px;">
                 <span slot="expand-icon">▸</span>
                 <span slot="collapse-icon">▸</span>
-                {#each $consumersPanelState.detailResponseHeaders as [key, value] (`resp:${key}:${value}`)}
+                {#each $consumersPanelState.detailResponseHeaders as [key, value], i (`resp:${key}:${value}-${i}`)}
                   <div class="response-meta-row">
                     <span class="response-meta-key">{key}</span>
                     <span class="response-meta-value">{value}</span>

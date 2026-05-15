@@ -27,8 +27,9 @@ import {
   normalizeScalarEndpointValue,
   prunePolymorphicEndpointKeys,
 } from "./endpoint-utils";
+import { getEntityDisplayLabel } from "./utils";
+import { createLocalEntityId, getEntityStorageKey } from "./entity-key";
 import { readJson, removeKey, writeJson } from "./storage";
-import { getEntityStorageKey } from "./entity-key";
 import { forceRefOnlyEndpoints } from "./schema-utils";
 import type {
   ConsumerConfig,
@@ -373,6 +374,8 @@ function normalizePublisherConfigShape(publisher: PublisherConfig): PublisherCon
     const { root, ...rest } = data;
     data = { ...rest, ...root };
   }
+  data.id = String(data.id || "").trim() || createLocalEntityId("publisher");
+  data.name = String(data.name ?? "");
 
   data.endpoint = ensurePublisherEndpointDefaults(data.endpoint);
 
@@ -386,7 +389,7 @@ function syncConsumerPublisherReferences(
 ) {
   const nextPublisherName = String(nextPublisher.name || "").trim();
   const nextPublisherId = String(nextPublisher.id || "").trim();
-  if (!Array.isArray(consumers) || !previousPublisherName || !nextPublisherName) {
+  if (!Array.isArray(consumers) || (!previousPublisherName && !nextPublisherId)) {
     return;
   }
 
@@ -401,7 +404,7 @@ function syncConsumerPublisherReferences(
       consumer.output = {
         ...consumer.output,
         publisher: nextPublisherName,
-        publisher_id: nextPublisherId || consumer.output.publisher_id,
+        publisher_id: nextPublisherId || consumer.output.publisher_id || undefined,
       };
     }
   });
@@ -480,6 +483,26 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   let historyStore = localHistoryStore.updated_at >= configHistoryStore.updated_at
     ? localHistoryStore
     : configHistoryStore;
+
+  for (const publisher of publishers) {
+    const storageKey = getPublisherStorageKey(publisher);
+    const legacyNameKey = String(publisher.name || "").trim();
+    if (storageKey && legacyNameKey && storageKey !== legacyNameKey && !appState[storageKey] && appState[legacyNameKey]) {
+      appState[storageKey] = appState[legacyNameKey];
+      delete appState[legacyNameKey];
+    }
+    if (
+      storageKey
+      && legacyNameKey
+      && storageKey !== legacyNameKey
+      && !historyStore.publishers?.[storageKey]
+      && historyStore.publishers?.[legacyNameKey]
+    ) {
+      historyStore.publishers[storageKey] = historyStore.publishers[legacyNameKey];
+      delete historyStore.publishers[legacyNameKey];
+    }
+  }
+
   let history = flattenPublisherHistory(historyStore).slice(0, 1000);
   let envVars = workspaceConfig.env_vars;
 
@@ -910,13 +933,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const createPublisherVariantFromCurrentState = async (publisher: PublisherConfig) => {
     const nextName = await mqbDialogs.prompt("Choose a name for the saved publisher variant.", "Save Publisher Variant", {
       confirmLabel: "Save",
-      value: nextUniqueName(`${publisher.name} copy`, (config.publishers || []).map((row) => row.name)),
+      value: "",
       placeholder: "publisher_name",
     });
-    if (!nextName) return null;
+    if (nextName === null) return null;
 
     const cloned = normalizePublisherConfigShape(cloneJson(publisher));
-    cloned.id = undefined;
+    cloned.id = createLocalEntityId("publisher");
     cloned.name = nextName.trim();
     if (getEndpointType(cloned) === "http") {
       ensureHttpConfig(cloned).method = currentMethodValue || ensureHttpConfig(cloned).method;
@@ -931,13 +954,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const createPublisherVariantFromHistoryItem = async (publisher: PublisherConfig, item: PublisherHistoryItem) => {
     const nextName = await mqbDialogs.prompt("Choose a name for the saved publisher variant.", "Save Publisher Variant", {
       confirmLabel: "Save",
-      value: nextUniqueName(`${publisher.name} history`, (config.publishers || []).map((row) => row.name)),
+      value: "",
       placeholder: "publisher_name",
     });
-    if (!nextName) return null;
+    if (nextName === null) return null;
 
     const cloned = normalizePublisherConfigShape(cloneJson(publisher));
-    cloned.id = undefined;
+    cloned.id = createLocalEntityId("publisher");
     cloned.name = nextName.trim();
     const state = getPublisherState(cloned);
     state.payload = item.payload || "";
@@ -1364,6 +1387,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (itemSchema.properties?.id) {
       itemSchema.properties.id.hidden = true;
     }
+    if (Array.isArray(itemSchema.required)) {
+      itemSchema.required = itemSchema.required.filter((key: string) => key !== "name");
+    }
 
     const switchConfig = itemSchema.$defs?.SwitchConfig;
     if (switchConfig?.properties) {
@@ -1389,18 +1415,21 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     
     await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], async (updated) => {
       const current = publishers[idx];
-      const updatedPublisher = updated as PublisherConfig;
       const previousPublisherName = current?.name || "";
       const previousStorageKey = getPublisherStorageKey(current);
       const previousRequestPayload = get(publishersPanelState).requestPayload;
 
-      // 1. Merge form updates into a clone of current to preserve fields not in the form (like presets)
+      // Flatten form output to handle 'root' wrapper and ensure fields like 'name' are present (even if empty).
+      const formOutput = normalizePublisherConfigShape(updated as PublisherConfig);
+
+      // 1. Merge form updates into a clone of current to preserve fields not in the form
       const mergedPublisher = {
         ...current,
-        ...updatedPublisher,
+        ...formOutput,
+        id: current.id, // Always preserve the original stable ID
         endpoint: {
           ...current.endpoint,
-          ...updatedPublisher.endpoint,
+          ...formOutput.endpoint,
         }
       };
 
@@ -1441,17 +1470,18 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       "Copy to Consumer",
       {
         confirmLabel: "Create",
-        value: nextUniqueName(getEndpointType(current), (config.consumers || []).map((consumer) => consumer.name)),
+        value: "",
         placeholder: "publisher_consumer",
       },
     );
+    if (consumerName === null) return;
     const trimmedConsumerName = String(consumerName || "").trim();
-    if (!trimmedConsumerName) return;
-    if ((config.consumers || []).some((consumer) => consumer.name === trimmedConsumerName)) {
+    if (trimmedConsumerName && (config.consumers || []).some((consumer) => consumer.name === trimmedConsumerName)) {
       await mqbDialogs.alert("Consumer already exists");
       return;
     }
     config.consumers.push({
+      id: createLocalEntityId("consumer"),
       name: trimmedConsumerName,
       endpoint: createConsumerEndpointFromPublisherEndpoint(currentEndpoint),
       comment: current.comment || "",
@@ -1465,7 +1495,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const addPublisher = (choice: string) => {
     if (choice) {
       config.publishers.push({
-        name: nextUniqueName(choice, (config.publishers || []).map((publisher) => publisher.name)),
+        id: createLocalEntityId("publisher"),
+        name: "",
         endpoint: createDefaultPublisherEndpoint(choice),
         comment: "",
       });
@@ -1481,6 +1512,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   cloneCurrentPublisherAction = () => {
     const current = config.publishers[currentIdx];
     const cloned = cloneJson(current);
+    cloned.id = createLocalEntityId("publisher");
     cloned.name += "_copy";
     if (config.publishers.some((publisher) => publisher.name === cloned.name)) {
       void mqbDialogs.alert("Cloned publisher name already exists. Please choose a different name.");
@@ -1529,6 +1561,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     await Promise.resolve();
 
     const selectedIdx = currentIdx;
+    const selectedKey = getPublisherStorageKey(config.publishers[selectedIdx]);
     const originalName = config.publishers[selectedIdx]?.name || null;
     const selectedTab = activeSubtab;
     const mapped = config.publishers.map((publisher) => {
@@ -1538,7 +1571,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       return nextPublisher;
     });
     config.publishers.splice(0, config.publishers.length, ...mapped);
-    const selectedName = config.publishers[selectedIdx]?.name || originalName;
+    const selectedName = config.publishers[selectedIdx]?.name ?? originalName;
     const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
     if (!saved) {
       // If saveConfigSection failed, we should not proceed with re-initializing
@@ -1566,7 +1599,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
     mqbRuntime.markSectionSaved("publishers", refreshedConfig.publishers);
     const currentPublishers = mqbApp.config<PublishersAppConfig>().publishers || []; // Use the updated mqbApp.config()
-    const refreshedIdx = currentPublishers.findIndex((publisher: PublisherConfig) => publisher.name === selectedName); // Find index in the updated list
+    const refreshedIdx = currentPublishers.findIndex(
+      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey || publisher.name === selectedName,
+    ); // Find index in the updated list
     const pendingRestore = {
       idx: refreshedIdx === -1 ? Math.min(selectedIdx, Math.max(currentPublishers.length - 1, 0)) : refreshedIdx, // Ensure index is valid
       tab: selectedTab,
@@ -1658,7 +1693,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     const publisher = publishers[currentIdx];
-    const name = publisher.name;
+    const name = String(publisher.name || "").trim();
+    const publisherId = getPublisherStorageKey(publisher);
     const endpoint = publisher.endpoint;
     const payload = applyEnvVars(getPublisherState(publisher).payload);
     const metaArray =
@@ -1711,7 +1747,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         response = await fetch("/publish", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, payload, metadata, endpoint }),
+          body: JSON.stringify({ name, publisher_id: publisherId || undefined, payload, metadata, endpoint }),
           signal: controller.signal,
         });
       } finally {
@@ -1810,7 +1846,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!publisherKey && !name) return;
     history = history.filter((item) => {
       if (publisherKey) {
-        return !(item.publisher_id === publisherKey && item.name === name);
+        return item.publisher_id !== publisherKey;
       }
       return !(
         (item.publisher_id === undefined || item.publisher_id === null || item.publisher_id === "")

@@ -24,8 +24,9 @@ import {
   prunePolymorphicEndpointKeys,
   type EndpointRecord,
 } from "./endpoint-utils";
+import { getEntityDisplayLabel } from "./utils";
 import { readJson, removeKey, writeJson } from "./storage";
-import { getEntityStorageKey } from "./entity-key";
+import { createLocalEntityId, getEntityStorageKey } from "./entity-key";
 import { forceRefOnlyEndpoints } from "./schema-utils";
 import type {
   ConsumerConfig,
@@ -237,6 +238,8 @@ function normalizeConsumerConfigShape(consumer: ConsumerConfig): ConsumerConfig 
     const { root, ...rest } = data;
     data = { ...rest, ...root };
   }
+  data.id = String(data.id || "").trim() || createLocalEntityId("consumer");
+  data.name = String(data.name ?? "");
   data.endpoint = ensureConsumerEndpointDefaults(data.endpoint);
   data.output = normalizeConsumerOutput(data.output, data.response);
   data.message_capture = normalizeConsumerMessageCapture(data.message_capture);
@@ -382,10 +385,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   let currentIdx = 0;
   let activeSubtab: "definition" | "response" | "messages" = "messages";
   let selectedMessageIndex: number | null = null;
-  let pendingToggle: { name: string; action: "start" | "stop" } | null = null;
+  let pendingToggle: { key: string; action: "start" | "stop" } | null = null;
   let nextResponseHeaderId = 1;
   const getConsumerStorageKey = (consumer: Partial<ConsumerConfig> | null | undefined) =>
     getEntityStorageKey(consumer);
+  const getConsumerRuntimeKey = (consumer: Partial<ConsumerConfig> | null | undefined) =>
+    getConsumerStorageKey(consumer) || String(consumer?.name || "").trim();
   let savedConsumerKeys = new Set(
     ((Array.isArray(state.saved_sections?.consumers) ? state.saved_sections.consumers : consumers) || [])
       .map((consumer: ConsumerConfig) => getConsumerStorageKey(consumer))
@@ -407,13 +412,24 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
   const getPublisherStorageKey = (publisher: Partial<PublisherConfig> | null | undefined) =>
     getEntityStorageKey(publisher);
-  const getPublisherByName = (publisherName: string) =>
-    getAvailablePublishers().find((publisher) => String(publisher?.name || "").trim() === String(publisherName || "").trim());
+  const getPublisherOptionValue = (publisher: PublisherConfig, idx: number) =>
+    String(publisher.id || publisher.name || idx).trim();
+  const getPublisherByKey = (publisherKey: string) => {
+    const normalized = String(publisherKey || "").trim();
+    return getAvailablePublishers().find((publisher, idx) =>
+      String(getPublisherOptionValue(publisher, idx)).trim() === normalized
+      || String(publisher?.name || "").trim() === normalized,
+    );
+  };
 
-  const getAvailablePublisherNames = (): string[] =>
-    getAvailablePublishers()
-      .map((publisher) => String(publisher?.name || "").trim())
-      .filter(Boolean);
+  const getPublisherOptionLabel = (publisher: PublisherConfig) =>
+    getEntityDisplayLabel(String(publisher.name || "").trim(), publisher.endpoint, getEndpointType(publisher.endpoint));
+
+  const getAvailablePublisherOptions = () =>
+    getAvailablePublishers().map((publisher, idx) => ({
+      value: getPublisherOptionValue(publisher, idx),
+      label: getPublisherOptionLabel(publisher),
+    }));
 
   const rememberConsumerView = (
     idx = currentIdx,
@@ -458,6 +474,16 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         ]),
       )
       : {};
+  }
+
+  for (const consumer of config.consumers || []) {
+    const storageKey = getConsumerStorageKey(consumer);
+    const legacyNameKey = String(consumer.name || "").trim();
+    if (!storageKey || !legacyNameKey || storageKey === legacyNameKey || consumerMessages[storageKey]) continue;
+    if (consumerMessages[legacyNameKey]) {
+      consumerMessages[storageKey] = consumerMessages[legacyNameKey];
+      delete consumerMessages[legacyNameKey];
+    }
   }
 
   consumerMessages = Object.fromEntries(
@@ -534,11 +560,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const currentConsumer = consumers[currentIdx] || null;
     const currentConsumerName = currentConsumer?.name || null;
     const currentConsumerKey = currentConsumer ? getConsumerStorageKey(currentConsumer) : null;
+    const currentConsumerRuntimeKey = currentConsumer ? getConsumerRuntimeKey(currentConsumer) : null;
     const messages = currentConsumerKey ? consumerMessages[currentConsumerKey] || [] : [];
-    const status = currentConsumerName
-      ? consumerStatus[currentConsumerName] || { running: false, status: { healthy: false } }
+    const status = currentConsumerRuntimeKey
+      ? consumerStatus[currentConsumerRuntimeKey] || (currentConsumerName ? consumerStatus[currentConsumerName] : undefined) || { running: false, status: { healthy: false } }
       : { running: false, status: { healthy: false } };
-    const isTogglePending = !!(currentConsumerName && pendingToggle && pendingToggle.name === currentConsumerName);
+    const isTogglePending = !!(currentConsumerRuntimeKey && pendingToggle && pendingToggle.key === currentConsumerRuntimeKey);
 
     const liveStatusText = status.running
       ? status.status.healthy
@@ -609,23 +636,26 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
     consumersPanelState.set({
       hasConsumers: consumers.length > 0,
-      currentConsumerName,
+      currentConsumerKey,
       items: consumers.map((consumer, index) => {
-        const status = consumerStatus[consumer.name];
+        const consumerRuntimeKey = getConsumerRuntimeKey(consumer);
+        const status = consumerStatus[consumerRuntimeKey] || consumerStatus[String(consumer.name || "").trim()];
         const statusClass = status
           ? status.running
             ? status.status?.healthy ? "status-ok" : "status-err"
             : "status-off"
           : "status-off";
         return {
-          name: consumer.name,
+          name: String(consumer.name || "").trim(),
+          displayName: getEntityDisplayLabel(consumer.name, consumer.endpoint, getEndpointType(consumer.endpoint)),
           inputProto: getConsumerInputType(consumer).toUpperCase(),
           statusClass,
           messageCount: consumerMessages[getConsumerStorageKey(consumer)]?.length || 0,
           throughputLabel: status?.running
-            ? `${(consumerThroughput[consumer.name] || 0).toFixed(1)} msg/s`
+            ? `${(consumerThroughput[consumerRuntimeKey] || consumerThroughput[String(consumer.name || "").trim()] || 0).toFixed(1)} msg/s`
             : "",
           originalIndex: index,
+          id: consumer.id,
         };
       }),
       selectedIndex: currentIdx,
@@ -636,8 +666,13 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       messageCaptureKeepLast: messageCapture.keep_last,
       responseEnabled: Boolean(currentConsumer),
       outputMode: resolvedOutput.mode,
-      publisherOptions: getAvailablePublisherNames(),
-      selectedPublisher: resolvedOutput.mode === "publisher" ? resolvedOutput.publisher : "",
+      publisherOptions: getAvailablePublisherOptions(),
+      selectedPublisher: (() => {
+        if (resolvedOutput.mode !== "publisher") return "";
+        const options = getAvailablePublisherOptions();
+        const publisherKey = String(resolvedOutput.publisher || resolvedOutput.publisher_id || "").trim();
+        return options.find((option) => option.value === publisherKey || option.label === publisherKey)?.value || "";
+      })(),
       responseSupported,
       responseHeaders,
       responsePayload,
@@ -681,25 +716,30 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       >;
     const nowMs = Date.now();
 
-    for (const existingName of Object.keys(consumerStatus)) {
-      if (!(config.consumers || []).some((consumer) => consumer.name === existingName)) {
-        delete consumerStatus[existingName];
-        delete consumerThroughput[existingName];
-        delete consumerRateSamples[existingName];
-        delete consumerMessageSequences[existingName];
-        delete consumerLastPolled[existingName];
+    for (const existingKey of Object.keys(consumerStatus)) {
+      if (!(config.consumers || []).some((consumer) => {
+        const runtimeKey = getConsumerRuntimeKey(consumer);
+        const name = String(consumer.name || "").trim();
+        return runtimeKey === existingKey || name === existingKey;
+      })) {
+        delete consumerStatus[existingKey];
+        delete consumerThroughput[existingKey];
+        delete consumerRateSamples[existingKey];
+        delete consumerMessageSequences[existingKey];
+        delete consumerLastPolled[existingKey];
       }
     }
 
     for (const consumer of config.consumers || []) {
-      const name = consumer.name;
+      const name = String(consumer.name || "").trim();
+      const consumerKey = getConsumerRuntimeKey(consumer);
       if (!isSavedConsumer(consumer)) {
-        consumerStatus[name] = { running: false, status: { healthy: false }, unsaved: true };
+        consumerStatus[consumerKey] = { running: false, status: { healthy: false }, unsaved: true };
         continue;
       }
 
-      const runtimeConsumer = runtimeConsumers[name];
-      consumerStatus[name] = {
+      const runtimeConsumer = runtimeConsumers[consumerKey] || runtimeConsumers[name];
+      consumerStatus[consumerKey] = {
         running: Boolean(runtimeConsumer?.running),
         status: {
           healthy: Boolean(runtimeConsumer?.status?.healthy),
@@ -707,22 +747,22 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         },
       };
 
-      if (consumerStatus[name].running) {
+      if (consumerStatus[consumerKey].running) {
         const currentSeq = runtimeConsumer?.message_sequence || 0;
-        const prevSample = consumerRateSamples[name];
+        const prevSample = consumerRateSamples[consumerKey];
         if (prevSample) {
           const elapsedSec = (nowMs - prevSample.timestampMs) / 1000;
           if (elapsedSec >= 0.8) {
             const delta = Math.max(0, currentSeq - prevSample.total);
-            consumerThroughput[name] = delta / elapsedSec;
-            consumerRateSamples[name] = { timestampMs: nowMs, total: currentSeq };
+            consumerThroughput[consumerKey] = delta / elapsedSec;
+            consumerRateSamples[consumerKey] = { timestampMs: nowMs, total: currentSeq };
           }
         } else {
-          consumerRateSamples[name] = { timestampMs: nowMs, total: currentSeq };
-          consumerThroughput[name] = 0;
+          consumerRateSamples[consumerKey] = { timestampMs: nowMs, total: currentSeq };
+          consumerThroughput[consumerKey] = 0;
         }
       } else {
-        consumerThroughput[name] = 0;
+        consumerThroughput[consumerKey] = 0;
       }
     }
   };
@@ -779,25 +819,19 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       "Copy to Publisher",
       {
         confirmLabel: "Create",
-        value: nextUniqueName(
-          `${current.name}_publisher`,
-          (config.publishers || []).map((publisher) => publisher.name),
-        ),
+        value: "",
         placeholder: "consumer_publisher",
       },
     );
-    if (!publisherName) return;
+    if (publisherName === null) return;
     const trimmed = publisherName.trim();
-    if (!trimmed) {
-      await mqbDialogs.alert("Publisher name cannot be empty");
-      return;
-    }
-    if ((config.publishers || []).some((publisher) => String(publisher.name || "").trim() === trimmed)) {
+    if (trimmed && (config.publishers || []).some((publisher) => String(publisher.name || "").trim() === trimmed)) {
       await mqbDialogs.alert("Publisher already exists");
       return;
     }
     config.publishers ||= [];
     config.publishers.push({
+      id: createLocalEntityId("publisher"),
       name: trimmed,
       endpoint: cloneJson(current.endpoint),
       comment: current.comment || "",
@@ -809,7 +843,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const addConsumer = (endpointType: string) => {
     if (endpointType) {
       config.consumers.push({
-        name: nextUniqueName(endpointType, (config.consumers || []).map((consumer) => consumer.name)),
+        id: createLocalEntityId("consumer"),
+        name: "",
         endpoint: createDefaultConsumerEndpoint(endpointType),
         comment: "",
         response: null,
@@ -898,21 +933,21 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       activeSubtab = "response";
     } else if (mode === "publisher") {
       const existing = normalizeConsumerOutput(current.output, current.response);
-      const publisherOptions = getAvailablePublisherNames();
+      const publisherOptions = getAvailablePublisherOptions();
       if (publisherOptions.length === 0) {
         void mqbDialogs.alert("Create or select a publisher first.");
         return;
       }
-      const preferredPublisher =
+      const preferredPublisherKey =
         existing.mode === "publisher" && existing.publisher
           ? existing.publisher
           : publisherOptions.length === 1
-            ? publisherOptions[0]
+            ? publisherOptions[0].value
             : "";
-      const preferredPublisherConfig = getPublisherByName(preferredPublisher);
+      const preferredPublisherConfig = getPublisherByKey(preferredPublisherKey);
       current.output = {
         mode: "publisher",
-        publisher: preferredPublisher,
+        publisher: String(preferredPublisherConfig?.id || preferredPublisherConfig?.name || "").trim(),
         ...(preferredPublisherConfig?.id ? { publisher_id: preferredPublisherConfig.id } : {}),
       };
       current.response = null;
@@ -930,11 +965,10 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const setCurrentConsumerOutputPublisher = (publisher: string) => {
     const current = config.consumers[currentIdx];
     if (!current) return;
-    const publisherName = String(publisher || "").trim();
-    const publisherConfig = getPublisherByName(publisherName);
+    const publisherConfig = getPublisherByKey(publisher);
     current.output = {
       mode: "publisher",
-      publisher: publisherName,
+      publisher: String(publisherConfig?.id || publisherConfig?.name || publisher || "").trim(),
       ...(publisherConfig?.id ? { publisher_id: publisherConfig.id } : {}),
     };
     current.response = null;
@@ -973,8 +1007,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     syncCurrentConsumerResponse(normalizeConsumerResponse({ headers, payload }));
   };
 
-  showConsumerMessageDetails = (name: string, msgIdx: number) => {
-    const consumer = (config.consumers || []).find((entry) => entry.name === name);
+  showConsumerMessageDetails = (consumerKey: string, msgIdx: number) => {
+    const consumer = (config.consumers || []).find((entry) => getConsumerRuntimeKey(entry) === consumerKey || entry.name === consumerKey);
     const message = (consumerMessages[getConsumerStorageKey(consumer)] || [])[msgIdx];
     if (!message) return;
     selectedMessageIndex = msgIdx;
@@ -983,24 +1017,16 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     syncConsumersPanelState();
   };
 
-  const toggleConsumer = async (name: string) => {
-    if (pendingToggle?.name === name) return;
+  const toggleConsumer = async (consumerKey: string) => {
+    if (pendingToggle?.key === consumerKey) return;
 
-    const isRunning = consumerStatus[name]?.running;
+    const isRunning = consumerStatus[consumerKey]?.running;
     const action = isRunning ? "stop" : "start";
-    let targetName = name;
-    let normalizedNamesChanged = false;
-
-    if (action === "start") {
-      const normalized = normalizeConsumerNames(config.consumers, currentIdx);
-      normalizedNamesChanged = normalized.changed;
-      targetName = normalized.selectedName || targetName;
-      if (targetName !== name) syncConsumersPanelState();
-    }
-
+    let targetKey = consumerKey;
+    let targetName = (config.consumers || []).find((consumer) => getConsumerRuntimeKey(consumer) === consumerKey)?.name || consumerKey;
     if (
       action === "start" &&
-      (!isSavedConsumer(consumers.find((consumer) => consumer.name === targetName)) || mqbRuntime.refreshDirtySection("consumers") || normalizedNamesChanged)
+      (!isSavedConsumer(consumers.find((consumer) => getConsumerRuntimeKey(consumer) === targetKey || consumer.name === targetName)) || mqbRuntime.refreshDirtySection("consumers"))
     ) {
       const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
       if (!saved?.consumers) return;
@@ -1010,27 +1036,28 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       mqbApp.config<ConsumersAppConfig>().consumers = consumers;
       syncSavedConsumerNames(consumers);
 
-      const refreshedIdx = consumers.findIndex((consumer) => consumer.name === targetName);
+      const refreshedIdx = consumers.findIndex((consumer) => getConsumerRuntimeKey(consumer) === targetKey || consumer.name === targetName);
       if (refreshedIdx === -1) {
         await mqbDialogs.alert("Save completed, but the selected consumer no longer exists.");
         return;
       }
       currentIdx = refreshedIdx;
+      targetKey = getConsumerRuntimeKey(consumers[refreshedIdx]) || targetKey;
       targetName = consumers[refreshedIdx].name;
     }
 
-    pendingToggle = { name: targetName, action };
+    pendingToggle = { key: targetKey, action };
     syncConsumersPanelState();
 
     try {
-      const response = await fetch(`/consumer-${action}?consumer=${encodeURIComponent(targetName)}`, { method: "POST" });
+      const response = await fetch(`/consumer-${action}?consumer_id=${encodeURIComponent(targetKey)}`, { method: "POST" });
       if (response.ok) {
         await appWindow().pollRuntimeStatus();
         syncRuntimeConsumerStatuses();
         syncConsumersPanelState();
       } else {
         const errorMessage = (await response.text()) || `Failed to ${action} consumer`;
-        consumerStatus[targetName] = {
+        consumerStatus[targetKey] = {
           running: false,
           status: { healthy: false, error: errorMessage.replace(/^Internal Server Error:\s*/i, "") },
         };
@@ -1047,7 +1074,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   const clearConsumerHistory = (name: string) => {
-    const consumer = (config.consumers || []).find((entry) => entry.name === name);
+    const consumer = (config.consumers || []).find((entry) => getConsumerRuntimeKey(entry) === name || entry.name === name);
     consumerMessages[getConsumerStorageKey(consumer)] = [];
     saveMessages();
     syncConsumersPanelState();
@@ -1073,6 +1100,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     }
     if (itemSchema.properties?.id) {
       itemSchema.properties.id.hidden = true;
+    }
+    if (Array.isArray(itemSchema.required)) {
+      itemSchema.required = itemSchema.required.filter((key: string) => key !== "name");
     }
     const httpConfigSchema = itemSchema.$defs?.HttpConfig;
     if (httpConfigSchema?.properties?.custom_headers) {
@@ -1138,15 +1168,15 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   toggleActiveConsumer = () => {
-    const name = consumers[currentIdx]?.name;
-    if (!name) return;
-    void toggleConsumer(name);
+    const consumer = consumers[currentIdx];
+    if (!consumer) return;
+    void toggleConsumer(getConsumerRuntimeKey(consumer));
   };
 
   clearActiveConsumerHistory = () => {
-    const name = consumers[currentIdx]?.name;
-    if (!name) return;
-    clearConsumerHistory(name);
+    const consumer = consumers[currentIdx];
+    if (!consumer) return;
+    clearConsumerHistory(getConsumerRuntimeKey(consumer));
   };
 
   addConsumerAction = addConsumer;
@@ -1159,6 +1189,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   cloneCurrentConsumerAction = async () => {
     const current = config.consumers[currentIdx];
     const cloned = cloneJson(current);
+    cloned.id = createLocalEntityId("consumer");
     cloned.name = nextUniqueName(
       sanitizeConsumerName(`${cloned.name}_copy`),
       (config.consumers || []).map((consumer) => consumer.name),
@@ -1211,8 +1242,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const activeElement = document.activeElement as HTMLElement | null;
     activeElement?.blur();
     await Promise.resolve();
-    const normalized = normalizeConsumerNames(config.consumers, currentIdx);
-    const selectedName = normalized.selectedName;
+    const selectedConsumer = (config.consumers || [])[currentIdx];
+    const selectedKey = selectedConsumer ? getConsumerStorageKey(selectedConsumer) : "";
+    const selectedName = selectedConsumer?.name || null;
     const selectedTab = activeSubtab;
     const mapped = (config.consumers || []).map((consumer) => normalizeConsumerConfigShape({ ...consumer }));
     config.consumers.splice(0, config.consumers.length, ...mapped);
@@ -1227,7 +1259,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     syncSavedConsumerNames(saved.consumers || []);
     mqbRuntime.markSectionSaved("consumers", normalizedSavedConsumers);
     const targetIdx = (mqbApp.config<ConsumersAppConfig>().consumers || []).findIndex(
-      (consumer: ConsumerConfig) => consumer.name === selectedName,
+      (consumer: ConsumerConfig) => getConsumerStorageKey(consumer) === selectedKey || consumer.name === selectedName,
     );
     const pendingRestore = { idx: targetIdx === -1 ? currentIdx : targetIdx, tab: selectedTab };
     getMqbState().pending_consumer_restore = pendingRestore;
@@ -1356,15 +1388,16 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       const messageCapture = normalizeConsumerMessageCapture(activeConsumer.message_capture);
 
       syncRuntimeConsumerStatuses();
-      const name = activeConsumer.name;
-      const runtimeConsumer = getMqbState().runtime_status?.consumers?.[name];
-      const knownSequence = consumerMessageSequences[name] || 0;
+      const name = String(activeConsumer.name || "").trim();
+      const activeConsumerKey = getConsumerRuntimeKey(activeConsumer);
+      const runtimeConsumer = getMqbState().runtime_status?.consumers?.[activeConsumerKey] || getMqbState().runtime_status?.consumers?.[name];
+      const knownSequence = consumerMessageSequences[activeConsumerKey] || consumerMessageSequences[name] || 0;
       const nextSequence = runtimeConsumer?.message_sequence || 0;
 
       syncConsumersPanelState();
 
       if (!messageCapture.enabled) {
-        consumerMessageSequences[name] = nextSequence;
+        consumerMessageSequences[activeConsumerKey] = nextSequence;
         schedulePoll(runtimeConsumer?.running ? 1000 : 5000);
         return;
       }
@@ -1374,32 +1407,32 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         return;
       }
 
-      const response = await fetch(`/messages?consumer=${encodeURIComponent(name)}`);
+      const response = await fetch(`/messages?consumer_id=${encodeURIComponent(activeConsumerKey)}`);
       if (response.ok) {
         const data = (await response.json()) as Record<string, unknown[]>;
         let hasNew = false;
         const selectedMessages: ConsumerMessage[] = [];
         const maxMessages = messageCapture.keep_last;
 
-        for (const [sourceName, rawMessages] of Object.entries(data)) {
-          const sourceConsumer = (config.consumers || []).find((consumer) => consumer.name === sourceName);
-          const sourceKey = getConsumerStorageKey(sourceConsumer || { name: sourceName });
+        for (const [sourceKey, rawMessages] of Object.entries(data)) {
+          const sourceConsumer = (config.consumers || []).find((consumer) => getConsumerRuntimeKey(consumer) === sourceKey || consumer.name === sourceKey);
+          const resolvedSourceKey = getConsumerStorageKey(sourceConsumer || { id: sourceKey, name: sourceKey });
           const messages = Array.isArray(rawMessages)
             ? rawMessages.map((message) => normalizeConsumerMessage(message))
             : [];
-          consumerMessages[sourceKey] = [...messages, ...(consumerMessages[sourceKey] || [])].slice(0, maxMessages);
-          consumerMessages[sourceKey].sort((a, b) => {
+          consumerMessages[resolvedSourceKey] = [...messages, ...(consumerMessages[resolvedSourceKey] || [])].slice(0, maxMessages);
+          consumerMessages[resolvedSourceKey].sort((a, b) => {
             const cmp = (b.time || "").localeCompare(a.time || "");
             return cmp !== 0 ? cmp : (b.id || "").localeCompare(a.id || "");
           });
           hasNew = hasNew || messages.length > 0;
-          if (sourceName !== name && messages.length > 0) {
+          if (resolvedSourceKey !== activeConsumerKey && sourceKey !== name && messages.length > 0) {
             selectedMessages.push(...messages);
           }
         }
 
         const activeKey = getConsumerStorageKey(activeConsumer);
-        if ((!data[name] || data[name].length === 0) && selectedMessages.length > 0) {
+        if ((!data[activeConsumerKey] || data[activeConsumerKey].length === 0) && (!data[name] || data[name].length === 0) && selectedMessages.length > 0) {
           consumerMessages[activeKey] = [...selectedMessages, ...(consumerMessages[activeKey] || [])].slice(0, maxMessages);
           consumerMessages[activeKey].sort((a, b) => {
             const cmp = (b.time || "").localeCompare(a.time || "");
@@ -1408,8 +1441,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           hasNew = true;
         }
 
-        consumerLastPolled[name] = Date.now();
-        consumerMessageSequences[name] = nextSequence;
+        consumerLastPolled[activeConsumerKey] = Date.now();
+        consumerMessageSequences[activeConsumerKey] = nextSequence;
         if (hasNew) saveMessages();
 
         syncConsumersPanelState();

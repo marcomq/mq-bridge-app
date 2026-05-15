@@ -13,7 +13,6 @@
     addPublisherMetadataRow,
     beautifyPublisherPayloadAction,
     clearActivePublisherHistory,
-    cloneCurrentPublisherAction,
     copyPublisherResponse,
     copyPublisherResponseJson,
     copyPublisherAsCurl,
@@ -38,7 +37,7 @@
     updatePublisherPayload,
     updatePublisherRequestField,
   } from "../lib/publishers-view";
-  import { handleActionKey } from "../lib/utils";
+  import { handleActionKey, getEntityDisplayLabel } from "../lib/utils";
   import { getMqbState, mqbDialogs } from "../lib/runtime-window";
 
   let filterText = $state("");
@@ -57,6 +56,13 @@
     | { kind: "group"; id: string; label: string; depth: number; expanded: boolean; endpointType?: string; tooltip?: string }
     | { kind: "publisher"; id: string; label: string; depth: number; endpointType: string; publisherIndex: number; tooltip?: string };
 
+  function getPublisherLabel(node: any) {
+    if (node.label && node.label.trim()) return node.label;
+    const pub = node.publisher;
+    if (!pub) return "Unnamed Publisher";
+    return getEntityDisplayLabel(pub.name, pub.endpoint);
+  }
+
   function collectDefaultExpanded(nodes: PublisherTreeNode[], depth = 0, acc = new Set<string>()) {
     for (const node of nodes) {
       if (node.kind === "group") {
@@ -74,8 +80,8 @@
     const result: PublisherTreeNode[] = [];
     for (const node of nodes) {
       if (node.kind === "publisher") {
-        const matches = node.label.toLowerCase().includes(q)
-          || node.publisher.name.toLowerCase().includes(q)
+        const label = getPublisherLabel(node);
+        const matches = label.toLowerCase().includes(q)
           || String(node.tooltip || "").toLowerCase().includes(q);
         if (matches) {
           result.push(node);
@@ -84,7 +90,7 @@
       }
 
       const children = filterTree(node.children, query);
-      if (children.length > 0 || node.label.toLowerCase().includes(q) || String(node.tooltip || "").toLowerCase().includes(q)) {
+      if (children.length > 0 || (node.label || "").toLowerCase().includes(q) || String(node.tooltip || "").toLowerCase().includes(q)) {
         result.push({ ...node, children });
       }
     }
@@ -95,12 +101,14 @@
     const q = query.trim().toLowerCase();
     if (!q) return false;
 
-    const selfMatches = node.label.toLowerCase().includes(q) || String(node.tooltip || "").toLowerCase().includes(q);
     if (node.kind === "publisher") {
-      return selfMatches || node.publisher.name.toLowerCase().includes(q);
+      const label = getPublisherLabel(node);
+      return label.toLowerCase().includes(q) || String(node.tooltip || "").toLowerCase().includes(q);
     }
 
-    return selfMatches || node.children.some((child) => subtreeHasMatch(child, query));
+    return (node.label || "").toLowerCase().includes(q) 
+      || String(node.tooltip || "").toLowerCase().includes(q) 
+      || node.children.some((child) => subtreeHasMatch(child, query));
   }
 
   function flattenTree(nodes: PublisherTreeNode[], depth = 0): VisibleTreeRow[] {
@@ -324,7 +332,7 @@
       </div>
       <div class="sidebar-list" id="pub-list">
         <div class="sidebar-group-label">Saved</div>
-        {#each visibleTreeRows as row (row.id)}
+        {#each visibleTreeRows as row, i (row.id + '-' + i)}
           {#if row.kind === "group"}
             <button
               type="button"
@@ -353,7 +361,7 @@
               {#if row.depth === 0}
                 <span class={`proto-badge proto-${row.endpointType.toLowerCase()}`}>{row.endpointType}</span>
               {/if}
-              <span class="item-name">{row.label}</span>
+              <span class="item-name">{getPublisherLabel(row)}</span>
               <span class="item-status status-off"></span>
             </button>
           {/if}
@@ -534,7 +542,7 @@
                       {#each filteredHistoryRows as row (row.historyIndex)}
                         <tr
                           class="history-row"
-                          style="cursor:zoom-in;"
+                          style="cursor:pointer;"
                           role="button"
                           tabindex="0"
                           onclick={() => openHistoryRow(row.historyIndex)}
@@ -595,17 +603,6 @@
                       role="button" 
                       tabindex="0"
                       >Copy to Consumer</wa-button
-                    >
-                    <wa-button 
-                      variant="neutral" 
-                      appearance="outlined" 
-                      size="small" 
-                      id="pub-clone" 
-                      onclick={cloneCurrentPublisherAction} 
-                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentPublisherAction)} 
-                      role="button" 
-                      tabindex="0"
-                      >Clone</wa-button
                     >
                     <wa-button
                       variant="neutral"
@@ -694,7 +691,7 @@
                   icon-placement="start">
                   <span slot="expand-icon">▸</span>
                   <span slot="collapse-icon">▸</span>
-                  {#each $publishersPanelState.requestRows as [key, value] (`req:${key}:${value}`)}
+                  {#each $publishersPanelState.requestRows as [key, value], i (`req:${key}:${value}-${i}`)}
                     <div class="response-meta-row">
                       <span class="response-meta-key">{key}</span>
                       <span class="response-meta-value">{value}</span>
@@ -702,7 +699,7 @@
                   {/each}
                   {#if $publishersPanelState.requestHeaders.length > 0}
                     <div class="section-label" style="margin-top:10px;">Headers</div>
-                    {#each $publishersPanelState.requestHeaders as [key, value] (`hdr:${key}:${value}`)}
+                    {#each $publishersPanelState.requestHeaders as [key, value], i (`hdr:${key}:${value}-${i}`)}
                       <div class="response-meta-row">
                         <span class="response-meta-key">{key}</span>
                         <span class="response-meta-value">{value}</span>
@@ -717,7 +714,7 @@
                   icon-placement="start">
                     <span slot="expand-icon">▸</span>
                     <span slot="collapse-icon">▸</span>
-                    {#each $publishersPanelState.responseHeaders as [key, value] (`resp:${key}:${value}`)}
+                    {#each $publishersPanelState.responseHeaders as [key, value], i (`resp:${key}:${value}-${i}`)}
                     <div class="response-meta-row">
                       <span class="response-meta-key">{key}</span>
                       <span class="response-meta-value">{value}</span>

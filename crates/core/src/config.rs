@@ -159,6 +159,7 @@ pub struct RouteConfig {
 pub struct ConsumerConfig {
     #[serde(default = "generate_config_id")]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     pub endpoint: Endpoint,
     #[serde(default)]
@@ -223,6 +224,7 @@ fn consumer_output_is_none(output: &ConsumerOutputConfig) -> bool {
 pub struct PublisherClient {
     #[serde(default = "generate_config_id")]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     pub endpoint: Endpoint,
     #[serde(default)]
@@ -257,7 +259,8 @@ fn endpoint_value(endpoint: &Endpoint) -> serde_json::Value {
 }
 
 fn endpoint_type_name_from_value(value: &serde_json::Value) -> String {
-    value.as_object()
+    value
+        .as_object()
         .and_then(|object| {
             object
                 .keys()

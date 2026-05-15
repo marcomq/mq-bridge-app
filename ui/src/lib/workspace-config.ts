@@ -1,3 +1,5 @@
+import { createLocalEntityId } from "./entity-key";
+
 export type HeaderRow = { key: string; value: string; enabled: boolean };
 export type HistoryMetadataRow = { k: string; v: string };
 export type ConfigSecurityMode =
@@ -94,7 +96,7 @@ function createDefaultRawPublisherEndpoint(endpointType: string) {
     grpc: { url: "http://localhost:50051" },
     nats: { url: "nats://localhost:4222", subject: "events.created" },
     memory: { topic: "events" },
-    webservice: { url: "http://localhost:8070" },
+    webservice: { url: "ws://localhost:8070" },
     amqp: { url: "amqp://guest:guest@localhost:5672/%2f", queue: "jobs" },
     kafka: { url: "localhost:9092", topic: "events" },
     sqlx: { url: "postgres://postgres:password@localhost/postgres", table: "events" },
@@ -198,18 +200,22 @@ function migrateLegacyPresetsToPublishers(config: WorkspaceConfig) {
   );
 
   for (const [publisherKey, rows] of Object.entries(legacyPresets)) {
-    const basePublisher = migratedPublishers.find((publisher) => getRawPublisherStorageKey(publisher) === publisherKey);
+    const basePublisher = migratedPublishers.find((publisher) =>
+      getRawPublisherStorageKey(publisher) === publisherKey
+      || String(publisher.name || "").trim() === String(publisherKey || "").trim(),
+    );
     for (const preset of rows) {
       const fallbackType = preset.endpoint_type || "http";
       const nextPublisher = basePublisher
         ? structuredClone(basePublisher)
         : {
+            id: createLocalEntityId("publisher"),
             name: publisherKey || preset.name || fallbackType,
             endpoint: createDefaultRawPublisherEndpoint(fallbackType),
             comment: "",
           };
 
-      nextPublisher.id = undefined;
+      nextPublisher.id = createLocalEntityId("publisher");
       nextPublisher.name = nextUniquePublisherName(
         basePublisher
           ? `${String(basePublisher.name || publisherKey || fallbackType).trim()} - ${String(preset.name || fallbackType).trim()}`

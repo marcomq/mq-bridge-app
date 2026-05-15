@@ -15,7 +15,13 @@ function getBrowserStorage(): Storage | null {
 }
 
 export const localStorageBackend: StorageBackend = {
-  getItem: (key) => getBrowserStorage()?.getItem(key) ?? null,
+  getItem: (key) => {
+    try {
+      return getBrowserStorage()?.getItem(key) ?? null;
+    } catch {
+      return null;
+    }
+  },
   setItem: (key, value) => {
     try {
       const storage = getBrowserStorage();
@@ -57,11 +63,11 @@ export function getStorageBackend(): StorageBackend {
 export function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = activeBackend.getItem(key);
-    if (!raw) {
+    if (raw === null) {
       return fallback;
     }
     const parsed = JSON.parse(raw);
-    return (parsed ?? fallback) as T;
+    return parsed as T;
   } catch {
     return fallback;
   }

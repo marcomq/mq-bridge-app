@@ -15,7 +15,7 @@
     title = "Ref Endpoint",
     description = "",
     value,
-    placeholder = "Select a publisher reference...",
+    placeholder = "Select a publisher id...",
     name,
     onChange,
   }: Props = $props();
@@ -23,8 +23,8 @@
   const suggestions = $derived(
     Array.from(
       new Set(
-        ((mqbApp.config<Record<string, any>>()?.publishers || []) as Array<{ name?: string }>)
-          .map((publisher) => String(publisher?.name || "").trim())
+        ((mqbApp.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
+          .map((publisher) => String(publisher?.id || publisher?.name || "").trim())
           .filter(Boolean),
       ),
     ).sort((a, b) => a.localeCompare(b)),

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '@awesome.me/webawesome/dist/components/callout/callout.js';
   import { activeMainTab, storageSecurityStore } from "../lib/stores";
   import { exportFullBundle, importAppConfigFromJsonText, resetAppConfigToDefaults } from "../lib/import-export";
   import { mqbDialogs, mqbApp } from "../lib/runtime-window";
@@ -137,11 +138,9 @@
 
 <div class:active={$activeMainTab === "config"} class="tab-content-panel" id="tab-config">
   <div id="form-tab-wrapper">
-    <wa-callout variant="neutral">
-      <div class="settings-security-banner" id="settings-security-banner">
-        {storageNotice}
-      </div>
-    </wa-callout>
+    <div class="settings-security-banner" id="settings-security-banner">
+      {storageNotice}
+    </div>
     <div
       id="form-actions"
       class="section-toolbar editor-action-bar editor-action-bar--config editor-action-bar--compact"

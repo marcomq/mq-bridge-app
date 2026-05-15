@@ -12,6 +12,7 @@ import PasswordField from "./PasswordField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
 import { mqbApp } from "../runtime-window";
+import { BASIC_ENDPOINT_FIELDS } from "../utils";
 import {
   createTypeSelectArrayRenderer,
   domRenderer,
@@ -241,29 +242,6 @@ function parseElementPath(pathLike: string): Array<string | number> {
 
   return parts;
 }
-
-// Define basic fields for each endpoint type (keyed by the endpoint type string, not *Config)
-// Fields not in this list will be considered "advanced" and placed in a collapsible section.
-// For types like 'static', 'ref', 'switch', 'fanout', 'response', 'custom', 'null', they are handled by specific renderers or are complex polymorphic types that don't fit this simple basic/advanced split.
-const BASIC_ENDPOINT_FIELDS: Record<string, string[]> = {
-  http: ["url", "method", "path"],
-  kafka: ["url", "topic", "group_id"],
-  mqtt: ["url", "topic"],
-  grpc: ["url", "topic"],
-  amqp: ["url", "queue", "subscribe_mode", "exchange"],
-  nats: ["url", "subject", "stream"],
-  mongodb: ["url", "database", "collection", "change_stream"],
-  sqlx: ["url", "table"],
-  zeromq: ["url", "topic"],
-  file: ["path", "mode"],
-  memory: ["topic"],
-  sled: ["path", "tree"],
-  ibmmq: ["url", "queue", "topic"],
-  switch: ["metadata_key", "default", "cases"],
-  fanout: ["endpoints"],
-  websocket: ["url"],
-  aws: ["region", "access_key_id", "secret_access_key"], // Assuming these are basic for AWS, adjust if needed
-};
 
 const baseRenderBoolean = typeof domRenderer.renderBoolean === "function"
   ? domRenderer.renderBoolean.bind(domRenderer)
@@ -1016,12 +994,12 @@ CUSTOM_RENDERERS.static = createScalarEndpointRenderer("static", {
 
 CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
   title: "Ref",
-  placeholder: "publisher_name",
+  placeholder: "publisher_id",
   suggestions: () =>
     Array.from(
       new Set(
-        ((mqbApp.config<Record<string, any>>()?.publishers || []) as Array<{ name?: string }>)
-          .map((publisher) => String(publisher?.name || "").trim())
+        ((mqbApp.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
+          .map((publisher) => String(publisher?.id || publisher?.name || "").trim())
           .filter(Boolean),
       ),
     ).sort((a, b) => a.localeCompare(b)),

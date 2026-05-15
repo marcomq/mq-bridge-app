@@ -1,5 +1,6 @@
 import type { PublisherConfig } from "./panel-types";
 import { getEndpointType } from "./endpoint-utils";
+import { getEntityDisplayLabel } from "./utils";
 
 export type PublisherLeafNode = {
   kind: "publisher";
@@ -67,6 +68,12 @@ function sanitizeTooltipValue(value: string) {
 
 function fallbackLeafId(publisher: PublisherConfig, publisherIndex: number) {
   return String(publisher.id || publisher.name || publisherIndex);
+}
+
+function getPublisherMenuLabel(publisher: PublisherConfig, fallback = "") {
+  const name = String(publisher.name || "").trim();
+  if (name) return name;
+  return String(fallback || getEntityDisplayLabel("", publisher.endpoint, getEndpointType(publisher.endpoint))).trim();
 }
 
 function getHttpMethod(publisher: PublisherConfig) {
@@ -166,7 +173,7 @@ function createHttpLeaf(
   return {
     kind: "publisher",
     id: fallbackLeafId(publisher, publisherIndex),
-    label: publisherName || fullTarget || "/",
+    label: getPublisherMenuLabel(publisher, fullTarget || "/"),
     publisher,
     publisherIndex,
     endpointType,
@@ -180,12 +187,11 @@ function countTrieLeaves(node: PathTrieNode): number {
 }
 
 function toRelativeHttpLeaf(leaf: MutableLeaf, segments: string[]): PublisherLeafNode {
-  const publisherName = String(leaf.publisher.name || "").trim();
   const pathLabel = formatHttpSegments(segments);
   return {
     kind: "publisher",
     id: leaf.id,
-    label: `${getHttpMethod(leaf.publisher)} ${pathLabel}${publisherName ? ` (${publisherName})` : ""}`,
+    label: getPublisherMenuLabel(leaf.publisher, `${getHttpMethod(leaf.publisher)} ${pathLabel}`),
     publisher: leaf.publisher,
     publisherIndex: leaf.publisherIndex,
     endpointType: leaf.endpointType,
@@ -284,7 +290,7 @@ function buildNonHttpGroupInfo(publisher: PublisherConfig) {
       groupKey: `mongodb:${safeUrl}:${database}:${collection}`,
       groupLabel: label.trim(),
       tooltip: safeUrl,
-      leafLabel: publisher.name,
+      leafLabel: getPublisherMenuLabel(publisher, `${database}/${collection}`.replace(/^\/+|\/+$/g, "") || safeUrl),
       leafTooltip: `${database}/${collection}`.replace(/^\/+|\/+$/g, "") || safeUrl,
       sortTarget: `${database}/${collection}|${publisher.name}`,
     };
@@ -306,7 +312,7 @@ function buildNonHttpGroupInfo(publisher: PublisherConfig) {
     groupKey: `${endpointType}:${safeUrl}:${firstSegment}`,
     groupLabel: `${endpointType.toUpperCase()} ${displayUrlWithoutScheme(safeUrl) || firstSegment}`.trim(),
     tooltip: safeUrl || target,
-    leafLabel: `${target || publisher.name}${publisher.name ? ` (${publisher.name})` : ""}`,
+    leafLabel: getPublisherMenuLabel(publisher, target || safeUrl || firstSegment),
     leafTooltip: target || safeUrl,
     sortTarget: `${target}|${publisher.name}`,
   };

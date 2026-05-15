@@ -10,11 +10,13 @@ export const storageSecurityStore = writable<StorageSecurityInfo>({ ...EMPTY_STO
 
 export interface ConsumerSidebarItem {
   name: string;
+  displayName: string;
   inputProto: string;
   statusClass: string;
   messageCount: number;
   throughputLabel: string;
   originalIndex: number;
+  id?: string;
 }
 
 export interface ConsumerLogItem {
@@ -26,7 +28,7 @@ export interface ConsumerLogItem {
 
 export interface ConsumersPanelState {
   hasConsumers: boolean;
-  currentConsumerName: string | null;
+  currentConsumerKey: string | null;
   items: ConsumerSidebarItem[];
   selectedIndex: number;
   activeSubtab: "definition" | "response" | "messages";
@@ -36,7 +38,7 @@ export interface ConsumersPanelState {
   messageCaptureKeepLast: number;
   responseEnabled: boolean;
   outputMode: "none" | "publisher" | "response";
-  publisherOptions: string[];
+  publisherOptions: Array<{ value: string; label: string }>;
   selectedPublisher: string;
   responseSupported: boolean;
   responseHeaders: Array<{ id: number; key: string; value: string; enabled: boolean }>;
@@ -59,7 +61,7 @@ export interface ConsumersPanelState {
 
 export const consumersPanelState = writable<ConsumersPanelState>({
   hasConsumers: false,
-  currentConsumerName: null,
+  currentConsumerKey: null,
   items: [],
   selectedIndex: 0,
   activeSubtab: "messages",
