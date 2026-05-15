@@ -1,4 +1,4 @@
-import { activeMainTab, runtimeStatusStore } from "./lib/stores";
+import { activeMainTab, runtimeStatusStore, storageSecurityStore } from "./lib/stores";
 import { createDirtyTracker, cloneSectionState, isDirty } from "./lib/dirty-state";
 import {
   saveWholeConfig,
@@ -206,6 +206,10 @@ function renderRuntimeStatus(status?: typeof EMPTY_RUNTIME_STATUS) {
   runtimeStatusStore.set(status || getMqbState().runtime_status || EMPTY_RUNTIME_STATUS);
 }
 
+function renderStorageSecurity() {
+  storageSecurityStore.set(getMqbState().storage_security || { ...EMPTY_STORAGE_SECURITY });
+}
+
 const runtimeStatusPoller = createRuntimeStatusPoller({
   onStatus: (status) => {
     // Keep window/global mirror in sync first so a subsequent getMqbState() call
@@ -213,12 +217,8 @@ const runtimeStatusPoller = createRuntimeStatusPoller({
     (appWindow() as unknown as { _mqb_runtime_status?: typeof status })._mqb_runtime_status = status;
     getMqbState().runtime_status = status;
     renderRuntimeStatus(status);
-    if (appWindow().renderRoutesRuntimeMetrics) {
-      appWindow().renderRoutesRuntimeMetrics();
-    }
-    if (appWindow().renderConsumersRuntimeStatus) {
-      appWindow().renderConsumersRuntimeStatus();
-    }
+    appWindow().renderRoutesRuntimeMetrics?.();
+    appWindow().renderConsumersRuntimeStatus?.();
   },
 });
 
@@ -267,6 +267,7 @@ function installGlobals() {
   const state = getMqbState();
   state.runtime_status = { ...EMPTY_RUNTIME_STATUS };
   state.storage_security = { ...EMPTY_STORAGE_SECURITY };
+  renderStorageSecurity();
   state.dirty_sections = {};
   state.saved_sections = {};
   appWindow().switchMain = switchMain;
@@ -313,6 +314,7 @@ function installGlobals() {
         const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
         state.storage_security = normalizedStorageSecurity;
         (appWindow() as any)._mqb_storage_security = normalizedStorageSecurity;
+        renderStorageSecurity();
       }
       appWindow().markSectionSaved("config", appConfig);
       return refreshedConfig;
@@ -386,6 +388,7 @@ export async function bootstrapApp() {
   const state = getMqbState();
   state.storage_security = storageSecurity;
   (appWindow() as any)._mqb_storage_security = storageSecurity;
+  renderStorageSecurity();
   state.storage_cache = {
     publisher_state: await getStoredJson("mqb_publisher_state", {}, storageSecurity),
     publisher_history: await getStoredJson("mqb_publisher_history", {}, storageSecurity),

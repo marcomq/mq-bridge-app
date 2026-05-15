@@ -3,7 +3,7 @@
   import { switchMain } from "../bootstrap";
   import { runtimeStatusStore } from "../lib/stores";
   import { isRuntimeConnected, runtimeStatusLabel } from "../lib/runtime-status";
-  import { getThemePreference, setThemePreference } from "../lib/theme-bridge";
+  import { getThemePreference, setThemePreference } from "../lib/utils";
   import { onMount } from "svelte";
 
   type Theme = "auto" | "light" | "dark";

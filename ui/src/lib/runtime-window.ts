@@ -1,5 +1,7 @@
 import Split from "split.js";
 import * as VanillaSchemaForms from "vanilla-schema-forms";
+import type { RuntimeStatus } from "./runtime-status";
+import type { StorageSecurityInfo } from "./storage-security";
 
 export function appWindow() {
   return window;
@@ -42,33 +44,8 @@ export type MqbState = {
   last_publisher_idx?: number;
   last_consumer_tab?: "definition" | "response" | "messages";
   last_publisher_tab?: "payload" | "headers" | "history" | "definition";
-  runtime_status: {
-    active_consumers: string[];
-    active_routes: string[];
-    route_throughput: Record<string, number>;
-    consumers: Record<string, {
-      running: boolean;
-      status: { healthy: boolean; error?: string };
-      message_sequence: number;
-      capture_enabled?: boolean;
-      capture_keep_last?: number;
-    }>;
-  };
-  storage_security?: {
-    target?: "cli" | "desktop";
-    encrypted: boolean;
-    persistent: boolean;
-    keySource: "none" | "os-key-store" | "ephemeral-process" | "env";
-    keyStoreAvailable?: boolean;
-    encryptedConfigAvailable?: boolean;
-    persistentMessagesAvailable?: boolean;
-    configEncrypted: boolean;
-    messagesEncrypted: boolean;
-    messagesPersistent: boolean;
-    reason?: "key-store-unavailable" | "key-store-write-failed" | "cli-mode";
-    messageKeyHex?: string;
-    kid?: string;
-  };
+  runtime_status: RuntimeStatus;
+  storage_security?: StorageSecurityInfo;
   storage_cache?: {
     publisher_state?: Record<string, unknown>;
     publisher_history?: unknown;

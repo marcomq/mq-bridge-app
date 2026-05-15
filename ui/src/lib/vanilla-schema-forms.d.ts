@@ -15,5 +15,7 @@ declare module "vanilla-schema-forms" {
   export const init: any;
   export const generateDefaultData: any;
   export const validateAndShowErrors: any;
-  export default any;
+
+  const vanillaSchemaForms: any;
+  export default vanillaSchemaForms;
 }

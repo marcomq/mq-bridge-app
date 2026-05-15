@@ -1,14 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
+  availableStorageModeValues,
   fallbackStorageSecurity,
   normalizeStorageSecurityInfo,
-  storageModeOptions,
-  storageModeOptionsSummary,
 } from "../../ui/src/lib/storage-security";
 
 describe("storage-security", () => {
   test("shows only cli-relevant storage modes", () => {
-    const options = storageModeOptions(
+    const options = availableStorageModeValues(
       normalizeStorageSecurityInfo({
         target: "cli",
         key_source: "env",
@@ -20,11 +19,10 @@ describe("storage-security", () => {
       }),
     );
 
-    expect(options.map((option) => option.value)).toEqual([
+    expect(options).toEqual([
       "unencrypted",
       "balanced",
       "env_temporary_messages",
-      "sensitive",
     ]);
   });
 
@@ -43,17 +41,14 @@ describe("storage-security", () => {
       reason: "key-store-unavailable",
     });
 
-    expect(storageModeOptions(info).map((option) => option.value)).toEqual([
+    expect(availableStorageModeValues(info)).toEqual([
       "unencrypted",
       "temporary_messages",
     ]);
-    expect(storageModeOptionsSummary(info)).toContain(
-      "Persistent encrypted config and persistent encrypted history are unavailable because no OS key store is available.",
-    );
   });
 
-  test("marks durable mode unavailable when desktop persistent history is not available", () => {
-    const options = storageModeOptions(
+  test("omits durable mode when desktop persistent history is not available", () => {
+    const options = availableStorageModeValues(
       normalizeStorageSecurityInfo({
         target: "desktop",
         key_source: "os-key-store",
@@ -68,11 +63,7 @@ describe("storage-security", () => {
       }),
     );
 
-    expect(options.find((option) => option.value === "durable")).toEqual(
-      expect.objectContaining({
-        available: false,
-      }),
-    );
+    expect(options).not.toContain("durable");
   });
 
   test("falls back to temporary encrypted message handling for temporary modes", () => {

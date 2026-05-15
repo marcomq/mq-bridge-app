@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const runtimeStatusStoreSet = vi.fn();
 const activeMainTabSet = vi.fn();
+const storageSecurityStoreSet = vi.fn();
 
 let capturedOnStatus: ((status: any) => void) | null = null;
 
@@ -20,6 +21,7 @@ const runtimeState = {
 vi.mock("../../ui/src/lib/stores", () => ({
   activeMainTab: { set: activeMainTabSet },
   runtimeStatusStore: { set: runtimeStatusStoreSet },
+  storageSecurityStore: { set: storageSecurityStoreSet },
 }));
 
 vi.mock("../../ui/src/lib/runtime-status", () => ({
@@ -100,6 +102,7 @@ describe("bootstrap runtime status sync", () => {
     vi.resetModules();
     runtimeStatusStoreSet.mockReset();
     activeMainTabSet.mockReset();
+    storageSecurityStoreSet.mockReset();
     capturedOnStatus = null;
     runtimeState.runtime_status = {
       active_consumers: [],
@@ -171,6 +174,18 @@ describe("bootstrap runtime status sync", () => {
     await (window as any).saveConfig();
 
     expect(fetchStorageSecurityFromServer).toHaveBeenCalled();
+    expect(storageSecurityStoreSet).toHaveBeenLastCalledWith({
+      target: "cli",
+      encrypted: true,
+      persistent: false,
+      keySource: "ephemeral-process",
+      keyStoreAvailable: false,
+      encryptedConfigAvailable: false,
+      persistentMessagesAvailable: false,
+      configEncrypted: true,
+      messagesEncrypted: true,
+      messagesPersistent: false,
+    });
     expect((window as any)._mqb_storage_security).toEqual({
       target: "cli",
       encrypted: true,

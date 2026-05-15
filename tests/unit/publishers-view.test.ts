@@ -253,7 +253,7 @@ describe("initPublishers", () => {
             static: "hello world",
           },
           comment: "",
-          payload: '{\n  "hello": "world"\n}',
+          payload: '{}',
           headers: [],
         },
       ],

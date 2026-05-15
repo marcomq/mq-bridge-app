@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, test, vi } from "vitest";
+// @ts-expect-error Svelte's client test runtime is only available from the client entrypoint path here.
 import { flushSync, mount, unmount } from "../../node_modules/svelte/src/index-client.js";
 import CollapsibleFields from "../../ui/src/lib/forms/CollapsibleFields.svelte";
 import OptionalSectionField from "../../ui/src/lib/forms/OptionalSectionField.svelte";

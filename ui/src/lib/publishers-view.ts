@@ -723,10 +723,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const getPublisherState = (publisher: PublisherConfig | null | undefined) => {
     const storageKey = getPublisherStorageKey(publisher);
     if (!storageKey) {
-      return { payload: String(publisher?.payload || '{\n  "hello": "world"\n}') };
+      return { payload: String(publisher?.payload || '{}') };
     }
     if (!appState[storageKey]) {
-      appState[storageKey] = { payload: String(publisher?.payload || '{\n  "hello": "world"\n}') };
+      appState[storageKey] = { payload: String(publisher?.payload || '{}') };
     }
     return appState[storageKey];
   };

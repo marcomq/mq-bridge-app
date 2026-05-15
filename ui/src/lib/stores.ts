@@ -2,9 +2,11 @@ import { writable } from "svelte/store";
 import type { MainTab, RuntimeStatus } from "./runtime-status";
 import { EMPTY_RUNTIME_STATUS } from "./runtime-status";
 import type { PublisherTreeNode } from "./publisher-grouping";
+import { EMPTY_STORAGE_SECURITY, type StorageSecurityInfo } from "./storage-security";
 
 export const activeMainTab = writable<MainTab>("publishers");
 export const runtimeStatusStore = writable<RuntimeStatus>(EMPTY_RUNTIME_STATUS);
+export const storageSecurityStore = writable<StorageSecurityInfo>({ ...EMPTY_STORAGE_SECURITY });
 
 export interface ConsumerSidebarItem {
   name: string;

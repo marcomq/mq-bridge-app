@@ -94,6 +94,7 @@ function createDefaultRawPublisherEndpoint(endpointType: string) {
     grpc: { url: "http://localhost:50051" },
     nats: { url: "nats://localhost:4222", subject: "events.created" },
     memory: { topic: "events" },
+    webservice: { url: "http://localhost:8070" },
     amqp: { url: "amqp://guest:guest@localhost:5672/%2f", queue: "jobs" },
     kafka: { url: "localhost:9092", topic: "events" },
     sqlx: { url: "postgres://postgres:password@localhost/postgres", table: "events" },
