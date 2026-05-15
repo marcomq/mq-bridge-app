@@ -26,7 +26,7 @@ import {
   updateConsumerResponsePayload,
 } from "../../ui/src/lib/consumers-view";
 import { consumersPanelState } from "../../ui/src/lib/stores";
-import { createHyperscriptNode, installBaseWindowStubs } from "./test-helpers";
+import { createHyperscriptNode, installBaseWindowStubs, restoreBaseWindowStubs } from "./test-helpers";
 
 function mountConsumersDom() {
   document.body.innerHTML = `
@@ -119,6 +119,7 @@ describe("initConsumers", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    restoreBaseWindowStubs();
   });
 
   test("renders consumer names and waiting log state", async () => {

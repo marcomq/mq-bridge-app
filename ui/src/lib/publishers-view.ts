@@ -1808,9 +1808,15 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const publisherKey = getPublisherStorageKey(publisher);
     const name = publisher?.name;
     if (!publisherKey && !name) return;
-    history = history.filter((item) =>
-      item.publisher_id !== publisherKey && item.name !== name,
-    );
+    history = history.filter((item) => {
+      if (publisherKey) {
+        return !(item.publisher_id === publisherKey && item.name === name);
+      }
+      return !(
+        (item.publisher_id === undefined || item.publisher_id === null || item.publisher_id === "")
+        && item.name === name
+      );
+    });
     saveHistory();
     renderHistory();
     clearPublisherResponse();

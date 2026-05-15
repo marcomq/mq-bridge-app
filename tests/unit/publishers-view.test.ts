@@ -31,7 +31,7 @@ import {
   updatePublisherRequestField,
 } from "../../ui/src/lib/publishers-view";
 import { publishersPanelState } from "../../ui/src/lib/stores";
-import { createHyperscriptNode, installBaseWindowStubs } from "./test-helpers";
+import { createHyperscriptNode, installBaseWindowStubs, restoreBaseWindowStubs } from "./test-helpers";
 
 function mountPublishersDom() {
   document.body.innerHTML = `
@@ -155,6 +155,7 @@ describe("initPublishers", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    restoreBaseWindowStubs();
   });
 
   test("renders publisher names and request bar state", () => {

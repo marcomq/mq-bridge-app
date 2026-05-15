@@ -787,13 +787,18 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       },
     );
     if (!publisherName) return;
-    if ((config.publishers || []).some((publisher) => publisher.name === publisherName)) {
+    const trimmed = publisherName.trim();
+    if (!trimmed) {
+      await mqbDialogs.alert("Publisher name cannot be empty");
+      return;
+    }
+    if ((config.publishers || []).some((publisher) => String(publisher.name || "").trim() === trimmed)) {
       await mqbDialogs.alert("Publisher already exists");
       return;
     }
     config.publishers ||= [];
     config.publishers.push({
-      name: publisherName,
+      name: trimmed,
       endpoint: cloneJson(current.endpoint),
       comment: current.comment || "",
     });

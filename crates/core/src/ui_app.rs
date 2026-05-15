@@ -1122,7 +1122,8 @@ impl UiApp {
         new_config.migrate_legacy_routes();
         let consumers: Vec<crate::config::ConsumerConfig> = new_config
             .consumers
-            .drain(..)
+            .iter()
+            .cloned()
             .map(|mut c| {
                 c.name = c.name.trim().to_string();
                 c.output = normalize_consumer_output(c.output, c.response.clone());

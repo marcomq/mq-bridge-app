@@ -110,7 +110,15 @@ export async function getStoredJson<T>(
 
   if (!hasEncryptedMessages(security)) {
     try {
-      return JSON.parse(raw) as T;
+      const parsed = JSON.parse(raw) as unknown;
+      if (isEnvelope(parsed)) {
+        const shouldClear = options.clearOnFailure ?? hasTemporaryEncryptedMessages(security);
+        if (shouldClear) {
+          storage.removeItem(storageKey);
+        }
+        return fallback;
+      }
+      return parsed as T;
     } catch {
       return fallback;
     }

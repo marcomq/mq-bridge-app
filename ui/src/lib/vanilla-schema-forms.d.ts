@@ -1,21 +1,37 @@
 declare module "vanilla-schema-forms" {
-  export const renderObject: any;
-  export const renderProperties: any;
-  export const domRenderer: any;
-  export const setI18n: (config: any) => void;
-  export const setConfig: (config: any) => void;
-  export const setCustomRenderers: (renderers: any) => void;
-  export const renderNode: any;
-  export const createTypeSelectArrayRenderer: any;
-  export const formatWebAwesomeLabel: any;
-  export const hydrateNodeWithData: any;
-  export const rendererConfig: any;
-  export const createOptionalRenderer: any;
-  export const createForm: any;
-  export const init: any;
-  export const generateDefaultData: any;
-  export const validateAndShowErrors: any;
+  export type JsonObject = Record<string, unknown>;
+  export type Renderer = (...args: unknown[]) => HTMLElement | Text | DocumentFragment | null;
+  export type FormChangeHandler = (updated: unknown) => void | Promise<void>;
+  export type FormApi = { destroy?: () => void; update?: (data: unknown) => void };
 
-  const vanillaSchemaForms: any;
+  export const renderObject: Renderer;
+  export const renderProperties: Renderer;
+  export const renderNode: Renderer;
+  export const domRenderer: Record<string, unknown> & { renderBoolean?: Renderer };
+  export const setI18n: (config: Record<string, string>) => void;
+  export const setConfig: (config: JsonObject) => void;
+  export const setCustomRenderers: (renderers: Record<string, Renderer>) => void;
+  export const createTypeSelectArrayRenderer: (...args: unknown[]) => Renderer;
+  export const formatWebAwesomeLabel: (...args: unknown[]) => string;
+  export const hydrateNodeWithData: (...args: unknown[]) => void;
+  export const rendererConfig: JsonObject;
+  export const createOptionalRenderer: (...args: unknown[]) => Renderer;
+  export const createForm: (schema: unknown, data?: unknown, options?: JsonObject) => FormApi;
+  export const init: (
+    container: HTMLElement,
+    schema: unknown,
+    data?: unknown,
+    onChange?: FormChangeHandler,
+  ) => void | Promise<void> | FormApi;
+  export const generateDefaultData: (schema: unknown) => unknown;
+  export const validateAndShowErrors: (...args: unknown[]) => boolean;
+
+  const vanillaSchemaForms: {
+    init: typeof init;
+    createForm: typeof createForm;
+    setCustomRenderers: typeof setCustomRenderers;
+    setConfig: typeof setConfig;
+    setI18n: typeof setI18n;
+  } & Record<string, unknown>;
   export default vanillaSchemaForms;
 }

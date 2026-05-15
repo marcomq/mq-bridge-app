@@ -1,5 +1,5 @@
 import { saveWholeConfig } from "./config-api";
-import { mqbApp } from "./runtime-window";
+import { getMqbState, mqbApp } from "./runtime-window";
 import {
   ensureWorkspaceCollections,
   isSensitiveConfig,
@@ -7,6 +7,7 @@ import {
   sanitizePublisherHistory,
   sanitizePresets,
   type EnvVars,
+  type HeaderRow,
   type PublisherHistoryStore,
   type PresetsByPublisher,
   type PublisherPreset,
@@ -520,9 +521,11 @@ async function saveImportedConfig(config: Record<string, unknown>) {
   delete nextConfig.routes;
   const history = sanitizePublisherHistory(nextConfig.history);
   nextConfig.history = history;
-  const storageSecurity = resolveStorageSecurity((window as any)._mqb_storage_security, nextConfig);
+  const storageSecurity = resolveStorageSecurity(getMqbState().storage_security, nextConfig);
   if (hasEncryptedMessages(storageSecurity)) {
     await setStoredJson(PUBLISHER_HISTORY_KEY, history, storageSecurity);
+  } else if (storageSecurity.messagesEncrypted) {
+    removeStoredJson(PUBLISHER_HISTORY_KEY);
   } else if (!isSensitiveConfig(nextConfig)) {
     await setStoredJson(PUBLISHER_HISTORY_KEY, history, storageSecurity);
   } else {

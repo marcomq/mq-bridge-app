@@ -4,5 +4,7 @@ export type NamedEntity = {
 };
 
 export function getEntityStorageKey(entity: NamedEntity | null | undefined): string {
-  return String(entity?.id || entity?.name || "").trim();
+  const trimmedId = String(entity?.id || "").trim();
+  const trimmedName = String(entity?.name || "").trim();
+  return trimmedId !== "" ? trimmedId : trimmedName;
 }

@@ -391,7 +391,7 @@ export function sanitizePublisherHistory(value: unknown): PublisherHistoryStore 
   const entry = isRecord(value) ? value : {};
   const publishers = entry.publishers
     ? sanitizeHistoryPublishers(entry.publishers)
-    : sanitizeHistoryPublishers(entry);
+    : sanitizeHistoryPublishers({});
   const version = Number.isFinite(entry.version) ? Number(entry.version) : 1;
   const updated_at = Number.isFinite(entry.updated_at) ? Number(entry.updated_at) : 0;
 

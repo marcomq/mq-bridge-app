@@ -94,6 +94,9 @@ export function availableStorageModeValues(info: StorageSecurityInfo): StorageMo
 
 export function fallbackStorageSecurity(config: Pick<WorkspaceConfig, "config_security"> | Record<string, unknown>) {
   const mode = String((config as WorkspaceConfig).config_security?.mode || "balanced");
+  // These fallback objects are metadata-only. Callers such as hasEncryptedMessages() and
+  // saveImportedConfig()/setStoredJson() must still check messageKeyHex/kid before assuming
+  // encrypted message storage is actually writable or decryptable in the current process.
   if (mode === "durable") {
     return {
       ...EMPTY_STORAGE_SECURITY,

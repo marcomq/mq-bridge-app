@@ -1,7 +1,7 @@
 export interface StorageBackend {
   getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
+  setItem(key: string, value: string): boolean;
+  removeItem(key: string): boolean;
 }
 
 function getBrowserStorage(): Storage | null {
@@ -17,10 +17,24 @@ function getBrowserStorage(): Storage | null {
 export const localStorageBackend: StorageBackend = {
   getItem: (key) => getBrowserStorage()?.getItem(key) ?? null,
   setItem: (key, value) => {
-    getBrowserStorage()?.setItem(key, value);
+    try {
+      const storage = getBrowserStorage();
+      if (!storage) return false;
+      storage.setItem(key, value);
+      return true;
+    } catch {
+      return false;
+    }
   },
   removeItem: (key) => {
-    getBrowserStorage()?.removeItem(key);
+    try {
+      const storage = getBrowserStorage();
+      if (!storage) return false;
+      storage.removeItem(key);
+      return true;
+    } catch {
+      return false;
+    }
   },
 };
 
@@ -34,6 +48,12 @@ export function getStorageBackend(): StorageBackend {
   return activeBackend;
 }
 
+/**
+ * Reads and parses JSON from the active storage backend.
+ *
+ * This helper does not perform runtime type validation. It returns either the parsed JSON value
+ * or the provided fallback, so callers should still validate the returned shape before using it.
+ */
 export function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = activeBackend.getItem(key);
@@ -48,9 +68,13 @@ export function readJson<T>(key: string, fallback: T): T {
 }
 
 export function writeJson<T>(key: string, value: T): void {
-  activeBackend.setItem(key, JSON.stringify(value));
+  try {
+    activeBackend.setItem(key, JSON.stringify(value));
+  } catch {}
 }
 
 export function removeKey(key: string): void {
-  activeBackend.removeItem(key);
+  try {
+    activeBackend.removeItem(key);
+  } catch {}
 }

@@ -16,13 +16,24 @@ use mq_bridge_app::ui_app::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tauri::Manager;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 const DESKTOP_SECRET_SERVICE: &str = "com.marcomq.mqbridgeapp";
+
+fn generate_ephemeral_message_key() -> (String, String) {
+    let mut bytes = [0u8; 32];
+    bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    let kid = uuid::Uuid::new_v4().to_string();
+    (hex::encode(bytes), kid)
+}
+
+static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
+    LazyLock::new(generate_ephemeral_message_key);
 
 #[derive(Clone)]
 struct DesktopState {
@@ -403,11 +414,7 @@ fn storage_security_for_desktop(
             kid: None,
         },
         ConfigSecurityMode::EnvTemporaryMessages | ConfigSecurityMode::TemporaryMessages => {
-            let (message_key_hex, kid) = (
-                uuid::Uuid::new_v4().simple().to_string()
-                    + &uuid::Uuid::new_v4().simple().to_string(),
-                uuid::Uuid::new_v4().to_string(),
-            );
+            let (message_key_hex, kid) = &*EPHEMERAL_MESSAGE_KEY;
             StorageSecurityInfoResponse {
                 target: "desktop".to_string(),
                 encrypted: true,
@@ -420,8 +427,8 @@ fn storage_security_for_desktop(
                 messages_encrypted: true,
                 messages_persistent: false,
                 reason: if key_store_available { None } else { reason },
-                message_key_hex: Some(message_key_hex),
-                kid: Some(kid),
+                message_key_hex: Some(message_key_hex.clone()),
+                kid: Some(kid.clone()),
             }
         }
         ConfigSecurityMode::Sensitive => {

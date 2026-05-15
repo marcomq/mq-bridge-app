@@ -89,7 +89,7 @@ It originally served as the primary reference implementation and testbed for the
 
 Prebuilt binaries are published on the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases), including the desktop Tauri bundles and CLI artifacts for supported platforms.
 
-### MacOS Desktop App (Tauri)
+### macOS Desktop App (Tauri)
 
 Because the desktop binaries are currently not notarized, macOS may report the application as "damaged" when you first try to open it. To fix this, you need to remove the quarantine attribute.
 

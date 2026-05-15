@@ -229,10 +229,17 @@ function formatDescription(node: SchemaNode, _elementId: string) {
 }
 
 function parseElementPath(pathLike: string): Array<string | number> {
-  return String(pathLike || "")
-    .split(".")
-    .filter(Boolean)
-    .map((segment) => (/^\d+$/.test(segment) ? Number(segment) : segment));
+  const path = String(pathLike || "");
+  const parts: Array<string | number> = [];
+  const pattern = /([^[.\]]+)|\[(\d+|[^[\]]+)\]/g;
+
+  for (const match of path.matchAll(pattern)) {
+    const segment = match[1] ?? match[2];
+    if (!segment) continue;
+    parts.push(/^\d+$/.test(segment) ? Number(segment) : segment);
+  }
+
+  return parts;
 }
 
 // Define basic fields for each endpoint type (keyed by the endpoint type string, not *Config)
