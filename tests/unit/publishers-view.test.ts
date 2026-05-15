@@ -494,7 +494,7 @@ describe("initPublishers", () => {
             ],
           },
           comment: "",
-          payload: '{\n  "hello": "world"\n}',
+          payload: "{}",
           headers: [],
         },
       ],

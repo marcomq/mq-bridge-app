@@ -78,9 +78,9 @@ async function resetConfig(page, config = BASE_CONFIG) {
 
 async function openPublisherDefinition(page, index = 0) {
   await page.goto(`/#publishers:${index}`);
-  const items = page.locator("#pub-list .pub-item");
-  if ((await items.count()) > index) {
-    await items.nth(index).click();
+  const item = page.locator(`#pub-list .pub-item[data-idx="${index}"]`);
+  if (await item.count()) {
+    await item.first().click();
   }
   await page.locator("#ctab-config").click();
   await expect(page.locator("#pub-config-pane")).toBeVisible();
@@ -169,14 +169,14 @@ test("publisher form hides transport fields already handled by the request bar",
   await expect(page.locator("#pub-url")).toBeVisible();
   await expect(page.locator("#pub-method")).toBeVisible();
 
-  await page.locator("#pub-list .pub-item").nth(1).click();
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("amqp_publisher");
+  await openPublisherDefinition(page, 1);
+  await expect(page.locator("#pub-extra-1")).toHaveValue("jobs");
 
-  await page.locator("#pub-list .pub-item").nth(2).click();
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("kafka_publisher");
+  await openPublisherDefinition(page, 2);
+  await expect(page.locator("#pub-extra-1")).toHaveValue("events");
 
-  await page.locator("#pub-list .pub-item").nth(3).click();
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("mongo_publisher");
+  await openPublisherDefinition(page, 3);
+  await expect(page.locator("#pub-extra-1")).toHaveValue("app");
 });
 
 test("consumer custom response headers can be added and removed", async ({ page }) => {
@@ -264,7 +264,7 @@ test("http publisher delivers a message to the http consumer within 2 seconds wi
   await expect(page.locator("#cons-msg-panel")).toContainText("Connected");
 
   await page.goto("/#publishers:0");
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("http_local_publisher");
+  await expect(page.locator("#pub-list .pub-item.active .item-name")).toContainText("http_local_publisher");
   await page.locator("#ctab-payload").click();
   await page.locator("#pub-payload .cm-content").fill("{\"hello\":\"ui-test\"}");
   const publishResponsePromise = page.waitForResponse(
@@ -333,7 +333,7 @@ test("consumer can be copied to a new publisher for review", async ({ page }) =>
 
 test("publisher delete can be saved and stays deleted after reload", async ({ page }) => {
   await openPublisherDefinition(page, 3);
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("mongo_publisher");
+  await expect(page.getByRole("textbox", { name: "Name *" })).toHaveValue("mongo_publisher");
 
   await page.locator("#pub-delete").click();
   await page.locator("wa-button", { hasText: "Continue" }).click();

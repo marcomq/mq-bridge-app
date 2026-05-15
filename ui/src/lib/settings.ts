@@ -113,6 +113,7 @@ function filterObjectKeys<T extends Record<string, unknown>>(value: T, keys: rea
 function applyStorageModeDescriptions(
   properties: Record<string, unknown>,
   storageInfo: StorageSecurityInfo | undefined,
+  currentConfig?: Record<string, unknown>,
 ) {
   const configSecurity = properties.config_security as Record<string, unknown> | undefined;
   const nestedProperties = configSecurity?.properties as Record<string, unknown> | undefined;
@@ -122,7 +123,12 @@ function applyStorageModeDescriptions(
   }
 
   configSecurity.description = "";
-  modeProperty.description = formatStorageModeDescription(storageInfo);
+  modeProperty.description = formatStorageModeDescription(
+    storageInfo,
+    typeof (currentConfig as any)?.config_security?.mode === "string"
+      ? (currentConfig as any).config_security.mode
+      : undefined,
+  );
 }
 
 function getStorageModeUiOptions(
@@ -134,9 +140,12 @@ function getStorageModeUiOptions(
     .filter((option): option is StorageModeUiOption => Boolean(option));
 }
 
-function formatStorageModeDescription(storageInfo: StorageSecurityInfo) {
+function formatStorageModeDescription(storageInfo: StorageSecurityInfo, currentMode?: string) {
   const options = getStorageModeUiOptions(storageInfo);
   const parts = options.map((option) => `${option.title}: ${option.detail}`);
+  if (currentMode && STORAGE_MODE_VALUES.has(currentMode as StorageModeValue) && !options.some((option) => option.value === currentMode)) {
+    parts.push(`${currentMode} (Current, unsupported here): Unavailable.`);
+  }
 
   if (storageInfo.target === "desktop" && storageInfo.keyStoreAvailable !== true) {
     parts.push("Only the modes shown here are available because no OS key store is currently usable.");
@@ -158,6 +167,7 @@ export function buildSettingsSchema(
   applyStorageModeDescriptions(
     properties,
     storageInfo,
+    currentConfig,
   );
   return {
     ...cloned,
