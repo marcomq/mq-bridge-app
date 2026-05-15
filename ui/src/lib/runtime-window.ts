@@ -33,6 +33,12 @@ export function clearLegacyPendingRestoreGlobals() {
   w._mqb_pending_publisher_restore = null;
 }
 
+const VALID_PUBLISHER_TABS = new Set(["payload", "headers", "history", "definition"]);
+
+function normalizeLegacyPublisherTab(tab: unknown): MqbState["last_publisher_tab"] {
+  return typeof tab === "string" && VALID_PUBLISHER_TABS.has(tab) ? (tab as MqbState["last_publisher_tab"]) : "payload";
+}
+
 export type MqbState = {
   active_tab?: "publishers" | "consumers" | "config";
   consumers_initialized?: boolean;
@@ -73,7 +79,7 @@ export function getMqbState(): MqbState {
       last_consumer_idx: Number.isFinite(w._mqb_last_consumer_idx) ? w._mqb_last_consumer_idx : 0,
       last_publisher_idx: Number.isFinite(w._mqb_last_publisher_idx) ? w._mqb_last_publisher_idx : 0,
       last_consumer_tab: w._mqb_last_consumer_tab ?? "messages",
-      last_publisher_tab: w._mqb_last_publisher_tab ?? "payload",
+      last_publisher_tab: normalizeLegacyPublisherTab(w._mqb_last_publisher_tab),
       runtime_status: w._mqb_runtime_status ?? {
         active_consumers: [],
         active_routes: [],
@@ -103,7 +109,7 @@ export function getMqbState(): MqbState {
   if (w._mqb_last_consumer_idx !== undefined) state.last_consumer_idx = w._mqb_last_consumer_idx;
   if (w._mqb_last_publisher_idx !== undefined) state.last_publisher_idx = w._mqb_last_publisher_idx;
   if (w._mqb_last_consumer_tab !== undefined) state.last_consumer_tab = w._mqb_last_consumer_tab;
-  if (w._mqb_last_publisher_tab !== undefined) state.last_publisher_tab = w._mqb_last_publisher_tab;
+  if (w._mqb_last_publisher_tab !== undefined) state.last_publisher_tab = normalizeLegacyPublisherTab(w._mqb_last_publisher_tab);
   if (w._mqb_runtime_status !== undefined) state.runtime_status = w._mqb_runtime_status;
   if (w._mqb_storage_security !== undefined) state.storage_security = w._mqb_storage_security;
   if (w._mqb_storage_cache !== undefined) state.storage_cache = w._mqb_storage_cache;

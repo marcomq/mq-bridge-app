@@ -259,7 +259,7 @@ async fn test_web_ui_serves_custom_static_assets() {
     let app_bundle = http_get(port, "/index.js").await;
     assert!(app_bundle.contains("200 OK"));
     assert!(app_bundle.contains("pub-copy"));
-    assert!(app_bundle.contains("Request Presets"));
+    assert!(app_bundle.contains("pub-save-variant"));
     assert!(app_bundle.contains("cons-output-mode"));
     assert!(app_bundle.contains("cons-output-publisher"));
     assert!(app_bundle.contains("Execution History"));

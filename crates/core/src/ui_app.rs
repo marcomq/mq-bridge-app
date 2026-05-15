@@ -352,14 +352,13 @@ fn next_route_metric_sample(
         let elapsed = observed_at
             .duration_since(previous.observed_at)
             .as_secs_f64();
-        let current_throughput = if elapsed > 0.0 {
-            (total_messages - previous.total_messages).max(0.0) / elapsed
+        if elapsed > 0.0 {
+            let current_throughput = (total_messages - previous.total_messages).max(0.0) / elapsed;
+            THROUGHPUT_EMA_ALPHA * current_throughput
+                + (1.0 - THROUGHPUT_EMA_ALPHA) * previous.smoothed_throughput
         } else {
-            0.0
-        };
-
-        THROUGHPUT_EMA_ALPHA * current_throughput
-            + (1.0 - THROUGHPUT_EMA_ALPHA) * previous.smoothed_throughput
+            previous.smoothed_throughput
+        }
     } else {
         0.0
     };
@@ -1031,7 +1030,11 @@ impl UiApp {
         let config = self.config.read().await;
         let mut consumers = HashMap::new();
         for consumer in &config.consumers {
-            if let Some(snapshot) = self.consumer_status_snapshot(consumer).await {
+            let running = active_consumers.contains(&consumer.name);
+            if let Some(snapshot) = self
+                .consumer_status_snapshot_with_running(consumer, running)
+                .await
+            {
                 let message_sequence = consumer_sequences
                     .get(&consumer.name)
                     .map(|a| a.load(Ordering::Relaxed))
@@ -1060,8 +1063,17 @@ impl UiApp {
         &self,
         consumer: &ConsumerConfig,
     ) -> Option<ConsumerStatusSnapshot> {
+        let running = self.ui_handles.read().await.contains_key(&consumer.name);
+        self.consumer_status_snapshot_with_running(consumer, running)
+            .await
+    }
+
+    async fn consumer_status_snapshot_with_running(
+        &self,
+        consumer: &ConsumerConfig,
+        running: bool,
+    ) -> Option<ConsumerStatusSnapshot> {
         let name = consumer.name.clone();
-        let running = self.ui_handles.read().await.contains_key(&name);
         let status = if running {
             mq_bridge::traits::EndpointStatus {
                 healthy: true,

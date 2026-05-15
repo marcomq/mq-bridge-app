@@ -208,7 +208,7 @@
       type="button"
       class="sidebar-resizer"
       aria-label="Resize consumer sidebar"
-      tabindex="0"
+      tabindex="-1"
       onmousedown={startSidebarResize}
     ></button>
     <div class="main-content">

@@ -91,11 +91,24 @@
     return result;
   }
 
+  function subtreeHasMatch(node: PublisherTreeNode, query: string): boolean {
+    const q = query.trim().toLowerCase();
+    if (!q) return false;
+
+    const selfMatches = node.label.toLowerCase().includes(q) || String(node.tooltip || "").toLowerCase().includes(q);
+    if (node.kind === "publisher") {
+      return selfMatches || node.publisher.name.toLowerCase().includes(q);
+    }
+
+    return selfMatches || node.children.some((child) => subtreeHasMatch(child, query));
+  }
+
   function flattenTree(nodes: PublisherTreeNode[], depth = 0): VisibleTreeRow[] {
     const rows: VisibleTreeRow[] = [];
+    const isFiltering = filterText.trim().length > 0;
     for (const node of nodes) {
       if (node.kind === "group") {
-        const expanded = expandedGroupIds.has(node.id);
+        const expanded = expandedGroupIds.has(node.id) || (isFiltering && subtreeHasMatch(node, filterText));
         rows.push({
           kind: "group",
           id: node.id,

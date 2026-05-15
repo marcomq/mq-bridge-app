@@ -903,6 +903,8 @@ const endpointRenderer = {
     // Use _path for more robust matching of nested elements.
     const isPrimaryDefinition =
       elementId === "root.endpoint" ||
+      elementId === "root.input" ||
+      elementId === "root.output" ||
       elementId === "input" ||
       elementId === "output" ||
       /^publishers\.\d+\.endpoint$/i.test(_path) || /^consumers\.\d+\.(input|output|endpoint)$/i.test(_path);

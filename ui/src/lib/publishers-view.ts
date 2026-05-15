@@ -2,6 +2,7 @@ import {
   applyEndpointSchemaDefaults,
   nextUniqueName,
 } from "./routes";
+import { get } from "svelte/store";
 import { cloneJson } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { publishersPanelState } from "./stores";
@@ -304,6 +305,14 @@ function createDefaultPublisherEndpoint(endpointType: string) {
   return {
     ...base,
     [endpointType]: cloneJson(defaults[endpointType] || {}),
+  };
+}
+
+function createEmptyPublisher(): PublisherConfig {
+  return {
+    name: "",
+    endpoint: createDefaultPublisherEndpoint("http"),
+    comment: "",
   };
 }
 
@@ -909,6 +918,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const cloned = normalizePublisherConfigShape(cloneJson(publisher));
     cloned.id = undefined;
     cloned.name = nextName.trim();
+    if (getEndpointType(cloned) === "http") {
+      ensureHttpConfig(cloned).method = currentMethodValue || ensureHttpConfig(cloned).method;
+    }
     cloned.payload = getPublisherState(publisher).payload || "";
     const nextState = structuredClone(getPublisherState(publisher));
     appState[getPublisherStorageKey(cloned)] = nextState;
@@ -930,6 +942,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const state = getPublisherState(cloned);
     state.payload = item.payload || "";
     applyHistoryRequestToPublisher(cloned, item);
+    if (getEndpointType(cloned) === "http") {
+      ensureHttpConfig(cloned).method = item.method || item.requestMetadata?.http_method || ensureHttpConfig(cloned).method;
+    }
     cloned.payload = state.payload;
     cloned.headers = getPublisherHeaderRows(cloned).map(({ key, value, enabled }) => ({ key, value, enabled }));
     return cloned;
@@ -939,8 +954,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     jsonText: string,
     expectedKind: "postman" | "openapi" | "asyncapi",
   ) => {
-    const activePublisher = publishers[currentIdx];
-    if (!activePublisher) return;
+    const basePublisher = publishers[currentIdx] || createEmptyPublisher();
     const imported = extractImportedRequests(jsonText);
     if (imported.kind !== expectedKind) {
       throw new Error(`Selected file is not a valid ${expectedKind.toUpperCase()} JSON file.`);
@@ -949,7 +963,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     let importedAsPublishers = 0;
 
     for (const request of imported.requests) {
-      config.publishers.push(requestToPublisher(request, activePublisher));
+      config.publishers.push(requestToPublisher(request, basePublisher));
       importedAsPublishers += 1;
     }
 
@@ -1377,6 +1391,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       const current = publishers[idx];
       const updatedPublisher = updated as PublisherConfig;
       const previousPublisherName = current?.name || "";
+      const previousStorageKey = getPublisherStorageKey(current);
+      const previousRequestPayload = get(publishersPanelState).requestPayload;
 
       // 1. Merge form updates into a clone of current to preserve fields not in the form (like presets)
       const mergedPublisher = {
@@ -1389,6 +1405,17 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       };
 
       const nextPublisher = normalizePublisherConfigShape(mergedPublisher);
+      const nextStorageKey = getPublisherStorageKey(nextPublisher);
+      if (previousStorageKey && nextStorageKey && previousStorageKey !== nextStorageKey && !appState[nextStorageKey]) {
+        const previousState = appState[previousStorageKey];
+        appState[nextStorageKey] = previousState
+          ? { ...previousState }
+          : {
+              payload: previousRequestPayload || String(current?.payload || "{}"),
+              headers: getPublisherHeaderRows(current),
+            };
+        delete appState[previousStorageKey];
+      }
       copyRequestBarFieldValues(current, nextPublisher);
 
       // Preserve custom headers for HTTP (managed in the Headers tab)
@@ -1506,8 +1533,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const selectedTab = activeSubtab;
     const mapped = config.publishers.map((publisher) => {
       const nextPublisher = normalizePublisherConfigShape(publisher);
-      nextPublisher.payload = getPublisherState(nextPublisher).payload || "";
-      nextPublisher.headers = getPublisherHeaderRows(nextPublisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
+      nextPublisher.payload = getPublisherState(publisher).payload || "";
+      nextPublisher.headers = getPublisherHeaderRows(publisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
       return nextPublisher;
     });
     config.publishers.splice(0, config.publishers.length, ...mapped);
