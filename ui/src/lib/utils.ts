@@ -65,6 +65,21 @@ export function setThemePreference(value: ThemePreference) {
   window.setThemePreference?.(value);
 }
 
+export function getLabel(node: any) {
+  if (!node) return "";
+  if (node.item && typeof node.label === "string" && node.label.trim()) return node.label;
+  if (typeof node.label === "string" && node.label.trim()) return node.label;
+
+  const entity = node.publisher || node.item || node;
+  const name = entity.name || entity.displayName || "";
+  const endpoint = entity.endpoint || {};
+  const type = entity.endpointType || entity.inputProto || entity.proto || "";
+
+  if (!name && Object.keys(endpoint).length === 0 && !type) return "Unnamed Entity";
+
+  return getEntityDisplayLabel(name, endpoint, type);
+}
+
 export function sanitizeConsumerName(name: string): string {
   const asciiName = String(name || "")
     .normalize("NFKD")
@@ -133,14 +148,11 @@ function normalizePathValue(rawPath: string) {
   return value.startsWith("/") ? value : `/${value}`;
 }
 
-export function getEntityDisplayLabel(
-  name: string | undefined,
+export function getTechnicalDisplayLabel(
   endpoint: Record<string, unknown>,
   endpointType?: string,
 ) {
-  const title = String(name || "").trim();
-  if (title) return title;
-
+  if (!endpoint) return endpointType ? String(endpointType).toUpperCase() : "";
   const type = String(endpointType || getEndpointType(endpoint)).trim().toLowerCase();
   const endpointData = (endpoint as Record<string, unknown>)[type];
   const data = endpointData && typeof endpointData === "object" && !Array.isArray(endpointData)
@@ -160,6 +172,17 @@ export function getEntityDisplayLabel(
   }).filter(Boolean);
 
   return values.join(" ").trim() || type.toUpperCase();
+}
+
+export function getEntityDisplayLabel(
+  name: string | undefined,
+  endpoint: Record<string, unknown>,
+  endpointType?: string,
+) {
+  const title = String(name || "").trim();
+  if (title) return title;
+
+  return getTechnicalDisplayLabel(endpoint, endpointType);
 }
 
 export function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {

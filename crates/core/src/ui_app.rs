@@ -1206,6 +1206,12 @@ impl UiApp {
                 target: name.clone(),
                 ..Default::default()
             }
+        } else if name.trim().is_empty() {
+            mq_bridge::traits::EndpointStatus {
+                healthy: false,
+                target: "Unnamed Consumer".to_string(),
+                ..Default::default()
+            }
         } else {
             let status_future = consumer.endpoint.create_consumer(&name);
             match tokio::time::timeout(Duration::from_secs(2), status_future).await {

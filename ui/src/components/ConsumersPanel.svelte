@@ -27,8 +27,8 @@
     updateConsumerResponseHeader,
     updateConsumerResponsePayload,
   } from "../lib/consumers-view";
-  import { handleActionKey } from "../lib/utils";
-  import { getMqbState } from "../lib/runtime-window";
+  import { handleActionKey, getTechnicalDisplayLabel } from "../lib/utils";
+  import { getMqbState, mqbApp } from "../lib/runtime-window";
 
   let filterText = $state("");
   let addMenuOpen = $state(false);
@@ -36,6 +36,23 @@
   let consumersContainerEl = $state<HTMLDivElement | null>(null);
   let selectedImportKind = $state<"asyncapi" | "mqb">("asyncapi");
   let sidebarWidth = $state<number | null>(null);
+
+  const selectedConsumer = $derived(
+    $consumersPanelState.items.find((item) => item.originalIndex === $consumersPanelState.selectedIndex),
+  );
+  const selectedConfig = $derived.by(() => {
+    const idx = $consumersPanelState.selectedIndex;
+    if (idx == null || idx < 0) return null;
+    return mqbApp.config()?.consumers?.[idx];
+  });
+
+  const selectedSummary = $derived.by(() => {
+    if (selectedConfig && selectedConfig.endpoint) {
+      return getTechnicalDisplayLabel(selectedConfig.endpoint as Record<string, unknown>, selectedConsumer?.inputProto);
+    }
+    return "";
+  });
+  const selectedProto = $derived(selectedConsumer?.inputProto || "");
 
   function getConsumerLabel(item: any) {
     return String(item.displayName || item.name || item.inputProto || "Unnamed Consumer").trim();
@@ -220,6 +237,72 @@
         No consumers configured. Click "+" to create one.
       </div>
       <div id="cons-main-ui" style:display={$consumersPanelState.hasConsumers ? "contents" : "none"}>
+        <div class="request-bar">
+          <div class="request-field request-field--wide">
+            <input class="url-input request-field-input" readonly value={selectedSummary} />
+          </div>
+          <div class="request-field" style="align-items: center; justify-content: flex-start; gap: 12px; margin-left: 12px;">
+            <wa-badge
+              appearance="filled-outlined"
+              class="consumer-live-badge"
+              class:consumer-live-badge--success={$consumersPanelState.liveStatusVariant === "success"}
+              class:consumer-live-badge--danger={$consumersPanelState.liveStatusVariant === "danger"}
+              class:consumer-live-badge--neutral={$consumersPanelState.liveStatusVariant === "neutral"}
+              variant={$consumersPanelState.liveStatusVariant}
+            >
+              {$consumersPanelState.liveStatusText}
+            </wa-badge>
+          </div>
+          <div class="consumer-message-controls">
+            <label class="consumer-message-control consumer-message-control--checkbox" for="cons-capture-enabled">
+              <input
+                id="cons-capture-enabled"
+                type="checkbox"
+                checked={$consumersPanelState.messageCaptureEnabled}
+                onchange={setMessageCaptureEnabled}
+              />
+              <span>Capture messages</span>
+            </label>
+            <label class="consumer-message-control" for="cons-capture-keep-last">
+              <span>Keep last</span>
+              <select
+                id="cons-capture-keep-last"
+                class="field-input consumer-message-select"
+                value={String($consumersPanelState.messageCaptureKeepLast)}
+                onchange={setMessageCaptureKeepLast}
+              >
+                <option value="10">10</option>
+                <option value="100">100</option>
+                <option value="500">500</option>
+              </select>
+            </label>
+          </div>
+          <wa-button
+            variant="neutral"
+            appearance="outlined"
+            size="small"
+            class="ghost-action"
+            id="cons-clear-history"
+            role="button"
+            tabindex="0"
+            onclick={clearActiveConsumerHistory}
+            onkeydown={(event: KeyboardEvent) => handleActionKey(event, clearActiveConsumerHistory)}
+            >Clear</wa-button
+          >
+          <wa-button
+            variant={$consumersPanelState.toggleVariant}
+            id="cons-toggle"
+            size="small"
+            loading={$consumersPanelState.toggleBusy}
+            disabled={$consumersPanelState.toggleBusy}
+            role="button"
+            tabindex={$consumersPanelState.toggleBusy ? "-1" : "0"}
+            onclick={toggleActiveConsumer}
+            onkeydown={(event: KeyboardEvent) => handleActionKey(event, toggleActiveConsumer)}
+          >
+            {$consumersPanelState.toggleLabel}
+          </wa-button>
+        </div>
         <div class="content-tabs" id="cons-sub-tabs">
           <button
             type="button"
@@ -278,7 +361,7 @@
                     tabindex="0"
                     onclick={cloneCurrentConsumerAction}
                     onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentConsumerAction)}
-                    >Save As New</wa-button
+                    >Clone</wa-button
                   >
                 </div>
                 <div class="toolbar-divider" aria-hidden="true"></div>
@@ -389,69 +472,6 @@
           style:display={$consumersPanelState.activeSubtab === "messages" ? "flex" : "none"}
         >
           <div class="pane-top" id="cons-list-pane">
-            <div class="msg-table-header">
-              <div class="msg-table-title">
-                <span class="section-label section-label--inline" id="cons-live-title">Incoming Messages</span>
-                <wa-badge
-                  appearance="filled-outlined"
-                  class="consumer-live-badge"
-                  class:consumer-live-badge--success={$consumersPanelState.liveStatusVariant === "success"}
-                  class:consumer-live-badge--danger={$consumersPanelState.liveStatusVariant === "danger"}
-                  class:consumer-live-badge--neutral={$consumersPanelState.liveStatusVariant === "neutral"}
-                  variant={$consumersPanelState.liveStatusVariant}
-                >
-                  {$consumersPanelState.liveStatusText}
-                </wa-badge>
-              </div>
-              <div class="consumer-message-controls">
-                <label class="consumer-message-control consumer-message-control--checkbox" for="cons-capture-enabled">
-                  <input
-                    id="cons-capture-enabled"
-                    type="checkbox"
-                    checked={$consumersPanelState.messageCaptureEnabled}
-                    onchange={setMessageCaptureEnabled}
-                  />
-                  <span>Capture messages</span>
-                </label>
-                <label class="consumer-message-control" for="cons-capture-keep-last">
-                  <span>Keep last</span>
-                  <select
-                    id="cons-capture-keep-last"
-                    class="field-input consumer-message-select"
-                    value={String($consumersPanelState.messageCaptureKeepLast)}
-                    onchange={setMessageCaptureKeepLast}
-                  >
-                    <option value="10">10</option>
-                    <option value="100">100</option>
-                    <option value="500">500</option>
-                  </select>
-                </label>
-              </div>
-              <wa-button
-                variant="neutral"
-                appearance="outlined"
-                size="small"
-                class="ghost-action"
-                id="cons-clear-history"
-                role="button"
-                tabindex="0"
-                onclick={clearActiveConsumerHistory}
-                onkeydown={(event: KeyboardEvent) => handleActionKey(event, clearActiveConsumerHistory)}>Clear</wa-button
-              >
-              <wa-button
-                variant={$consumersPanelState.toggleVariant}
-                id="cons-toggle"
-                size="small"
-                loading={$consumersPanelState.toggleBusy}
-                disabled={$consumersPanelState.toggleBusy}
-                role="button"
-                tabindex={$consumersPanelState.toggleBusy ? "-1" : "0"}
-                onclick={toggleActiveConsumer}
-                onkeydown={(event: KeyboardEvent) => handleActionKey(event, toggleActiveConsumer)}
-              >
-                {$consumersPanelState.toggleLabel}
-              </wa-button>
-            </div>
             <div style="overflow:auto;flex:1;" id="consumer-log-body-wrapper">
               <table class="msg-table">
                 <thead>

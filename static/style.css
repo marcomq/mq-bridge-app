@@ -142,10 +142,10 @@ body {
     top: 100%;
     right: 0;
     z-index: 1000;
-    background: var(--bg-base);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    box-shadow: 0 4px 12px var(--shadow-color);
+    background: var(--wa-color-surface-default, white);
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgb(0 0 0 / 0.14);
     min-width: 140px;
     margin-top: 4px;
     display: flex;
@@ -163,9 +163,9 @@ body {
     text-align: left;
     cursor: pointer;
     font-size: 11px;
-    border-radius: 2px;
     width: 100%;
     white-space: nowrap;
+    border-radius: 5px;
 }
 
 .add-menu button:hover {
@@ -187,6 +187,10 @@ body {
     background: transparent;
     color: #666;
     cursor: pointer;
+}
+.theme button:hover {
+    background: var(--bg-hover);
+    color: var(--accent-color);
 }
 
 .header-save-button {
@@ -225,6 +229,10 @@ body {
     outline: none;
 }
 
+#cons-capture-enabled {
+    height: 15px;
+}
+
 .theme-menu {
     position: absolute;
     top: 34px;
@@ -250,7 +258,6 @@ body {
     cursor: pointer;
 }
 
-.theme-menu button:hover,
 .theme-menu button.active {
     background: rgb(0 0 0 / 0.08);
 }
@@ -316,6 +323,10 @@ body {
 .main-tab .tab-icon {
     font-size: 10px;
     opacity: 0.7;
+}
+
+.request-field {
+    min-height: 27px;
 }
 
 /* ── BODY LAYOUT ── */
@@ -1942,7 +1953,7 @@ wa-button.is-dirty::part(base) {
 
 .code-editor .cm-editor {
     height: 100%;
-    min-height: 30px;
+    min-height: 36px;
     background: transparent;
     color: var(--text-primary);
     font-family: var(--font);

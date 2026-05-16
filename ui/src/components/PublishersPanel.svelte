@@ -36,7 +36,7 @@
     updatePublisherPayload,
     updatePublisherRequestField,
   } from "../lib/publishers-view";
-  import { handleActionKey, getEntityDisplayLabel } from "../lib/utils";
+  import { handleActionKey, getLabel } from "../lib/utils";
   import { getMqbState, mqbDialogs } from "../lib/runtime-window";
 
   let filterText = $state("");
@@ -55,13 +55,6 @@
     | { kind: "group"; id: string; label: string; depth: number; expanded: boolean; endpointType?: string; tooltip?: string }
     | { kind: "publisher"; id: string; label: string; depth: number; endpointType: string; publisherIndex: number; tooltip?: string };
 
-  function getPublisherLabel(node: any) {
-    if (node.label && node.label.trim()) return node.label;
-    const pub = node.publisher;
-    if (!pub) return "Unnamed Publisher";
-    return getEntityDisplayLabel(pub.name, pub.endpoint);
-  }
-
   function collectDefaultExpanded(nodes: PublisherTreeNode[], depth = 0, acc = new Set<string>()) {
     for (const node of nodes) {
       if (node.kind === "group") {
@@ -79,7 +72,7 @@
     const result: PublisherTreeNode[] = [];
     for (const node of nodes) {
       if (node.kind === "publisher") {
-        const label = getPublisherLabel(node);
+        const label = getLabel(node);
         const matches = label.toLowerCase().includes(q)
           || String(node.tooltip || "").toLowerCase().includes(q);
         if (matches) {
@@ -101,7 +94,7 @@
     if (!q) return false;
 
     if (node.kind === "publisher") {
-      const label = getPublisherLabel(node);
+      const label = getLabel(node);
       return label.toLowerCase().includes(q) || String(node.tooltip || "").toLowerCase().includes(q);
     }
 
@@ -360,7 +353,7 @@
               {#if row.depth === 0}
                 <span class={`proto-badge proto-${row.endpointType.toLowerCase()}`}>{row.endpointType}</span>
               {/if}
-              <span class="item-name">{getPublisherLabel(row)}</span>
+              <span class="item-name">{getLabel(row)}</span>
               <span class="item-status status-off"></span>
             </button>
           {/if}
@@ -612,7 +605,7 @@
                       onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void saveCurrentPublisherVariantAction())}
                       role="button"
                       tabindex="0"
-                    >Save As New</wa-button>
+                    >Clone</wa-button>
                   </div>
                   <div class="toolbar-divider" aria-hidden="true"></div>
                   <div class="editor-action-cluster">
