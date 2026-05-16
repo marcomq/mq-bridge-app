@@ -349,10 +349,20 @@ async fn test_consumer_custom_response_is_returned_for_http_consumer() {
         "unexpected response: {}",
         response
     );
+    let saved_config = read_json_response(ui_port, "/config").await;
+    let consumer_id = saved_config["consumers"][0]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !consumer_id.is_empty(),
+        "expected saved consumer id in config: {}",
+        saved_config
+    );
 
     let start_response = http_post(
         ui_port,
-        &format!("/consumer-start?consumer={consumer_name}"),
+        &format!("/consumer-start?consumer_id={consumer_id}"),
     )
     .await;
     assert!(
@@ -413,10 +423,20 @@ async fn test_web_ui_collects_http_consumer_messages_and_updates_runtime_status(
         "unexpected response: {}",
         response
     );
+    let saved_config = read_json_response(ui_port, "/config").await;
+    let consumer_id = saved_config["consumers"][0]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !consumer_id.is_empty(),
+        "expected saved consumer id in config: {}",
+        saved_config
+    );
 
     let start_response = http_post(
         ui_port,
-        &format!("/consumer-start?consumer={consumer_name}"),
+        &format!("/consumer-start?consumer_id={consumer_id}"),
     )
     .await;
     assert!(
@@ -440,15 +460,15 @@ async fn test_web_ui_collects_http_consumer_messages_and_updates_runtime_status(
 
     let runtime = read_json_response(ui_port, "/runtime-status").await;
     assert_eq!(
-        runtime["consumers"][&consumer_name]["message_sequence"]
+        runtime["consumers"][&consumer_id]["message_sequence"]
             .as_u64()
             .unwrap_or_default(),
         1
     );
 
     let messages =
-        read_json_response(ui_port, &format!("/messages?consumer={consumer_name}")).await;
-    let payload = messages[&consumer_name][0]["payload"]
+        read_json_response(ui_port, &format!("/messages?consumer_id={consumer_id}")).await;
+    let payload = messages[&consumer_id][0]["payload"]
         .as_str()
         .unwrap_or_default();
     assert_eq!(payload, "hello");

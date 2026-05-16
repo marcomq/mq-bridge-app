@@ -16,6 +16,7 @@ import {
   restorePublisherStateFromView,
   removePublisherMetadataRow,
   saveCurrentPublisherAction,
+  saveCurrentPublisherVariantAction,
   sendPublisherAction,
   showPublisherHistoryEntry,
   selectPublisherSubtab,
@@ -1337,6 +1338,7 @@ describe("initPublishers", () => {
     );
 
     updatePublisherPayload("{\"hello\":true}");
+    await saveCurrentPublisherVariantAction();
 
     expect(config.publishers[1]).toMatchObject({
       name: "saved_variant",
@@ -1364,6 +1366,7 @@ describe("initPublishers", () => {
     updatePublisherRequestField("pub-extra-2", "outbox");
     updatePublisherRequestField("pub-url", "mongodb://mongo.local:27017");
     updatePublisherPayload("{\"hello\":true}");
+    await saveCurrentPublisherVariantAction();
 
     expect(config.publishers[1]).toMatchObject({
       name: "saved_mongo_variant",

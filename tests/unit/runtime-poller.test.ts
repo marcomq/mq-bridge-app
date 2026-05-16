@@ -42,6 +42,7 @@ describe("runtime-poller", () => {
         "consumer-a": {
           running: true,
           status: { healthy: true },
+          throughput: 0,
           message_sequence: 4,
           capture_enabled: true,
           capture_keep_last: 100,
@@ -56,6 +57,7 @@ describe("runtime-poller", () => {
         "consumer-a": {
           running: true,
           status: { healthy: true },
+          throughput: 0,
           message_sequence: 4,
           capture_enabled: true,
           capture_keep_last: 100,
@@ -130,6 +132,7 @@ describe("runtime-poller", () => {
         c1: {
           running: true,
           status: { healthy: true },
+          throughput: 0,
           message_sequence: 1,
           capture_enabled: true,
           capture_keep_last: 100,
@@ -137,6 +140,7 @@ describe("runtime-poller", () => {
         c2: {
           running: false,
           status: { healthy: false, error: "down" },
+          throughput: 0,
           message_sequence: 0,
           capture_enabled: true,
           capture_keep_last: 100,

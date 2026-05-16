@@ -347,7 +347,7 @@ fn is_same_origin_request(msg: &CanonicalMessage) -> bool {
 
 /// Time constant for throughput smoothing (EMA) in seconds.
 /// A value of 2.0s means it will take approximately 9-10s to decay to ~1% of its value.
-const THROUGHPUT_TAU: f64 = 2.0;
+const THROUGHPUT_TAU: f64 = 0.5;
 /// Frequency of throughput calculations.
 const THROUGHPUT_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -988,7 +988,7 @@ impl UiApp {
                             });
 
                         grouped_messages
-                            .entry(source)
+                            .entry(source.clone())
                             .or_default()
                             .push_back(serde_json::json!({
                                 "id": id,
@@ -1156,16 +1156,14 @@ impl UiApp {
                     .get(&consumer_key)
                     .map(|s| s.smoothed_throughput)
                     .unwrap_or(0.0);
-                consumers.insert(
-                    consumer_key,
-                    ConsumerStatusSnapshot {
-                        throughput,
-                        message_sequence,
-                        capture_enabled: consumer.message_capture.enabled,
-                        capture_keep_last: consumer.message_capture.keep_last,
-                        ..snapshot
-                    },
-                );
+                let status_snapshot = ConsumerStatusSnapshot {
+                    throughput,
+                    message_sequence,
+                    capture_enabled: consumer.message_capture.enabled,
+                    capture_keep_last: consumer.message_capture.keep_last,
+                    ..snapshot
+                };
+                consumers.insert(consumer_key, status_snapshot);
             }
         }
 

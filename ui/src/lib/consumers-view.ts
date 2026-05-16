@@ -657,7 +657,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       currentConsumerKey,
       items: consumers.map((consumer, index) => {
         const consumerRuntimeKey = getConsumerRuntimeKey(consumer);
-        const status = consumerStatus[consumerRuntimeKey] || consumerStatus[String(consumer.name || "").trim()];
+        const status = consumerStatus[consumerRuntimeKey];
         const statusClass = status
           ? status.running
             ? status.status?.healthy ? "status-ok" : "status-err"
@@ -670,7 +670,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
           statusClass,
           messageCount: consumerMessages[getConsumerStorageKey(consumer)]?.length || 0,
           throughputLabel: status?.running
-            ? `${(consumerThroughput[consumerRuntimeKey] || consumerThroughput[String(consumer.name || "").trim()] || 0).toFixed(1)} msg/s`
+            ? `${(consumerThroughput[consumerRuntimeKey] || 0).toFixed(1)} msg/s`
             : "",
           originalIndex: index,
           id: consumer.id,
@@ -736,8 +736,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     for (const existingKey of Object.keys(consumerStatus)) {
       if (!(config.consumers || []).some((consumer) => {
         const runtimeKey = getConsumerRuntimeKey(consumer);
-        const name = String(consumer.name || "").trim();
-        return runtimeKey === existingKey || name === existingKey;
+        return runtimeKey === existingKey;
       })) {
         delete consumerStatus[existingKey];
         delete consumerThroughput[existingKey];
@@ -747,14 +746,13 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     }
 
     for (const consumer of config.consumers || []) {
-      const name = String(consumer.name || "").trim();
       const consumerKey = getConsumerRuntimeKey(consumer);
       if (!isSavedConsumer(consumer)) {
         consumerStatus[consumerKey] = { running: false, status: { healthy: false }, unsaved: true };
         continue;
       }
 
-      const runtimeConsumer = runtimeConsumers[consumerKey] || runtimeConsumers[name];
+      const runtimeConsumer = runtimeConsumers[consumerKey];
       consumerStatus[consumerKey] = {
         running: Boolean(runtimeConsumer?.running),
         status: {
@@ -1388,10 +1386,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       const messageCapture = normalizeConsumerMessageCapture(activeConsumer.message_capture);
 
       syncRuntimeConsumerStatuses();
-      const name = String(activeConsumer.name || "").trim();
       const activeConsumerKey = getConsumerRuntimeKey(activeConsumer);
-      const runtimeConsumer = getMqbState().runtime_status?.consumers?.[activeConsumerKey] || getMqbState().runtime_status?.consumers?.[name];
-      const knownSequence = consumerMessageSequences[activeConsumerKey] || consumerMessageSequences[name] || 0;
+      const runtimeConsumer = getMqbState().runtime_status?.consumers?.[activeConsumerKey];
+      const knownSequence = consumerMessageSequences[activeConsumerKey] || 0;
       const nextSequence = runtimeConsumer?.message_sequence || 0;
 
       syncConsumersPanelState();
@@ -1415,7 +1412,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         const maxMessages = messageCapture.keep_last;
 
         for (const [sourceKey, rawMessages] of Object.entries(data)) {
-          const sourceConsumer = (config.consumers || []).find((consumer) => getConsumerRuntimeKey(consumer) === sourceKey || consumer.name === sourceKey);
+          const sourceConsumer = (config.consumers || []).find((consumer) => getConsumerRuntimeKey(consumer) === sourceKey);
           const resolvedSourceKey = getConsumerStorageKey(sourceConsumer || { id: sourceKey, name: sourceKey });
           const messages = Array.isArray(rawMessages)
             ? rawMessages.map((message) => normalizeConsumerMessage(message))
@@ -1426,13 +1423,13 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
             return cmp !== 0 ? cmp : (b.id || "").localeCompare(a.id || "");
           });
           hasNew = hasNew || messages.length > 0;
-          if (resolvedSourceKey !== activeConsumerKey && sourceKey !== name && messages.length > 0) {
+          if (resolvedSourceKey !== activeConsumerKey && messages.length > 0) {
             selectedMessages.push(...messages);
           }
         }
 
         const activeKey = getConsumerStorageKey(activeConsumer);
-        if ((!data[activeConsumerKey] || data[activeConsumerKey].length === 0) && (!data[name] || data[name].length === 0) && selectedMessages.length > 0) {
+        if ((!data[activeConsumerKey] || data[activeConsumerKey].length === 0) && selectedMessages.length > 0) {
           consumerMessages[activeKey] = [...selectedMessages, ...(consumerMessages[activeKey] || [])].slice(0, maxMessages);
           consumerMessages[activeKey].sort((a, b) => {
             const cmp = (b.time || "").localeCompare(a.time || "");

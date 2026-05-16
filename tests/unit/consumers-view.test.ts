@@ -822,19 +822,6 @@ describe("initConsumers", () => {
       }
       return 1 as any;
     }) as any);
-    window._mqb_runtime_status = {
-      active_consumers: ["orders_http"],
-      active_routes: [],
-      route_throughput: {},
-      consumers: {
-        orders_http: {
-          running: true,
-          status: { healthy: true },
-          message_sequence: 1,
-        },
-      },
-    };
-
     globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith("/messages")) {
@@ -852,18 +839,19 @@ describe("initConsumers", () => {
     }) as any;
 
     try {
+      const config = {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { middlewares: [{ metrics: {} }], http: {} },
+            response: null,
+          },
+        ],
+        routes: {},
+        publishers: [],
+      };
       await initConsumers(
-        {
-          consumers: [
-            {
-              name: "orders_http",
-              endpoint: { middlewares: [{ metrics: {} }], http: {} },
-              response: null,
-            },
-          ],
-          routes: {},
-          publishers: [],
-        },
+        config,
         {
           properties: {
             consumers: {
@@ -883,6 +871,19 @@ describe("initConsumers", () => {
           },
         },
       );
+      const runtimeKey = String(config.consumers[0]?.id || "orders_http");
+      window._mqb_runtime_status = {
+        active_consumers: [runtimeKey],
+        active_routes: [],
+        route_throughput: {},
+        consumers: {
+          [runtimeKey]: {
+            running: true,
+            status: { healthy: true },
+            message_sequence: 1,
+          },
+        },
+      };
       window.renderConsumersRuntimeStatus?.();
 
       expect(scheduled.length).toBeGreaterThan(0);
@@ -896,7 +897,7 @@ describe("initConsumers", () => {
       await Promise.resolve();
 
       expect(get(consumersPanelState).items[0]?.statusClass).toBe("status-ok");
-      expect(globalThis.fetch).not.toHaveBeenCalledWith("/consumer-status?consumer_id=orders_http");
+      expect(globalThis.fetch).not.toHaveBeenCalledWith(`/consumer-status?consumer_id=${runtimeKey}`);
     } finally {
       setTimeoutSpy.mockRestore();
     }
@@ -1175,52 +1176,33 @@ describe("initConsumers", () => {
   test("shows throughput from runtime status while new messages are fetched", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2025-01-01T00:00:00Z"));
-
-    const messageResponses = [
-      { orders_http: [{ payload: "first" }] },
-      {
-        orders_http: Array.from({ length: 30 }, (_, index) => ({
-          payload: `message-${index}`,
-        })),
-      },
-    ];
+    let runtimeKey = "orders_http";
 
     globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith("/messages")) {
         return {
           ok: true,
-          json: async () => messageResponses.shift() ?? { orders_http: [] },
+          json: async () => ({ [runtimeKey]: [{ payload: "first" }] }),
         } as any;
       }
       return { ok: true, json: async () => ({}) } as any;
     }) as any;
 
-    window._mqb_runtime_status = {
-      active_consumers: ["orders_http"],
-      active_routes: [],
-      route_throughput: {},
-      consumers: {
-        orders_http: {
-          running: true,
-          status: { healthy: true },
-          message_sequence: 1,
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
         },
-      },
+      ],
+      routes: {},
+      publishers: [],
     };
 
     await initConsumers(
-      {
-        consumers: [
-          {
-            name: "orders_http",
-            endpoint: { middlewares: [{ metrics: {} }], http: {} },
-            response: null,
-          },
-        ],
-        routes: {},
-        publishers: [],
-      },
+      config,
       {
         properties: {
           consumers: {
@@ -1240,10 +1222,24 @@ describe("initConsumers", () => {
         },
       },
     );
+    runtimeKey = String(config.consumers[0]?.id || "orders_http");
+    window._mqb_runtime_status = {
+      active_consumers: [runtimeKey],
+      active_routes: [],
+      route_throughput: {},
+      consumers: {
+        [runtimeKey]: {
+          running: true,
+          status: { healthy: true },
+          message_sequence: 1,
+        },
+      },
+    };
+    window.renderConsumersRuntimeStatus?.();
 
     await Promise.resolve();
-    window._mqb_runtime_status.consumers.orders_http.message_sequence = 2;
-    window._mqb_runtime_status.consumers.orders_http.throughput = 30;
+    window._mqb_runtime_status.consumers[runtimeKey].message_sequence = 2;
+    window._mqb_runtime_status.consumers[runtimeKey].throughput = 30;
     vi.setSystemTime(new Date("2025-01-01T00:00:01Z"));
     await vi.advanceTimersByTimeAsync(2000);
     await Promise.resolve();
@@ -1430,14 +1426,26 @@ describe("initConsumers", () => {
     });
     globalThis.fetch = fetchMock as any;
     window._mqb_active_tab = "publishers";
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
     window.pollRuntimeStatus = vi.fn().mockImplementation(async () => {
       statusCallCount += 1;
+      const runtimeKey = String(config.consumers[0]?.id || "orders_http");
       window._mqb_runtime_status = {
-        active_consumers: ["orders_http"],
+        active_consumers: [runtimeKey],
         active_routes: [],
         route_throughput: {},
         consumers: {
-          orders_http: {
+          [runtimeKey]: {
             running: statusCallCount > 0,
             status: { healthy: statusCallCount > 0 },
             message_sequence: 0,
@@ -1448,17 +1456,7 @@ describe("initConsumers", () => {
     });
 
     await initConsumers(
-      {
-        consumers: [
-          {
-            name: "orders_http",
-            endpoint: { middlewares: [{ metrics: {} }], http: {} },
-            response: null,
-          },
-        ],
-        routes: {},
-        publishers: [],
-      },
+      config,
       {
         properties: {
           consumers: {

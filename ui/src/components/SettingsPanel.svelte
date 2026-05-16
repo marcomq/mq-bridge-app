@@ -138,7 +138,11 @@
 
 <div class:active={$activeMainTab === "config"} class="tab-content-panel" id="tab-config">
   <div id="form-tab-wrapper">
-    <div class="settings-security-banner" id="settings-security-banner">
+    <div
+      class="settings-security-banner"
+      id="settings-security-banner"
+      data-test-id="js-storage-security-note"
+    >
       {storageNotice}
     </div>
     <div
