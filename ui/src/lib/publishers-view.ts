@@ -2095,28 +2095,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   appWindow().restorePublisherState = restorePublisherState;
   restorePublisherStateFromView = restorePublisherState;
 
-  addPublisherAction = addPublisher;
-  showPublisherHistoryEntry = showPublisherHistoryEntry;
-  clearActivePublisherHistory = clearActivePublisherHistory;
-  copyPublisherResponse = copyPublisherResponse;
-  copyPublisherResponseJson = copyPublisherResponseJson;
-  copyPublisherAsCurl = copyPublisherAsCurl;
-  savePublisherHistoryAsPublisherAction = savePublisherHistoryAsPublisherAction;
   savePublisherHistoryAsPresetAction = savePublisherHistoryAsPublisherAction;
-  resendPublisherHistoryAction = resendPublisherHistoryAction;
-  saveCurrentPublisherVariantAction = saveCurrentPublisherVariantAction;
   savePublisherPresetAction = saveCurrentPublisherVariantAction;
   exportPublisherPresetsAction = () => {};
   renamePublisherPresetAction = async () => {};
   applyPublisherPresetAction = () => {};
   deletePublisherPresetAction = async () => {};
-  importPostmanToPublisherAction = importPostmanToPublisherAction;
-  importOpenApiToPublisherAction = importOpenApiToPublisherAction;
-  importAsyncApiToPublisherAction = importAsyncApiToPublisherAction;
-  importMqbToPublisherAction = importMqbToPublisherAction;
   presetToPublisherAction = async () => {};
-  selectPublisherSubtab = selectPublisherSubtab;
-  editEnvironmentVarsAction = editEnvironmentVarsAction;
-  beautifyPublisherPayloadAction = beautifyPublisherPayloadAction;
-  sendPublisherAction = sendPublisherAction;
 }
