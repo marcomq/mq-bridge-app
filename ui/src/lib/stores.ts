@@ -7,6 +7,8 @@ import { EMPTY_STORAGE_SECURITY, type StorageSecurityInfo } from "./storage-secu
 export const activeMainTab = writable<MainTab>("publishers");
 export const runtimeStatusStore = writable<RuntimeStatus>(EMPTY_RUNTIME_STATUS);
 export const storageSecurityStore = writable<StorageSecurityInfo>({ ...EMPTY_STORAGE_SECURITY });
+export const workspaceDirtyStore = writable(false);
+export const workspaceSavingStore = writable(false);
 
 export interface ConsumerSidebarItem {
   name: string;

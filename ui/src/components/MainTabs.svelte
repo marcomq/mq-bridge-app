@@ -1,4 +1,5 @@
 <script lang="ts">
+  import HeaderSaveButton from "./HeaderSaveButton.svelte";
   import { activeMainTab } from "../lib/stores";
   import { switchMain } from "../bootstrap";
   import { runtimeStatusStore } from "../lib/stores";
@@ -84,6 +85,7 @@
         </div>
       {/if}
     </div>
+    <HeaderSaveButton />
   </div>
   
 </div>

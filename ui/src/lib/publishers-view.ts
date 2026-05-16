@@ -49,19 +49,12 @@ export let copyPublisherResponse: () => void = () => {};
 export let copyPublisherResponseJson: () => void = () => {};
 export let copyPublisherAsCurl: () => void = () => {};
 export let savePublisherHistoryAsPublisherAction: (historyIndex: number) => void | Promise<void> = () => {};
-export let savePublisherHistoryAsPresetAction: (historyIndex: number) => void | Promise<void> = () => {};
 export let resendPublisherHistoryAction: (historyIndex: number) => void | Promise<void> = () => {};
 export let importPostmanToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let importOpenApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let importAsyncApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let importMqbToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let saveCurrentPublisherVariantAction: () => void | Promise<void> = () => {};
-export let savePublisherPresetAction: () => void | Promise<void> = () => {};
-export let exportPublisherPresetsAction: () => void = () => {};
-export let renamePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
-export let applyPublisherPresetAction: (presetIndex: number) => void = () => {};
-export let deletePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
-export let presetToPublisherAction: (presetIndex: number) => void | Promise<void> = () => {};
 export let selectPublisherSubtab: (tab: string) => void = () => {};
 export let addPublisherAction: (endpointType: string) => void | Promise<void> = () => {};
 export let copyCurrentPublisherAction: () => void | Promise<void> = () => {};
@@ -541,8 +534,36 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
 
   mqbRuntime.registerDirtySection("publishers", {
-    buttonId: "pub-save",
+    buttonId: "workspace-save-button",
     getValue: () => config.publishers,
+  });
+  mqbRuntime.registerBeforeWorkspaceSave("publishers", async () => {
+    const activeElement = document.activeElement as HTMLElement | null;
+    activeElement?.blur();
+    await Promise.resolve();
+    const mapped = config.publishers.map((publisher) => {
+      const nextPublisher = normalizePublisherConfigShape(publisher);
+      nextPublisher.payload = getPublisherState(publisher).payload || "";
+      nextPublisher.headers = getPublisherHeaderRows(publisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
+      return nextPublisher;
+    });
+    config.publishers.splice(0, config.publishers.length, ...mapped);
+  });
+  mqbRuntime.registerAfterWorkspaceSave("publishers", () => {
+    const selectedPublisher = config.publishers[currentIdx];
+    const selectedKey = getPublisherStorageKey(selectedPublisher);
+    const selectedName = selectedPublisher?.name || null;
+    const refreshedPublishers = mqbApp.config<PublishersAppConfig>().publishers || [];
+    const refreshedIdx = refreshedPublishers.findIndex(
+      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey || publisher.name === selectedName,
+    );
+    const pendingRestore = {
+      idx: refreshedIdx === -1 ? Math.min(currentIdx, Math.max(refreshedPublishers.length - 1, 0)) : refreshedIdx,
+      tab: activeSubtab,
+    };
+    getMqbState().pending_publisher_restore = pendingRestore;
+    rememberPublisherView(pendingRestore.idx, activeSubtab);
+    (appWindow() as any)._mqb_pending_publisher_restore = pendingRestore;
   });
   const hadUnsavedChangesBeforeInit = mqbRuntime.refreshDirtySection("publishers");
 
@@ -2094,12 +2115,4 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   (appWindow() as any)._mqb_publishers_initialized = true;
   appWindow().restorePublisherState = restorePublisherState;
   restorePublisherStateFromView = restorePublisherState;
-
-  savePublisherHistoryAsPresetAction = savePublisherHistoryAsPublisherAction;
-  savePublisherPresetAction = saveCurrentPublisherVariantAction;
-  exportPublisherPresetsAction = () => {};
-  renamePublisherPresetAction = async () => {};
-  applyPublisherPresetAction = () => {};
-  deletePublisherPresetAction = async () => {};
-  presetToPublisherAction = async () => {};
 }

@@ -178,6 +178,7 @@ body {
     display: inline-flex;
 }
 
+.header-save-button,
 .theme-trigger {
     width: 30px;
     height: 30px;
@@ -188,6 +189,36 @@ body {
     cursor: pointer;
 }
 
+.header-save-button {
+    position: relative;
+    align-items: center;
+    display: inline-flex;
+    justify-content: center;
+    width: 54px;
+}
+
+.header-save-button:disabled {
+    cursor: default;
+    opacity: 0.72;
+}
+
+.header-save-button .save-icon {
+    display: block;
+}
+
+.header-save-button .dirty-dot {
+    position: absolute;
+    top: 6px;
+    right: -5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: #2684ff;
+    box-shadow: 0 0 0 2px var(--bg-panel);
+}
+
+.header-save-button:hover,
+.header-save-button:focus-visible,
 .theme-trigger:hover,
 .theme-trigger:focus-visible {
     background: rgb(0 0 0 / 0.08);

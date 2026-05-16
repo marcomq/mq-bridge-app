@@ -27,7 +27,6 @@
     restorePublisherStateFromView,
     saveCurrentPublisherVariantAction,
     savePublisherHistoryAsPublisherAction,
-    saveCurrentPublisherAction,
     selectPublisherSubtab,
     sendPublisherAction,
     showPublisherHistoryEntry,
@@ -617,14 +616,10 @@
                   </div>
                   <div class="toolbar-divider" aria-hidden="true"></div>
                   <div class="editor-action-cluster">
-                    <wa-button variant="brand" size="small" id="pub-save"
-                      role="button" tabindex="0"
-                      onclick={(event: MouseEvent) => saveCurrentPublisherAction(event.currentTarget as HTMLElement)}
-                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void saveCurrentPublisherAction(document.getElementById("pub-save")))}>Save</wa-button>
                     <wa-button variant="danger" appearance="outlined" size="small" id="pub-delete"
                       role="button" tabindex="0"
-                      onclick={() => deleteCurrentPublisherAction(document.getElementById("pub-save"))}
-                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void deleteCurrentPublisherAction(document.getElementById("pub-save")))}
+                      onclick={() => deleteCurrentPublisherAction()}
+                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void deleteCurrentPublisherAction())}
                       >Delete</wa-button
                     >
                   </div>

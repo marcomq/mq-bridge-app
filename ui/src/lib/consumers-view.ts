@@ -443,8 +443,27 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   mqbRuntime.registerDirtySection("consumers", {
-    buttonId: "cons-save",
+    buttonId: "workspace-save-button",
     getValue: () => config.consumers,
+  });
+  mqbRuntime.registerBeforeWorkspaceSave("consumers", async () => {
+    const activeElement = document.activeElement as HTMLElement | null;
+    activeElement?.blur();
+    await Promise.resolve();
+    const mapped = (config.consumers || []).map((consumer) => normalizeConsumerConfigShape({ ...consumer }));
+    config.consumers.splice(0, config.consumers.length, ...mapped);
+  });
+  mqbRuntime.registerAfterWorkspaceSave("consumers", () => {
+    const selectedConsumer = (config.consumers || [])[currentIdx];
+    const selectedKey = selectedConsumer ? getConsumerStorageKey(selectedConsumer) : "";
+    const selectedName = selectedConsumer?.name || null;
+    const targetIdx = (mqbApp.config<ConsumersAppConfig>().consumers || []).findIndex(
+      (consumer: ConsumerConfig) => getConsumerStorageKey(consumer) === selectedKey || consumer.name === selectedName,
+    );
+    const pendingRestore = { idx: targetIdx === -1 ? currentIdx : targetIdx, tab: activeSubtab };
+    getMqbState().pending_consumer_restore = pendingRestore;
+    rememberConsumerView(pendingRestore.idx, activeSubtab);
+    setWindowState("pending_consumer_restore", pendingRestore);
   });
   const hadUnsavedChangesBeforeInit = mqbRuntime.refreshDirtySection("consumers");
 

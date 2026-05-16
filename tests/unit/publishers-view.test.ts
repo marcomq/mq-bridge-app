@@ -4,23 +4,17 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import {
   addPublisherAction,
-  applyPublisherPresetAction,
   addPublisherMetadataRow,
   beautifyPublisherPayloadAction,
   clearActivePublisherHistory,
   cloneCurrentPublisherAction,
   copyCurrentPublisherAction,
   createConsumerEndpointFromPublisherEndpoint,
-  deletePublisherPresetAction,
-  exportPublisherPresetsAction,
   importAsyncApiToPublisherAction,
   importMqbToPublisherAction,
   initPublishers,
-  presetToPublisherAction,
   restorePublisherStateFromView,
-  renamePublisherPresetAction,
   removePublisherMetadataRow,
-  savePublisherPresetAction,
   saveCurrentPublisherAction,
   sendPublisherAction,
   showPublisherHistoryEntry,
@@ -1343,7 +1337,6 @@ describe("initPublishers", () => {
     );
 
     updatePublisherPayload("{\"hello\":true}");
-    await savePublisherPresetAction();
 
     expect(config.publishers[1]).toMatchObject({
       name: "saved_variant",
@@ -1371,7 +1364,6 @@ describe("initPublishers", () => {
     updatePublisherRequestField("pub-extra-2", "outbox");
     updatePublisherRequestField("pub-url", "mongodb://mongo.local:27017");
     updatePublisherPayload("{\"hello\":true}");
-    await savePublisherPresetAction();
 
     expect(config.publishers[1]).toMatchObject({
       name: "saved_mongo_variant",

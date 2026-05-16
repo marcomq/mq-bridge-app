@@ -42,10 +42,19 @@ declare global {
       sectionName: string,
       options: { buttonId: string; getValue: () => unknown },
     ) => void;
+    registerBeforeWorkspaceSave: (key: string, callback: () => void | Promise<void>) => void;
+    registerAfterWorkspaceSave: (
+      key: string,
+      callback: (savedConfig: Record<string, unknown>) => void | Promise<void>,
+    ) => void;
     refreshDirtySection: (sectionName: string) => boolean;
     markSectionSaved: (sectionName: string, savedValue?: unknown) => void;
     pollRuntimeStatus: () => Promise<unknown>;
     fetchConfigFromServer: <T>() => Promise<T>;
+    saveWorkspace: (
+      silent?: boolean,
+      button?: (HTMLElement & { loading?: boolean }) | null,
+    ) => Promise<Record<string, unknown> | boolean | null>;
     saveConfig: (
       silent?: boolean,
       button?: (HTMLElement & { loading?: boolean }) | null,

@@ -12,13 +12,14 @@ describe("settings", () => {
   beforeEach(() => {
     document.body.innerHTML = `
       <div id="form-actions" style="display:none;">
-        <button id="js-submit" type="button">Save</button>
       </div>
       <div id="form-container"></div>
     `;
 
     window.appConfig = { consumers: [], publishers: [], default_tab: "publishers" };
     window.registerDirtySection = vi.fn();
+    window.registerBeforeWorkspaceSave = vi.fn();
+    window.registerAfterWorkspaceSave = vi.fn();
     window.refreshDirtySection = vi.fn();
     window.markSectionSaved = vi.fn();
     window.saveConfig = vi.fn().mockResolvedValue(true);
@@ -180,9 +181,11 @@ describe("settings", () => {
     );
 
     expect(window.registerDirtySection).toHaveBeenCalledWith("config", {
-      buttonId: "js-submit",
+      buttonId: "workspace-save-button",
       getValue: expect.any(Function),
     });
+    expect(window.registerBeforeWorkspaceSave).toHaveBeenCalledWith("config", expect.any(Function));
+    expect(window.registerAfterWorkspaceSave).toHaveBeenCalledWith("config", expect.any(Function));
     expect(window.VanillaSchemaForms.init).toHaveBeenCalledWith(
       document.getElementById("form-container"),
       {
@@ -204,12 +207,11 @@ describe("settings", () => {
     expect(document.getElementById("storage-security-note")).toBeNull();
     expect(document.getElementById("storage-mode-note")).toBeNull();
 
-    const submitButton = document.getElementById("js-submit") as HTMLButtonElement;
     (window as any).__settingsData.log_level = "debug";
     (window as any).__settingsData.env_vars = { BASE_URL: "https://changed.test", API_TOKEN: "abc" };
     (window as any).__settingsData.config_security = { mode: "balanced" };
-    await submitButton.onclick?.({ currentTarget: submitButton } as unknown as PointerEvent);
-    expect(window.saveConfig).toHaveBeenCalledWith(false, submitButton);
+    const beforeSaveHook = (window.registerBeforeWorkspaceSave as any).mock.calls[0][1] as () => void;
+    beforeSaveHook();
     expect(window.appConfig.log_level).toBe("debug");
     expect(window.appConfig.env_vars).toEqual({ BASE_URL: "https://changed.test", API_TOKEN: "abc" });
     expect(window.appConfig.config_security).toEqual({ mode: "balanced" });

@@ -183,7 +183,7 @@ export function extractSettingsConfig(config: Record<string, unknown>) {
   return filterObjectKeys(normalized, SETTINGS_KEYS);
 }
 
-function mergeSettingsConfig(target: Record<string, unknown>, settingsConfig: Record<string, unknown>) {
+export function mergeSettingsConfig(target: Record<string, unknown>, settingsConfig: Record<string, unknown>) {
   for (const key of SETTINGS_KEYS) {
     if (Object.prototype.hasOwnProperty.call(settingsConfig, key)) {
       target[key] = settingsConfig[key];
@@ -266,8 +266,14 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   state.saved_sections.config = cloneSectionState(settingsConfig);
 
   mqbRuntime.registerDirtySection("config", {
-    buttonId: "js-submit",
+    buttonId: "workspace-save-button",
     getValue: () => settingsConfig,
+  });
+  mqbRuntime.registerBeforeWorkspaceSave("config", () => {
+    mergeSettingsConfig(mqbApp.config<Record<string, unknown>>(), settingsConfig);
+  });
+  mqbRuntime.registerAfterWorkspaceSave("config", (savedConfig) => {
+    settingsConfig = extractSettingsConfig(savedConfig);
   });
 
   state.form_mode = "settings";
@@ -284,22 +290,6 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   const formActions = document.getElementById("form-actions");
   if (formActions) {
     formActions.style.display = "flex";
-  }
-
-  const submitButton = document.getElementById("js-submit") as (HTMLElement & {
-    onclick?: (event: Event) => void | Promise<void>;
-  }) | null;
-  if (submitButton) {
-    submitButton.onclick = async (event) => {
-      const currentTarget = event.currentTarget as HTMLElement | null;
-      const appConfig = mqbApp.config<Record<string, unknown>>();
-      mergeSettingsConfig(appConfig, settingsConfig);
-      const saved = await appWindow().saveConfig(false, currentTarget);
-      if (saved) {
-        settingsConfig = extractSettingsConfig(appConfig);
-        appWindow().markSectionSaved("config", settingsConfig);
-      }
-    };
   }
 
   const scheduleDirtyRefresh = () => appWindow().setTimeout(() => mqbRuntime.refreshDirtySection("config"), 0);

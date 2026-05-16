@@ -1,5 +1,11 @@
-import { activeMainTab, runtimeStatusStore, storageSecurityStore } from "./lib/stores";
-import { createDirtyTracker, cloneSectionState, isDirty } from "./lib/dirty-state";
+import {
+  activeMainTab,
+  runtimeStatusStore,
+  storageSecurityStore,
+  workspaceDirtyStore,
+  workspaceSavingStore,
+} from "./lib/stores";
+import { createDirtyTracker, cloneSectionState, isDirty, serializeSectionState } from "./lib/dirty-state";
 import {
   saveWholeConfig,
   saveConfigSection as persistConfigSection,
@@ -12,7 +18,7 @@ import { initConsumers, restoreConsumerStateFromView } from "./lib/consumers-vie
 import { initPublishers, restorePublisherStateFromView } from "./lib/publishers-view";
 import { EMPTY_RUNTIME_STATUS, createRuntimeStatusPoller } from "./lib/runtime-status";
 import { nextHashForTab, pickDefaultTab, resolveTabFromHash } from "./lib/routing";
-import { initSettings } from "./lib/settings";
+import { extractSettingsConfig, initSettings } from "./lib/settings";
 import { installDialogs } from "./lib/dialogs";
 import {
   appWindow,
@@ -177,28 +183,54 @@ function showJsonModal() {
 
 function syncSaveButtonLabel(button: HTMLElement | null) {
   if (!button) return;
-  const baseLabel =
-    button.dataset.baseLabel || button.textContent?.trim() || "Save";
+  const baseLabel = button.dataset.baseLabel || button.textContent?.trim() || "Save";
   button.dataset.baseLabel = baseLabel;
 
   if (button.dataset.saving === "true") return;
 
   const dirty = button.dataset.dirty === "true";
-  button.textContent = dirty ? `${baseLabel} *` : baseLabel;
-  button.title = dirty ? "Unsaved changes" : "";
+  if (button.dataset.iconOnly !== "true") {
+    button.textContent = dirty ? `${baseLabel} *` : baseLabel;
+  }
   button.classList.toggle("is-dirty", dirty);
+}
+
+function computeWorkspaceDirty(): boolean {
+  return Object.values(getMqbState().dirty_sections || {}).some((tracker) => isDirty(tracker));
+}
+
+function renderWorkspaceDirty() {
+  const dirty = computeWorkspaceDirty();
+  workspaceDirtyStore?.set(dirty);
+  const saveButton = document.getElementById("workspace-save-button");
+  if (saveButton) {
+    saveButton.dataset.dirty = dirty ? "true" : "false";
+    syncSaveButtonLabel(saveButton);
+  }
+  return dirty;
+}
+
+function syncAllDirtyBaselinesToCurrentState() {
+  const state = getMqbState();
+  for (const [sectionName, tracker] of Object.entries(state.dirty_sections || {})) {
+    const currentValue = tracker.getValue();
+    state.saved_sections[sectionName] = cloneSectionState(currentValue);
+    tracker.baseline = serializeSectionState(currentValue);
+    refreshDirtySection(sectionName);
+  }
 }
 
 function refreshDirtySection(sectionName: string): boolean {
   const tracker = getMqbState().dirty_sections?.[sectionName];
   if (!tracker) return false;
 
-  const button = document.getElementById(tracker.buttonId);
-  if (!button) return false;
-
   const dirty = isDirty(tracker);
-  button.dataset.dirty = dirty ? "true" : "false";
-  syncSaveButtonLabel(button);
+  const button = document.getElementById(tracker.buttonId);
+  if (button) {
+    button.dataset.dirty = dirty ? "true" : "false";
+    syncSaveButtonLabel(button);
+  }
+  renderWorkspaceDirty();
   return dirty;
 }
 
@@ -223,16 +255,20 @@ const runtimeStatusPoller = createRuntimeStatusPoller({
 });
 
 async function runSaveButtonAction<T>(button: any, action: () => Promise<T>): Promise<T | null> {
+  workspaceSavingStore?.set(true);
   const originalLabel = button?.dataset?.baseLabel || button?.textContent?.trim() || "Save";
   const originalDisabled = button?.disabled;
   const originalLoading = button?.loading;
+  const iconOnly = button?.dataset?.iconOnly === "true";
 
   if (button) {
     button.dataset.baseLabel = originalLabel;
     button.dataset.saving = "true";
     button.disabled = true;
     if ("loading" in button) button.loading = true;
-    button.textContent = "Saving...";
+    if (!iconOnly) {
+      button.textContent = "Saving...";
+    }
   }
 
   try {
@@ -240,7 +276,9 @@ async function runSaveButtonAction<T>(button: any, action: () => Promise<T>): Pr
 
     if (button) {
       if ("loading" in button) button.loading = false;
-      button.textContent = "Saved";
+      if (!iconOnly) {
+        button.textContent = "Saved";
+      }
       appWindow().setTimeout(() => {
         button.dataset.saving = "false";
         button.disabled = originalDisabled ?? false;
@@ -249,6 +287,7 @@ async function runSaveButtonAction<T>(button: any, action: () => Promise<T>): Pr
       }, 1200);
     }
 
+    workspaceSavingStore?.set(false);
     return result;
   } catch (error) {
     if (button) {
@@ -257,9 +296,27 @@ async function runSaveButtonAction<T>(button: any, action: () => Promise<T>): Pr
       button.disabled = originalDisabled ?? false;
       syncSaveButtonLabel(button);
     }
+    workspaceSavingStore?.set(false);
     await mqbDialogs.alert(`Error saving: ${(error as Error).message}`);
     return null;
   }
+}
+
+async function reinitializeWorkspaceViews() {
+  const state = getMqbState();
+  if (state.publishers_initialized) {
+    await initPublishers(mqbApp.config(), mqbApp.schema());
+  }
+  if (state.consumers_initialized) {
+    await initConsumers(mqbApp.config(), mqbApp.schema());
+  }
+  if (state.config_initialized) {
+    await initSettings(mqbApp.config(), mqbApp.schema());
+  }
+}
+
+export function saveWorkspace(button?: HTMLElement | null, silent = false) {
+  return appWindow().saveWorkspace(silent, button);
 }
 
 function installGlobals() {
@@ -270,6 +327,10 @@ function installGlobals() {
   renderStorageSecurity();
   state.dirty_sections = {};
   state.saved_sections = {};
+  state.before_workspace_save_hooks = {};
+  state.after_workspace_save_hooks = {};
+  workspaceDirtyStore?.set(false);
+  workspaceSavingStore?.set(false);
   appWindow().switchMain = switchMain;
   appWindow().initConsumers = initConsumers;
   appWindow().initPublishers = initPublishers;
@@ -294,6 +355,16 @@ function installGlobals() {
     refreshDirtySection(sectionName);
   };
 
+  appWindow().registerBeforeWorkspaceSave = (key, callback) => {
+    if (!key || typeof callback !== "function") return;
+    state.before_workspace_save_hooks[key] = callback;
+  };
+
+  appWindow().registerAfterWorkspaceSave = (key, callback) => {
+    if (!key || typeof callback !== "function") return;
+    state.after_workspace_save_hooks[key] = callback;
+  };
+
   appWindow().markSectionSaved = (sectionName, savedValue = undefined) => {
     const tracker = state.dirty_sections?.[sectionName];
     const nextSavedValue = savedValue === undefined ? tracker?.getValue?.() : savedValue;
@@ -302,6 +373,55 @@ function installGlobals() {
 
     tracker.baseline = JSON.stringify(state.saved_sections[sectionName]);
     refreshDirtySection(sectionName);
+  };
+
+  appWindow().saveWorkspace = async (silent = false, button = null) => {
+    const doSave = async (): Promise<Record<string, unknown> | null> => {
+      for (const hook of Object.values(state.before_workspace_save_hooks)) {
+        await hook();
+      }
+
+      const appConfig = mqbApp.config<Record<string, unknown>>();
+      const refreshedConfig = await saveWholeConfig(fetch, appConfig);
+      const refreshedStorageSecurity = await fetchStorageSecurityFromServer(fetch).catch(() => null);
+      Object.assign(appConfig, refreshedConfig);
+      if (refreshedStorageSecurity) {
+        const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
+        state.storage_security = normalizedStorageSecurity;
+        (appWindow() as any)._mqb_storage_security = normalizedStorageSecurity;
+        renderStorageSecurity();
+      }
+
+      appWindow().markSectionSaved("publishers", appConfig.publishers ?? []);
+      appWindow().markSectionSaved("consumers", appConfig.consumers ?? []);
+      appWindow().markSectionSaved("config", extractSettingsConfig(appConfig));
+
+      for (const hook of Object.values(state.after_workspace_save_hooks)) {
+        await hook(appConfig);
+      }
+
+      await reinitializeWorkspaceViews();
+      syncAllDirtyBaselinesToCurrentState();
+      renderWorkspaceDirty();
+      return refreshedConfig;
+    };
+
+    if (button) {
+      return await runSaveButtonAction(button, doSave);
+    }
+
+    try {
+      workspaceSavingStore?.set(true);
+      const result = await doSave();
+      workspaceSavingStore?.set(false);
+      return result;
+    } catch (error) {
+      workspaceSavingStore?.set(false);
+      if (!silent) {
+        await mqbDialogs.alert(`Error saving: ${(error as Error).message}`);
+      }
+      return null;
+    }
   };
 
   appWindow().saveConfig = async (silent = false, button = null) => {
@@ -400,6 +520,7 @@ export async function bootstrapApp() {
     publishers: cloneSectionState(config.publishers),
     config: cloneSectionState(config),
   };
+  renderWorkspaceDirty();
 
   onHashChange(() => {
     const targetTab = resolveTabFromHash(currentHash());

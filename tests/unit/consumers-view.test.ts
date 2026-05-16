@@ -1172,7 +1172,7 @@ describe("initConsumers", () => {
     expect(state.items[0]?.throughputLabel).toBe("");
   });
 
-  test("computes throughput from fetched message count", async () => {
+  test("shows throughput from runtime status while new messages are fetched", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2025-01-01T00:00:00Z"));
 
@@ -1243,10 +1243,12 @@ describe("initConsumers", () => {
 
     await Promise.resolve();
     window._mqb_runtime_status.consumers.orders_http.message_sequence = 2;
+    window._mqb_runtime_status.consumers.orders_http.throughput = 30;
     vi.setSystemTime(new Date("2025-01-01T00:00:01Z"));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.resolve();
 
-    expect(parseFloat(get(consumersPanelState).items[0]?.throughputLabel || "0")).toBeGreaterThan(0);
+    expect(get(consumersPanelState).items[0]?.throughputLabel).toBe("30.0 msg/s");
   });
 
   test("keeps editable response header rows in local state and persists filtered headers", async () => {

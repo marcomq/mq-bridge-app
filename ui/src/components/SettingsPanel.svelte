@@ -191,8 +191,6 @@
                 onclick={deleteStoredSecrets}>Delete Stored Secrets</button
               >
             {/if}
-            <div class="toolbar-divider" aria-hidden="true"></div>
-            <wa-button variant="brand" size="small" id="js-submit">Save</wa-button>
           </div>
         </div>
       </div>

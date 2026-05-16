@@ -15,7 +15,6 @@
     importAsyncApiToConsumerAction,
     importMqbToConsumerAction,
     restoreConsumerStateFromView,
-    saveCurrentConsumerAction,
     selectConsumerSubtab,
     setConsumerMessageCaptureEnabledAction,
     setConsumerMessageCaptureKeepLastAction,
@@ -284,16 +283,6 @@
                 </div>
                 <div class="toolbar-divider" aria-hidden="true"></div>
                 <div class="editor-action-cluster">
-                  <wa-button
-                    variant="brand"
-                    size="small"
-                    id="cons-save"
-                    role="button"
-                    tabindex="0"
-                    onclick={saveCurrentConsumerAction}
-                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, saveCurrentConsumerAction)}
-                    >Save</wa-button
-                  >
                   <wa-button
                     variant="danger"
                     appearance="outlined"
