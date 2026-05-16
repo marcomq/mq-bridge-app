@@ -810,10 +810,6 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     );
     if (publisherName === null) return;
     const trimmed = publisherName.trim();
-    if (trimmed && (config.publishers || []).some((publisher) => String(publisher.name || "").trim() === trimmed)) {
-      await mqbDialogs.alert("Publisher already exists");
-      return;
-    }
     config.publishers ||= [];
     config.publishers.push({
       id: createLocalEntityId("publisher"),
