@@ -19,8 +19,11 @@
     "dev:ui": "vite --host 127.0.0.1 --port 39092",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:ui": "playwright test",
-    "test:ui:headed": "playwright test --headed",
+    "test:ui": "npm run build:ui && playwright test",
+    "test:ui:headed": "npm run build:ui && playwright test --headed",
+    "test:ui:update-screenshots": "npm run build:ui && playwright test --update-snapshots=all",
+    "tauri": "npm run build:ui && cargo run -p mq-bridge-app-desktop",
+    "test": "npm run test:unit && npm run test:ui",
     "update:ui-vendor": "npm update @awesome.me/webawesome split.js"
   },
   "devDependencies": {

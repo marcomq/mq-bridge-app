@@ -106,7 +106,7 @@ forms.setConfig({
       const formMode = String((window as any)._mqb_form_mode || "");
       const fieldName = lowerPath.split(".").pop() || "";
 
-      if (formMode === "publisher" && ["id", "presets", "url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
+      if (formMode === "publisher" && ["id", "presets", "url", "method", "queue", "topic", "database", "path", "collection", "legacy_presets"].includes(fieldName)) {
         return false;
       }
 
@@ -931,8 +931,12 @@ const endpointRenderer = {
 };
 
 const CUSTOM_RENDERERS: Record<string, unknown> = {
+  root: rootRenderer,
+  AppConfig: rootRenderer,
   Route: routeObjectRenderer,
+  route: routeObjectRenderer,
   Endpoint: endpointRenderer,
+  EndpointConfig: endpointRenderer,
   tls: tlsRenderer,
   basic_auth: basicAuthRenderer,
   custom_headers: customHeadersRenderer,
@@ -1007,10 +1011,5 @@ CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
 
 CUSTOM_RENDERERS.RefConfig = CUSTOM_RENDERERS.ref;
 CUSTOM_RENDERERS.StaticConfig = CUSTOM_RENDERERS.static;
-CUSTOM_RENDERERS.EndpointConfig = endpointRenderer;
-
-CUSTOM_RENDERERS.AppConfig = rootRenderer;
-CUSTOM_RENDERERS.route = routeObjectRenderer;
-CUSTOM_RENDERERS.root = rootRenderer;
 
 forms.setCustomRenderers(CUSTOM_RENDERERS);

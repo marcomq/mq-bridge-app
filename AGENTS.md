@@ -46,6 +46,9 @@
   - Command: `npm run test:ui`
   - Main spec: `tests/playwright/ui.spec.js`
   - Tests currently reset config before each case via `/config` post.
+  - Visual regression baselines use Playwright's built-in `toHaveScreenshot` assertions in `tests/playwright/ui-visual.spec.js`.
+  - Do not use LLM-based screenshot comparison.
+  - Do not run `npm run test:ui:update-screenshots` just to make failing tests pass. Update screenshot baselines only after reviewing the diff and confirming the UI/layout change is intentional.
 
 ## Known Active Areas
 
