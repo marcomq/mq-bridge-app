@@ -98,6 +98,7 @@ const ENDPOINT_TYPE_KEYS = [
   "kafka",
   "mqtt",
   "grpc",
+  "websocket",
   "amqp",
   "ibmmq",
   "nats",
@@ -128,6 +129,10 @@ const REQUEST_BAR_LAYOUTS: Record<string, RequestBarLayout> = {
   http: {
     showMethod: true,
     fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "https://example.com/api" }],
+  },
+  websocket: {
+    showMethod: true,
+    fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "ws://localhost:8080" }],
   },
   kafka: {
     fields: [
@@ -198,6 +203,7 @@ const REQUEST_BAR_LAYOUTS: Record<string, RequestBarLayout> = {
 
 const SCHEMA_REQUEST_BAR_FIELDS = {
   HttpConfig: ["url", "custom_headers"],
+  WebSocketConfig: ["url"],
   KafkaConfig: ["url", "topic"],
   MqttConfig: ["url", "topic"],
   GrpcConfig: ["url"],
@@ -282,6 +288,7 @@ function createDefaultPublisherEndpoint(endpointType: string) {
   const defaults: Record<string, Record<string, any>> = {
     http: defaultHttpConfig(),
     grpc: { url: "http://localhost:50051" },
+    websocket: { url: "ws://localhost:8080" },
     nats: { url: "nats://localhost:4222", subject: "events.created" },
     memory: { topic: "events" },
     amqp: { url: "amqp://guest:guest@localhost:5672/%2f", queue: "jobs" },
@@ -1047,7 +1054,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         visible: Boolean(descriptor),
       };
     };
-    const metadataRows = endpointType === "http" && activePublisher ? getPublisherHeaderRows(activePublisher) : [];
+    const metadataRows = activePublisher ? getPublisherHeaderRows(activePublisher) : [];
     const requestPayload = activePublisher ? getPublisherState(activePublisher).payload : "";
     const sidebarItems = publishers.map((publisher, index) => ({
       name: publisher.name,
@@ -1347,16 +1354,18 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }>,
   ) => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const state = getPublisherState(publisher);
     state.headers = rows;
-    const httpConfig = ensureHttpConfig(publisher);
-    httpConfig.custom_headers = Object.fromEntries(
-      rows
-        .filter((row) => row.enabled)
-        .map((row) => [row.key.trim(), row.value] as [string, string])
-        .filter(([key]) => key),
-    );
+    if (getEndpointType(publisher) === "http") {
+      const httpConfig = ensureHttpConfig(publisher);
+      httpConfig.custom_headers = Object.fromEntries(
+        rows
+          .filter((row) => row.enabled)
+          .map((row) => [row.key.trim(), row.value] as [string, string])
+          .filter(([key]) => key),
+      );
+    }
     persistConfigState();
   };
 
@@ -1635,7 +1644,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   addPublisherMetadataRow = () => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const currentRows = getPublisherHeaderRows(publisher);
     updatePublisherConfigFromMetadataRows([
       ...currentRows,
@@ -1644,7 +1653,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
   updatePublisherMetadataRow = (index, field, value) => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const currentRows = getPublisherHeaderRows(publisher);
     const nextRows = currentRows.map((entry, currentIndex) =>
       currentIndex === index ? { ...entry, [field]: value } : entry,
@@ -1653,7 +1662,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
   togglePublisherMetadataRow = (index: number, enabled: boolean) => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const currentRows = getPublisherHeaderRows(publisher);
     const nextRows = currentRows.map((entry, currentIndex) =>
       currentIndex === index ? { ...entry, enabled } : entry,
@@ -1662,7 +1671,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
   removePublisherMetadataRow = (index) => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const currentRows = getPublisherHeaderRows(publisher);
     updatePublisherConfigFromMetadataRows(currentRows.filter((_, currentIndex) => currentIndex !== index));
   };
@@ -1718,13 +1727,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const publisherId = getPublisherStorageKey(publisher);
     const endpoint = publisher.endpoint;
     const payload = applyEnvVars(getPublisherState(publisher).payload);
-    const metaArray =
-      getEndpointType(publisher) === "http"
-        ? sortEntries(ensureHttpConfig(publisher).custom_headers).map(([key, value]) => ({
-            k: applyEnvVars(String(key)),
-            v: applyEnvVars(String(value)),
-          }))
-        : [];
+    const metaArray = getPublisherHeaderRows(publisher)
+      .filter((row) => row.enabled && row.key.trim())
+      .map((row) => ({
+        k: applyEnvVars(row.key.trim()),
+        v: applyEnvVars(row.value),
+      }));
     const metadata = buildHttpRequestMetadata();
     Object.keys(metadata).forEach((key) => {
       metadata[key] = applyEnvVars(String(metadata[key]));

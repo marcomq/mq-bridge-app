@@ -1,4 +1,5 @@
 import { nextUniqueName } from "./routes";
+import { KNOWN_ENDPOINT_ROOT_KEYS } from "./endpoint-utils";
 
 export type ThemePreference = "auto" | "light" | "dark";
 
@@ -24,33 +25,8 @@ export const BASIC_ENDPOINT_FIELDS: Record<string, string[]> = {
   ref: ["ref"],
 };
 
-const KNOWN_ENDPOINT_ROOT_KEYS = new Set([
-  "http",
-  "grpc",
-  "nats",
-  "memory",
-  "amqp",
-  "kafka",
-  "mqtt",
-  "mongodb",
-  "sqlx",
-  "zeromq",
-  "file",
-  "static",
-  "ref",
-  "sled",
-  "ibmmq",
-  "switch",
-  "fanout",
-  "reader",
-  "response",
-  "custom",
-  "null",
-  "aws",
-]);
-
 function getEndpointType(endpoint: Record<string, unknown>): string {
-  return Object.keys(endpoint).find((key) => key !== "middlewares" && KNOWN_ENDPOINT_ROOT_KEYS.has(key)) || "http";
+  return Object.keys(endpoint).find((key) => key !== "middlewares" && (KNOWN_ENDPOINT_ROOT_KEYS as readonly string[]).includes(key)) || "http";
 }
 
 export function cloneJson<T>(value: T): T {

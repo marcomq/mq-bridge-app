@@ -66,6 +66,7 @@ export let importMqbToConsumerAction: (jsonText: string) => void | Promise<void>
 const MSG_STORAGE_KEY = "mqb_consumer_messages";
 export const CONSUMER_TYPE_OPTIONS = [
   "http",
+  "websocket",
   "grpc",
   "nats",
   "memory",
@@ -78,6 +79,8 @@ export const CONSUMER_TYPE_OPTIONS = [
   "file",
   "static",
   "sled",
+  "switch",
+  "aws",
 ].filter((t) => !["ref", "fanout", "switch", "ibmmq"].includes(t));
 
 const RESPONSE_CAPABLE_CONSUMER_TYPES = new Set([
@@ -165,6 +168,7 @@ function createDefaultConsumerEndpoint(endpointType: string): Record<string, unk
   }
   const defaults: Record<string, Record<string, any>> = {
     http: { url: "0.0.0.0:8080", method: "POST" },
+    websocket: { url: "0.0.0.0:8080" },
     grpc: { url: "0.0.0.0:50051" },
     nats: { url: "nats://localhost:4222", subject: "events.created" },
     memory: { topic: "events" },

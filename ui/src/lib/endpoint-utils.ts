@@ -11,6 +11,7 @@ export type Middleware = DlqMiddleware | Record<string, unknown>;
 
 export const KNOWN_ENDPOINT_ROOT_KEYS = [
   "http",
+  "websocket",
   "grpc",
   "nats",
   "memory",
@@ -32,11 +33,6 @@ export const KNOWN_ENDPOINT_ROOT_KEYS = [
   "custom",
   "null",
   "aws",
-  "url",
-  "topic",
-  "subject",
-  "queue",
-  "path",
 ] as const;
 
 function unwrapRoot(endpoint: unknown): EndpointRecord | null {

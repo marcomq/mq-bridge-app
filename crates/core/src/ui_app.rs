@@ -14,7 +14,7 @@ use mq_bridge::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::RwLock as StdRwLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -162,6 +162,7 @@ pub struct UiApp {
     storage_save_prepare: Option<Arc<StorageSavePrepare>>,
     config_recovery: Arc<StdRwLock<Option<ConfigRecoveryStatusResponse>>>,
     config_recovery_reset: Option<Arc<ConfigRecoveryReset>>,
+    throughput_updater_started: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy)]
@@ -581,31 +582,6 @@ fn resolve_consumer_output(
     }
 }
 
-/// Spawns a background task to periodically update throughput metrics for all active consumers.
-fn spawn_throughput_updater(
-    throughput_samples_arc: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
-    consumer_message_sequences_arc: Arc<RwLock<HashMap<String, Arc<AtomicU64>>>>,
-) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(THROUGHPUT_UPDATE_INTERVAL);
-
-        loop {
-            interval.tick().await; // Wait for the next interval tick
-            let now = Instant::now();
-
-            let consumer_sequences = consumer_message_sequences_arc.read().await.clone();
-            let mut samples = throughput_samples_arc.write().await;
-
-            for (consumer_key, sequence) in consumer_sequences.iter() {
-                let total_messages = sequence.load(Ordering::Relaxed) as f64;
-                let previous_sample = samples.get(consumer_key).copied();
-                let next_sample = next_route_metric_sample(previous_sample, total_messages, now);
-                samples.insert(consumer_key.clone(), next_sample);
-            }
-        }
-    });
-}
-
 impl UiApp {
     pub fn new(
         initial_config: AppConfig,
@@ -717,14 +693,49 @@ impl UiApp {
             storage_save_prepare: runtime_hooks.storage_save_prepare,
             config_recovery: Arc::new(StdRwLock::new(runtime_hooks.config_recovery)),
             config_recovery_reset: runtime_hooks.config_recovery_reset,
+            throughput_updater_started: Arc::new(AtomicBool::new(false)),
         };
 
-        spawn_throughput_updater(
-            Arc::clone(&app.throughput_samples),
-            Arc::clone(&app.consumer_message_sequences),
-        );
+        app.ensure_throughput_updater();
 
         app
+    }
+
+    /// Spawns a background task to periodically update throughput metrics for all active consumers if not already started.
+    fn ensure_throughput_updater(&self) {
+        if self.throughput_updater_started.load(Ordering::Relaxed) {
+            return;
+        }
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if self
+                .throughput_updater_started
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let throughput_samples_arc = Arc::clone(&self.throughput_samples);
+                let consumer_message_sequences_arc = Arc::clone(&self.consumer_message_sequences);
+                handle.spawn(async move {
+                    let mut interval = tokio::time::interval(THROUGHPUT_UPDATE_INTERVAL);
+
+                    loop {
+                        interval.tick().await; // Wait for the next interval tick
+                        let now = Instant::now();
+
+                        let consumer_sequences = consumer_message_sequences_arc.read().await.clone();
+                        let mut samples = throughput_samples_arc.write().await;
+
+                        for (consumer_key, sequence) in consumer_sequences.iter() {
+                            let total_messages = sequence.load(Ordering::Relaxed) as f64;
+                            let previous_sample = samples.get(consumer_key).copied();
+                            let next_sample =
+                                next_route_metric_sample(previous_sample, total_messages, now);
+                            samples.insert(consumer_key.clone(), next_sample);
+                        }
+                    }
+                });
+            }
+        }
     }
 
     pub async fn get_config(&self) -> AppConfig {
@@ -756,6 +767,8 @@ impl UiApp {
         msg: CanonicalMessage,
         serve_static_assets: bool,
     ) -> Result<Handled, HandlerError> {
+        self.ensure_throughput_updater();
+
         let method = msg
             .metadata
             .get("http_method")
@@ -886,11 +899,13 @@ impl UiApp {
         status: u16,
         message: impl Into<String>,
     ) -> Result<Handled, HandlerError> {
-        Ok(Handled::Publish(
-            msg!(message.into())
-                .with_status_code(status.to_string())
-                .with_content_type("text/plain; charset=utf-8"),
-        ))
+        let msg_str = message.into();
+        dbg!(&msg_str);
+        self.ok_json(&serde_json::json!({ "error": msg_str }), false)
+            .map(|h| match h {
+                Handled::Publish(m) => Handled::Publish(m.with_status_code(status.to_string())),
+                other => other,
+            })
     }
 
     pub fn render_metrics(&self) -> String {

@@ -38,7 +38,7 @@
     const isLocalUiRequest = (url) => {
         if (!url || url.origin !== window.location.origin) return false;
         const pathname = url.pathname.split('#')[0]; // Strip hash fragment for routing
-        return ['/health', '/schema.json', '/config', '/desktop-secrets', '/consumer-status', '/consumer-start', '/consumer-stop', '/messages', '/publish', '/runtime-status', '/metrics'].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}?`));
+        return ['/health', '/schema.json', '/config', '/desktop-secrets', '/consumer-status', '/consumer-start', '/consumer-stop', '/messages', '/publish', '/runtime-status', '/metrics'].includes(pathname);
     };
 
     // Override fetch for local UI requests
@@ -58,6 +58,7 @@
         const pathname = url.pathname.split('#')[0]; // Strip hash fragment for routing
         const queryParams = Object.fromEntries(url.searchParams.entries()); // Get query params as object
         const bodyText = await parseBody(normalizedInit) || '';
+        const consumer = queryParams.consumer || queryParams.consumer_id;
 
         let commandName;
         let commandArgs = {};
@@ -87,19 +88,19 @@
                 break;
             case '/consumer-status':
                 commandName = 'get_consumer_status_request';
-                commandArgs = { consumer: queryParams.consumer };
+                commandArgs = { consumer: consumer || '' };
                 break;
             case '/consumer-start':
                 commandName = 'post_consumer_start_request';
-                commandArgs = { consumer: queryParams.consumer };
+                commandArgs = { consumer: consumer || '' };
                 break;
             case '/consumer-stop':
                 commandName = 'post_consumer_stop_request';
-                commandArgs = { consumer: queryParams.consumer };
+                commandArgs = { consumer: consumer || '' };
                 break;
             case '/messages':
                 commandName = 'get_messages_request';
-                commandArgs = { consumer: queryParams.consumer || null };
+                commandArgs = { consumer: consumer || null };
                 break;
             case '/publish':
                 commandName = 'post_publish_request';
