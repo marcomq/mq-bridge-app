@@ -12,16 +12,16 @@ import PasswordField from "./PasswordField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
 import { mqbApp } from "../runtime-window";
-import { BASIC_ENDPOINT_FIELDS } from "../utils";
+import { BASIC_ENDPOINT_FIELDS } from "../endpoint-metadata";
 import {
   createTypeSelectArrayRenderer,
-  domRenderer,
+  domRenderer as baseDomRenderer,
   formatWebAwesomeLabel,
   hydrateNodeWithData,
   renderNode,
   renderObject,
   renderProperties,
-  rendererConfig,
+  rendererConfig as baseRendererConfig,
   setConfig,
   setCustomRenderers,
   setI18n,
@@ -31,6 +31,24 @@ import * as VanillaSchemaForms from "vanilla-schema-forms";
 
 type SchemaNode = Record<string, any>;
 type RendererContext = Record<string, any>;
+type CustomRenderer = {
+  render: (...args: any[]) => Node;
+};
+type RendererConfig = {
+  classes: Record<string, string>;
+  triggers: Record<string, string>;
+};
+type DomRenderer = Record<string, any> & {
+  renderAdditionalProperties: (...args: any[]) => HTMLElement;
+  renderBoolean?: (...args: any[]) => HTMLElement;
+  renderFieldWrapper: (...args: any[]) => HTMLElement;
+  renderHeadlessObject: (...args: any[]) => HTMLElement;
+  renderObject: (...args: any[]) => HTMLElement;
+  renderOneOf: (...args: any[]) => Node | null;
+};
+
+const rendererConfig = baseRendererConfig as RendererConfig;
+const domRenderer = baseDomRenderer as DomRenderer;
 
 function withRendererDefaults(context: RendererContext): RendererContext {
   const config = context.config || {};
@@ -106,7 +124,7 @@ forms.setConfig({
       const formMode = String((window as any)._mqb_form_mode || "");
       const fieldName = lowerPath.split(".").pop() || "";
 
-      if (formMode === "publisher" && ["id", "presets", "url", "method", "queue", "topic", "database", "path", "collection", "legacy_presets"].includes(fieldName)) {
+      if (formMode === "publisher" && ["id", "presets", "url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
         return false;
       }
 
@@ -162,6 +180,10 @@ function createWrappedContainer(content: Node, className = "") {
   wrapper.className = className;
   wrapper.appendChild(content);
   return wrapper;
+}
+
+function asNode(value: Node | null): Node {
+  return value || document.createDocumentFragment();
 }
 
 function addClassTokens(element: Element | null, ...classNames: Array<string | undefined>) {
@@ -404,7 +426,7 @@ const updateArrayItemLabel = (arrayItem: ParentNode | null) => {
 
   if (arrayItem.getAttribute("wa-no-label") === "true") {
     legend.textContent = "";
-    legend.style.display = "none";
+    (legend as HTMLElement).style.display = "none";
     return;
   }
 
@@ -501,14 +523,14 @@ function fixNullBooleans(node: SchemaNode, dataPath: Array<string | number>, con
 
   if (!data || typeof data !== "object") return;
 
-  const hasNullBooleans = Object.entries(node.properties).some(([key, prop]) => prop?.type === "boolean" && data[key] === null);
+  const hasNullBooleans = Object.entries(node.properties as Record<string, SchemaNode>).some(([key, prop]) => prop?.type === "boolean" && data[key] === null);
   if (!hasNullBooleans) return;
 
   window.setTimeout(() => {
     const currentData = { ...(store.getPath(dataPath) || {}) };
     let changed = false;
 
-    for (const [key, prop] of Object.entries(node.properties)) {
+    for (const [key, prop] of Object.entries(node.properties as Record<string, SchemaNode>)) {
       if (prop?.type === "boolean" && currentData[key] === null) {
         currentData[key] = false;
         changed = true;
@@ -637,7 +659,7 @@ const routesRenderer = {
         const routeDataPath = [...dataPath, key];
         const valueHtml = renderNode(context, valueNode, routePath, true, routeDataPath);
         const rowNode = routesRenderer.renderAdditionalPropertyRow(
-          valueHtml,
+          asNode(valueHtml),
           key,
           `${routePath}_key`,
         );
@@ -707,7 +729,7 @@ const createEndpointRenderer = (type: string) => ({
       if (specialRenderer && typeof specialRenderer.render === "function") {
         hiddenFragment.appendChild(specialRenderer.render(hiddenProperties[key], `${_path}.${key}`, `${elementId}.${key}`, [...dataPath, key], context));
       } else {
-        hiddenFragment.appendChild(renderNode(context, hiddenProperties[key], `${elementId}.${key}`, false, [...dataPath, key]));
+        hiddenFragment.appendChild(asNode(renderNode(context, hiddenProperties[key], `${elementId}.${key}`, false, [...dataPath, key])));
       }
     }
     const hiddenWrapper = createWrappedContainer(hiddenFragment, "mqb-form-block");
@@ -765,7 +787,7 @@ const rootRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     const originalDescription = node.description;
     node.description = formatDescription(node, elementId);
-    const result = createWrappedContainer(renderObject(context, node, elementId, false, dataPath), "mqb-form-block");
+    const result = createWrappedContainer(asNode(renderObject(context, node, elementId, false, dataPath)), "mqb-form-block");
     node.description = originalDescription;
     return result;
   },
@@ -779,7 +801,7 @@ const baseMiddlewaresRenderer = createTypeSelectArrayRenderer({
 
 const middlewaresRenderer = {
   render: (node: SchemaNode, path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext, isHeadless = false) => {
-    const element = baseMiddlewaresRenderer.render(node, path, elementId, dataPath, context, isHeadless) as HTMLElement;
+    const element = (baseMiddlewaresRenderer as unknown as CustomRenderer).render(node, path, elementId, dataPath, context, isHeadless) as HTMLElement;
     const toggleButton = element.querySelector(`.${rendererConfig.triggers.arrayTypeToggle}`) as HTMLElement | null;
     const typeSelect = element.querySelector(`.${rendererConfig.triggers.arrayTypeSelect}`) as HTMLSelectElement | null;
 
@@ -955,7 +977,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
         const ap = domRenderer.renderAdditionalProperties(node, elementId);
         const oneOf = domRenderer.renderOneOf(node, elementId);
         const content = document.createDocumentFragment();
-        content.append(props, ap, oneOf);
+        content.append(props, asNode(ap), asNode(oneOf));
         return domRenderer.renderHeadlessObject(elementId, content);
       }
       const originalDescription = node.description;

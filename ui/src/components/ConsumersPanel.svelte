@@ -171,7 +171,6 @@
         <input class="sidebar-search" id="cons-filter" type="text" placeholder="Filter consumers…" bind:value={filterText} />
         <div class="add-menu-container">
           <wa-button
-            size="small"
             appearance="outlined"
             class="icon-button"
             id="cons-add"
@@ -220,7 +219,7 @@
           bind:this={importInputEl}
           type="file"
           accept=".json,application/json"
-          style="display:none"
+          class="hidden-file-input"
           onchange={handleImportSelected}
         />
       </div>
@@ -280,7 +279,6 @@
           <wa-button
             variant="neutral"
             appearance="outlined"
-            size="small"
             class="ghost-action"
             id="cons-clear-history"
             role="button"
@@ -292,7 +290,6 @@
           <wa-button
             variant={$consumersPanelState.toggleVariant}
             id="cons-toggle"
-            size="small"
             loading={$consumersPanelState.toggleBusy}
             disabled={$consumersPanelState.toggleBusy}
             role="button"
@@ -344,7 +341,6 @@
                   <wa-button
                     variant="neutral"
                     appearance="outlined"
-                    size="small"
                     id="cons-copy"
                     role="button"
                     tabindex="0"
@@ -355,7 +351,6 @@
                   <wa-button
                     variant="neutral"
                     appearance="outlined"
-                    size="small"
                     id="cons-save-variant"
                     role="button"
                     tabindex="0"
@@ -369,7 +364,6 @@
                   <wa-button
                     variant="danger"
                     appearance="outlined"
-                    size="small"
                     id="cons-delete"
                     role="button"
                     tabindex="0"
@@ -610,5 +604,9 @@
   :global(.throughput-sep) {
     opacity: 0.4;
     font-size: 0.9em;
+  }
+
+  .hidden-file-input {
+    display: none;
   }
 </style>

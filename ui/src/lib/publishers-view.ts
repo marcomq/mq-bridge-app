@@ -3,7 +3,7 @@ import {
   nextUniqueName,
 } from "./routes";
 import { get } from "svelte/store";
-import { cloneJson } from "./utils";
+import { cloneJson, normalizeNamedEntityFormShape } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { publishersPanelState } from "./stores";
 import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
@@ -15,13 +15,21 @@ import {
   ensureWorkspaceCollections,
   isSensitiveConfig,
   sanitizePublisherHistory,
+  type PublisherHistoryStore,
   type PublisherPreset,
 } from "./workspace-config";
 import { setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
 import { buildPublisherTree } from "./publisher-grouping";
 import {
+  PUBLISHER_TYPE_OPTIONS,
+  REQUEST_BAR_LAYOUTS,
+  type RequestBarFieldDescriptor,
+  type RequestBarLayout,
+} from "./endpoint-metadata";
+import {
   ensureRefOnlyEndpointDefaults,
+  createConsumerEndpointFromPublisherEndpoint as toConsumerEndpoint,
   getEndpointType as getEndpointTypeFromEndpointRecord,
   normalizeMiddlewares,
   normalizeScalarEndpointValue,
@@ -72,19 +80,12 @@ export let updatePublisherPayload: (value: string) => void = () => {};
 export let updatePublisherMethod: (value: string) => void = () => {};
 export let updatePublisherRequestField: (fieldId: "pub-extra-1" | "pub-extra-2" | "pub-url", value: string) => void = () => {};
 
-type RequestBarFieldDescriptor = {
-  inputId: "pub-extra-1" | "pub-extra-2" | "pub-url";
-  field: string;
-  label: string;
-  placeholder?: string;
-};
-
-type RequestBarLayout = {
-  showMethod?: boolean;
-  fields: RequestBarFieldDescriptor[];
-};
-
 type PublisherSubtab = "payload" | "headers" | "history" | "definition";
+type SchemaObject = Record<string, any> & {
+  properties?: Record<string, any>;
+  required?: string[];
+  $defs?: Record<string, any>;
+};
 
 const STORAGE_KEY = "mqb_publisher_state";
 const HISTORY_KEY = "mqb_publisher_history";
@@ -93,155 +94,27 @@ const HTTP_METHOD_OPTIONS = ["POST", "GET", "PUT", "DELETE"];
 const PUBLISHER_SUBTABS = new Set<PublisherSubtab>(["payload", "headers", "history", "definition"]);
 const REQUEST_BAR_METADATA_PREFIX = "request_bar.";
 
-const ENDPOINT_TYPE_KEYS = [
-  "http",
-  "kafka",
-  "mqtt",
-  "grpc",
-  "websocket",
-  "amqp",
-  "ibmmq",
-  "nats",
-  "aws",
-  "mongodb",
-  "sqlx",
-  "sled",
-  "file",
-  "static",
-  "memory",
-  "ref",
-  "zeromq",
-  "switch",
-  "fanout",
-  "reader",
-  "response",
-  "custom",
-  "null",
-];
-// Internal or structural types that should not appear in the "New Publisher" dialog.
-// We don't want to support ibmmq yet. But we want to support "static"
-const EXCLUDED_PUBLISHER_TYPES = new Set(["custom", "ref", "response", "reader", "ibmmq", "null"]);
-export const PUBLISHER_TYPE_OPTIONS = ENDPOINT_TYPE_KEYS.filter(
-  (key) => !EXCLUDED_PUBLISHER_TYPES.has(key),
-);
+export { PUBLISHER_TYPE_OPTIONS };
 
-const REQUEST_BAR_LAYOUTS: Record<string, RequestBarLayout> = {
-  http: {
-    showMethod: true,
-    fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "https://example.com/api" }],
-  },
-  websocket: {
-    showMethod: true,
-    fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "ws://localhost:8080" }],
-  },
-  kafka: {
-    fields: [
-      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events" },
-      { inputId: "pub-url", field: "url", label: "BROKERS", placeholder: "kafka:9092" },
-    ],
-  },
-  mqtt: {
-    fields: [
-      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events/updates" },
-      { inputId: "pub-url", field: "url", label: "BROKER", placeholder: "tcp://localhost:1883" },
-    ],
-  },
-  grpc: {
-    fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "http://localhost:50051" }],
-  },
-  amqp: {
-    fields: [
-      { inputId: "pub-extra-1", field: "queue", label: "QUEUE", placeholder: "jobs" },
-      { inputId: "pub-url", field: "url", label: "URL", placeholder: "amqp://guest:guest@localhost:5672/%2f" },
-    ],
-  },
-  ibmmq: {
-    fields: [
-      { inputId: "pub-extra-1", field: "queue", label: "QUEUE", placeholder: "DEV.QUEUE.1" },
-      { inputId: "pub-extra-2", field: "topic", label: "TOPIC", placeholder: "topic://events" },
-      { inputId: "pub-url", field: "url", label: "HOST", placeholder: "mq-host(1414)" },
-    ],
-  },
-  nats: {
-    fields: [
-      { inputId: "pub-extra-1", field: "subject", label: "SUBJECT", placeholder: "events.created" },
-      { inputId: "pub-url", field: "url", label: "SERVERS", placeholder: "nats://localhost:4222" },
-    ],
-  },
-  mongodb: {
-    fields: [
-      { inputId: "pub-extra-1", field: "database", label: "DATABASE", placeholder: "app" },
-      { inputId: "pub-extra-2", field: "collection", label: "COLLECTION", placeholder: "messages" },
-      { inputId: "pub-url", field: "url", label: "URL", placeholder: "mongodb://localhost:27017" },
-    ],
-  },
-  sqlx: {
-    fields: [
-      { inputId: "pub-extra-1", field: "table", label: "TABLE", placeholder: "events" },
-      { inputId: "pub-url", field: "url", label: "URL", placeholder: "postgres://user:pass@localhost/db" },
-    ],
-  },
-  zeromq: {
-    fields: [
-      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events" },
-      { inputId: "pub-url", field: "url", label: "URL", placeholder: "tcp://127.0.0.1:5555" },
-    ],
-  },
-  file: {
-    fields: [{ inputId: "pub-url", field: "path", label: "PATH", placeholder: "/tmp/messages.jsonl" }],
-  },
-  memory: {
-    fields: [{ inputId: "pub-url", field: "topic", label: "TOPIC", placeholder: "events" }],
-  },
-  sled: {
-    fields: [
-      { inputId: "pub-extra-1", field: "tree", label: "TREE", placeholder: "default" },
-      { inputId: "pub-url", field: "path", label: "PATH", placeholder: "./data/sled" },
-    ],
-  },
-};
-
-const SCHEMA_REQUEST_BAR_FIELDS = {
-  HttpConfig: ["url", "custom_headers"],
-  WebSocketConfig: ["url"],
-  KafkaConfig: ["url", "topic"],
-  MqttConfig: ["url", "topic"],
-  GrpcConfig: ["url"],
-  AmqpConfig: ["url", "queue"],
-  IbmMqConfig: ["url", "queue", "topic"],
-  NatsConfig: ["url", "subject"],
-  MongoDbConfig: ["url", "database", "collection"],
-  ZeroMqConfig: ["url", "topic"],
-  SqlxConfig: ["url", "table"],
-  FileConfig: ["path"],
-  MemoryConfig: ["topic"],
-  SledConfig: ["path", "tree"],
-} satisfies Record<string, string[]>;
+const SCHEMA_CONFIG_ENDPOINT_TYPES = {
+  HttpConfig: "http",
+  WebSocketConfig: "websocket",
+  KafkaConfig: "kafka",
+  MqttConfig: "mqtt",
+  GrpcConfig: "grpc",
+  AmqpConfig: "amqp",
+  IbmMqConfig: "ibmmq",
+  NatsConfig: "nats",
+  MongoDbConfig: "mongodb",
+  ZeroMqConfig: "zeromq",
+  SqlxConfig: "sqlx",
+  FileConfig: "file",
+  MemoryConfig: "memory",
+  SledConfig: "sled",
+} satisfies Record<string, string>;
 
 export function createConsumerEndpointFromPublisherEndpoint(endpoint: Record<string, any>) {
-  const nextEndpoint = cloneJson(endpoint || {});
-  const http = nextEndpoint.http;
-  if (!http || typeof http !== "object" || typeof http.url !== "string") {
-    return nextEndpoint;
-  }
-
-  try {
-    const parsedUrl = new URL(http.url);
-    const defaultPort = parsedUrl.protocol === "https:" ? "443" : "80";
-    const port = parsedUrl.port || defaultPort;
-    http.url = `0.0.0.0:${port}`;
-
-    const nextPath = `${parsedUrl.pathname || "/"}${parsedUrl.search || ""}`;
-    if (nextPath && nextPath !== "/") {
-      http.path = nextPath;
-    } else {
-      delete http.path;
-    }
-  } catch {
-    // Leave non-URL values unchanged; the user can adjust them manually after copying.
-  }
-
-  return nextEndpoint;
+  return toConsumerEndpoint(endpoint);
 }
 
 function sortEntries(obj: Record<string, any> | undefined | null) {
@@ -368,15 +241,7 @@ function ensurePublisherEndpointDefaults(endpoint: unknown): Record<string, any>
 function normalizePublisherConfigShape(publisher: PublisherConfig): PublisherConfig {
   if (!publisher) return publisher;
 
-  // Handle root artifact from form generator
-  let data = { ...publisher } as any;
-  if (data.root) {
-    const { root, ...rest } = data;
-    data = { ...rest, ...root };
-  }
-  data.id = String(data.id || "").trim() || createLocalEntityId("publisher");
-  data.name = String(data.name ?? "");
-
+  const data = normalizeNamedEntityFormShape(publisher, "publisher") as any;
   data.endpoint = ensurePublisherEndpointDefaults(data.endpoint);
 
   return data as PublisherConfig;
@@ -514,9 +379,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const isSavedPublisher = (publisher: Partial<PublisherConfig> | null | undefined) =>
     savedPublisherKeys.has(getPublisherStorageKey(publisher));
 
-  const emptyAlert = document.getElementById("pub-empty-alert") as HTMLElement | null;
-  const mainUi = document.getElementById("pub-main-ui") as HTMLElement | null;
-  if (!container || !emptyAlert || !mainUi) {
+  if (!container) {
     return;
   }
 
@@ -663,8 +526,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!publisher.endpoint.http || typeof publisher.endpoint.http !== "object") {
       publisher.endpoint.http = defaultHttpConfig();
     }
-    publisher.endpoint.http.custom_headers ||= {};
-    return publisher.endpoint.http as Record<string, any>;
+    const httpConfig = publisher.endpoint.http as Record<string, any>;
+    httpConfig.custom_headers ||= {};
+    return httpConfig;
   };
 
   const ensureEndpointConfig = (publisher: PublisherConfig, endpointType: string) => {
@@ -683,7 +547,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const getExistingEndpointConfig = (publisher: PublisherConfig, endpointType = getEndpointType(publisher)) => {
     const endpoint = publisher?.endpoint || {};
     const endpointConfig = endpoint?.[endpointType];
-    return endpointConfig && typeof endpointConfig === "object" ? endpointConfig : null;
+    return endpointConfig && typeof endpointConfig === "object" ? endpointConfig as Record<string, any> : null;
   };
 
   const getRequestBarLayout = (endpointType: string): RequestBarLayout =>
@@ -922,7 +786,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     String(request.method || "").toUpperCase();
 
   const requestToPublisher = (request: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
-    const currentNames = (config.publishers || []).map((publisher) => publisher.name);
+    const currentNames = (config.publishers || []).map((publisher) => String(publisher.name || ""));
     const endpointType = getImportedRequestEndpointType(request, fallbackPublisher);
     const baseName = String(request.name || endpointType).trim() || endpointType;
     const name = nextUniqueName(baseName, currentNames);
@@ -1065,7 +929,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const metadataRows = activePublisher ? getPublisherHeaderRows(activePublisher) : [];
     const requestPayload = activePublisher ? getPublisherState(activePublisher).payload : "";
     const sidebarItems = publishers.map((publisher, index) => ({
-      name: publisher.name,
+      name: String(publisher.name || ""),
       endpointType: getEndpointType(publisher).toUpperCase(),
       originalIndex: index,
     }));
@@ -1115,9 +979,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   const renderSidebar = () => {
     syncPublishersPanelState();
-    const hasPublishers = publishers.length > 0;
-    emptyAlert.style.display = hasPublishers ? "none" : "block";
-    mainUi.style.display = hasPublishers ? "contents" : "none";
   };
 
   const setActiveItem = (idx: number, options: { tab?: PublisherSubtab; preserveTab?: boolean } = {}) => {
@@ -1403,13 +1264,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const itemSchema = cloneJson({
       ...(schema.properties?.publishers?.items || {}),
       $defs: schema.$defs,
-    });
+    }) as SchemaObject;
     applyEndpointSchemaDefaults(itemSchema);
     forceRefOnlyEndpoints(itemSchema);
-    Object.entries(SCHEMA_REQUEST_BAR_FIELDS).forEach(([defName, fields]) => {
+    Object.entries(SCHEMA_CONFIG_ENDPOINT_TYPES).forEach(([defName, endpointType]) => {
       const endpointSchema = itemSchema.$defs?.[defName];
       if (!endpointSchema?.properties) return;
-      fields.forEach((fieldName) => {
+      getRequestBarLayout(endpointType).fields.forEach(({ field: fieldName }) => {
         if (endpointSchema.properties[fieldName]) {
           endpointSchema.properties[fieldName].hidden = true;
         }
@@ -1451,7 +1312,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     state.form_mode = "publisher";
     (window as any)._mqb_form_mode = "publisher";
     
-    await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], async (updated) => {
+    await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], async (updated: PublisherConfig) => {
       const current = publishers[idx];
       const previousPublisherName = current?.name || "";
       const previousStorageKey = getPublisherStorageKey(current);
@@ -1487,7 +1348,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
       // Preserve custom headers for HTTP (managed in the Headers tab)
       if (getEndpointType(nextPublisher) === "http" && getEndpointType(current) === "http") {
-        nextPublisher.endpoint.http.custom_headers = current.endpoint.http.custom_headers;
+        (nextPublisher.endpoint.http as Record<string, any>).custom_headers =
+          (current.endpoint.http as Record<string, any>).custom_headers;
       }
 
       publishers[idx] = nextPublisher;
@@ -1562,7 +1424,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     initPublishers(config, schema);
   };
 
-  deleteCurrentPublisherAction = async (button = document.getElementById("pub-save")) => {
+  deleteCurrentPublisherAction = async (button = null) => {
     const publisher = config.publishers[currentIdx];
     if (!publisher) return;
 
@@ -1995,14 +1857,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     if (type === "mqb-presets") {
-      const result = await importFromJsonText(jsonText, {
+      await importFromJsonText(jsonText, {
         includeConfig: false,
         includePresets: true,
         targetPublisherName: "",
       });
       envVars = ensureWorkspaceCollections(mqbApp.config<PublishersAppConfig>()).env_vars;
       syncPublishersPanelState();
-      return result;
+      return;
     }
 
     const incomingConfig =
@@ -2050,7 +1912,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (idx >= 0) {
       restorePublisherStateFromView(idx, { tab: "definition" });
     }
-    return { importedKind: type, importedPublishers: importedPublishers.length };
+    return;
   };
 
   showPublisherHistoryEntry = async (historyIndex: number) => {

@@ -950,8 +950,55 @@ describe("initConsumers", () => {
     expect(config.publishers).toEqual([
       expect.objectContaining({
         name: "orders_publisher",
-        endpoint: expect.objectContaining({ http: expect.any(Object) }),
+        endpoint: expect.objectContaining({
+          http: expect.objectContaining({ url: "http://127.0.0.1:8080" }),
+        }),
       }),
+    ]);
+  });
+
+  test("copy consumer creates publisher client URLs with scheme and path", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: { url: "127.0.0.1:8080", path: "/orders" } },
+          response: null,
+        },
+        {
+          name: "orders_ws",
+          endpoint: { middlewares: [{ metrics: {} }], websocket: { url: "127.0.0.1:8081", path: "/socket" } },
+          response: null,
+        },
+        {
+          name: "orders_grpc",
+          endpoint: { middlewares: [{ metrics: {} }], grpc: { url: "127.0.0.1:50051" } },
+          response: null,
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    window.mqbPrompt = vi.fn()
+      .mockResolvedValueOnce("orders_http_publisher")
+      .mockResolvedValueOnce("orders_ws_publisher")
+      .mockResolvedValueOnce("orders_grpc_publisher");
+
+    await initConsumers(config, {
+      properties: { consumers: { items: { properties: { response: {} } } } },
+      $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+    });
+
+    await copyCurrentConsumerAction();
+    await restoreConsumerStateFromView(1, { tab: "definition" });
+    await copyCurrentConsumerAction();
+    await restoreConsumerStateFromView(2, { tab: "definition" });
+    await copyCurrentConsumerAction();
+
+    expect(config.publishers.map((publisher) => publisher.endpoint)).toEqual([
+      expect.objectContaining({ http: expect.objectContaining({ url: "http://127.0.0.1:8080/orders" }) }),
+      expect.objectContaining({ websocket: expect.objectContaining({ url: "ws://127.0.0.1:8081/socket" }) }),
+      expect.objectContaining({ grpc: expect.objectContaining({ url: "grpc://127.0.0.1:50051" }) }),
     ]);
   });
 
@@ -1557,7 +1604,7 @@ describe("initConsumers", () => {
       "consumers",
       expect.any(Array),
       false,
-      document.getElementById("cons-save"),
+      undefined,
     );
     expect(globalThis.fetch).toHaveBeenCalledWith("/consumer-start?consumer_id=orders_http", { method: "POST" });
 
@@ -1643,7 +1690,7 @@ describe("initConsumers", () => {
         }),
       ],
       false,
-      document.getElementById("cons-save"),
+      undefined,
     );
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringMatching(/^\/consumer-start\?consumer_id=consumer_/),
@@ -1699,7 +1746,7 @@ describe("initConsumers", () => {
       "consumers",
       expect.any(Array),
       false,
-      document.getElementById("cons-save"),
+      undefined,
     );
     expect(window.fetchConfigFromServer).not.toHaveBeenCalled();
   });

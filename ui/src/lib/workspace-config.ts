@@ -1,15 +1,9 @@
 import { createLocalEntityId } from "./entity-key";
+import type { ConfigSecurity as GeneratedConfigSecurity } from "./generated/ui-types";
 
 export type HeaderRow = { key: string; value: string; enabled: boolean };
 export type HistoryMetadataRow = { k: string; v: string };
-export type ConfigSecurityMode =
-  | "unencrypted"
-  | "balanced"
-  | "env_temporary_messages"
-  | "temporary_messages"
-  | "sensitive"
-  | "durable";
-export type ConfigSecurity = { mode: ConfigSecurityMode };
+export type ConfigSecurity = GeneratedConfigSecurity;
 
 export type PublisherPreset = {
   name: string;
@@ -58,7 +52,7 @@ export type WorkspaceConfig = Record<string, unknown> & {
   presets?: PresetsByPublisher;
   env_vars?: EnvVars;
   history?: PublisherHistoryStore;
-  config_security?: ConfigSecurity;
+  config_security?: ConfigSecurity | null;
   extract_secrets?: boolean;
 };
 
@@ -75,9 +69,9 @@ function getRawEndpointType(endpoint: unknown) {
 }
 
 function createDefaultRawPublisherEndpoint(endpointType: string) {
-  const base = {
+  const base: Record<string, unknown> = {
     middlewares: endpointType === "static" || endpointType === "ref" ? [] : [{ retry: {} }],
-  } satisfies Record<string, unknown>;
+  };
 
   const defaults: Record<string, unknown> = {
     http: {

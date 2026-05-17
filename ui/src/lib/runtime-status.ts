@@ -1,23 +1,12 @@
+import type {
+  ConsumerStatusSnapshot,
+  RuntimeStatusResponse,
+} from "./generated/ui-types";
+
 export type MainTab = "publishers" | "consumers" | "config";
 
-export interface RuntimeConsumerState {
-  running: boolean;
-  status: {
-    healthy: boolean;
-    error?: string;
-  };
-  throughput: number;
-  message_sequence: number;
-  capture_enabled: boolean;
-  capture_keep_last: number;
-}
-
-export interface RuntimeStatus {
-  active_consumers: string[];
-  active_routes: string[];
-  route_throughput: Record<string, number>;
-  consumers: Record<string, RuntimeConsumerState>;
-}
+export type RuntimeConsumerState = ConsumerStatusSnapshot;
+export type RuntimeStatus = RuntimeStatusResponse;
 
 export const EMPTY_RUNTIME_STATUS: RuntimeStatus = {
   active_consumers: [],
@@ -71,34 +60,14 @@ export function createRuntimeStatusPoller({
   let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight = false;
 
-  const pickRuntimeStatusShape = (raw: unknown): Record<string, unknown> => {
-    if (!raw || typeof raw !== "object") return {};
-    const obj = raw as Record<string, unknown>;
-
-    // direct payload
-    if (Array.isArray(obj.active_consumers) || Array.isArray(obj.active_routes)) return obj;
-    if (Array.isArray(obj.activeConsumers) || Array.isArray(obj.activeRoutes)) return obj;
-
-    // enum/wrapper payload variants seen in different UI transport layers
-    const wrapped =
-      obj.RuntimeStatus ||
-      obj.runtime_status ||
-      obj.payload ||
-      obj.status ||
-      null;
-    if (wrapped && typeof wrapped === "object") {
-      return wrapped as Record<string, unknown>;
-    }
-
-    return obj;
-  };
-
   const normalizeStatus = (rawStatus: unknown): RuntimeStatus => {
-    const status = pickRuntimeStatusShape(rawStatus);
-    const activeConsumersRaw = status.active_consumers ?? status.activeConsumers;
-    const activeRoutesRaw = status.active_routes ?? status.activeRoutes;
-    const throughputRaw = status.route_throughput ?? status.routeThroughput;
-    const consumersRaw = status.consumers ?? status.consumer_statuses ?? status.consumerStatuses;
+    const status = rawStatus && typeof rawStatus === "object"
+      ? rawStatus as Record<string, unknown>
+      : {};
+    const activeConsumersRaw = status.active_consumers;
+    const activeRoutesRaw = status.active_routes;
+    const throughputRaw = status.route_throughput;
+    const consumersRaw = status.consumers;
 
     const consumers = consumersRaw && typeof consumersRaw === "object"
       ? Object.fromEntries(
@@ -116,27 +85,25 @@ export function createRuntimeStatusPoller({
                 running: Boolean(rawConsumer.running),
                 status: {
                   healthy: Boolean(rawStatus.healthy),
+                  target: typeof rawStatus.target === "string" ? rawStatus.target : String(name),
+                  pending: typeof rawStatus.pending === "number" ? rawStatus.pending : null,
+                  capacity: typeof rawStatus.capacity === "number" ? rawStatus.capacity : null,
                   ...(typeof rawStatus.error === "string" && rawStatus.error ? { error: rawStatus.error } : {}),
+                  details: rawStatus.details ?? null,
                 },
                 throughput: typeof rawConsumer.throughput === "number" ? rawConsumer.throughput : 0,
                 message_sequence:
                   typeof rawConsumer.message_sequence === "number"
                     ? rawConsumer.message_sequence
-                    : typeof rawConsumer.messageSequence === "number"
-                      ? rawConsumer.messageSequence
-                      : 0,
+                    : 0,
                 capture_enabled:
                   typeof rawConsumer.capture_enabled === "boolean"
                     ? rawConsumer.capture_enabled
-                    : typeof rawConsumer.captureEnabled === "boolean"
-                      ? rawConsumer.captureEnabled
-                      : true,
+                    : true,
                 capture_keep_last:
                   typeof rawConsumer.capture_keep_last === "number"
                     ? rawConsumer.capture_keep_last
-                    : typeof rawConsumer.captureKeepLast === "number"
-                      ? rawConsumer.captureKeepLast
-                      : 100,
+                    : 100,
               } satisfies RuntimeConsumerState,
             ];
           }),

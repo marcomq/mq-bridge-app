@@ -5,6 +5,7 @@ import {
 } from "./routes";
 import {
   cloneJson,
+  normalizeNamedEntityFormShape,
   normalizeConsumerNames,
   normalizeConsumerResponse,
   sanitizeConsumerName,
@@ -18,12 +19,17 @@ import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
 import {
   ensureRefOnlyEndpointDefaults,
+  createPublisherEndpointFromConsumerEndpoint,
   getEndpointType,
   normalizeMiddlewares,
   normalizeScalarEndpointValue,
   prunePolymorphicEndpointKeys,
   type EndpointRecord,
 } from "./endpoint-utils";
+import {
+  CONSUMER_TYPE_OPTIONS,
+  RESPONSE_CAPABLE_CONSUMER_TYPES,
+} from "./endpoint-metadata";
 import { getEntityDisplayLabel } from "./utils";
 import { readJson, removeKey, writeJson } from "./storage";
 import { createLocalEntityId, getEntityStorageKey } from "./entity-key";
@@ -64,37 +70,23 @@ export let importAsyncApiToConsumerAction: (jsonText: string) => void | Promise<
 export let importMqbToConsumerAction: (jsonText: string) => void | Promise<void> = () => { };
 
 const MSG_STORAGE_KEY = "mqb_consumer_messages";
-export const CONSUMER_TYPE_OPTIONS = [
-  "http",
-  "websocket",
-  "grpc",
-  "nats",
-  "memory",
-  "amqp",
-  "kafka",
-  "mqtt",
-  "mongodb",
-  "sqlx",
-  "zeromq",
-  "file",
-  "static",
-  "sled",
-  "switch",
-  "aws",
-].filter((t) => !["ref", "fanout", "switch", "ibmmq"].includes(t));
-
-const RESPONSE_CAPABLE_CONSUMER_TYPES = new Set([
-  "http",
-  "nats",
-  "memory",
-  "amqp",
-  "mongodb",
-  "mqtt",
-  "zeromq",
-  "kafka",
-]);
+export { CONSUMER_TYPE_OPTIONS };
 
 export { sanitizeConsumerName, normalizeConsumerNames };
+
+function stoppedConsumerStatus(error: string | null = null): ConsumerStatus {
+  return {
+    running: false,
+    status: {
+      healthy: false,
+      target: "",
+      pending: null,
+      capacity: null,
+      error,
+      details: null,
+    },
+  };
+}
 
 export function normalizeConsumerMessage(raw: unknown, fallbackTime = new Date().toISOString()): ConsumerMessage {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -237,13 +229,7 @@ function ensureConsumerEndpointDefaults(endpoint: unknown): Record<string, unkno
 
 function normalizeConsumerConfigShape(consumer: ConsumerConfig): ConsumerConfig {
   if (!consumer) return consumer;
-  let data = { ...consumer } as any;
-  if (data.root) {
-    const { root, ...rest } = data;
-    data = { ...rest, ...root };
-  }
-  data.id = String(data.id || "").trim() || createLocalEntityId("consumer");
-  data.name = String(data.name ?? "");
+  const data = normalizeNamedEntityFormShape(consumer, "consumer") as any;
   data.endpoint = ensureConsumerEndpointDefaults(data.endpoint);
   data.output = normalizeConsumerOutput(data.output, data.response);
   data.message_capture = normalizeConsumerMessageCapture(data.message_capture);
@@ -334,7 +320,7 @@ function getDefaultConsumerOutput(
   if (publishers.length === 1) {
     return {
       mode: "publisher",
-      publisher: publishers[0].name,
+      publisher: String(publishers[0].name || ""),
       ...(publishers[0].id ? { publisher_id: publishers[0].id } : {}),
     };
   }
@@ -367,12 +353,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const consumers = config.consumers;
   consumers.forEach((consumer) => syncLegacyConsumerResponse(consumer));
 
-  const consList = document.getElementById("cons-list") as HTMLElement | null;
   const configFormContainer = document.getElementById("cons-config-form") as HTMLElement | null;
-  const emptyAlert = document.getElementById("cons-empty-alert") as HTMLElement | null;
-  const mainUi = document.getElementById("cons-main-ui") as HTMLElement | null;
 
-  if (!consList || !configFormContainer || !emptyAlert || !mainUi) {
+  if (!configFormContainer) {
     return;
   }
 
@@ -585,8 +568,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const currentConsumerRuntimeKey = currentConsumer ? getConsumerRuntimeKey(currentConsumer) : null;
     const messages = currentConsumerKey ? consumerMessages[currentConsumerKey] || [] : [];
     const status = currentConsumerRuntimeKey
-      ? consumerStatus[currentConsumerRuntimeKey] || (currentConsumerName ? consumerStatus[currentConsumerName] : undefined) || { running: false, status: { healthy: false } }
-      : { running: false, status: { healthy: false } };
+      ? consumerStatus[currentConsumerRuntimeKey] || (currentConsumerName ? consumerStatus[currentConsumerName] : undefined) || stoppedConsumerStatus()
+      : stoppedConsumerStatus();
     const isTogglePending = !!(currentConsumerRuntimeKey && pendingToggle && pendingToggle.key === currentConsumerRuntimeKey);
 
     const liveStatusText = status.running
@@ -752,7 +735,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     for (const consumer of config.consumers || []) {
       const consumerKey = getConsumerRuntimeKey(consumer);
       if (!isSavedConsumer(consumer)) {
-        consumerStatus[consumerKey] = { running: false, status: { healthy: false }, unsaved: true };
+        consumerStatus[consumerKey] = { ...stoppedConsumerStatus(), unsaved: true };
         continue;
       }
 
@@ -761,7 +744,11 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         running: Boolean(runtimeConsumer?.running),
         status: {
           healthy: Boolean(runtimeConsumer?.status?.healthy),
+          target: "",
+          pending: null,
+          capacity: null,
           ...(runtimeConsumer?.status?.error ? { error: runtimeConsumer.status.error } : {}),
+          details: null,
         },
       };
 
@@ -775,9 +762,6 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
   const renderSidebar = () => {
     syncConsumersPanelState();
-    const hasConsumers = consumers.length > 0;
-    emptyAlert.style.display = hasConsumers ? "none" : "block";
-    mainUi.style.display = hasConsumers ? "contents" : "none";
   };
 
   const setActiveItem = (idx: number) => {
@@ -835,7 +819,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     config.publishers.push({
       id: createLocalEntityId("publisher"),
       name: trimmed,
-      endpoint: cloneJson(current.endpoint),
+      endpoint: createPublisherEndpointFromConsumerEndpoint(current.endpoint),
       comment: current.comment || "",
     });
     mqbRuntime.refreshDirtySection("publishers");
@@ -861,7 +845,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     }
   };
   const requestToHttpConsumer = (request: { name: string; method: string; url: string }) => {
-    const currentNames = (config.consumers || []).map((consumer) => consumer.name);
+    const currentNames = (config.consumers || []).map((consumer) => String(consumer.name || ""));
     const baseName = String(request.name || "http").trim().replace(/\s+/g, "_").toLowerCase() || "http";
     const name = nextUniqueName(sanitizeConsumerName(baseName), currentNames);
     const listen = splitConsumerListenAddress(request.url || "");
@@ -1030,7 +1014,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       action === "start" &&
       (!isSavedConsumer(consumers.find((consumer) => getConsumerRuntimeKey(consumer) === targetKey || consumer.name === targetName)) || mqbRuntime.refreshDirtySection("consumers"))
     ) {
-      const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
+      const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
       if (!saved?.consumers) return;
 
       consumers.splice(0, consumers.length, ...saved.consumers);
@@ -1045,7 +1029,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       }
       currentIdx = refreshedIdx;
       targetKey = getConsumerRuntimeKey(consumers[refreshedIdx]) || targetKey;
-      targetName = consumers[refreshedIdx].name;
+      targetName = String(consumers[refreshedIdx].name || "");
     }
 
     pendingToggle = { key: targetKey, action };
@@ -1061,7 +1045,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         const errorMessage = (await response.text()) || `Failed to ${action} consumer`;
         consumerStatus[targetKey] = {
           running: false,
-          status: { healthy: false, error: errorMessage.replace(/^Internal Server Error:\s*/i, "") },
+          status: stoppedConsumerStatus(errorMessage.replace(/^Internal Server Error:\s*/i, "")).status,
         };
         syncConsumersPanelState();
         await mqbDialogs.alert(errorMessage);
@@ -1137,7 +1121,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     state.form_mode = "consumer";
     (window as any)._mqb_form_mode = "consumer";
 
-    await mqbApp.forms().init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated) => {
+    await mqbApp.forms().init(configFormContainer, itemSchema, config.consumers[currentIdx], (updated: ConsumerConfig) => {
       const current = config.consumers[currentIdx];
       const normalized = normalizeConsumerConfigShape(updated as ConsumerConfig);
 
@@ -1194,7 +1178,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     cloned.id = createLocalEntityId("consumer");
     cloned.name = nextUniqueName(
       sanitizeConsumerName(`${cloned.name}_copy`),
-      (config.consumers || []).map((consumer) => consumer.name),
+      (config.consumers || []).map((consumer) => String(consumer.name || "")),
     );
     cloned.endpoint = ensureConsumerEndpointDefaults(cloned.endpoint);
     syncLegacyConsumerResponse(cloned);
@@ -1250,7 +1234,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const selectedTab = activeSubtab;
     const mapped = (config.consumers || []).map((consumer) => normalizeConsumerConfigShape({ ...consumer }));
     config.consumers.splice(0, config.consumers.length, ...mapped);
-    const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false, document.getElementById("cons-save"));
+    const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
     if (!saved) return;
 
     const normalizedSavedConsumers = (saved.consumers || []).map((consumer: ConsumerConfig) =>
@@ -1340,7 +1324,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const imported = extractImportedRequests(jsonText);
     if (imported.kind !== "asyncapi") throw new Error("Selected file is not a valid AsyncAPI JSON file.");
     const importedConsumers = imported.requests.map((request) =>
-      requestToHttpConsumer({ name: request.name, method: request.method, url: request.url }),
+      requestToHttpConsumer({ name: request.name, method: request.method || "POST", url: request.url || "" }),
     );
     await persistImportedConsumers(importedConsumers);
   };
@@ -1355,7 +1339,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       ? (parsed.config as Record<string, unknown>)
       : parsed;
     const importedConsumersRaw = Array.isArray(importedConfig.consumers) ? importedConfig.consumers : [];
-    const existingNames = (config.consumers || []).map((consumer) => consumer.name);
+    const existingNames = (config.consumers || []).map((consumer) => String(consumer.name || ""));
     const importedConsumers = importedConsumersRaw
       .filter((row) => row && typeof row === "object")
       .map((row) => {

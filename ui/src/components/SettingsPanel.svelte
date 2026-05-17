@@ -147,8 +147,7 @@
     </div>
     <div
       id="form-actions"
-      class="section-toolbar editor-action-bar editor-action-bar--config editor-action-bar--compact"
-      style="display: none;"
+      class="section-toolbar editor-action-bar editor-action-bar--config editor-action-bar--compact settings-action-bar-initial"
     >
       <div class="form-actions-row section-actions">
         <div class="section-actions-right">
@@ -171,7 +170,7 @@
               title="Reset publishers and consumers"
               onclick={resetConfig}>Reset</button
             >
-            <input bind:this={importInputEl} type="file" accept=".json,application/json" style="display:none" onchange={handleImportSelected} />
+            <input bind:this={importInputEl} type="file" accept=".json,application/json" class="hidden-file-input" onchange={handleImportSelected} />
             <button
               class="wa-native-button wa-native-button--neutral"
               id="js-show-json"
@@ -207,7 +206,7 @@
 
 <wa-dialog label="Current Configuration (JSON)" open={isJsonModalOpen} onwa-hide={() => (isJsonModalOpen = false)}>
   <div bind:this={editorContainer} class="json-preview-container"></div>
-  <wa-button slot="footer" variant="brand" size="small" 
+  <wa-button slot="footer" variant="brand" 
     role="button"
     tabindex="0"
     onclick={() => (isJsonModalOpen = false)} 
@@ -234,5 +233,10 @@
   }
   #form-tab-wrapper {
     position: relative;
+  }
+
+  .settings-action-bar-initial,
+  .hidden-file-input {
+    display: none;
   }
 </style>

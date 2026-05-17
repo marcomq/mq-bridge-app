@@ -11,6 +11,7 @@ use mq_bridge::route::RouteHandle;
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
 };
+use schemars::JsonSchema;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::RwLock as StdRwLock;
@@ -172,7 +173,7 @@ struct RouteMetricSample {
     smoothed_throughput: f64,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct RuntimeStatusResponse {
     pub active_consumers: Vec<String>,
     pub active_routes: Vec<String>,
@@ -180,23 +181,46 @@ pub struct RuntimeStatusResponse {
     pub consumers: HashMap<String, ConsumerStatusSnapshot>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct ConsumerStatusSnapshot {
     pub running: bool,
-    pub status: mq_bridge::traits::EndpointStatus,
+    pub status: EndpointStatusSnapshot,
     pub throughput: f64,
     pub message_sequence: u64,
     pub capture_enabled: bool,
     pub capture_keep_last: usize,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct ConsumerStatusResponse {
     pub running: bool,
-    pub status: mq_bridge::traits::EndpointStatus,
+    pub status: EndpointStatusSnapshot,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+pub struct EndpointStatusSnapshot {
+    pub healthy: bool,
+    pub target: String,
+    pub pending: Option<usize>,
+    pub capacity: Option<usize>,
+    pub error: Option<String>,
+    pub details: serde_json::Value,
+}
+
+impl From<mq_bridge::traits::EndpointStatus> for EndpointStatusSnapshot {
+    fn from(status: mq_bridge::traits::EndpointStatus) -> Self {
+        Self {
+            healthy: status.healthy,
+            target: status.target,
+            pending: status.pending,
+            capacity: status.capacity,
+            error: status.error,
+            details: status.details,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct PublishRequest {
     #[serde(default)]
     pub name: String,
@@ -209,7 +233,7 @@ pub struct PublishRequest {
     pub endpoint: Option<mq_bridge::models::Endpoint>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct PublishResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,7 +242,7 @@ pub struct PublishResponse {
     pub metadata: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct ConfigRecoveryStatusResponse {
     pub mode: Option<String>,
     pub reason: String,
@@ -227,7 +251,7 @@ pub struct ConfigRecoveryStatusResponse {
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct ConfigRecoveryResetResponse {
     pub backup_path: String,
 }
@@ -1257,7 +1281,7 @@ impl UiApp {
 
         Some(ConsumerStatusSnapshot {
             running,
-            status,
+            status: status.into(),
             throughput: 0.0,
             message_sequence: 0,
             capture_enabled: consumer.message_capture.enabled,
@@ -1609,7 +1633,7 @@ impl std::fmt::Display for UpdateConfigError {
 }
 
 impl std::error::Error for UpdateConfigError {}
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct StorageSecurityInfoResponse {
     pub target: String,
     pub encrypted: bool,

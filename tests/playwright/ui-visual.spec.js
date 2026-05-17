@@ -85,6 +85,8 @@ const screenshotOptions = {
   maxDiffPixelRatio: 0.001,
 };
 
+test.skip(!!process.env.CI, "Screenshot baselines are local-only; CI runs the behavioral UI suite.");
+
 async function stabilizeForScreenshot(page) {
   await page.addStyleTag({
     content: `

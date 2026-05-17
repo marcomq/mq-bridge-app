@@ -170,7 +170,7 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).selectedIndex).toBe(0);
     expect(get(publishersPanelState).endpointType).toBe("HTTP");
     expect(get(publishersPanelState).urlField.value).toBe("https://example.test/orders");
-    expect(document.getElementById("pub-empty-alert")?.style.display).toBe("none");
+    expect(get(publishersPanelState).hasPublishers).toBe(true);
   });
 
   test("shows empty state when there are no publishers", () => {
@@ -179,8 +179,7 @@ describe("initPublishers", () => {
       { properties: { publishers: { items: {} } } },
     );
 
-    expect(document.getElementById("pub-empty-alert")?.style.display).toBe("block");
-    expect(document.getElementById("pub-main-ui")?.style.display).toBe("none");
+    expect(get(publishersPanelState).hasPublishers).toBe(false);
   });
 
   test("creates new http publishers with usable local defaults", async () => {
@@ -1457,10 +1456,39 @@ describe("publisher to consumer endpoint conversion", () => {
 
     expect(endpoint).toEqual({
       http: {
-        url: "0.0.0.0:1234",
+        url: "localhost:1234",
         path: "/api/orders/updated?mode=test",
         method: "POST",
         custom_headers: { authorization: "Bearer token" },
+      },
+    });
+  });
+
+  test("converts websocket publisher URLs into consumer listen addresses", () => {
+    const endpoint = createConsumerEndpointFromPublisherEndpoint({
+      websocket: {
+        url: "ws://localhost:8081/socket/events",
+      },
+    });
+
+    expect(endpoint).toEqual({
+      websocket: {
+        url: "localhost:8081",
+        path: "/socket/events",
+      },
+    });
+  });
+
+  test("converts grpc publisher URLs into consumer listen addresses", () => {
+    const endpoint = createConsumerEndpointFromPublisherEndpoint({
+      grpc: {
+        url: "grpc://localhost:50051/bridge.Messages",
+      },
+    });
+
+    expect(endpoint).toEqual({
+      grpc: {
+        url: "localhost:50051",
       },
     });
   });

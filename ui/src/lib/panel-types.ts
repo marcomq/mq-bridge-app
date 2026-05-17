@@ -1,4 +1,14 @@
-import type { ConfigSecurity, EnvVars, PresetsByPublisher, PublisherHistoryEntry, PublisherHistoryStore, PublisherPreset } from "./workspace-config";
+import type { PresetsByPublisher, PublisherHistoryEntry, PublisherHistoryStore, PublisherPreset } from "./workspace-config";
+import type {
+  AppConfig,
+  ConsumerConfig as GeneratedConsumerConfig,
+  ConsumerMessageCaptureConfig as GeneratedConsumerMessageCaptureConfig,
+  ConsumerOutputConfig as GeneratedConsumerOutputConfig,
+  ConsumerResponseConfig as GeneratedConsumerResponseConfig,
+  ConsumerStatusResponse,
+  HeaderRow as GeneratedHeaderRow,
+  PublisherClient,
+} from "./generated/ui-types";
 
 export type ConsumerMessage = {
   id?: string;
@@ -9,33 +19,17 @@ export type ConsumerMessage = {
   response_metadata?: Record<string, string>;
 };
 
-export type ConsumerStatus = {
-  running: boolean;
+export type ConsumerStatus = ConsumerStatusResponse & {
   unsaved?: boolean;
-  status: {
-    healthy: boolean;
-    error?: string;
-  };
 };
 
-export type ConsumerMessageCaptureConfig = {
-  enabled: boolean;
-  keep_last: number;
-};
+export type ConsumerMessageCaptureConfig = Required<GeneratedConsumerMessageCaptureConfig>;
 
-export type ConsumerResponseConfig = {
-  headers: Record<string, string>;
-  payload: string;
-};
+export type ConsumerResponseConfig = Required<GeneratedConsumerResponseConfig>;
+export type ConsumerOutputConfig = GeneratedConsumerOutputConfig;
 
-export type ConsumerOutputConfig =
-  | { mode: "none" }
-  | { mode: "publisher"; publisher: string; publisher_id?: string | null }
-  | { mode: "response"; response: ConsumerResponseConfig | null };
-
-export type ConsumerConfig = {
+export type ConsumerConfig = Omit<GeneratedConsumerConfig, "endpoint" | "response" | "output" | "message_capture"> & {
   id?: string;
-  name: string;
   endpoint: Record<string, unknown>;
   comment?: string;
   response?: unknown;
@@ -44,18 +38,11 @@ export type ConsumerConfig = {
   batch_size?: number;
 };
 
-export type PublisherConfig = {
+export type PublisherConfig = Omit<PublisherClient, "endpoint" | "headers"> & {
   id?: string;
-  name: string;
   endpoint: Record<string, unknown>;
   comment?: string;
-  payload?: string;
-  headers?: Array<{
-    key: string;
-    value: string;
-    enabled: boolean;
-  }>;
-  sort_order?: number;
+  headers?: Required<GeneratedHeaderRow>[];
 };
 
 export type ConsumerResponseHeaderRow = {
@@ -91,20 +78,15 @@ export type PublisherResponseState = {
 
 export type PublisherHistoryItem = PublisherHistoryEntry;
 
-export type ConsumersAppConfig = {
+export type ConsumersAppConfig = Pick<AppConfig, "routes" | "config_security"> & {
   consumers: ConsumerConfig[];
   publishers?: PublisherConfig[];
-  routes?: Record<string, unknown>;
-  config_security?: ConfigSecurity;
 };
 
-export type PublishersAppConfig = {
+export type PublishersAppConfig = Pick<AppConfig, "routes" | "env_vars" | "config_security"> & {
   publishers: PublisherConfig[];
   consumers?: ConsumerConfig[];
-  routes?: Record<string, unknown>;
-  env_vars?: EnvVars;
   history?: PublisherHistoryStore;
-  config_security?: ConfigSecurity;
   presets?: PresetsByPublisher;
 };
 

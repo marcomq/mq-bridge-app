@@ -1,5 +1,6 @@
 import { cloneJson } from "./utils";
 import { defaultMetricsMiddleware } from "./routes";
+import { KNOWN_ENDPOINT_ROOT_KEYS } from "./endpoint-metadata";
 
 export type EndpointRecord = Record<string, unknown>;
 
@@ -9,31 +10,12 @@ export type DlqMiddleware = {
 
 export type Middleware = DlqMiddleware | Record<string, unknown>;
 
-export const KNOWN_ENDPOINT_ROOT_KEYS = [
-  "http",
-  "websocket",
-  "grpc",
-  "nats",
-  "memory",
-  "amqp",
-  "kafka",
-  "mqtt",
-  "mongodb",
-  "sqlx",
-  "zeromq",
-  "file",
-  "static",
-  "ref",
-  "sled",
-  "ibmmq",
-  "switch",
-  "fanout",
-  "reader",
-  "response",
-  "custom",
-  "null",
-  "aws",
-] as const;
+const CLIENT_URL_PROTOCOLS: Record<string, string> = {
+  http: "http:",
+  websocket: "ws:",
+  grpc: "grpc:",
+};
+const PATH_CAPABLE_CLIENT_ENDPOINTS = new Set(["http", "websocket"]);
 
 function unwrapRoot(endpoint: unknown): EndpointRecord | null {
   if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
@@ -172,4 +154,77 @@ export function prunePolymorphicEndpointKeys(normalized: EndpointRecord, endpoin
       delete normalized[key];
     }
   }
+}
+
+function splitEndpointUrl(rawUrl: unknown, defaultProtocol: string) {
+  const value = String(rawUrl || "").trim();
+  if (!value) return null;
+
+  try {
+    const parsed = new URL(value.includes("://") ? value : `${defaultProtocol}//${value}`);
+    const path = `${parsed.pathname || "/"}${parsed.search || ""}`;
+    return {
+      host: parsed.host,
+      fullUrl: `${parsed.protocol}//${parsed.host}${path === "/" ? "" : path}`,
+      path: path && path !== "/" ? path : "",
+    };
+  } catch {
+    const [host, ...pathParts] = value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/");
+    const path = pathParts.length > 0 ? `/${pathParts.join("/")}` : "";
+    return {
+      host,
+      fullUrl: `${defaultProtocol}//${host}${path}`,
+      path,
+    };
+  }
+}
+
+export function createConsumerEndpointFromPublisherEndpoint(endpoint: EndpointRecord): EndpointRecord {
+  const nextEndpoint = cloneJson(endpoint || {});
+  const endpointType = getEndpointType(nextEndpoint);
+  const protocol = CLIENT_URL_PROTOCOLS[endpointType];
+  const endpointConfig = nextEndpoint[endpointType];
+  if (!protocol || !endpointConfig || typeof endpointConfig !== "object" || Array.isArray(endpointConfig)) {
+    return nextEndpoint;
+  }
+
+  const config = endpointConfig as Record<string, unknown>;
+  const parsed = splitEndpointUrl(config.url, protocol);
+  if (!parsed?.host) return nextEndpoint;
+
+  config.url = parsed.host;
+  if (PATH_CAPABLE_CLIENT_ENDPOINTS.has(endpointType)) {
+    const path = parsed.path || (typeof config.path === "string" ? config.path : "");
+    if (path && path !== "/") {
+      config.path = path;
+    } else {
+      delete config.path;
+    }
+  }
+
+  return nextEndpoint;
+}
+
+export function createPublisherEndpointFromConsumerEndpoint(endpoint: EndpointRecord): EndpointRecord {
+  const nextEndpoint = cloneJson(endpoint || {});
+  const endpointType = getEndpointType(nextEndpoint);
+  const protocol = CLIENT_URL_PROTOCOLS[endpointType];
+  const endpointConfig = nextEndpoint[endpointType];
+  if (!protocol || !endpointConfig || typeof endpointConfig !== "object" || Array.isArray(endpointConfig)) {
+    return nextEndpoint;
+  }
+
+  const config = endpointConfig as Record<string, unknown>;
+  const parsed = splitEndpointUrl(config.url, protocol);
+  if (!parsed?.host) return nextEndpoint;
+
+  const path = PATH_CAPABLE_CLIENT_ENDPOINTS.has(endpointType) && typeof config.path === "string"
+    ? config.path.trim()
+    : parsed.path;
+  config.url = `${protocol}//${parsed.host}${path && path !== "/" ? path.startsWith("/") ? path : `/${path}` : ""}`;
+  if (PATH_CAPABLE_CLIENT_ENDPOINTS.has(endpointType)) {
+    delete config.path;
+  }
+
+  return nextEndpoint;
 }

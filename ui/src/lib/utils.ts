@@ -1,29 +1,11 @@
 import { nextUniqueName } from "./routes";
-import { KNOWN_ENDPOINT_ROOT_KEYS } from "./endpoint-utils";
+import {
+  BASIC_ENDPOINT_FIELDS,
+  KNOWN_ENDPOINT_ROOT_KEYS,
+} from "./endpoint-metadata";
+import { createLocalEntityId } from "./entity-key";
 
 export type ThemePreference = "auto" | "light" | "dark";
-
-export const BASIC_ENDPOINT_FIELDS: Record<string, string[]> = {
-  http: ["method", "url", "path"],
-  kafka: ["url", "topic", "group_id"],
-  mqtt: ["url", "topic"],
-  grpc: ["url", "topic"],
-  amqp: ["url", "queue", "subscribe_mode", "exchange"],
-  nats: ["url", "subject", "stream"],
-  mongodb: ["url", "database", "collection", "change_stream"],
-  sqlx: ["url", "table"],
-  zeromq: ["url", "topic"],
-  file: ["path", "mode"],
-  memory: ["topic"],
-  sled: ["path", "tree"],
-  ibmmq: ["connection_manager", "queue", "topic"],
-  switch: ["metadata_key", "default", "cases"],
-  fanout: ["endpoints"],
-  websocket: ["url"],
-  aws: ["region", "access_key_id", "secret_access_key"],
-  static: ["static"],
-  ref: ["ref"],
-};
 
 function getEndpointType(endpoint: Record<string, unknown>): string {
   return Object.keys(endpoint).find((key) => key !== "middlewares" && (KNOWN_ENDPOINT_ROOT_KEYS as readonly string[]).includes(key)) || "http";
@@ -31,6 +13,20 @@ function getEndpointType(endpoint: Record<string, unknown>): string {
 
 export function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+export function normalizeNamedEntityFormShape<T extends { id?: string; name?: string }>(
+  entity: T,
+  idPrefix: string,
+): T {
+  let data = { ...entity } as any;
+  if (data.root) {
+    const { root, ...rest } = data;
+    data = { ...rest, ...root };
+  }
+  data.id = String(data.id || "").trim() || createLocalEntityId(idPrefix);
+  data.name = String(data.name ?? "");
+  return data as T;
 }
 
 export function getThemePreference(): ThemePreference | undefined {

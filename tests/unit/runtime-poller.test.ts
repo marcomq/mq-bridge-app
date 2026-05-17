@@ -39,11 +39,11 @@ describe("runtime-poller", () => {
       active_routes: ["route-a"],
       route_throughput: { "route-a": 5 },
       consumers: {
-        "consumer-a": {
-          running: true,
-          status: { healthy: true },
-          throughput: 0,
-          message_sequence: 4,
+            "consumer-a": {
+              running: true,
+              status: { healthy: true, target: "consumer-a", pending: null, capacity: null, details: null },
+              throughput: 0,
+              message_sequence: 4,
           capture_enabled: true,
           capture_keep_last: 100,
         },
@@ -54,11 +54,11 @@ describe("runtime-poller", () => {
       active_routes: ["route-a"],
       route_throughput: { "route-a": 5 },
       consumers: {
-        "consumer-a": {
-          running: true,
-          status: { healthy: true },
-          throughput: 0,
-          message_sequence: 4,
+            "consumer-a": {
+              running: true,
+              status: { healthy: true, target: "consumer-a", pending: null, capacity: null, details: null },
+              throughput: 0,
+              message_sequence: 4,
           capture_enabled: true,
           capture_keep_last: 100,
         },
@@ -103,7 +103,7 @@ describe("runtime-poller", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  test("handles wrapped runtime status payload shape", async () => {
+  test("ignores legacy wrapped runtime status payload shape", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -124,28 +124,6 @@ describe("runtime-poller", () => {
     });
 
     const status = await poller.poll();
-    expect(status).toEqual({
-      active_consumers: ["c1", "c2"],
-      active_routes: [],
-      route_throughput: {},
-      consumers: {
-        c1: {
-          running: true,
-          status: { healthy: true },
-          throughput: 0,
-          message_sequence: 1,
-          capture_enabled: true,
-          capture_keep_last: 100,
-        },
-        c2: {
-          running: false,
-          status: { healthy: false, error: "down" },
-          throughput: 0,
-          message_sequence: 0,
-          capture_enabled: true,
-          capture_keep_last: 100,
-        },
-      },
-    });
+    expect(status).toEqual(EMPTY_RUNTIME_STATUS);
   });
 });

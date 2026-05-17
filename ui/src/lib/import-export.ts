@@ -136,7 +136,7 @@ export async function importAppConfigFromJsonText(text: string) {
     normalizeNamedArray<Record<string, unknown>>(incomingConfig.consumers) as Array<Record<string, unknown>>,
   );
 
-  const nextConfig = {
+  const nextConfig: Record<string, unknown> = {
     ...currentConfig,
     ...incomingConfig,
     publishers: mergedPublishers,
@@ -178,7 +178,7 @@ export async function importAppConfigFromJsonText(text: string) {
 export async function resetAppConfigToDefaults() {
   const currentConfig = asObject(structuredClone(mqbApp.config<Record<string, unknown>>()));
   const normalizedCurrentConfig = ensureWorkspaceCollections(currentConfig);
-  const nextConfig = {
+  const nextConfig: Record<string, unknown> = {
     ...currentConfig,
     consumers: [],
     publishers: [],

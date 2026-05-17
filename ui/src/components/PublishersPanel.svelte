@@ -303,7 +303,6 @@
         <input class="sidebar-search" id="pub-filter" type="text" placeholder="Filter publishers…" bind:value={filterText} />
         <div class="add-menu-container">
           <wa-button
-            size="small"
             appearance="outlined"
             class="icon-button"
             id="pub-add"
@@ -376,7 +375,7 @@
           bind:this={importInputEl}
           type="file"
           accept=".json,application/json"
-          style="display:none"
+          class="hidden-file-input"
           onchange={handleImportSelected}
         />
       </div>
@@ -442,7 +441,7 @@
               oninput={(event) => updatePublisherRequestField("pub-url", (event.currentTarget as HTMLInputElement).value)}
             />
           </div>
-          <wa-button variant="brand" size="small" id="pub-send" role="button" tabindex="0" onclick={sendPublisherAction}
+          <wa-button variant="brand" id="pub-send" role="button" tabindex="0" onclick={sendPublisherAction}
             onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void sendPublisherAction())}>Send</wa-button
           >
         </div>
@@ -506,7 +505,7 @@
               <div class="section-toolbar">
                 <span class="section-label">Execution History</span>
                 <input class="sidebar-search" style="max-width:220px;" placeholder="Filter history..." bind:value={historyFilterText} />
-                <wa-button variant="neutral" appearance="outlined" size="small" class="ghost-action" id="pub-clear-history"
+                <wa-button variant="neutral" appearance="outlined" class="ghost-action" id="pub-clear-history"
                   role="button"
                   tabindex="0"
                   onclick={clearHistory}
@@ -549,7 +548,6 @@
                               <span class="history-preview-text">{row.payloadPreview}</span>
                               <span class="history-preview-actions">
                               <wa-button
-                                size="small"
                                 appearance="outlined"
                                 variant="neutral"
                                 role="button"
@@ -558,7 +556,6 @@
                                 onkeydown={(event: KeyboardEvent) => { event.stopPropagation(); handleActionKey(event, () => void savePublisherHistoryAsPublisherAction(row.historyIndex)); }}
                               >Save As Publisher</wa-button>
                               <wa-button
-                                size="small"
                                 appearance="outlined"
                                 variant="neutral"
                                 role="button"
@@ -588,7 +585,6 @@
                     <wa-button 
                       variant="neutral" 
                       appearance="outlined" 
-                      size="small" 
                       id="pub-copy" 
                       onclick={copyCurrentPublisherAction} 
                       onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void copyCurrentPublisherAction())} 
@@ -599,7 +595,6 @@
                     <wa-button
                       variant="neutral"
                       appearance="outlined"
-                      size="small"
                       id="pub-save-variant"
                       onclick={saveCurrentPublisherVariantAction}
                       onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void saveCurrentPublisherVariantAction())}
@@ -609,7 +604,7 @@
                   </div>
                   <div class="toolbar-divider" aria-hidden="true"></div>
                   <div class="editor-action-cluster">
-                    <wa-button variant="danger" appearance="outlined" size="small" id="pub-delete"
+                    <wa-button variant="danger" appearance="outlined" id="pub-delete"
                       role="button" tabindex="0"
                       onclick={() => deleteCurrentPublisherAction()}
                       onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void deleteCurrentPublisherAction())}
@@ -724,3 +719,9 @@
     </div>
   </div>
 </div>
+
+<style>
+  .hidden-file-input {
+    display: none;
+  }
+</style>
