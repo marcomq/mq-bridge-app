@@ -256,6 +256,43 @@ function renderStorageSecurity() {
   storageSecurityStore.set(getMqbState().storage_security || { ...EMPTY_STORAGE_SECURITY });
 }
 
+async function replaceConfigFromSave(appConfig: Record<string, unknown>) {
+  const refreshedConfig = await saveWholeConfig(fetch, appConfig);
+  const refreshedStorageSecurity = await fetchStorageSecurityFromServer(fetch).catch(() => null);
+  replaceLiveConfig(appConfig, refreshedConfig);
+  if (refreshedStorageSecurity) {
+    const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
+    const state = getMqbState();
+    state.storage_security = normalizedStorageSecurity;
+    (appWindow() as any)._mqb_storage_security = normalizedStorageSecurity;
+    renderStorageSecurity();
+  }
+  return refreshedConfig;
+}
+
+async function runSaveAction<T>(
+  button: HTMLElement | null,
+  silent: boolean,
+  action: () => Promise<T>,
+  options: { trackWorkspaceSaving?: boolean } = {},
+): Promise<T | null> {
+  if (button) {
+    return await runSaveButtonAction(button, action);
+  }
+
+  try {
+    if (options.trackWorkspaceSaving) workspaceSavingStore?.set(true);
+    return await action();
+  } catch (error) {
+    if (!silent) {
+      await mqbDialogs.alert(`Error saving: ${(error as Error).message}`);
+    }
+    return null;
+  } finally {
+    if (options.trackWorkspaceSaving) workspaceSavingStore?.set(false);
+  }
+}
+
 const runtimeStatusPoller = createRuntimeStatusPoller({
   onStatus: (status) => {
     // Keep window/global mirror in sync first so a subsequent getMqbState() call
@@ -405,15 +442,7 @@ function installGlobals() {
       }
 
       const appConfig = mqbApp.config<Record<string, unknown>>();
-      const refreshedConfig = await saveWholeConfig(fetch, appConfig);
-      const refreshedStorageSecurity = await fetchStorageSecurityFromServer(fetch).catch(() => null);
-      replaceLiveConfig(appConfig, refreshedConfig);
-      if (refreshedStorageSecurity) {
-        const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
-        state.storage_security = normalizedStorageSecurity;
-        (appWindow() as any)._mqb_storage_security = normalizedStorageSecurity;
-        renderStorageSecurity();
-      }
+      const refreshedConfig = await replaceConfigFromSave(appConfig);
 
       appWindow().markSectionSaved("publishers", appConfig.publishers ?? []);
       appWindow().markSectionSaved("consumers", appConfig.consumers ?? []);
@@ -429,52 +458,18 @@ function installGlobals() {
       return refreshedConfig;
     };
 
-    if (button) {
-      return await runSaveButtonAction(button, doSave);
-    }
-
-    try {
-      workspaceSavingStore?.set(true);
-      const result = await doSave();
-      workspaceSavingStore?.set(false);
-      return result;
-    } catch (error) {
-      workspaceSavingStore?.set(false);
-      if (!silent) {
-        await mqbDialogs.alert(`Error saving: ${(error as Error).message}`);
-      }
-      return null;
-    }
+    return await runSaveAction(button, silent, doSave, { trackWorkspaceSaving: true });
   };
 
   appWindow().saveConfig = async (silent = false, button = null) => {
     const doSave = async (): Promise<Record<string, unknown> | null> => {
       const appConfig = mqbApp.config<Record<string, unknown>>();
-      const refreshedConfig = await saveWholeConfig(fetch, appConfig);
-      const refreshedStorageSecurity = await fetchStorageSecurityFromServer(fetch).catch(() => null);
-      replaceLiveConfig(appConfig, refreshedConfig);
-      if (refreshedStorageSecurity) {
-        const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
-        state.storage_security = normalizedStorageSecurity;
-        (appWindow() as any)._mqb_storage_security = normalizedStorageSecurity;
-        renderStorageSecurity();
-      }
+      const refreshedConfig = await replaceConfigFromSave(appConfig);
       appWindow().markSectionSaved("config", appConfig);
       return refreshedConfig;
     };
 
-    if (button) {
-      return await runSaveButtonAction(button, doSave);
-    }
-
-    try {
-      return await doSave();
-    } catch (error) {
-      if (!silent) {
-        await mqbDialogs.alert(`Error saving: ${(error as Error).message}`);
-      }
-      return null;
-    }
+    return await runSaveAction(button, silent, doSave);
   };
 
   appWindow().saveConfigSection = async (sectionName, sectionValue, silent = false, button = null) => {
@@ -491,18 +486,7 @@ function installGlobals() {
       return refreshedConfig;
     };
 
-    if (button) {
-      return await runSaveButtonAction(button, doSave);
-    }
-
-    try {
-      return await doSave();
-    } catch (error) {
-      if (!silent) {
-        await mqbDialogs.alert(`Error saving: ${(error as Error).message}`);
-      }
-      return null;
-    }
+    return await runSaveAction(button, silent, doSave);
   };
 }
 

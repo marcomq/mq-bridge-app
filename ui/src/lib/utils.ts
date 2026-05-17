@@ -210,3 +210,18 @@ export function stringToUint8ArrayLatin1(str: string): Uint8Array {
   }
   return bytes;
 }
+
+export async function withSelectedFileText(
+  event: Event,
+  onText: (text: string, target: HTMLInputElement) => Promise<void> | void,
+) {
+  const target = event.currentTarget as HTMLInputElement | null;
+  const file = target?.files?.[0];
+  if (!target || !file) return;
+
+  try {
+    await onText(await file.text(), target);
+  } finally {
+    target.value = "";
+  }
+}

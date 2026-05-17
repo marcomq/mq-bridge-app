@@ -179,19 +179,27 @@ function splitEndpointUrl(rawUrl: unknown, defaultProtocol: string) {
   }
 }
 
-export function createConsumerEndpointFromPublisherEndpoint(endpoint: EndpointRecord): EndpointRecord {
+function getMutableClientEndpointParts(endpoint: EndpointRecord) {
   const nextEndpoint = cloneJson(endpoint || {});
   const endpointType = getEndpointType(nextEndpoint);
   const protocol = CLIENT_URL_PROTOCOLS[endpointType];
   const endpointConfig = nextEndpoint[endpointType];
   if (!protocol || !endpointConfig || typeof endpointConfig !== "object" || Array.isArray(endpointConfig)) {
-    return nextEndpoint;
+    return null;
   }
 
   const config = endpointConfig as Record<string, unknown>;
   const parsed = splitEndpointUrl(config.url, protocol);
-  if (!parsed?.host) return nextEndpoint;
+  if (!parsed?.host) return null;
 
+  return { nextEndpoint, endpointType, protocol, config, parsed };
+}
+
+export function createConsumerEndpointFromPublisherEndpoint(endpoint: EndpointRecord): EndpointRecord {
+  const parts = getMutableClientEndpointParts(endpoint);
+  if (!parts) return cloneJson(endpoint || {});
+
+  const { nextEndpoint, endpointType, config, parsed } = parts;
   config.url = parsed.host;
   if (PATH_CAPABLE_CLIENT_ENDPOINTS.has(endpointType)) {
     const path = parsed.path || (typeof config.path === "string" ? config.path : "");
@@ -206,18 +214,10 @@ export function createConsumerEndpointFromPublisherEndpoint(endpoint: EndpointRe
 }
 
 export function createPublisherEndpointFromConsumerEndpoint(endpoint: EndpointRecord): EndpointRecord {
-  const nextEndpoint = cloneJson(endpoint || {});
-  const endpointType = getEndpointType(nextEndpoint);
-  const protocol = CLIENT_URL_PROTOCOLS[endpointType];
-  const endpointConfig = nextEndpoint[endpointType];
-  if (!protocol || !endpointConfig || typeof endpointConfig !== "object" || Array.isArray(endpointConfig)) {
-    return nextEndpoint;
-  }
+  const parts = getMutableClientEndpointParts(endpoint);
+  if (!parts) return cloneJson(endpoint || {});
 
-  const config = endpointConfig as Record<string, unknown>;
-  const parsed = splitEndpointUrl(config.url, protocol);
-  if (!parsed?.host) return nextEndpoint;
-
+  const { nextEndpoint, endpointType, protocol, config, parsed } = parts;
   const path = PATH_CAPABLE_CLIENT_ENDPOINTS.has(endpointType) && typeof config.path === "string"
     ? config.path.trim()
     : parsed.path;

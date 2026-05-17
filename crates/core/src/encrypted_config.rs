@@ -305,6 +305,22 @@ publishers:
         .unwrap()
     }
 
+    fn save_and_load_sensitive_config() -> (String, AppConfig) {
+        let config = sample_sensitive_config();
+        let path = std::env::temp_dir().join("mqb-config-sensitive-roundtrip.yml");
+        let secret_store = RecordingSecretStore::default();
+
+        config
+            .save_with_secret_store(path.to_str().unwrap(), &secret_store)
+            .unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let (loaded, _) = load_config_at_path(path.to_str().unwrap()).unwrap();
+
+        let _ = std::fs::remove_file(path);
+        (saved, loaded)
+    }
+
     #[test]
     fn sensitive_file_round_trip_encrypts_and_decrypts() {
         with_test_master_key(|| {
@@ -362,15 +378,7 @@ publishers:
         );
 
         with_test_master_key(|| {
-            let config = sample_sensitive_config();
-            let path = std::env::temp_dir().join("mqb-config-sensitive-roundtrip.yml");
-            let secret_store = RecordingSecretStore::default();
-
-            config
-                .save_with_secret_store(path.to_str().unwrap(), &secret_store)
-                .unwrap();
-
-            let saved = std::fs::read_to_string(&path).unwrap();
+            let (saved, loaded) = save_and_load_sensitive_config();
             assert!(saved.contains("encrypted_config"));
             assert!(!saved.contains("Bearer token"));
             assert_eq!(
@@ -378,7 +386,6 @@ publishers:
                 Some("sensitive")
             );
 
-            let (loaded, _) = load_config_at_path(path.to_str().unwrap()).unwrap();
             let headers = match &loaded.publishers[0].endpoint.endpoint_type {
                 crate::mq_bridge::models::EndpointType::Http(cfg) => cfg.custom_headers.clone(),
                 other => panic!("expected http publisher, got {other:?}"),
@@ -388,26 +395,16 @@ publishers:
                 headers.get("authorization").map(String::as_str),
                 Some("Bearer token")
             );
-            let _ = std::fs::remove_file(path);
         });
     }
 
     #[test]
     fn config_module_round_trips_sensitive_file_using_encryption_module() {
         with_test_master_key(|| {
-            let config = sample_sensitive_config();
-            let path = std::env::temp_dir().join("mqb-config-sensitive-roundtrip.yml");
-            let secret_store = RecordingSecretStore::default();
-
-            config
-                .save_with_secret_store(path.to_str().unwrap(), &secret_store)
-                .unwrap();
-
-            let saved = std::fs::read_to_string(&path).unwrap();
+            let (saved, loaded) = save_and_load_sensitive_config();
             assert!(saved.contains("encrypted_config"));
             assert!(!saved.contains("Bearer token"));
 
-            let (loaded, _) = load_config_at_path(path.to_str().unwrap()).unwrap();
             let headers = match &loaded.publishers[0].endpoint.endpoint_type {
                 crate::mq_bridge::models::EndpointType::Http(cfg) => cfg.custom_headers.clone(),
                 other => panic!("expected http publisher, got {other:?}"),
@@ -417,8 +414,6 @@ publishers:
                 headers.get("authorization").map(String::as_str),
                 Some("Bearer token")
             );
-
-            let _ = std::fs::remove_file(path);
         });
     }
 

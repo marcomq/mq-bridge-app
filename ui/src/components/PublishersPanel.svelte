@@ -2,6 +2,7 @@
   import { get } from "svelte/store";
   import { activeMainTab, publishersPanelState } from "../lib/stores";
   import type { PublisherTreeNode } from "../lib/publisher-grouping";
+  import SidebarImportActions from "./SidebarImportActions.svelte";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
   import "@awesome.me/webawesome/dist/components/button/button.js";
   import "@awesome.me/webawesome/dist/components/details/details.js";
@@ -36,6 +37,7 @@
     updatePublisherPayload,
     updatePublisherRequestField,
   } from "../lib/publishers-view";
+  import { registerDismissOnOutsideClick, startSidebarResize as beginSidebarResize } from "../lib/sidebar-ui";
   import { handleActionKey, getLabel } from "../lib/utils";
   import { getMqbState, mqbDialogs } from "../lib/runtime-window";
 
@@ -44,9 +46,14 @@
   let historyFilterText = $state("");
   let copyFeedback = $state("");
   let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
-  let importInputEl: HTMLInputElement | null = null;
   let publishersContainerEl: HTMLDivElement | null = null;
   let selectedImportKind = $state<"postman" | "openapi" | "asyncapi" | "mqb">("postman");
+  const importActions = [
+    { key: "postman", label: "Import Postman" },
+    { key: "openapi", label: "Import OpenAPI" },
+    { key: "asyncapi", label: "Import AsyncAPI" },
+    { key: "mqb", label: "Import mq-bridge" },
+  ];
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
   let sidebarWidth = $state<number | null>(null);
@@ -161,13 +168,12 @@
     flattenTree(filterTree($publishersPanelState.groupedItems || [], filterText)));
 
   onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (addMenuOpen && !(e.target as HTMLElement).closest(".add-menu-container")) {
+    return registerDismissOnOutsideClick(
+      () => addMenuOpen,
+      () => {
         addMenuOpen = false;
-      }
-    };
-    window.addEventListener("click", handler);
-    return () => window.removeEventListener("click", handler);
+      },
+    );
   });
 
   function openPublisher(originalIndex: number) {
@@ -229,17 +235,9 @@
     selectPublisherSubtab(tab);
   }
 
-  function openImportPicker(kind: "postman" | "openapi" | "asyncapi" | "mqb") {
-    selectedImportKind = kind;
-    importInputEl?.click();
-  }
-
-  async function handleImportSelected(event: Event) {
-    const target = event.currentTarget as HTMLInputElement | null;
-    const file = target?.files?.[0];
-    if (!file) return;
+  async function handleImport(actionKey: string, text: string) {
+    selectedImportKind = actionKey as typeof selectedImportKind;
     try {
-      const text = await file.text();
       if (selectedImportKind === "postman") {
         await importPostmanToPublisherAction(text);
       } else if (selectedImportKind === "openapi") {
@@ -258,8 +256,6 @@
       openSubtab("definition");
     } catch (error) {
       await mqbDialogs.alert(`Import failed: ${(error as Error).message}`, "Import");
-    } finally {
-      if (target) target.value = "";
     }
   }
 
@@ -274,25 +270,9 @@
   }
 
   function startSidebarResize(event: MouseEvent) {
-    event.preventDefault();
-    const containerRect = publishersContainerEl?.getBoundingClientRect();
-    if (!containerRect) return;
-
-    const minWidth = 220;
-    const maxWidth = Math.max(minWidth, Math.min(640, Math.floor(containerRect.width * 0.6)));
-
-    const onMove = (moveEvent: MouseEvent) => {
-      const nextWidth = Math.min(maxWidth, Math.max(minWidth, moveEvent.clientX - containerRect.left));
+    beginSidebarResize(event, publishersContainerEl, (nextWidth) => {
       sidebarWidth = nextWidth;
-    };
-
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    });
   }
 </script>
 
@@ -358,27 +338,7 @@
           {/if}
         {/each}
       </div>
-      <div class="sidebar-import-actions">
-        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("postman")}>
-          Import Postman
-        </button>
-        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("openapi")}>
-          Import OpenAPI
-        </button>
-        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("asyncapi")}>
-          Import AsyncAPI
-        </button>
-        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("mqb")}>
-          Import mq-bridge
-        </button>
-        <input
-          bind:this={importInputEl}
-          type="file"
-          accept=".json,application/json"
-          class="hidden-file-input"
-          onchange={handleImportSelected}
-        />
-      </div>
+      <SidebarImportActions actions={importActions} onImport={handleImport} />
     </div>
     <button
       type="button"

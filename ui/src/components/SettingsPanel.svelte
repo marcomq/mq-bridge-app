@@ -2,6 +2,7 @@
   import '@awesome.me/webawesome/dist/components/callout/callout.js';
   import { activeMainTab, storageSecurityStore } from "../lib/stores";
   import { exportFullBundle, importAppConfigFromJsonText, resetAppConfigToDefaults } from "../lib/import-export";
+  import { withSelectedFileText } from "../lib/utils";
   import { mqbDialogs, mqbApp } from "../lib/runtime-window";
   import type { StorageSecurityInfo } from "../lib/storage-security";
   import { formatDesktopSecretsSummary } from "../lib/settings";
@@ -21,21 +22,17 @@
   }
 
   async function handleImportSelected(event: Event) {
-    const target = event.currentTarget as HTMLInputElement;
-    const file = target.files?.[0];
-    if (!file) return;
     try {
-      const text = await file.text();
-      const result = await importAppConfigFromJsonText(text);
-      await mqbDialogs.alert(
-        `Imported ${result.importedPublishers} publishers and ${result.importedConsumers} consumers.`,
-        "Import complete",
-      );
-      window.location.reload();
+      await withSelectedFileText(event, async (text) => {
+        const result = await importAppConfigFromJsonText(text);
+        await mqbDialogs.alert(
+          `Imported ${result.importedPublishers} publishers and ${result.importedConsumers} consumers.`,
+          "Import complete",
+        );
+        window.location.reload();
+      });
     } catch (error) {
       await mqbDialogs.alert(`Import failed: ${(error as Error).message}`, "Import");
-    } finally {
-      target.value = "";
     }
   }
 

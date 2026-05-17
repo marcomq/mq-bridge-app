@@ -229,47 +229,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function sanitizePresets(value: unknown): PresetsByPublisher {
-  const result: PresetsByPublisher = {};
+function sanitizeRowsByPublisher<T>(
+  value: unknown,
+  mapRow: (row: unknown, index: number, publisherName: string) => T,
+): Record<string, T[]> {
+  const result: Record<string, T[]> = {};
   if (!isRecord(value)) return result;
 
   for (const [publisherName, rows] of Object.entries(value)) {
     if (!Array.isArray(rows)) continue;
-    result[publisherName] = rows.map((row, index) => {
-      const entry = isRecord(row) ? row : {};
-      const headersValue = Array.isArray(entry.headers) ? entry.headers : [];
-      const headers = headersValue.map((headerRow) => {
-        const header = isRecord(headerRow) ? headerRow : {};
-        return {
-          key: String(header.key ?? ""),
-          value: String(header.value ?? ""),
-          enabled: header.enabled !== false,
-        };
-      });
-      const requestFieldsValue = isRecord(entry.request_fields) ? entry.request_fields : {};
-      const request_fields = Object.fromEntries(
-        Object.entries(requestFieldsValue).map(([key, raw]) => [String(key), String(raw ?? "")]),
-      );
-      const endpoint_type = entry.endpoint_type ? String(entry.endpoint_type) : undefined;
-      const method = entry.method ? String(entry.method).toUpperCase() : undefined;
-      const url = entry.url ? String(entry.url) : undefined;
-      if (url && !request_fields.url) {
-        request_fields.url = url;
-      }
-      return {
-        name: String(entry.name || `Imported preset ${index + 1}`),
-        payload: String(entry.payload || ""),
-        headers,
-        group: entry.group ? String(entry.group) : undefined,
-        endpoint_type,
-        method,
-        url,
-        request_fields,
-      };
-    });
+    result[publisherName] = rows.map((row, index) => mapRow(row, index, publisherName));
   }
 
   return result;
+}
+
+export function sanitizePresets(value: unknown): PresetsByPublisher {
+  return sanitizeRowsByPublisher(value, (row, index) => {
+    const entry = isRecord(row) ? row : {};
+    const { request_fields, endpoint_type, method, url } = sanitizeRequestDetails(entry);
+    return {
+      name: String(entry.name || `Imported preset ${index + 1}`),
+      payload: String(entry.payload || ""),
+      headers: sanitizeHeaderRows(entry.headers),
+      group: entry.group ? String(entry.group) : undefined,
+      endpoint_type,
+      method,
+      url,
+      request_fields,
+    };
+  });
 }
 
 function sanitizeHeaderRows(value: unknown): HeaderRow[] {
@@ -304,6 +293,17 @@ function sanitizeStringMap(value: unknown): Record<string, string> {
   return result;
 }
 
+function sanitizeRequestDetails(entry: Record<string, unknown>) {
+  const request_fields = sanitizeStringMap(entry.request_fields);
+  const endpoint_type = entry.endpoint_type ? String(entry.endpoint_type) : undefined;
+  const method = entry.method ? String(entry.method).toUpperCase() : undefined;
+  const url = entry.url ? String(entry.url) : undefined;
+  if (url && !request_fields.url) {
+    request_fields.url = url;
+  }
+  return { request_fields, endpoint_type, method, url };
+}
+
 function sanitizeHistoryEntry(value: unknown, fallbackName = "", index = 0): PublisherHistoryEntry {
   const entry = isRecord(value) ? value : {};
   const headers = sanitizeHeaderRows(entry.headers);
@@ -314,14 +314,8 @@ function sanitizeHistoryEntry(value: unknown, fallbackName = "", index = 0): Pub
   const mergedHeaders = headers.length > 0
     ? headers
     : mergedMetadata.map((row) => ({ key: row.k, value: row.v, enabled: true }));
-  const request_fields = sanitizeStringMap(entry.request_fields);
+  const { request_fields, endpoint_type, method, url } = sanitizeRequestDetails(entry);
   const requestMetadata = sanitizeStringMap(entry.requestMetadata);
-  const endpoint_type = entry.endpoint_type ? String(entry.endpoint_type) : undefined;
-  const method = entry.method ? String(entry.method).toUpperCase() : undefined;
-  const url = entry.url ? String(entry.url) : undefined;
-  if (url && !request_fields.url) {
-    request_fields.url = url;
-  }
   const status = Number.isFinite(entry.status) ? Number(entry.status) : 0;
   const duration = Number.isFinite(entry.duration) ? Number(entry.duration) : 0;
   const time = Number.isFinite(entry.time) ? Number(entry.time) : index;
@@ -360,15 +354,8 @@ function sanitizeHistoryEntry(value: unknown, fallbackName = "", index = 0): Pub
 }
 
 function sanitizeHistoryPublishers(value: unknown): PublisherHistoryByPublisher {
-  const result: PublisherHistoryByPublisher = {};
-  if (!isRecord(value)) return result;
-
-  for (const [publisherName, rows] of Object.entries(value)) {
-    if (!Array.isArray(rows)) continue;
-    result[publisherName] = rows.map((row, index) => sanitizeHistoryEntry(row, publisherName, index));
-  }
-
-  return result;
+  return sanitizeRowsByPublisher(value, (row, index, publisherName) =>
+    sanitizeHistoryEntry(row, publisherName, index));
 }
 
 export function sanitizePublisherHistory(value: unknown): PublisherHistoryStore {

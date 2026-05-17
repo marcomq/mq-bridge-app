@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FormField from "./FormField.svelte";
   import MountedNode from "./MountedNode.svelte";
   import { defaultPasswordFieldVisibility } from "./password-field-visibility";
 
@@ -54,33 +55,22 @@
   });
 </script>
 
-<div class={`wa-form-row mqb-form-row ${wrapperClass}`.trim()}>
-  <label class="wa-form-label mqb-form-label" for={labelFor}>
-    <span>{label}</span>
-    {#if required}
-      <span class="mqb-form-required">*</span>
-    {/if}
-  </label>
-  <div class="wa-form-col mqb-form-col">
-    <div class="mqb-password-field">
-      <MountedNode node={control} className="mqb-password-field__control" />
-      <button
-        type="button"
-        class="wa-native-button wa-native-button--neutral mqb-password-field__toggle"
-        aria-pressed={visible}
-        aria-label={visible ? "Mask sensitive value" : "Show sensitive value"}
-        onclick={() => {
-          visibleOverride = !visible;
-        }}
-      >
-        {visible ? visibleLabel : maskedLabel}
-      </button>
-    </div>
-    {#if description}
-      <div class="form-description mqb-form-description">{description}</div>
-    {/if}
+<FormField {label} {description} {labelFor} {wrapperClass} {required}>
+  <div class="mqb-password-field">
+    <MountedNode node={control} className="mqb-password-field__control" />
+    <button
+      type="button"
+      class="wa-native-button wa-native-button--neutral mqb-password-field__toggle"
+      aria-pressed={visible}
+      aria-label={visible ? "Mask sensitive value" : "Show sensitive value"}
+      onclick={() => {
+        visibleOverride = !visible;
+      }}
+    >
+      {visible ? visibleLabel : maskedLabel}
+    </button>
   </div>
-</div>
+</FormField>
 
 <style>
   .mqb-password-field {

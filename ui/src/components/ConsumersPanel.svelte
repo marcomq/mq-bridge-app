@@ -1,6 +1,7 @@
 <script lang="ts">
   import "@awesome.me/webawesome/dist/components/details/details.js";
   import { activeMainTab, consumersPanelState } from "../lib/stores";
+  import SidebarImportActions from "./SidebarImportActions.svelte";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
   import PayloadDisplay from "./PayloadDisplay.svelte";
   import { onMount } from "svelte";
@@ -27,15 +28,18 @@
     updateConsumerResponseHeader,
     updateConsumerResponsePayload,
   } from "../lib/consumers-view";
+  import { registerDismissOnOutsideClick, startSidebarResize as beginSidebarResize } from "../lib/sidebar-ui";
   import { handleActionKey, getTechnicalDisplayLabel } from "../lib/utils";
   import { getMqbState, mqbApp } from "../lib/runtime-window";
 
   let filterText = $state("");
   let addMenuOpen = $state(false);
-  let importInputEl = $state<HTMLInputElement | null>(null);
   let consumersContainerEl = $state<HTMLDivElement | null>(null);
-  let selectedImportKind = $state<"asyncapi" | "mqb">("asyncapi");
   let sidebarWidth = $state<number | null>(null);
+  const importActions = [
+    { key: "asyncapi", label: "Import AsyncAPI" },
+    { key: "mqb", label: "Import mq-bridge" },
+  ];
 
   const selectedConsumer = $derived(
     $consumersPanelState.items.find((item) => item.originalIndex === $consumersPanelState.selectedIndex),
@@ -67,13 +71,12 @@
   );
 
   onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (addMenuOpen && !(e.target as HTMLElement).closest(".add-menu-container")) {
+    return registerDismissOnOutsideClick(
+      () => addMenuOpen,
+      () => {
         addMenuOpen = false;
-      }
-    };
-    window.addEventListener("click", handler);
-    return () => window.removeEventListener("click", handler);
+      },
+    );
   });
 
   function openConsumer(originalIndex: number) {
@@ -109,26 +112,15 @@
     setConsumerOutputPublisherAction((event.currentTarget as HTMLSelectElement).value);
   }
 
-  function openImportPicker(kind: "asyncapi" | "mqb") {
-    selectedImportKind = kind;
-    importInputEl?.click();
-  }
-
-  async function handleImportSelected(event: Event) {
-    const target = event.currentTarget as HTMLInputElement;
-    const file = target.files?.[0];
-    if (!file) return;
+  async function handleImport(actionKey: string, text: string) {
     try {
-      const text = await file.text();
-      if (selectedImportKind === "asyncapi") {
+      if (actionKey === "asyncapi") {
         await importAsyncApiToConsumerAction(text);
       } else {
         await importMqbToConsumerAction(text);
       }
     } catch (error) {
       console.error(error);
-    } finally {
-      target.value = "";
     }
   }
 
@@ -138,25 +130,9 @@
   }
 
   function startSidebarResize(event: MouseEvent) {
-    event.preventDefault();
-    const containerRect = consumersContainerEl?.getBoundingClientRect();
-    if (!containerRect) return;
-
-    const minWidth = 220;
-    const maxWidth = Math.max(minWidth, Math.min(640, Math.floor(containerRect.width * 0.6)));
-
-    const onMove = (moveEvent: MouseEvent) => {
-      const nextWidth = Math.min(maxWidth, Math.max(minWidth, moveEvent.clientX - containerRect.left));
+    beginSidebarResize(event, consumersContainerEl, (nextWidth) => {
       sidebarWidth = nextWidth;
-    };
-
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    });
   }
 </script>
 
@@ -209,21 +185,7 @@
           </button>
         {/each}
       </div>
-      <div class="sidebar-import-actions">
-        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("asyncapi")}>
-          Import AsyncAPI
-        </button>
-        <button class="wa-native-button wa-native-button--neutral sidebar-import-button" type="button" onclick={() => openImportPicker("mqb")}>
-          Import mq-bridge
-        </button>
-        <input
-          bind:this={importInputEl}
-          type="file"
-          accept=".json,application/json"
-          class="hidden-file-input"
-          onchange={handleImportSelected}
-        />
-      </div>
+      <SidebarImportActions actions={importActions} onImport={handleImport} />
     </div>
     <button
       type="button"

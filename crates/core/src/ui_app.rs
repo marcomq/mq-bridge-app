@@ -731,35 +731,33 @@ impl UiApp {
             return;
         }
 
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            if self
+        if let Ok(handle) = tokio::runtime::Handle::try_current()
+            && self
                 .throughput_updater_started
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
-            {
-                let throughput_samples_arc = Arc::clone(&self.throughput_samples);
-                let consumer_message_sequences_arc = Arc::clone(&self.consumer_message_sequences);
-                handle.spawn(async move {
-                    let mut interval = tokio::time::interval(THROUGHPUT_UPDATE_INTERVAL);
+        {
+            let throughput_samples_arc = Arc::clone(&self.throughput_samples);
+            let consumer_message_sequences_arc = Arc::clone(&self.consumer_message_sequences);
+            handle.spawn(async move {
+                let mut interval = tokio::time::interval(THROUGHPUT_UPDATE_INTERVAL);
 
-                    loop {
-                        interval.tick().await; // Wait for the next interval tick
-                        let now = Instant::now();
+                loop {
+                    interval.tick().await; // Wait for the next interval tick
+                    let now = Instant::now();
 
-                        let consumer_sequences =
-                            consumer_message_sequences_arc.read().await.clone();
-                        let mut samples = throughput_samples_arc.write().await;
+                    let consumer_sequences = consumer_message_sequences_arc.read().await.clone();
+                    let mut samples = throughput_samples_arc.write().await;
 
-                        for (consumer_key, sequence) in consumer_sequences.iter() {
-                            let total_messages = sequence.load(Ordering::Relaxed) as f64;
-                            let previous_sample = samples.get(consumer_key).copied();
-                            let next_sample =
-                                next_route_metric_sample(previous_sample, total_messages, now);
-                            samples.insert(consumer_key.clone(), next_sample);
-                        }
+                    for (consumer_key, sequence) in consumer_sequences.iter() {
+                        let total_messages = sequence.load(Ordering::Relaxed) as f64;
+                        let previous_sample = samples.get(consumer_key).copied();
+                        let next_sample =
+                            next_route_metric_sample(previous_sample, total_messages, now);
+                        samples.insert(consumer_key.clone(), next_sample);
                     }
-                });
-            }
+                }
+            });
         }
     }
 
