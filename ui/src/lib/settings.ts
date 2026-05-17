@@ -282,9 +282,6 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   pruneStorageModeOptions(
     container,
     state.storage_security,
-    typeof (settingsConfig as any)?.config_security?.mode === "string"
-      ? (settingsConfig as any).config_security.mode
-      : undefined,
   );
 
   const formActions = document.getElementById("form-actions");

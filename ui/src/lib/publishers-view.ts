@@ -548,10 +548,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const activeElement = document.activeElement as HTMLElement | null;
     activeElement?.blur();
     await Promise.resolve();
-    const mapped = config.publishers.map((publisher) => {
+    const mapped = config.publishers.map((publisher, index) => {
       const nextPublisher = normalizePublisherConfigShape(publisher);
       nextPublisher.payload = getPublisherState(publisher).payload || "";
       nextPublisher.headers = getPublisherHeaderRows(publisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
+      if (index === currentIdx && getEndpointType(nextPublisher) === "http") {
+        const httpConfig = ensureHttpConfig(nextPublisher);
+        httpConfig.method = currentMethodValue || httpConfig.method;
+      }
       return nextPublisher;
     });
     config.publishers.splice(0, config.publishers.length, ...mapped);
@@ -993,6 +997,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const state = getPublisherState(cloned);
     state.payload = item.payload || "";
     applyHistoryRequestToPublisher(cloned, item);
+    cloned.headers = (item.headers?.length
+      ? item.headers
+      : (item.metadata || []).map(({ k, v }) => ({ key: k, value: v, enabled: true }))
+    ).map(({ key, value, enabled }) => ({ key, value, enabled }));
     if (getEndpointType(cloned) === "http") {
       ensureHttpConfig(cloned).method = item.method || item.requestMetadata?.http_method || ensureHttpConfig(cloned).method;
     }
@@ -1594,10 +1602,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const selectedKey = getPublisherStorageKey(config.publishers[selectedIdx]);
     const originalName = config.publishers[selectedIdx]?.name || null;
     const selectedTab = activeSubtab;
-    const mapped = config.publishers.map((publisher) => {
+    const mapped = config.publishers.map((publisher, index) => {
       const nextPublisher = normalizePublisherConfigShape(publisher);
       nextPublisher.payload = getPublisherState(publisher).payload || "";
       nextPublisher.headers = getPublisherHeaderRows(publisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
+      if (index === currentIdx && getEndpointType(nextPublisher) === "http") {
+        const httpConfig = ensureHttpConfig(nextPublisher);
+        httpConfig.method = currentMethodValue || httpConfig.method;
+      }
       return nextPublisher;
     });
     config.publishers.splice(0, config.publishers.length, ...mapped);

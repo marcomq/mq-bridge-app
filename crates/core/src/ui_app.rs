@@ -398,7 +398,7 @@ fn encode_collector_route_key(consumer_key: &str) -> String {
 }
 
 fn decode_collector_route_key(encoded: &str) -> Option<String> {
-    if encoded.len().is_multiple_of(2) {
+    if !encoded.len().is_multiple_of(2) {
         return None;
     }
 
@@ -949,8 +949,17 @@ impl UiApp {
     }
 
     pub async fn stop_consumer(&self, consumer_key: &str) -> bool {
+        let resolved_consumer_key = {
+            let config = self.config.read().await;
+            config
+                .consumers
+                .iter()
+                .find(|c| consumer_matches_lookup(c, consumer_key))
+                .map(consumer_runtime_key)
+        };
+        let handle_key = resolved_consumer_key.as_deref().unwrap_or(consumer_key);
         let mut handles = self.ui_handles.write().await;
-        if let Some(handle) = handles.remove(consumer_key) {
+        if let Some(handle) = handles.remove(handle_key) {
             handle.stop().await;
             true
         } else {
@@ -1711,7 +1720,8 @@ mod tests {
 
         let next = next_route_metric_sample(Some(previous), 8.0, start + Duration::from_secs(1));
 
-        assert_eq!(next.smoothed_throughput, 3.0);
+        let expected = 6.0 * (-1.0 / THROUGHPUT_TAU).exp();
+        assert!((next.smoothed_throughput - expected).abs() < 1e-9);
     }
 
     #[tokio::test]

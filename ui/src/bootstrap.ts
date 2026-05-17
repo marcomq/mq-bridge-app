@@ -41,6 +41,14 @@ type ConfigRecoveryStatus = {
   detail?: string;
 } | null;
 
+function replaceLiveConfig<T extends Record<string, unknown>>(appConfig: T, refreshedConfig: T | null | undefined) {
+  if (!refreshedConfig) return;
+  Object.keys(appConfig).forEach((key) => {
+    delete appConfig[key];
+  });
+  Object.assign(appConfig, refreshedConfig);
+}
+
 async function maybeHandleConfigRecovery(fetchImpl: typeof fetch): Promise<void> {
   const recovery = await fetchConfigRecoveryFromServer<ConfigRecoveryStatus>(fetchImpl).catch(() => null);
   if (!recovery?.message) {
@@ -384,7 +392,7 @@ function installGlobals() {
       const appConfig = mqbApp.config<Record<string, unknown>>();
       const refreshedConfig = await saveWholeConfig(fetch, appConfig);
       const refreshedStorageSecurity = await fetchStorageSecurityFromServer(fetch).catch(() => null);
-      Object.assign(appConfig, refreshedConfig);
+      replaceLiveConfig(appConfig, refreshedConfig);
       if (refreshedStorageSecurity) {
         const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
         state.storage_security = normalizedStorageSecurity;
@@ -429,7 +437,7 @@ function installGlobals() {
       const appConfig = mqbApp.config<Record<string, unknown>>();
       const refreshedConfig = await saveWholeConfig(fetch, appConfig);
       const refreshedStorageSecurity = await fetchStorageSecurityFromServer(fetch).catch(() => null);
-      Object.assign(appConfig, refreshedConfig);
+      replaceLiveConfig(appConfig, refreshedConfig);
       if (refreshedStorageSecurity) {
         const normalizedStorageSecurity = normalizeStorageSecurityInfo(refreshedStorageSecurity);
         state.storage_security = normalizedStorageSecurity;
