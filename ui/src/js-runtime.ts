@@ -48,7 +48,7 @@ if (typeof window.mqbChoose === "undefined") {
     const result = prompt(promptText);
     if (!result) return null;
 
-    const index = parseInt(result) - 1;
+    const index = parseInt(result, 10) - 1;
     if (index >= 0 && index < choices.length) {
       return choices[index].value;
     }

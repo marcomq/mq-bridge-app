@@ -1,6 +1,8 @@
 use mq_bridge_app::{
     config::{AppConfig, ConsumerConfig, PublisherClient},
-    ui_app::{ConsumerStatusResponse, PublishRequest, RuntimeStatusResponse, StorageSecurityInfoResponse},
+    ui_app::{
+        ConsumerStatusResponse, PublishRequest, RuntimeStatusResponse, StorageSecurityInfoResponse,
+    },
 };
 use serde_json::json;
 

@@ -841,7 +841,16 @@ fn is_sensitive_http_header(key: &str) -> bool {
 }
 
 fn sanitize_name_for_env(name: &str) -> String {
-    name.trim().replace(' ', "_").to_uppercase()
+    name.trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn sanitize_id_for_env(id: &str) -> String {

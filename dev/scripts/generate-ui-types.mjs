@@ -75,11 +75,15 @@ function typeFromSchema(schema) {
   return "unknown";
 }
 
+function tsPropName(name) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : JSON.stringify(name);
+}
+
 function objectTypeFromSchema(schema) {
   const required = new Set(schema.required || []);
   const properties = Object.entries(schema.properties || {}).map(([propertyName, propertySchema]) => {
     const optional = required.has(propertyName) ? "" : "?";
-    return `${propertyName}${optional}: ${typeFromSchema(propertySchema)}`;
+    return `${tsPropName(propertyName)}${optional}: ${typeFromSchema(propertySchema)}`;
   });
   return `{ ${properties.join("; ")} }`;
 }
@@ -93,7 +97,9 @@ function interfaceFromSchema(name, schema) {
   const lines = [`export interface ${name} {`];
   for (const [propertyName, propertySchema] of Object.entries(schema.properties || {})) {
     const optional = required.has(propertyName) ? "" : "?";
-    lines.push(`  ${propertyName}${optional}: ${typeFromSchema(propertySchema)};`);
+    lines.push(
+      `  ${tsPropName(propertyName)}${optional}: ${typeFromSchema(propertySchema)};`,
+    );
   }
   lines.push("}");
   return lines.join("\n");

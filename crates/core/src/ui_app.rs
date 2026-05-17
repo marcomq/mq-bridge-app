@@ -746,7 +746,8 @@ impl UiApp {
                         interval.tick().await; // Wait for the next interval tick
                         let now = Instant::now();
 
-                        let consumer_sequences = consumer_message_sequences_arc.read().await.clone();
+                        let consumer_sequences =
+                            consumer_message_sequences_arc.read().await.clone();
                         let mut samples = throughput_samples_arc.write().await;
 
                         for (consumer_key, sequence) in consumer_sequences.iter() {
@@ -924,7 +925,6 @@ impl UiApp {
         message: impl Into<String>,
     ) -> Result<Handled, HandlerError> {
         let msg_str = message.into();
-        dbg!(&msg_str);
         self.ok_json(&serde_json::json!({ "error": msg_str }), false)
             .map(|h| match h {
                 Handled::Publish(m) => Handled::Publish(m.with_status_code(status.to_string())),
