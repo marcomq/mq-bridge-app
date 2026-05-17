@@ -5,14 +5,8 @@ interface DesktopSecretEntry {
   error?: string;
 }
 import { cloneSectionState } from "./dirty-state";
-import { appWindow, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
-import {
-  storageModeOptions,
-  storageModeOptionsSummary,
-  storageSecurityDetail,
-  storageSecuritySummary,
-  type StorageSecurityInfo,
-} from "./storage-security";
+import { appWindow, getMqbState, mqbApp, mqbRuntime } from "./runtime-window";
+import { availableStorageModeValues, type StorageModeValue, type StorageSecurityInfo } from "./storage-security";
 import { ensureWorkspaceCollections } from "./workspace-config";
 
 interface DesktopSecretSummary {
@@ -41,6 +35,67 @@ const STORAGE_MODE_VALUES = new Set([
   "durable",
 ]);
 
+type StorageModeUiOption = {
+  value: StorageModeValue;
+  title: string;
+  detail: string;
+};
+
+const STORAGE_MODE_UI: Record<StorageModeValue, { cli?: StorageModeUiOption; desktop?: StorageModeUiOption }> = {
+  unencrypted: {
+    cli: {
+      value: "unencrypted",
+      title: "Unencrypted",
+      detail: "Plain config and plain cached message history on disk.",
+    },
+    desktop: {
+      value: "unencrypted",
+      title: "Unencrypted",
+      detail: "Plain config and plain cached message history on disk.",
+    },
+  },
+  balanced: {
+    cli: {
+      value: "balanced",
+      title: "Env secrets",
+      detail: "Plain config with secrets extracted to environment placeholders; message history stays plain.",
+    },
+    desktop: {
+      value: "balanced",
+      title: "Keychain secrets",
+      detail: "Plain config, secrets stored in the OS key store, plain message history.",
+    },
+  },
+  env_temporary_messages: {
+    cli: {
+      value: "env_temporary_messages",
+      title: "Env secrets + temporary encrypted messages",
+      detail: "Plain config with env placeholders and encrypted message history cleared after restart.",
+    },
+  },
+  temporary_messages: {
+    desktop: {
+      value: "temporary_messages",
+      title: "Temporary encrypted messages",
+      detail: "Plain config with encrypted message history that is cleared after restart.",
+    },
+  },
+  sensitive: {
+    desktop: {
+      value: "sensitive",
+      title: "Encrypted config + temporary encrypted messages",
+      detail: "Encrypted config with temporary encrypted message history cleared after restart.",
+    },
+  },
+  durable: {
+    desktop: {
+      value: "durable",
+      title: "Encrypted config + persistent encrypted messages",
+      detail: "Encrypted config with persistent encrypted message history restored after restart.",
+    },
+  },
+};
+
 function cloneSchema<T>(schema: T): T {
   return JSON.parse(JSON.stringify(schema)) as T;
 }
@@ -58,7 +113,7 @@ function filterObjectKeys<T extends Record<string, unknown>>(value: T, keys: rea
 function applyStorageModeDescriptions(
   properties: Record<string, unknown>,
   storageInfo: StorageSecurityInfo | undefined,
-  currentMode?: string,
+  currentConfig?: Record<string, unknown>,
 ) {
   const configSecurity = properties.config_security as Record<string, unknown> | undefined;
   const nestedProperties = configSecurity?.properties as Record<string, unknown> | undefined;
@@ -67,19 +122,36 @@ function applyStorageModeDescriptions(
     return;
   }
 
-  const options = storageModeOptions(storageInfo);
-  if (currentMode && !options.some((option) => option.value === currentMode)) {
-    options.push({
-      value: currentMode as any,
-      title: `${currentMode} (Current, unsupported here)`,
-      detail: "This mode was loaded from another target or older config and is not normally offered here.",
-      available: false,
-    });
+  configSecurity.description = "";
+  modeProperty.description = formatStorageModeDescription(
+    storageInfo,
+    typeof (currentConfig as any)?.config_security?.mode === "string"
+      ? (currentConfig as any).config_security.mode
+      : undefined,
+  );
+}
+
+function getStorageModeUiOptions(
+  storageInfo: StorageSecurityInfo,
+): StorageModeUiOption[] {
+  const target = storageInfo.target === "desktop" ? "desktop" : "cli";
+  return availableStorageModeValues(storageInfo)
+    .map((value) => STORAGE_MODE_UI[value][target])
+    .filter((option): option is StorageModeUiOption => Boolean(option));
+}
+
+function formatStorageModeDescription(storageInfo: StorageSecurityInfo, currentMode?: string) {
+  const options = getStorageModeUiOptions(storageInfo);
+  const parts = options.map((option) => `${option.title}: ${option.detail}`);
+  if (currentMode && STORAGE_MODE_VALUES.has(currentMode as StorageModeValue) && !options.some((option) => option.value === currentMode)) {
+    parts.push(`${currentMode} (Current, unsupported here): Unavailable.`);
   }
-  configSecurity.description = storageModeOptionsSummary(storageInfo);
-  modeProperty.description = options
-    .map((option) => `${option.title}: ${option.available ? option.detail : `Unavailable. ${option.detail}`}`)
-    .join("\n");
+
+  if (storageInfo.target === "desktop" && storageInfo.keyStoreAvailable !== true) {
+    parts.push("Only the modes shown here are available because no OS key store is currently usable.");
+  }
+
+  return parts.join(" ");
 }
 
 export function buildSettingsSchema(
@@ -95,9 +167,7 @@ export function buildSettingsSchema(
   applyStorageModeDescriptions(
     properties,
     storageInfo,
-    typeof (currentConfig as any)?.config_security?.mode === "string"
-      ? (currentConfig as any).config_security.mode
-      : undefined,
+    currentConfig,
   );
   return {
     ...cloned,
@@ -113,7 +183,7 @@ export function extractSettingsConfig(config: Record<string, unknown>) {
   return filterObjectKeys(normalized, SETTINGS_KEYS);
 }
 
-function mergeSettingsConfig(target: Record<string, unknown>, settingsConfig: Record<string, unknown>) {
+export function mergeSettingsConfig(target: Record<string, unknown>, settingsConfig: Record<string, unknown>) {
   for (const key of SETTINGS_KEYS) {
     if (Object.prototype.hasOwnProperty.call(settingsConfig, key)) {
       target[key] = settingsConfig[key];
@@ -121,71 +191,15 @@ function mergeSettingsConfig(target: Record<string, unknown>, settingsConfig: Re
   }
 }
 
-function createActionButton(
-  label: string,
-  id: string,
-  variant: "neutral" | "danger",
-) {
-  const button = mqbApp.forms().h("wa-button", { id }, label) as HTMLElement & {
-    setAttribute: (name: string, value: string) => void;
-    onclick?: (event: Event) => void | Promise<void>;
-  };
-  button.setAttribute("variant", variant);
-  button.setAttribute("appearance", "outlined");
-  button.setAttribute("size", "small");
-  return button;
-}
-
-function renderStorageSecurityNotice() {
-  const formActions = document.getElementById("form-actions");
-  const state = getMqbState();
-  const info = state.storage_security;
-  if (!formActions || !info || !info.messagesEncrypted) return;
-
-  let notice = document.getElementById("js-storage-security-note");
-  if (!notice) {
-    notice = document.createElement("div");
-    notice.id = "js-storage-security-note";
-    notice.className = "storage-security-note";
-    formActions.parentElement?.insertBefore(notice, formActions);
-  }
-
-  notice.textContent = `${storageSecuritySummary(info)} ${storageSecurityDetail(info)}`;
-}
-
-function renderStorageModeNotice() {
-  const formActions = document.getElementById("form-actions");
-  const state = getMqbState();
-  const info = state.storage_security;
-  if (!formActions || !info) return;
-
-  let notice = document.getElementById("js-storage-mode-note");
-  if (!notice) {
-    notice = document.createElement("div");
-    notice.id = "js-storage-mode-note";
-    notice.className = "storage-security-note";
-    formActions.parentElement?.insertBefore(notice, formActions);
-  }
-
-  const options = storageModeOptions(info);
-  notice.textContent = options
-    .map((option) => `${option.title}: ${option.available ? option.detail : `Unavailable. ${option.detail}`}`)
-    .join(" ");
-}
-
 function pruneStorageModeOptions(
   container: HTMLElement,
   storageInfo: StorageSecurityInfo | undefined,
-  currentMode?: string,
 ) {
   if (!storageInfo) {
     return;
   }
 
-  const allowed = new Set(storageModeOptions(storageInfo).map((option) => option.value));
-  if (currentMode && STORAGE_MODE_VALUES.has(currentMode)) {
-    allowed.add(currentMode as any);
-  }
+  const allowed = new Set(availableStorageModeValues(storageInfo));
 
   const candidates = Array.from(container.querySelectorAll("select")) as HTMLSelectElement[];
   const select = candidates.find((candidate) => {
@@ -252,8 +266,14 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   state.saved_sections.config = cloneSectionState(settingsConfig);
 
   mqbRuntime.registerDirtySection("config", {
-    buttonId: "js-submit",
+    buttonId: "workspace-save-button",
     getValue: () => settingsConfig,
+  });
+  mqbRuntime.registerBeforeWorkspaceSave("config", () => {
+    mergeSettingsConfig(mqbApp.config<Record<string, unknown>>(), settingsConfig);
+  });
+  mqbRuntime.registerAfterWorkspaceSave("config", (savedConfig) => {
+    settingsConfig = extractSettingsConfig(savedConfig);
   });
 
   state.form_mode = "settings";
@@ -262,108 +282,14 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
   pruneStorageModeOptions(
     container,
     state.storage_security,
-    typeof (settingsConfig as any)?.config_security?.mode === "string"
-      ? (settingsConfig as any).config_security.mode
-      : undefined,
   );
-  renderStorageSecurityNotice();
-  renderStorageModeNotice();
 
   const formActions = document.getElementById("form-actions");
   if (formActions) {
     formActions.style.display = "flex";
   }
 
-  const submitButton = document.getElementById("js-submit") as (HTMLElement & {
-    onclick?: (event: Event) => void | Promise<void>;
-  }) | null;
-  if (submitButton) {
-    submitButton.onclick = async (event) => {
-      const currentTarget = event.currentTarget as HTMLElement | null;
-      const appConfig = mqbApp.config<Record<string, unknown>>();
-      mergeSettingsConfig(appConfig, settingsConfig);
-      const saved = await appWindow().saveConfig(false, currentTarget);
-      if (saved) {
-        settingsConfig = extractSettingsConfig(appConfig);
-        appWindow().markSectionSaved("config", settingsConfig);
-        renderStorageSecurityNotice();
-        renderStorageModeNotice();
-      }
-    };
-  }
-
   const scheduleDirtyRefresh = () => appWindow().setTimeout(() => mqbRuntime.refreshDirtySection("config"), 0);
   container.oninput = scheduleDirtyRefresh;
   container.onchange = scheduleDirtyRefresh;
-
-  let desktopSecretsDeleteButton = document.getElementById("js-delete-desktop-secrets") as (HTMLElement & {
-    onclick?: (event: Event) => void | Promise<void>;
-  }) | null;
-  let desktopSecretsCheckButton = document.getElementById("js-check-desktop-secrets") as (HTMLElement & {
-    onclick?: (event: Event) => void | Promise<void>;
-  }) | null;
-
-  if (mqbApp.isDesktop() && formActions && !desktopSecretsDeleteButton) {
-    desktopSecretsCheckButton = createActionButton(
-      "Check Stored Secrets",
-      "js-check-desktop-secrets",
-      "neutral",
-    );
-    formActions.appendChild(desktopSecretsCheckButton);
-
-    desktopSecretsDeleteButton = createActionButton(
-      "Delete Stored Secrets",
-      "js-delete-desktop-secrets",
-      "danger",
-    );
-    formActions.appendChild(desktopSecretsDeleteButton);
-  }
-
-  if (desktopSecretsDeleteButton) {
-    desktopSecretsDeleteButton.onclick = async () => {
-      try {
-        const confirmed = await mqbDialogs.confirm(
-          "Delete all securely stored secrets referenced by the current desktop config?",
-          "Delete Stored Secrets",
-        );
-        if (!confirmed) {
-          return;
-        }
-
-        const response = await fetch("/desktop-secrets", { method: "DELETE" });
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(text || "Failed to delete stored secrets");
-        }
-
-        const result = await response.json().catch(() => ({ deleted: 0 }));
-        const deleted = Number(result?.deleted || 0);
-        await mqbDialogs.alert(
-          deleted > 0
-            ? `Deleted ${deleted} stored secret${deleted === 1 ? "" : "s"}.`
-            : "No stored secrets were found for the current desktop config.",
-          "Stored Secrets",
-        );
-      } catch (error) {
-        await mqbDialogs.alert(`Failed to delete stored secrets: ${(error as Error).message}`, "Stored Secrets");
-      }
-    };
-  }
-
-  if (desktopSecretsCheckButton) {
-    desktopSecretsCheckButton.onclick = async () => {
-      try {
-        const response = await fetch("/desktop-secrets", { cache: "no-store" });
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(text || "Failed to inspect stored secrets");
-        }
-
-        const summary = (await response.json()) as DesktopSecretSummary;
-        await mqbDialogs.alert(formatDesktopSecretsSummary(summary), "Stored Secrets");
-      } catch (error) {
-        await mqbDialogs.alert(`Failed to inspect stored secrets: ${(error as Error).message}`, "Stored Secrets");
-      }
-    };
-  }
 }

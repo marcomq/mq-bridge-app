@@ -259,7 +259,7 @@ async fn test_web_ui_serves_custom_static_assets() {
     let app_bundle = http_get(port, "/index.js").await;
     assert!(app_bundle.contains("200 OK"));
     assert!(app_bundle.contains("pub-copy"));
-    assert!(app_bundle.contains("Request Presets"));
+    assert!(app_bundle.contains("pub-save-variant"));
     assert!(app_bundle.contains("cons-output-mode"));
     assert!(app_bundle.contains("cons-output-publisher"));
     assert!(app_bundle.contains("Execution History"));
@@ -276,7 +276,7 @@ async fn test_web_ui_serves_custom_static_assets() {
 }
 
 #[tokio::test]
-async fn test_web_ui_post_config_deploys_enabled_route() {
+async fn test_web_ui_post_config_migrates_legacy_route_to_consumer_config() {
     let _guard = test_mutex().lock().await;
     stop_all_routes().await;
 
@@ -297,9 +297,21 @@ async fn test_web_ui_post_config_deploys_enabled_route() {
 
     sleep(Duration::from_millis(200)).await;
     let routes = mq_bridge_app::mq_bridge::list_routes();
-    assert!(routes.contains(&route_name));
+    assert!(!routes.contains(&route_name));
 
-    mq_bridge_app::mq_bridge::stop_route(&route_name).await;
+    let config_json = read_json_response(port, "/config").await;
+    assert_eq!(config_json["consumers"][0]["name"], route_name);
+    assert_eq!(
+        config_json["publishers"][0]["name"],
+        format!("{route_name}_publisher")
+    );
+    assert!(
+        config_json["routes"]
+            .as_object()
+            .map(|routes| routes.is_empty())
+            .unwrap_or(true)
+    );
+
     server.abort();
     stop_all_routes().await;
     let _ = std::fs::remove_file(config_file);
@@ -337,10 +349,20 @@ async fn test_consumer_custom_response_is_returned_for_http_consumer() {
         "unexpected response: {}",
         response
     );
+    let saved_config = read_json_response(ui_port, "/config").await;
+    let consumer_id = saved_config["consumers"][0]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !consumer_id.is_empty(),
+        "expected saved consumer id in config: {}",
+        saved_config
+    );
 
     let start_response = http_post(
         ui_port,
-        &format!("/consumer-start?consumer={consumer_name}"),
+        &format!("/consumer-start?consumer_id={consumer_id}"),
     )
     .await;
     assert!(
@@ -401,10 +423,20 @@ async fn test_web_ui_collects_http_consumer_messages_and_updates_runtime_status(
         "unexpected response: {}",
         response
     );
+    let saved_config = read_json_response(ui_port, "/config").await;
+    let consumer_id = saved_config["consumers"][0]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !consumer_id.is_empty(),
+        "expected saved consumer id in config: {}",
+        saved_config
+    );
 
     let start_response = http_post(
         ui_port,
-        &format!("/consumer-start?consumer={consumer_name}"),
+        &format!("/consumer-start?consumer_id={consumer_id}"),
     )
     .await;
     assert!(
@@ -428,15 +460,15 @@ async fn test_web_ui_collects_http_consumer_messages_and_updates_runtime_status(
 
     let runtime = read_json_response(ui_port, "/runtime-status").await;
     assert_eq!(
-        runtime["consumers"][&consumer_name]["message_sequence"]
+        runtime["consumers"][&consumer_id]["message_sequence"]
             .as_u64()
             .unwrap_or_default(),
         1
     );
 
     let messages =
-        read_json_response(ui_port, &format!("/messages?consumer={consumer_name}")).await;
-    let payload = messages[&consumer_name][0]["payload"]
+        read_json_response(ui_port, &format!("/messages?consumer_id={consumer_id}")).await;
+    let payload = messages[&consumer_id][0]["payload"]
         .as_str()
         .unwrap_or_default();
     assert_eq!(payload, "hello");
@@ -447,7 +479,7 @@ async fn test_web_ui_collects_http_consumer_messages_and_updates_runtime_status(
 }
 
 #[tokio::test]
-async fn test_web_ui_post_config_accepts_disabled_route_without_deploying_it() {
+async fn test_web_ui_post_config_accepts_disabled_route_and_migrates_it() {
     let _guard = test_mutex().lock().await;
     stop_all_routes().await;
 
@@ -471,7 +503,13 @@ async fn test_web_ui_post_config_accepts_disabled_route_without_deploying_it() {
     assert!(!routes.contains(&route_name));
 
     let config_json = read_json_response(port, "/config").await;
-    assert_eq!(config_json["routes"][&route_name]["enabled"], false);
+    assert_eq!(config_json["consumers"][0]["name"], route_name);
+    assert!(
+        config_json["routes"]
+            .as_object()
+            .map(|routes| routes.is_empty())
+            .unwrap_or(true)
+    );
 
     server.abort();
     stop_all_routes().await;
@@ -508,7 +546,7 @@ async fn test_web_ui_rejects_cross_origin_post_requests() {
 }
 
 #[tokio::test]
-async fn test_web_ui_can_disable_existing_route_and_runtime_status_updates() {
+async fn test_web_ui_legacy_route_payload_does_not_create_active_runtime_routes() {
     let _guard = test_mutex().lock().await;
     stop_all_routes().await;
 
@@ -530,7 +568,7 @@ async fn test_web_ui_can_disable_existing_route_and_runtime_status_updates() {
     sleep(Duration::from_millis(200)).await;
     let runtime_before = read_json_response(port, "/runtime-status").await;
     assert!(
-        runtime_before["active_routes"]
+        !runtime_before["active_routes"]
             .as_array()
             .unwrap()
             .iter()
@@ -559,6 +597,9 @@ async fn test_web_ui_can_disable_existing_route_and_runtime_status_updates() {
             .iter()
             .any(|name| name == &serde_json::Value::String(route_name.clone()))
     );
+
+    let config_json = read_json_response(port, "/config").await;
+    assert_eq!(config_json["consumers"][0]["name"], route_name);
 
     server.abort();
     stop_all_routes().await;

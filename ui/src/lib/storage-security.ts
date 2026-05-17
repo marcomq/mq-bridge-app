@@ -1,5 +1,13 @@
 import type { WorkspaceConfig } from "./workspace-config";
 
+export type StorageModeValue =
+  | "unencrypted"
+  | "balanced"
+  | "env_temporary_messages"
+  | "temporary_messages"
+  | "sensitive"
+  | "durable";
+
 export type StorageSecurityInfo = {
   target?: "cli" | "desktop";
   encrypted: boolean;
@@ -67,100 +75,28 @@ export function normalizeStorageSecurityInfo(raw: unknown): StorageSecurityInfo 
   };
 }
 
-export type StorageModeOption = {
-  value:
-    | "unencrypted"
-    | "balanced"
-    | "env_temporary_messages"
-    | "temporary_messages"
-    | "sensitive"
-    | "durable";
-  title: string;
-  detail: string;
-  available: boolean;
-};
-
-export function storageModeOptions(info: StorageSecurityInfo): StorageModeOption[] {
+export function availableStorageModeValues(info: StorageSecurityInfo): StorageModeValue[] {
   const target = info.target === "desktop" ? "desktop" : "cli";
   if (target === "desktop") {
     if (info.keyStoreAvailable !== true) {
-      return [
-        {
-          value: "unencrypted",
-          title: "Unencrypted",
-          detail: "Plain config and plain cached message history on disk.",
-          available: true,
-        },
-        {
-          value: "temporary_messages",
-          title: "Temporary encrypted messages",
-          detail: "Plain config with encrypted message history that is cleared after restart.",
-          available: true,
-        },
-      ];
+      return ["unencrypted", "temporary_messages"];
     }
     return [
-      {
-        value: "unencrypted",
-        title: "Unencrypted",
-        detail: "Plain config and plain cached message history on disk.",
-        available: true,
-      },
-      {
-        value: "balanced",
-        title: "Keychain secrets",
-        detail: "Plain config, secrets stored in the OS key store, plain message history.",
-        available: true,
-      },
-      {
-        value: "sensitive",
-        title: "Encrypted config + temporary encrypted messages",
-        detail: "Encrypted config with temporary encrypted message history cleared after restart.",
-        available: true,
-      },
-      {
-        value: "durable",
-        title: "Encrypted config + persistent encrypted messages",
-        detail: "Encrypted config with persistent encrypted message history restored after restart.",
-        available: info.persistentMessagesAvailable === true,
-      },
+      "unencrypted",
+      "balanced",
+      "sensitive",
+      ...(info.persistentMessagesAvailable === true ? ["durable" as const] : []),
     ];
   }
 
-  return [
-    {
-      value: "unencrypted",
-      title: "Unencrypted",
-      detail: "Plain config and plain cached message history on disk.",
-      available: true,
-    },
-    {
-      value: "balanced",
-      title: "Env secrets",
-      detail: "Plain config with secrets extracted to environment placeholders; message history stays plain.",
-      available: true,
-    },
-    {
-      value: "env_temporary_messages",
-      title: "Env secrets + temporary encrypted messages",
-      detail: "Plain config with env placeholders and encrypted message history cleared after restart.",
-      available: true,
-    },
-  ];
-}
-
-export function storageModeOptionsSummary(info: StorageSecurityInfo): string {
-  const base = storageModeOptions(info)
-    .map((option) => `${option.title}: ${option.available ? option.detail : `Unavailable. ${option.detail}`}`)
-    .join(" ");
-  if (info.target === "desktop" && info.keyStoreAvailable !== true) {
-    return `${base} Persistent encrypted config and persistent encrypted history are unavailable because no OS key store is available.`;
-  }
-  return base;
+  return ["unencrypted", "balanced", "env_temporary_messages"];
 }
 
 export function fallbackStorageSecurity(config: Pick<WorkspaceConfig, "config_security"> | Record<string, unknown>) {
   const mode = String((config as WorkspaceConfig).config_security?.mode || "balanced");
+  // These fallback objects are metadata-only. Callers such as hasEncryptedMessages() and
+  // saveImportedConfig()/setStoredJson() must still check messageKeyHex/kid before assuming
+  // encrypted message storage is actually writable or decryptable in the current process.
   if (mode === "durable") {
     return {
       ...EMPTY_STORAGE_SECURITY,
@@ -210,24 +146,4 @@ export function hasTemporaryEncryptedMessages(info: StorageSecurityInfo) {
 
 export function hasEncryptedMessages(info: StorageSecurityInfo) {
   return info.messagesEncrypted && typeof info.messageKeyHex === "string" && info.messageKeyHex.length > 0;
-}
-
-export function storageSecuritySummary(info: StorageSecurityInfo): string {
-  if (info.messagesEncrypted && info.messagesPersistent) {
-    return "Messages are encrypted and can be restored after restart using a key stored in the OS key store.";
-  }
-  if (hasTemporaryEncryptedMessages(info)) {
-    return "Messages are encrypted during the current session and cleared after restart.";
-  }
-  if (info.reason === "key-store-unavailable") {
-    return "No OS key store is available. Message history can only be stored temporarily and will be cleared after restart.";
-  }
-  return "Message history is stored without encryption at rest.";
-}
-
-export function storageSecurityDetail(info: StorageSecurityInfo): string {
-  if (info.messagesEncrypted) {
-    return "Message history is encrypted at rest to avoid leaving readable broker payloads in local browser storage after shutdown. This does not protect against code running inside the app.";
-  }
-  return "Stored message history and cached payloads remain readable on disk after shutdown in this mode.";
 }

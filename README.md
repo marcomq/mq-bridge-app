@@ -60,7 +60,9 @@ In short:
 
 > **Note**: This project is currently in **Active Development**.
 
-It originally served as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. It may already work reliably for some use cases. The UI is somewhat rough and may not work in all cases. Always test thoroughly before production use.
+It originally served as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. 
+
+The UI was mostly vibe coded. It was first created as vanilla-js project and then converted to svelte and typescript via codex. Later to tauri too. Early cleanups were missed and are now performed one after another. Final cleanups are performed manually but may still take additional weeks. Don't use the current ui code as reference implementation. It may already work ok for some use cases but I wouldn't recommend to use it in production yet without testing.
 
 ## Features
 
@@ -89,7 +91,7 @@ It originally served as the primary reference implementation and testbed for the
 
 Prebuilt binaries are published on the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases), including the desktop Tauri bundles and CLI artifacts for supported platforms.
 
-### MacOS Desktop App (Tauri)
+### macOS Desktop App (Tauri)
 
 Because the desktop binaries are currently not notarized, macOS may report the application as "damaged" when you first try to open it. To fix this, you need to remove the quarantine attribute.
 

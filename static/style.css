@@ -142,10 +142,10 @@ body {
     top: 100%;
     right: 0;
     z-index: 1000;
-    background: var(--bg-base);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    box-shadow: 0 4px 12px var(--shadow-color);
+    background: var(--wa-color-surface-default, white);
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgb(0 0 0 / 0.14);
     min-width: 140px;
     margin-top: 4px;
     display: flex;
@@ -163,9 +163,9 @@ body {
     text-align: left;
     cursor: pointer;
     font-size: 11px;
-    border-radius: 2px;
     width: 100%;
     white-space: nowrap;
+    border-radius: 5px;
 }
 
 .add-menu button:hover {
@@ -178,6 +178,7 @@ body {
     display: inline-flex;
 }
 
+.header-save-button,
 .theme-trigger {
     width: 30px;
     height: 30px;
@@ -187,11 +188,49 @@ body {
     color: #666;
     cursor: pointer;
 }
+.theme button:hover {
+    background: var(--bg-hover);
+    color: var(--accent-color);
+}
 
+.header-save-button {
+    position: relative;
+    align-items: center;
+    display: inline-flex;
+    justify-content: center;
+    width: 54px;
+}
+
+.header-save-button:disabled {
+    cursor: default;
+    opacity: 0.72;
+}
+
+.header-save-button .save-icon {
+    display: block;
+}
+
+.header-save-button .dirty-dot {
+    position: absolute;
+    top: 6px;
+    right: -5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: #2684ff;
+    box-shadow: 0 0 0 2px var(--bg-panel);
+}
+
+.header-save-button:hover,
+.header-save-button:focus-visible,
 .theme-trigger:hover,
 .theme-trigger:focus-visible {
     background: rgb(0 0 0 / 0.08);
     outline: none;
+}
+
+#cons-capture-enabled {
+    height: 15px;
 }
 
 .theme-menu {
@@ -219,7 +258,6 @@ body {
     cursor: pointer;
 }
 
-.theme-menu button:hover,
 .theme-menu button.active {
     background: rgb(0 0 0 / 0.08);
 }
@@ -287,6 +325,10 @@ body {
     opacity: 0.7;
 }
 
+.request-field {
+    min-height: 27px;
+}
+
 /* ── BODY LAYOUT ── */
 .app-body {
     flex: 1;
@@ -304,6 +346,13 @@ body {
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+}
+
+.publishers-layout {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .sidebar-header {
@@ -407,6 +456,30 @@ body {
     cursor: pointer;
     border-left: 2px solid transparent;
     transition: background 0.1s;
+}
+
+.sidebar-item--group {
+    font-weight: 600;
+}
+
+.tree-guide {
+    display: block;
+    align-self: stretch;
+    flex: 0 0 auto;
+    min-width: 0;
+    background-image: repeating-linear-gradient(
+        to right,
+        transparent 0 11px,
+        color-mix(in srgb, var(--border) 80%, transparent) 11px 12px,
+        transparent 12px 14px
+    );
+    opacity: 0.85;
+}
+
+.tree-caret {
+    width: 12px;
+    flex: 0 0 12px;
+    color: var(--text-dim);
 }
 
 .sidebar-item:hover {
@@ -548,6 +621,26 @@ button.sidebar-item:focus-visible {
     background: var(--bg-base);
     height: 100%;
     min-height: 0;
+}
+
+.sidebar-resizer {
+    width: 3px;
+    flex: 0 0 2px;
+    display: block;
+    height: 100%;
+    cursor: col-resize;
+    background: var(--border);
+    transition: background 0.1s;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    align-self: stretch;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible {
+    background: var(--accent-blue);
+    outline: none;
 }
 
 /* ── CONTENT TABS (Definition / Messages etc.) ── */
@@ -1860,7 +1953,7 @@ wa-button.is-dirty::part(base) {
 
 .code-editor .cm-editor {
     height: 100%;
-    min-height: 30px;
+    min-height: 36px;
     background: transparent;
     color: var(--text-primary);
     font-family: var(--font);

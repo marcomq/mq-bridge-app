@@ -107,28 +107,7 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
-pub struct PublisherPreset {
-    // Presets mirror request-bar state so they can be reused across non-HTTP endpoints too.
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub payload: String,
-    #[serde(default)]
-    pub headers: Vec<PublisherPresetHeader>,
-    #[serde(default)]
-    pub group: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub request_fields: HashMap<String, String>,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
-pub struct PublisherPresetHeader {
+pub struct HeaderRow {
     #[serde(default)]
     pub key: String,
     #[serde(default)]
@@ -159,6 +138,7 @@ pub struct RouteConfig {
 pub struct ConsumerConfig {
     #[serde(default = "generate_config_id")]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     pub endpoint: Endpoint,
     #[serde(default)]
@@ -223,16 +203,17 @@ fn consumer_output_is_none(output: &ConsumerOutputConfig) -> bool {
 pub struct PublisherClient {
     #[serde(default = "generate_config_id")]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     pub endpoint: Endpoint,
     #[serde(default)]
-    pub presets: Vec<PublisherPreset>,
-    #[serde(default)]
     pub comment: String,
-}
-
-fn normalized_config_name(name: &str) -> String {
-    name.trim().replace(' ', "_").to_lowercase()
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub payload: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<HeaderRow>,
+    #[serde(default, alias = "sortOrder", skip_serializing_if = "Option::is_none")]
+    pub sort_order: Option<i32>,
 }
 
 fn next_unique_name(base: &str, existing: &HashSet<String>) -> String {
@@ -319,8 +300,39 @@ impl SecretStore for EnvFileSecretStore {
     }
 }
 
-fn expand_variables(content: &str) -> Result<String, anyhow::Error> {
-    Ok(shellexpand::env(content)?.to_string())
+fn extract_inline_env_vars(
+    content: &str,
+    format: config::FileFormat,
+) -> HashMap<String, String> {
+    let parsed = match format {
+        config::FileFormat::Json => serde_json::from_str::<serde_json::Value>(content).ok(),
+        _ => serde_yaml_ng::from_str::<serde_json::Value>(content).ok(),
+    };
+
+    let Some(root) = parsed else {
+        return HashMap::new();
+    };
+
+    root.get("env_vars")
+        .or_else(|| root.get("envVars"))
+        .and_then(serde_json::Value::as_object)
+        .map(|env_vars| {
+            env_vars
+                .iter()
+                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn expand_variables(content: &str, format: config::FileFormat) -> Result<String, anyhow::Error> {
+    let inline_env_vars = extract_inline_env_vars(content, format);
+    let expanded = shellexpand::env_with_context_no_errors(content, |key| {
+        std::env::var(key)
+            .ok()
+            .or_else(|| inline_env_vars.get(key).cloned())
+    });
+    Ok(expanded.to_string())
 }
 
 // New helper function to create a config source from a string.
@@ -329,7 +341,7 @@ fn source_from_str(
     content: &str,
     format: config::FileFormat,
 ) -> Result<config::File<config::FileSourceString, config::FileFormat>, anyhow::Error> {
-    let expanded = expand_variables(content)?;
+    let expanded = expand_variables(content, format)?;
     // Using `required(false)` means an empty or whitespace-only string won't cause an error.
     Ok(config::File::from_str(&expanded, format).required(false))
 }
@@ -479,9 +491,8 @@ pub fn load_config_at_path(
 }
 
 impl AppConfig {
-    fn ensure_entity_ids(&mut self) {
+    pub fn ensure_entity_ids(&mut self) {
         let mut known_ids = HashSet::new();
-
         for publisher in &mut self.publishers {
             if publisher.id.trim().is_empty() || !known_ids.insert(publisher.id.clone()) {
                 publisher.id = generate_config_id();
@@ -610,7 +621,7 @@ impl AppConfig {
             let mut routes = std::mem::take(&mut self.routes);
 
             for (route_name, route_config) in routes.drain() {
-                let normalized_route_name = normalized_config_name(&route_name);
+                let normalized_route_name = route_name.trim().to_string();
                 let output =
                     if matches!(route_config.route.output.endpoint_type, EndpointType::Null) {
                         ConsumerOutputConfig::None
@@ -632,8 +643,10 @@ impl AppConfig {
                             id: generate_config_id(),
                             name: publisher_name.clone(),
                             endpoint: route_config.route.output.clone(),
-                            presets: Vec::new(),
                             comment: String::new(),
+                            payload: String::new(),
+                            headers: Vec::new(),
+                            sort_order: None,
                         };
                         let publisher_id = publisher.id.clone();
                         self.publishers.push(publisher);
@@ -670,18 +683,14 @@ impl AppConfig {
 
     pub fn save_with_secret_store(&self, path: &str, secret_store: &dyn SecretStore) -> Result<()> {
         let mut config_to_save = self.clone();
-        config_to_save.migrate_legacy_consumer_response();
-        config_to_save.migrate_legacy_security_mode();
-        config_to_save.ensure_entity_ids();
-        config_to_save.normalize_consumer_publisher_outputs();
+        config_to_save.migrate_legacy_routes();
 
-        // Sanitize route names to ensure compatibility with environment variables
-        let sanitized_routes: HashMap<String, RouteConfig> = config_to_save
+        let trimmed_routes: HashMap<String, RouteConfig> = config_to_save
             .routes
             .drain()
-            .map(|(k, v)| (k.trim().replace(' ', "_").to_lowercase(), v))
+            .map(|(k, v)| (k.trim().to_string(), v))
             .collect();
-        config_to_save.routes = sanitized_routes;
+        config_to_save.routes = trimmed_routes;
 
         for consumer in &mut config_to_save.consumers {
             consumer.name = consumer.name.trim().to_string();
@@ -728,33 +737,54 @@ impl AppConfig {
         Ok(())
     }
 
+    fn extract_secrets_to_all(
+        name: &str,
+        id: &str,
+        entity_type: &str,
+        endpoint: &mut Endpoint,
+        all_secrets: &mut HashMap<String, String>,
+    ) {
+        let mut endpoint_secrets = HashMap::new();
+        let id_part = sanitize_id_for_env(id);
+        let final_prefix = format!("MQB__{}__{}__", entity_type, id_part);
+        extract_all_secrets_from_endpoint(endpoint, &final_prefix, &mut endpoint_secrets);
+
+        if !endpoint_secrets.is_empty() {
+            let name_part = sanitize_name_for_env(name);
+
+            for (k, v) in endpoint_secrets {
+                let suffix = k.strip_prefix(&final_prefix).unwrap();
+                all_secrets.insert(
+                    format!("MQB__{}__{}{}", entity_type, name_part, suffix),
+                    v.clone(),
+                );
+                all_secrets.insert(format!("MQB__{}__{}{}", entity_type, id_part, suffix), v);
+            }
+        }
+    }
+
     fn extract_secrets(&mut self) -> HashMap<String, String> {
         let mut all_secrets = HashMap::new();
         for (name, route) in &mut self.routes {
-            let name = name.to_uppercase(); // Names are already sanitized in save()
-            let prefix = format!("MQB__ROUTES__{}__", name);
+            let prefix = format!("MQB__ROUTES__{}__", sanitize_name_for_env(name));
             route.route.extract_secrets(&prefix, &mut all_secrets);
             extract_http_header_secrets_from_route(&mut route.route, &prefix, &mut all_secrets);
         }
         for consumer in &mut self.consumers {
-            let name = consumer.name.trim().replace(' ', "_").to_uppercase();
-            let prefix = format!("MQB__CONSUMERS__{}__", name);
-            consumer.endpoint.extract_secrets(&prefix, &mut all_secrets);
-            extract_http_header_secrets_from_endpoint(
+            Self::extract_secrets_to_all(
+                &consumer.name,
+                &consumer.id,
+                "CONSUMERS",
                 &mut consumer.endpoint,
-                &prefix,
                 &mut all_secrets,
             );
         }
         for publisher in &mut self.publishers {
-            let name = publisher.name.trim().replace(' ', "_").to_uppercase();
-            let prefix = format!("MQB__PUBLISHERS__{}__", name);
-            publisher
-                .endpoint
-                .extract_secrets(&prefix, &mut all_secrets);
-            extract_http_header_secrets_from_endpoint(
+            Self::extract_secrets_to_all(
+                &publisher.name,
+                &publisher.id,
+                "PUBLISHERS",
                 &mut publisher.endpoint,
-                &prefix,
                 &mut all_secrets,
             );
         }
@@ -764,8 +794,7 @@ impl AppConfig {
     pub fn referenced_secret_keys(&self) -> SecretReferenceSummary {
         let mut routes = HashMap::new();
         for (name, route_config) in &self.routes {
-            let sanitized_name = name.trim().replace(' ', "_").to_lowercase();
-            let prefix = format!("MQB__ROUTES__{}__", sanitized_name.to_uppercase());
+            let prefix = format!("MQB__ROUTES__{}__", sanitize_name_for_env(name));
             let mut route = route_config.route.clone();
             let mut secrets = HashMap::new();
             route.extract_secrets(&prefix, &mut secrets);
@@ -773,37 +802,33 @@ impl AppConfig {
             if !secrets.is_empty() {
                 let mut keys: Vec<String> = secrets.into_keys().collect();
                 keys.sort();
-                routes.insert(sanitized_name, keys);
+                routes.insert(name.clone(), keys);
             }
         }
 
         let mut consumers = HashMap::new();
         for consumer in &self.consumers {
-            let sanitized_name = consumer.name.trim().replace(' ', "_");
-            let prefix = format!("MQB__CONSUMERS__{}__", sanitized_name.to_uppercase());
-            let mut endpoint = consumer.endpoint.clone();
-            let mut secrets = HashMap::new();
-            endpoint.extract_secrets(&prefix, &mut secrets);
-            extract_http_header_secrets_from_endpoint(&mut endpoint, &prefix, &mut secrets);
-            if !secrets.is_empty() {
-                let mut keys: Vec<String> = secrets.into_keys().collect();
-                keys.sort();
-                consumers.insert(sanitized_name, keys);
+            let keys = self.get_referenced_keys_for_entity(
+                &consumer.name,
+                &consumer.id,
+                "CONSUMERS",
+                &consumer.endpoint,
+            );
+            if !keys.is_empty() {
+                consumers.insert(consumer.name.clone(), keys);
             }
         }
 
         let mut publishers = HashMap::new();
         for publisher in &self.publishers {
-            let sanitized_name = publisher.name.trim().replace(' ', "_");
-            let prefix = format!("MQB__PUBLISHERS__{}__", sanitized_name.to_uppercase());
-            let mut endpoint = publisher.endpoint.clone();
-            let mut secrets = HashMap::new();
-            endpoint.extract_secrets(&prefix, &mut secrets);
-            extract_http_header_secrets_from_endpoint(&mut endpoint, &prefix, &mut secrets);
-            if !secrets.is_empty() {
-                let mut keys: Vec<String> = secrets.into_keys().collect();
-                keys.sort();
-                publishers.insert(sanitized_name, keys);
+            let keys = self.get_referenced_keys_for_entity(
+                &publisher.name,
+                &publisher.id,
+                "PUBLISHERS",
+                &publisher.endpoint,
+            );
+            if !keys.is_empty() {
+                publishers.insert(publisher.name.clone(), keys);
             }
         }
 
@@ -813,6 +838,30 @@ impl AppConfig {
             publishers,
         }
     }
+
+    fn get_referenced_keys_for_entity(
+        &self,
+        name: &str,
+        id: &str,
+        entity_type: &str,
+        endpoint: &Endpoint,
+    ) -> Vec<String> {
+        let mut endpoint = endpoint.clone();
+        let mut endpoint_secrets = HashMap::new();
+        let temp_prefix = "SECRET__";
+        extract_all_secrets_from_endpoint(&mut endpoint, temp_prefix, &mut endpoint_secrets);
+
+        let name_part = sanitize_name_for_env(name);
+        let id_part = sanitize_id_for_env(id);
+        let mut keys = Vec::new();
+        for k in endpoint_secrets.keys() {
+            let suffix = k.strip_prefix(temp_prefix).unwrap();
+            keys.push(format!("MQB__{}__{}{}", entity_type, name_part, suffix));
+            keys.push(format!("MQB__{}__{}{}", entity_type, id_part, suffix));
+        }
+        keys.sort();
+        keys
+    }
 }
 
 fn is_sensitive_http_header(key: &str) -> bool {
@@ -820,6 +869,32 @@ fn is_sensitive_http_header(key: &str) -> bool {
         key.trim().to_ascii_lowercase().as_str(),
         "authorization" | "x-api-key" | "api-key" | "x-auth-token" | "proxy-authorization"
     )
+}
+
+fn sanitize_name_for_env(name: &str) -> String {
+    name.trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn sanitize_id_for_env(id: &str) -> String {
+    id.trim().replace('-', "_").to_uppercase()
+}
+
+fn extract_all_secrets_from_endpoint(
+    endpoint: &mut Endpoint,
+    prefix: &str,
+    secrets: &mut HashMap<String, String>,
+) {
+    endpoint.extract_secrets(prefix, secrets);
+    extract_http_header_secrets_from_endpoint(endpoint, prefix, secrets);
 }
 
 fn extract_http_header_secrets_from_route(
@@ -1061,6 +1136,40 @@ routes:
         } else {
             panic!("Expected Kafka source endpoint");
         }
+    }
+
+    #[test]
+    fn test_config_expands_placeholders_from_inline_env_vars() {
+        let yaml_config = r#"
+env_vars:
+  baseUrl: "https://api.example.test"
+publishers:
+  - name: "orders list"
+    endpoint:
+      http:
+        url: "${baseUrl}/orders"
+"#;
+
+        let (config, _) = load_config_internal(
+            Some("_".to_string()),
+            None,
+            None,
+            Some(yaml_config.to_string()),
+            false,
+            false,
+        )
+        .unwrap();
+
+        match &config.publishers[0].endpoint.endpoint_type {
+            mq_bridge::models::EndpointType::Http(http) => {
+                assert_eq!(http.url, "https://api.example.test/orders");
+            }
+            other => panic!("expected http publisher, got {other:?}"),
+        }
+        assert_eq!(
+            config.env_vars.get("baseUrl").map(String::as_str),
+            Some("https://api.example.test")
+        );
     }
 
     #[test]

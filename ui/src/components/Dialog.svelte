@@ -89,7 +89,6 @@
             <wa-button
               variant="neutral"
               appearance="outlined"
-              size="small"
               role="button"
               tabindex="0"
               onclick={() => handleClose(choice.value)}
@@ -112,7 +111,6 @@
         <wa-button
           variant="neutral"
           appearance="outlined"
-          size="small"
           role="button"
           tabindex="0"
           onclick={() => handleClose(mode === "confirm" ? false : null)}
@@ -123,7 +121,6 @@
       {/if}
       <wa-button
         variant="brand"
-        size="small"
         role="button"
         tabindex="0"
         onclick={() => handleClose(mode === "prompt" ? inputValue.trim() : true)}
@@ -137,7 +134,6 @@
        slot="footer"
        variant="neutral"
        appearance="outlined"
-       size="small"
        role="button"
        tabindex="0"
        onclick={() => handleClose(null)}

@@ -1,7 +1,6 @@
 use crate::config::{
     AppConfig, ConfigSecurityMode, ConsumerConfig, ConsumerMessageCaptureConfig,
-    ConsumerOutputConfig, ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, RouteConfig,
-    SecretStore,
+    ConsumerOutputConfig, ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, SecretStore,
 };
 use crate::encrypted_config::has_config_master_key;
 use anyhow::{Result, anyhow};
@@ -12,10 +11,11 @@ use mq_bridge::route::RouteHandle;
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
 };
+use schemars::JsonSchema;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::RwLock as StdRwLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -163,15 +163,17 @@ pub struct UiApp {
     storage_save_prepare: Option<Arc<StorageSavePrepare>>,
     config_recovery: Arc<StdRwLock<Option<ConfigRecoveryStatusResponse>>>,
     config_recovery_reset: Option<Arc<ConfigRecoveryReset>>,
+    throughput_updater_started: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy)]
 struct RouteMetricSample {
     total_messages: f64,
     observed_at: Instant,
+    smoothed_throughput: f64,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct RuntimeStatusResponse {
     pub active_consumers: Vec<String>,
     pub active_routes: Vec<String>,
@@ -179,24 +181,51 @@ pub struct RuntimeStatusResponse {
     pub consumers: HashMap<String, ConsumerStatusSnapshot>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct ConsumerStatusSnapshot {
     pub running: bool,
-    pub status: mq_bridge::traits::EndpointStatus,
+    pub status: EndpointStatusSnapshot,
+    pub throughput: f64,
     pub message_sequence: u64,
     pub capture_enabled: bool,
     pub capture_keep_last: usize,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct ConsumerStatusResponse {
     pub running: bool,
-    pub status: mq_bridge::traits::EndpointStatus,
+    pub status: EndpointStatusSnapshot,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+pub struct EndpointStatusSnapshot {
+    pub healthy: bool,
+    pub target: String,
+    pub pending: Option<usize>,
+    pub capacity: Option<usize>,
+    pub error: Option<String>,
+    pub details: serde_json::Value,
+}
+
+impl From<mq_bridge::traits::EndpointStatus> for EndpointStatusSnapshot {
+    fn from(status: mq_bridge::traits::EndpointStatus) -> Self {
+        Self {
+            healthy: status.healthy,
+            target: status.target,
+            pending: status.pending,
+            capacity: status.capacity,
+            error: status.error,
+            details: status.details,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct PublishRequest {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub publisher_id: Option<String>,
     pub payload: String,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
@@ -204,7 +233,7 @@ pub struct PublishRequest {
     pub endpoint: Option<mq_bridge::models::Endpoint>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct PublishResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,7 +242,7 @@ pub struct PublishResponse {
     pub metadata: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct ConfigRecoveryStatusResponse {
     pub mode: Option<String>,
     pub reason: String,
@@ -222,7 +251,7 @@ pub struct ConfigRecoveryStatusResponse {
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct ConfigRecoveryResetResponse {
     pub backup_path: String,
 }
@@ -341,57 +370,83 @@ fn is_same_origin_request(msg: &CanonicalMessage) -> bool {
     true
 }
 
-fn extract_label_value(segment: &str, label: &str) -> Option<String> {
-    let pattern = format!(r#"{label}=""#);
-    let start = segment.find(&pattern)? + pattern.len();
-    let remainder = &segment[start..];
-    let end = remainder.find('"')?;
-    Some(remainder[..end].to_string())
+/// Time constant for throughput smoothing (EMA) in seconds.
+/// A value of 2.0s means it will take approximately 9-10s to decay to ~1% of its value.
+const THROUGHPUT_TAU: f64 = 0.5;
+/// Frequency of throughput calculations.
+const THROUGHPUT_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
+
+fn next_route_metric_sample(
+    previous: Option<RouteMetricSample>,
+    total_messages: f64,
+    observed_at: Instant,
+) -> RouteMetricSample {
+    let smoothed_throughput = if let Some(previous_sample) = previous {
+        let elapsed = observed_at
+            .duration_since(previous_sample.observed_at)
+            .as_secs_f64();
+        if elapsed > 0.0 {
+            let current_rate = (total_messages - previous_sample.total_messages).max(0.0) / elapsed;
+
+            // Time-weighted alpha: alpha = 1 - exp(-delta_t / tau)
+            let alpha = 1.0 - (-elapsed / THROUGHPUT_TAU).exp();
+            alpha * current_rate + (1.0 - alpha) * previous_sample.smoothed_throughput
+        } else {
+            previous_sample.smoothed_throughput
+        }
+    } else {
+        0.0
+    };
+    RouteMetricSample {
+        total_messages,
+        observed_at,
+        smoothed_throughput, // First observation: we have no previous throughput to smooth, so start at 0.
+    }
 }
 
-fn parse_route_metric_totals(metrics_text: &str) -> HashMap<(String, String), f64> {
-    let mut totals = HashMap::new();
+fn consumer_runtime_key(consumer: &ConsumerConfig) -> String {
+    let trimmed_id = consumer.id.trim();
+    if trimmed_id.is_empty() {
+        consumer.name.trim().to_string()
+    } else {
+        trimmed_id.to_string()
+    }
+}
 
-    for line in metrics_text.lines() {
-        if !line.starts_with("queue_messages_processed_total{") {
-            continue;
-        }
+fn encode_collector_route_key(consumer_key: &str) -> String {
+    let mut encoded = String::with_capacity(consumer_key.len() * 2);
+    for byte in consumer_key.as_bytes() {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
+}
 
-        let Some(labels_end) = line.find('}') else {
-            continue;
-        };
-        let labels = &line["queue_messages_processed_total{".len()..labels_end];
-        let value_str = line[labels_end + 1..].trim();
-        let Ok(value) = value_str.parse::<f64>() else {
-            continue;
-        };
-
-        let Some(route) = extract_label_value(labels, "route") else {
-            continue;
-        };
-        let Some(endpoint) = extract_label_value(labels, "endpoint") else {
-            continue;
-        };
-
-        totals.insert((route, endpoint), value);
+fn decode_collector_route_key(encoded: &str) -> Option<String> {
+    if !encoded.len().is_multiple_of(2) {
+        return None;
     }
 
-    totals
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    let mut index = 0;
+    while index < encoded.len() {
+        let next = index + 2;
+        let value = u8::from_str_radix(&encoded[index..next], 16).ok()?;
+        bytes.push(value);
+        index = next;
+    }
+
+    String::from_utf8(bytes).ok()
 }
 
-fn route_has_metrics(route: &Route) -> bool {
-    let has_metrics = |endpoint: &Endpoint| {
-        endpoint
-            .middlewares
-            .iter()
-            .any(|middleware| matches!(middleware, mq_bridge::models::Middleware::Metrics(_)))
-    };
-
-    has_metrics(&route.input) || has_metrics(&route.output)
+fn collector_route_name(consumer_key: &str) -> String {
+    format!(
+        "ui_collector_route_{}",
+        encode_collector_route_key(consumer_key)
+    )
 }
 
-fn route_is_active(route_config: &RouteConfig) -> bool {
-    route_config.enabled && !matches!(route_config.route.input.endpoint_type, EndpointType::Null)
+fn consumer_matches_lookup(consumer: &ConsumerConfig, lookup: &str) -> bool {
+    consumer_runtime_key(consumer) == lookup || consumer.name == lookup
 }
 
 fn endpoint_supports_consumer_response(endpoint: &Endpoint) -> bool {
@@ -490,7 +545,7 @@ enum ResolvedConsumerOutput {
 }
 
 struct CollectorContext {
-    name: String,
+    source_key: String,
     log_channel: mq_bridge::endpoints::memory::MemoryChannel,
     counter: Arc<AtomicU64>,
     output: ResolvedConsumerOutput,
@@ -649,7 +704,7 @@ impl UiApp {
         runtime_hooks: UiAppRuntimeHooks,
     ) -> Self {
         initial_config.migrate_legacy_security_mode();
-        Self {
+        let app = Self {
             config: Arc::new(RwLock::new(initial_config)),
             metrics_handle,
             config_file_path: Arc::new(config_file_path),
@@ -662,6 +717,47 @@ impl UiApp {
             storage_save_prepare: runtime_hooks.storage_save_prepare,
             config_recovery: Arc::new(StdRwLock::new(runtime_hooks.config_recovery)),
             config_recovery_reset: runtime_hooks.config_recovery_reset,
+            throughput_updater_started: Arc::new(AtomicBool::new(false)),
+        };
+
+        app.ensure_throughput_updater();
+
+        app
+    }
+
+    /// Spawns a background task to periodically update throughput metrics for all active consumers if not already started.
+    fn ensure_throughput_updater(&self) {
+        if self.throughput_updater_started.load(Ordering::Relaxed) {
+            return;
+        }
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current()
+            && self
+                .throughput_updater_started
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            let throughput_samples_arc = Arc::clone(&self.throughput_samples);
+            let consumer_message_sequences_arc = Arc::clone(&self.consumer_message_sequences);
+            handle.spawn(async move {
+                let mut interval = tokio::time::interval(THROUGHPUT_UPDATE_INTERVAL);
+
+                loop {
+                    interval.tick().await; // Wait for the next interval tick
+                    let now = Instant::now();
+
+                    let consumer_sequences = consumer_message_sequences_arc.read().await.clone();
+                    let mut samples = throughput_samples_arc.write().await;
+
+                    for (consumer_key, sequence) in consumer_sequences.iter() {
+                        let total_messages = sequence.load(Ordering::Relaxed) as f64;
+                        let previous_sample = samples.get(consumer_key).copied();
+                        let next_sample =
+                            next_route_metric_sample(previous_sample, total_messages, now);
+                        samples.insert(consumer_key.clone(), next_sample);
+                    }
+                }
+            });
         }
     }
 
@@ -694,6 +790,8 @@ impl UiApp {
         msg: CanonicalMessage,
         serve_static_assets: bool,
     ) -> Result<Handled, HandlerError> {
+        self.ensure_throughput_updater();
+
         let method = msg
             .metadata
             .get("http_method")
@@ -740,27 +838,36 @@ impl UiApp {
             ("GET", "/config-recovery") => self.ok_json(&self.config_recovery(), true),
             ("GET", "/storage-security") => self.ok_json(&self.storage_security(), true),
             ("GET", "/consumer-status") => {
-                let name = query_param(&msg, "consumer").unwrap_or_default();
-                match self.consumer_status(&name).await {
+                let consumer_key = query_param(&msg, "consumer_id")
+                    .or_else(|| query_param(&msg, "consumer"))
+                    .unwrap_or_default();
+                match self.consumer_status(&consumer_key).await {
                     Some(status) => self.ok_json(&status, false),
-                    None => self.err_response(404, format!("Consumer not found: {name}")),
+                    None => self.err_response(404, format!("Consumer not found: {consumer_key}")),
                 }
             }
             ("POST", "/consumer-start") => {
-                let name = query_param(&msg, "consumer").unwrap_or_default();
-                match self.start_consumer(&name).await {
+                let consumer_key = query_param(&msg, "consumer_id")
+                    .or_else(|| query_param(&msg, "consumer"))
+                    .unwrap_or_default();
+                match self.start_consumer(&consumer_key).await {
                     Ok(true) => Ok(Handled::Publish(msg!("Started"))),
-                    Ok(false) => self.err_response(404, format!("Consumer not found: {name}")),
+                    Ok(false) => {
+                        self.err_response(404, format!("Consumer not found: {consumer_key}"))
+                    }
                     Err(e) => self.err_response(500, e.to_string()),
                 }
             }
             ("POST", "/consumer-stop") => {
-                let name = query_param(&msg, "consumer").unwrap_or_default();
-                self.stop_consumer(&name).await;
+                let consumer_key = query_param(&msg, "consumer_id")
+                    .or_else(|| query_param(&msg, "consumer"))
+                    .unwrap_or_default();
+                self.stop_consumer(&consumer_key).await;
                 Ok(Handled::Publish(msg!("Stopped")))
             }
             ("GET", "/messages") => {
-                let consumer = query_param(&msg, "consumer");
+                let consumer =
+                    query_param(&msg, "consumer_id").or_else(|| query_param(&msg, "consumer"));
                 self.ok_json(&self.get_messages(consumer.as_deref()).await, true)
             }
             ("POST", "/config") => self.handle_update_config_message(msg).await,
@@ -815,20 +922,24 @@ impl UiApp {
         status: u16,
         message: impl Into<String>,
     ) -> Result<Handled, HandlerError> {
-        Ok(Handled::Publish(
-            msg!(message.into())
-                .with_status_code(status.to_string())
-                .with_content_type("text/plain; charset=utf-8"),
-        ))
+        let msg_str = message.into();
+        self.ok_json(&serde_json::json!({ "error": msg_str }), false)
+            .map(|h| match h {
+                Handled::Publish(m) => Handled::Publish(m.with_status_code(status.to_string())),
+                other => other,
+            })
     }
 
     pub fn render_metrics(&self) -> String {
         self.metrics_handle.render()
     }
 
-    pub async fn consumer_status(&self, name: &str) -> Option<ConsumerStatusResponse> {
+    pub async fn consumer_status(&self, consumer_key: &str) -> Option<ConsumerStatusResponse> {
         let config = self.config.read().await;
-        let consumer_config = config.consumers.iter().find(|c| c.name == name);
+        let consumer_config = config
+            .consumers
+            .iter()
+            .find(|c| consumer_matches_lookup(c, consumer_key));
 
         consumer_config
             .map(|c| async move { self.consumer_status_snapshot(c).await })?
@@ -839,13 +950,13 @@ impl UiApp {
             })
     }
 
-    pub async fn start_consumer(&self, name: &str) -> Result<bool> {
+    pub async fn start_consumer(&self, consumer_key: &str) -> Result<bool> {
         let consumer_config = {
             let config = self.config.read().await;
             config
                 .consumers
                 .iter()
-                .find(|c| c.name == name)
+                .find(|c| consumer_matches_lookup(c, consumer_key))
                 .cloned()
                 .map(|consumer| (consumer, config.publishers.clone()))
         };
@@ -859,9 +970,18 @@ impl UiApp {
         }
     }
 
-    pub async fn stop_consumer(&self, name: &str) -> bool {
+    pub async fn stop_consumer(&self, consumer_key: &str) -> bool {
+        let resolved_consumer_key = {
+            let config = self.config.read().await;
+            config
+                .consumers
+                .iter()
+                .find(|c| consumer_matches_lookup(c, consumer_key))
+                .map(consumer_runtime_key)
+        };
+        let handle_key = resolved_consumer_key.as_deref().unwrap_or(consumer_key);
         let mut handles = self.ui_handles.write().await;
-        if let Some(handle) = handles.remove(name) {
+        if let Some(handle) = handles.remove(handle_key) {
             handle.stop().await;
             true
         } else {
@@ -875,8 +995,17 @@ impl UiApp {
     ) -> HashMap<String, VecDeque<serde_json::Value>> {
         let mut grouped_messages: HashMap<String, VecDeque<serde_json::Value>> = HashMap::new();
 
-        if let Some(consumer_name) = target_consumer {
-            let topic = format!("ui_collector_{consumer_name}");
+        if let Some(target_consumer) = target_consumer {
+            let consumer_key = {
+                let config = self.config.read().await;
+                config
+                    .consumers
+                    .iter()
+                    .find(|consumer| consumer_matches_lookup(consumer, target_consumer))
+                    .map(consumer_runtime_key)
+                    .unwrap_or_else(|| target_consumer.to_string())
+            };
+            let topic = format!("ui_collector_{consumer_key}");
             let channel = mq_bridge::get_or_create_channel(&MemoryConfig::new(&topic, None));
             while let Ok(batch) = channel.receiver.try_recv() {
                 for m in batch {
@@ -905,7 +1034,7 @@ impl UiApp {
                             });
 
                         grouped_messages
-                            .entry(source)
+                            .entry(source.clone())
                             .or_default()
                             .push_back(serde_json::json!({
                                 "id": id,
@@ -928,19 +1057,42 @@ impl UiApp {
     }
 
     pub async fn publish(&self, request: PublishRequest) -> Result<Option<PublishResponse>> {
-        let endpoint = if let Some(ep) = request.endpoint {
+        let PublishRequest {
+            name,
+            publisher_id,
+            payload,
+            metadata,
+            endpoint,
+        } = request;
+        let publisher_lookup_key = publisher_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                let trimmed_name = name.trim();
+                (!trimmed_name.is_empty()).then(|| trimmed_name.to_string())
+            });
+        let endpoint = if let Some(ep) = endpoint {
             Some(ep)
         } else {
             let config = self.config.read().await;
             config
                 .publishers
                 .iter()
-                .find(|p| p.name == request.name)
+                .find(|publisher| {
+                    publisher_lookup_key
+                        .as_ref()
+                        .is_some_and(|lookup| publisher.id == *lookup || publisher.name == *lookup)
+                })
                 .map(|p| p.endpoint.clone())
         };
 
         let publisher = if let Some(endpoint) = endpoint {
-            unregister_publisher(&request.name);
+            let trimmed_name = name.trim();
+            if !trimmed_name.is_empty() {
+                unregister_publisher(trimmed_name);
+            }
             match tokio::time::timeout(Duration::from_secs(5), Publisher::new(endpoint)).await {
                 Ok(Ok(p)) => Some(p),
                 Ok(Err(e)) => return Err(anyhow!("Failed to initialize publisher: {e}")),
@@ -951,8 +1103,8 @@ impl UiApp {
         };
 
         if let Some(publisher) = publisher {
-            let mut canonical = CanonicalMessage::from(request.payload);
-            for (k, v) in request.metadata {
+            let mut canonical = CanonicalMessage::from(payload);
+            for (k, v) in metadata {
                 canonical.metadata.insert(k, v);
             }
 
@@ -999,95 +1151,34 @@ impl UiApp {
     }
 
     pub async fn runtime_status(&self) -> RuntimeStatusResponse {
+        let config = self.config.read().await;
         let mut active_consumers: Vec<String> =
             self.ui_handles.read().await.keys().cloned().collect();
 
         // Consumers may run as internal collector routes even when ui_handles does not currently
         // track them (for example after restarts). Surface those as active consumers too.
-        let consumer_route_names: Vec<String> = mq_bridge::list_routes()
+        let consumer_route_ids: Vec<String> = mq_bridge::list_routes()
             .into_iter()
-            .filter_map(|name| {
-                name.strip_prefix("ui_collector_route_")
-                    .map(|consumer_name| consumer_name.to_string())
+            .filter_map(|runtime_id| {
+                runtime_id
+                    .strip_prefix("ui_collector_route_")
+                    .and_then(decode_collector_route_key)
             })
             .collect();
-        active_consumers.extend(consumer_route_names);
-
+        active_consumers.extend(consumer_route_ids);
         let active_routes: Vec<String> = mq_bridge::list_routes()
-            .into_iter()
+            .into_iter() // Filter out internal UI routes
             .filter(|name| name != "web_ui" && !name.starts_with("ui_collector_route_"))
             .collect();
 
-        let config = self.config.read().await;
-        let metrics_enabled_routes: HashSet<String> = config
-            .routes
+        let samples_guard = self.throughput_samples.read().await;
+        let active_consumer_keys: HashSet<String> =
+            config.consumers.iter().map(consumer_runtime_key).collect();
+        let route_throughput: HashMap<String, f64> = samples_guard
             .iter()
-            .filter(|(_, route)| route.enabled && route_has_metrics(&route.route))
-            .map(|(name, _)| name.clone())
+            .filter(|(key, _)| active_consumer_keys.contains(*key))
+            .map(|(key, sample)| (key.clone(), sample.smoothed_throughput))
             .collect();
-        drop(config);
-
-        let route_totals = parse_route_metric_totals(&self.metrics_handle.render());
-        let now = Instant::now();
-        let mut samples = self.throughput_samples.write().await;
-        let mut route_throughput = HashMap::new();
-
-        for route_name in &metrics_enabled_routes {
-            let input_total = route_totals
-                .get(&(route_name.clone(), "input".to_string()))
-                .copied();
-            let output_total = route_totals
-                .get(&(route_name.clone(), "output".to_string()))
-                .copied();
-            let Some(total_messages) = input_total.or(output_total) else {
-                route_throughput.insert(route_name.clone(), 0.0);
-                continue;
-            };
-
-            let throughput = if let Some(previous) = samples.get(route_name) {
-                let elapsed = now.duration_since(previous.observed_at).as_secs_f64();
-                if elapsed > 0.0 && total_messages >= previous.total_messages {
-                    (total_messages - previous.total_messages) / elapsed
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-
-            samples.insert(
-                route_name.clone(),
-                RouteMetricSample {
-                    total_messages,
-                    observed_at: now,
-                },
-            );
-            route_throughput.insert(route_name.clone(), throughput);
-        }
-
-        samples.retain(|route_name, _| metrics_enabled_routes.contains(route_name));
-
-        for (name, sequence) in self.consumer_message_sequences.read().await.iter() {
-            let total_messages = sequence.load(Ordering::Relaxed) as f64;
-            let throughput = if let Some(previous) = samples.get(name) {
-                let elapsed = now.duration_since(previous.observed_at).as_secs_f64();
-                if elapsed > 0.0 && total_messages >= previous.total_messages {
-                    (total_messages - previous.total_messages) / elapsed
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            samples.insert(
-                name.clone(),
-                RouteMetricSample {
-                    total_messages,
-                    observed_at: now,
-                },
-            );
-            route_throughput.insert(name.clone(), throughput);
-        }
 
         active_consumers.sort();
         active_consumers.dedup();
@@ -1095,23 +1186,30 @@ impl UiApp {
         active_routes.sort();
 
         let consumer_sequences = self.consumer_message_sequences.read().await.clone();
-        let config = self.config.read().await;
         let mut consumers = HashMap::new();
         for consumer in &config.consumers {
-            if let Some(snapshot) = self.consumer_status_snapshot(consumer).await {
+            let consumer_key = consumer_runtime_key(consumer);
+            let running = active_consumers.contains(&consumer_key);
+            if let Some(snapshot) = self
+                .consumer_status_snapshot_with_running(consumer, running)
+                .await
+            {
                 let message_sequence = consumer_sequences
-                    .get(&consumer.name)
+                    .get(&consumer_key)
                     .map(|a| a.load(Ordering::Relaxed))
                     .unwrap_or(0);
-                consumers.insert(
-                    consumer.name.clone(),
-                    ConsumerStatusSnapshot {
-                        message_sequence,
-                        capture_enabled: consumer.message_capture.enabled,
-                        capture_keep_last: consumer.message_capture.keep_last,
-                        ..snapshot
-                    },
-                );
+                let throughput = samples_guard
+                    .get(&consumer_key)
+                    .map(|s| s.smoothed_throughput)
+                    .unwrap_or(0.0);
+                let status_snapshot = ConsumerStatusSnapshot {
+                    throughput,
+                    message_sequence,
+                    capture_enabled: consumer.message_capture.enabled,
+                    capture_keep_last: consumer.message_capture.keep_last,
+                    ..snapshot
+                };
+                consumers.insert(consumer_key, status_snapshot);
             }
         }
 
@@ -1127,8 +1225,21 @@ impl UiApp {
         &self,
         consumer: &ConsumerConfig,
     ) -> Option<ConsumerStatusSnapshot> {
+        let running = self
+            .ui_handles
+            .read()
+            .await
+            .contains_key(&consumer_runtime_key(consumer));
+        self.consumer_status_snapshot_with_running(consumer, running)
+            .await
+    }
+
+    async fn consumer_status_snapshot_with_running(
+        &self,
+        consumer: &ConsumerConfig,
+        running: bool,
+    ) -> Option<ConsumerStatusSnapshot> {
         let name = consumer.name.clone();
-        let running = self.ui_handles.read().await.contains_key(&name);
         let status = if running {
             mq_bridge::traits::EndpointStatus {
                 healthy: true,
@@ -1139,6 +1250,12 @@ impl UiApp {
             mq_bridge::traits::EndpointStatus {
                 healthy: false,
                 target: name.clone(),
+                ..Default::default()
+            }
+        } else if name.trim().is_empty() {
+            mq_bridge::traits::EndpointStatus {
+                healthy: false,
+                target: "Unnamed Consumer".to_string(),
                 ..Default::default()
             }
         } else {
@@ -1162,7 +1279,8 @@ impl UiApp {
 
         Some(ConsumerStatusSnapshot {
             running,
-            status,
+            status: status.into(),
+            throughput: 0.0,
             message_sequence: 0,
             capture_enabled: consumer.message_capture.enabled,
             capture_keep_last: consumer.message_capture.keep_last,
@@ -1174,17 +1292,11 @@ impl UiApp {
         mut new_config: AppConfig,
     ) -> std::result::Result<(), UpdateConfigError> {
         tracing::info!("Received new configuration via Web UI. Reloading...");
-        new_config.migrate_legacy_security_mode();
-        new_config.migrate_legacy_consumer_response();
-
-        let routes: HashMap<String, RouteConfig> = new_config
-            .routes
-            .drain()
-            .map(|(k, v)| (k.trim().replace(' ', "_").to_lowercase(), v))
-            .collect();
+        new_config.migrate_legacy_routes();
         let consumers: Vec<crate::config::ConsumerConfig> = new_config
             .consumers
-            .drain(..)
+            .iter()
+            .cloned()
             .map(|mut c| {
                 c.name = c.name.trim().to_string();
                 c.output = normalize_consumer_output(c.output, c.response.clone());
@@ -1194,14 +1306,6 @@ impl UiApp {
             })
             .collect();
 
-        for (name, route) in &routes {
-            if !route.enabled {
-                continue;
-            }
-            route.route.check(name, None).map_err(|e| {
-                UpdateConfigError::Validation(format!("Route {name}: validation failed: {e}"))
-            })?;
-        }
         for consumer in &consumers {
             let resolved_output = resolve_consumer_output(consumer, &new_config.publishers)?;
             let output_endpoint = match &resolved_output {
@@ -1210,10 +1314,16 @@ impl UiApp {
                 ResolvedConsumerOutput::Publisher { endpoint, .. } => (*endpoint).as_ref().clone(),
             };
             let temp_route = Route::new(consumer.endpoint.clone(), output_endpoint);
-            temp_route.check(&consumer.name, None).map_err(|e| {
+            let consumer_key = consumer_runtime_key(consumer);
+            temp_route.check(&consumer_key, None).map_err(|e| {
                 UpdateConfigError::Validation(format!(
                     "Consumer {}: validation failed: {}",
-                    consumer.name, e
+                    if consumer.name.is_empty() {
+                        consumer_key.as_str()
+                    } else {
+                        consumer.name.as_str()
+                    },
+                    e
                 ))
             })?;
         }
@@ -1226,31 +1336,19 @@ impl UiApp {
 
         let old_config = self.config.read().await.clone();
 
-        let mut routes_to_stop = Vec::new();
-        for name in old_config.routes.keys() {
-            if !routes.contains_key(name)
-                || serde_json::to_value(&old_config.routes[name]).unwrap()
-                    != serde_json::to_value(&routes[name]).unwrap()
-            {
-                routes_to_stop.push(name.clone());
-            }
-        }
-
-        for name in routes_to_stop {
-            mq_bridge::stop_route(&name).await;
-        }
-
         {
             let mut handles = self.ui_handles.write().await;
             let mut collectors_to_remove = Vec::new();
 
-            for name in handles.keys() {
+            for consumer_key in handles.keys() {
                 let should_stop = if let (Some(old_consumer), Some(new_consumer)) = (
                     old_config
                         .consumers
                         .iter()
-                        .find(|consumer| &consumer.name == name),
-                    consumers.iter().find(|consumer| &consumer.name == name),
+                        .find(|consumer| consumer_runtime_key(consumer) == *consumer_key),
+                    consumers
+                        .iter()
+                        .find(|consumer| consumer_runtime_key(consumer) == *consumer_key),
                 ) {
                     serde_json::to_value(old_consumer).unwrap()
                         != serde_json::to_value(new_consumer).unwrap()
@@ -1259,26 +1357,17 @@ impl UiApp {
                 };
 
                 if should_stop {
-                    collectors_to_remove.push(name.clone());
+                    collectors_to_remove.push(consumer_key.clone());
                 }
             }
 
-            for name in collectors_to_remove {
-                if let Some(handle) = handles.remove(&name) {
+            for consumer_key in collectors_to_remove {
+                if let Some(handle) = handles.remove(&consumer_key) {
                     handle.stop().await;
                 }
             }
         }
 
-        for route in routes.values() {
-            if route.enabled && route.route.is_ref() {
-                route.route.register_output_endpoint(None).map_err(|e| {
-                    UpdateConfigError::RegisterOutputEndpoint(format!(
-                        "register_output_endpoint failed: {e}"
-                    ))
-                })?;
-            }
-        }
         for consumer in &consumers {
             let resolved_output = resolve_consumer_output(consumer, &new_config.publishers)?;
             let output_endpoint = match &resolved_output {
@@ -1295,27 +1384,6 @@ impl UiApp {
                 })?;
             }
         }
-
-        for (name, route) in &routes {
-            if !route_is_active(route) {
-                continue;
-            }
-            let should_deploy = if let Some(old_route) = old_config.routes.get(name) {
-                serde_json::to_value(old_route).unwrap() != serde_json::to_value(route).unwrap()
-            } else {
-                true
-            };
-
-            if should_deploy {
-                route.route.deploy(name).await.map_err(|e| {
-                    UpdateConfigError::DeployRouteFailed(format!(
-                        "Failed to deploy route {name}: {e}"
-                    ))
-                })?;
-            }
-        }
-
-        new_config.routes = routes.clone();
         new_config.consumers = consumers.clone();
 
         let config_file = &*self.config_file_path;
@@ -1369,7 +1437,11 @@ impl UiApp {
             }
         };
 
-        let name = request.name.clone();
+        let name = request
+            .publisher_id
+            .clone()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| request.name.clone());
         match self.publish(request).await {
             Ok(Some(response)) => self.ok_json(&response, false),
             Ok(None) => self.err_response(404, format!("Publisher not found: {name}")),
@@ -1425,8 +1497,8 @@ impl UiApp {
             if matches!(consumer.endpoint.endpoint_type, EndpointType::Null) {
                 continue;
             }
-            let name = consumer.name.clone();
-            let topic = format!("ui_collector_{name}");
+            let consumer_key = consumer_runtime_key(consumer);
+            let topic = format!("ui_collector_{consumer_key}");
             let capture_enabled = consumer.message_capture.enabled;
             let original_capture_keep_last = consumer.message_capture.keep_last.max(1);
             // Increase channel capacity by 10% to allow for some buffer before dropping messages
@@ -1439,7 +1511,7 @@ impl UiApp {
             let sequence_counter = {
                 let mut sequences = self.consumer_message_sequences.write().await;
                 sequences
-                    .entry(name.clone())
+                    .entry(consumer_key.clone())
                     .or_insert_with(|| Arc::new(AtomicU64::new(0)))
                     .clone()
             };
@@ -1467,7 +1539,7 @@ impl UiApp {
             };
 
             let context = Arc::new(CollectorContext {
-                name: name.clone(),
+                source_key: consumer_key.clone(),
                 log_channel,
                 counter: sequence_counter,
                 output: resolved_output,
@@ -1486,7 +1558,7 @@ impl UiApp {
                         if ctx.capture_enabled {
                             let mut enriched = msg.clone();
                             let meta = &mut enriched.metadata;
-                            meta.insert("ui_source".into(), ctx.name.clone());
+                            meta.insert("ui_source".into(), ctx.source_key.clone());
                             meta.insert(
                                 "ui_capture_time".into(),
                                 chrono::Utc::now().timestamp_millis().to_string(),
@@ -1531,9 +1603,9 @@ impl UiApp {
                         }
                     }
                 });
-            let internal_route_name = format!("ui_collector_route_{name}");
+            let internal_route_name = collector_route_name(&consumer_key);
             let handle = route.run(&internal_route_name).await?;
-            handles.insert(name, handle);
+            handles.insert(consumer_key, handle);
         }
         Ok(())
     }
@@ -1544,7 +1616,6 @@ pub enum UpdateConfigError {
     Validation(String),
     UnsupportedCustomResponses(String),
     RegisterOutputEndpoint(String),
-    DeployRouteFailed(String),
     Other(anyhow::Error),
 }
 
@@ -1553,15 +1624,14 @@ impl std::fmt::Display for UpdateConfigError {
         match self {
             Self::Validation(message)
             | Self::UnsupportedCustomResponses(message)
-            | Self::RegisterOutputEndpoint(message)
-            | Self::DeployRouteFailed(message) => write!(f, "{message}"),
+            | Self::RegisterOutputEndpoint(message) => write!(f, "{message}"),
             Self::Other(error) => write!(f, "{error}"),
         }
     }
 }
 
 impl std::error::Error for UpdateConfigError {}
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct StorageSecurityInfoResponse {
     pub target: String,
     pub encrypted: bool,
@@ -1633,6 +1703,47 @@ mod tests {
                 kid: None,
             },
         }
+    }
+
+    #[test]
+    fn next_route_metric_sample_starts_with_zero_throughput() {
+        let now = Instant::now();
+
+        let sample = next_route_metric_sample(None, 42.0, now);
+
+        assert_eq!(sample.total_messages, 42.0);
+        assert_eq!(sample.observed_at, now);
+        assert_eq!(sample.smoothed_throughput, 0.0);
+    }
+
+    #[test]
+    fn next_route_metric_sample_applies_ema_to_instantaneous_throughput() {
+        let start = Instant::now();
+        let previous = RouteMetricSample {
+            total_messages: 10.0,
+            observed_at: start,
+            smoothed_throughput: 4.0,
+        };
+
+        let next = next_route_metric_sample(Some(previous), 18.0, start + Duration::from_secs(2));
+
+        // Instantaneous throughput is (18 - 10) / 2 = 4.0, so the EMA stays at 4.0.
+        assert_eq!(next.smoothed_throughput, 4.0);
+    }
+
+    #[test]
+    fn next_route_metric_sample_clamps_negative_throughput_before_smoothing() {
+        let start = Instant::now();
+        let previous = RouteMetricSample {
+            total_messages: 10.0,
+            observed_at: start,
+            smoothed_throughput: 6.0,
+        };
+
+        let next = next_route_metric_sample(Some(previous), 8.0, start + Duration::from_secs(1));
+
+        let expected = 6.0 * (-1.0 / THROUGHPUT_TAU).exp();
+        assert!((next.smoothed_throughput - expected).abs() < 1e-9);
     }
 
     #[tokio::test]

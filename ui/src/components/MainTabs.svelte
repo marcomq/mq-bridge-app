@@ -1,9 +1,10 @@
 <script lang="ts">
+  import HeaderSaveButton from "./HeaderSaveButton.svelte";
   import { activeMainTab } from "../lib/stores";
   import { switchMain } from "../bootstrap";
   import { runtimeStatusStore } from "../lib/stores";
   import { isRuntimeConnected, runtimeStatusLabel } from "../lib/runtime-status";
-  import { getThemePreference, setThemePreference } from "../lib/theme-bridge";
+  import { getThemePreference, setThemePreference } from "../lib/utils";
   import { onMount } from "svelte";
 
   type Theme = "auto" | "light" | "dark";
@@ -84,6 +85,7 @@
         </div>
       {/if}
     </div>
+    <HeaderSaveButton />
   </div>
   
 </div>

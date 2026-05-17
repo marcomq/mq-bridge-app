@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { getStoredJson, setStoredJson } from "../../ui/src/lib/encrypted-json-storage";
+import { getStoredJson, removeStoredJson, setStoredJson } from "../../ui/src/lib/encrypted-json-storage";
+import { localStorageBackend, setStorageBackend } from "../../ui/src/lib/storage";
 import type { StorageSecurityInfo } from "../../ui/src/lib/storage-security";
 
 const temporarySecurity: StorageSecurityInfo = {
@@ -29,6 +30,7 @@ const persistentSecurity: StorageSecurityInfo = {
 describe("encrypted-json-storage", () => {
   beforeEach(() => {
     const store = new Map<string, string>();
+    setStorageBackend(localStorageBackend);
     Object.defineProperty(window, "localStorage", {
       configurable: true,
       value: {
@@ -78,5 +80,36 @@ describe("encrypted-json-storage", () => {
 
     await expect(getStoredJson("mqb_publisher_history", {}, wrongKey)).resolves.toEqual({});
     expect(window.localStorage.getItem("mqb_publisher_history")).toBe(raw);
+  });
+
+  test("binds ciphertext to its storage slot via authenticated data", async () => {
+    await setStoredJson("mqb_consumer_messages", { orders: [{ payload: "secret" }] }, temporarySecurity);
+
+    const raw = window.localStorage.getItem("mqb_consumer_messages");
+    expect(raw).toBeTruthy();
+    window.localStorage.setItem("mqb_other_messages", raw as string);
+
+    await expect(
+      getStoredJson("mqb_other_messages", { fallback: true }, temporarySecurity, { clearOnFailure: false }),
+    ).resolves.toEqual({ fallback: true });
+  });
+
+  test("uses the configured storage backend for writes and removals", async () => {
+    const store = new Map<string, string>();
+    setStorageBackend({
+      getItem: (key) => store.get(key) ?? null,
+      setItem: (key, value) => {
+        store.set(key, value);
+      },
+      removeItem: (key) => {
+        store.delete(key);
+      },
+    });
+
+    await setStoredJson("mqb_publisher_history", { rows: [1] }, persistentSecurity);
+    expect(store.get("mqb_publisher_history")).toBeTruthy();
+
+    removeStoredJson("mqb_publisher_history");
+    expect(store.has("mqb_publisher_history")).toBe(false);
   });
 });

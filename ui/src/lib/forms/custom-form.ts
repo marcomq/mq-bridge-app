@@ -3,22 +3,25 @@ import ArrayItemRow from "./ArrayItemRow.svelte";
 import BasicAuthEditor from "./BasicAuthEditor.svelte";
 import CheckboxField from "./CheckboxField.svelte";
 import CollapsibleFields from "./CollapsibleFields.svelte";
+import Endpoint from "./Endpoint.svelte";
 import FormField from "./FormField.svelte";
 import GenericAdditionalPropertyRow from "./GenericAdditionalPropertyRow.svelte";
 import HeadersEditor from "./HeadersEditor.svelte";
 import OptionalSectionField from "./OptionalSectionField.svelte";
+import PasswordField from "./PasswordField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
 import { mqbApp } from "../runtime-window";
+import { BASIC_ENDPOINT_FIELDS } from "../endpoint-metadata";
 import {
   createTypeSelectArrayRenderer,
-  domRenderer,
+  domRenderer as baseDomRenderer,
   formatWebAwesomeLabel,
   hydrateNodeWithData,
   renderNode,
   renderObject,
   renderProperties,
-  rendererConfig,
+  rendererConfig as baseRendererConfig,
   setConfig,
   setCustomRenderers,
   setI18n,
@@ -28,6 +31,24 @@ import * as VanillaSchemaForms from "vanilla-schema-forms";
 
 type SchemaNode = Record<string, any>;
 type RendererContext = Record<string, any>;
+type CustomRenderer = {
+  render: (...args: any[]) => Node;
+};
+type RendererConfig = {
+  classes: Record<string, string>;
+  triggers: Record<string, string>;
+};
+type DomRenderer = Record<string, any> & {
+  renderAdditionalProperties: (...args: any[]) => HTMLElement;
+  renderBoolean?: (...args: any[]) => HTMLElement;
+  renderFieldWrapper: (...args: any[]) => HTMLElement;
+  renderHeadlessObject: (...args: any[]) => HTMLElement;
+  renderObject: (...args: any[]) => HTMLElement;
+  renderOneOf: (...args: any[]) => Node | null;
+};
+
+const rendererConfig = baseRendererConfig as RendererConfig;
+const domRenderer = baseDomRenderer as DomRenderer;
 
 function withRendererDefaults(context: RendererContext): RendererContext {
   const config = context.config || {};
@@ -63,7 +84,6 @@ function withRendererDefaults(context: RendererContext): RendererContext {
       },
       visibility: {
         hiddenPaths: [],
-        hiddenKeys: [],
         customVisibility: () => true,
         ...(config.visibility || {}),
       },
@@ -104,7 +124,7 @@ forms.setConfig({
       const formMode = String((window as any)._mqb_form_mode || "");
       const fieldName = lowerPath.split(".").pop() || "";
 
-      if (formMode === "publisher" && ["url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
+      if (formMode === "publisher" && ["id", "presets", "url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
         return false;
       }
 
@@ -112,7 +132,7 @@ forms.setConfig({
       // The customVisibility is for top-level properties of the consumer/publisher config, not nested endpoint properties.
       // The `hidden: true` attributes in Svelte components are now redundant with this.
       // The `custom_headers` field is now handled by the collapsible renderer.
-      if (formMode === "consumer" && ["output", "response", "message_capture"].includes(fieldName)) {
+      if (formMode === "consumer" && ["id", "presets", "output",  "response", "message_capture"].includes(fieldName)) {
         return false;
       }
 
@@ -135,7 +155,6 @@ forms.setConfig({
       "input",
       "output",
       "name",
-      "id",
       "title",
       "type",
       "enabled",
@@ -161,6 +180,10 @@ function createWrappedContainer(content: Node, className = "") {
   wrapper.className = className;
   wrapper.appendChild(content);
   return wrapper;
+}
+
+function asNode(value: Node | null): Node {
+  return value || document.createDocumentFragment();
 }
 
 function addClassTokens(element: Element | null, ...classNames: Array<string | undefined>) {
@@ -229,33 +252,18 @@ function formatDescription(node: SchemaNode, _elementId: string) {
 }
 
 function parseElementPath(pathLike: string): Array<string | number> {
-  return String(pathLike || "")
-    .split(".")
-    .filter(Boolean)
-    .map((segment) => (/^\d+$/.test(segment) ? Number(segment) : segment));
-}
+  const path = String(pathLike || "");
+  const parts: Array<string | number> = [];
+  const pattern = /([^[.\]]+)|\[(\d+|[^[\]]+)\]/g;
 
-// Define basic fields for each endpoint type (keyed by the endpoint type string, not *Config)
-// Fields not in this list will be considered "advanced" and placed in a collapsible section.
-// For types like 'static', 'ref', 'switch', 'fanout', 'response', 'custom', 'null', they are handled by specific renderers or are complex polymorphic types that don't fit this simple basic/advanced split.
-const BASIC_ENDPOINT_FIELDS: Record<string, string[]> = {
-  http: ["url", "method", "path"],
-  kafka: ["url", "topic", "group_id"],
-  mqtt: ["url", "topic"],
-  grpc: ["url", "topic"],
-  amqp: ["url", "queue", "subscribe_mode", "exchange"],
-  nats: ["url", "subject", "stream"],
-  mongodb: ["url", "database", "collection", "change_stream"],
-  sqlx: ["url", "table"],
-  zeromq: ["url", "topic"],
-  file: ["path", "mode"],
-  memory: ["topic"],
-  sled: ["path", "tree"],
-  ibmmq: ["url", "queue", "topic"],
-  switch: ["metadata_key", "default", "cases"],
-  fanout: ["endpoints"],
-  aws: ["region", "access_key_id", "secret_access_key"], // Assuming these are basic for AWS, adjust if needed
-};
+  for (const match of path.matchAll(pattern)) {
+    const segment = match[1] ?? match[2];
+    if (!segment) continue;
+    parts.push(/^\d+$/.test(segment) ? Number(segment) : segment);
+  }
+
+  return parts;
+}
 
 const baseRenderBoolean = typeof domRenderer.renderBoolean === "function"
   ? domRenderer.renderBoolean.bind(domRenderer)
@@ -302,6 +310,12 @@ domRenderer.renderFieldWrapper = (
   const input = (inputElement.querySelector?.("input, select, textarea") as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null)
     || inputElement;
   const isCheckbox = input instanceof HTMLInputElement && input.type === "checkbox";
+  const isPassword = input instanceof HTMLInputElement && node.format === "password";
+
+  if (isPassword) {
+    input.type = "password";
+    input.autocomplete = input.autocomplete || "current-password";
+  }
 
   if (input?.classList) {
     if (isCheckbox) {
@@ -333,6 +347,20 @@ domRenderer.renderFieldWrapper = (
       description: formatDescription(node, elementId),
       labelFor: input instanceof HTMLElement ? input.id : undefined,
       control: input,
+    });
+  }
+
+  if (isPassword) {
+    return renderSvelteNode(PasswordField, {
+      label: formatLabel(node, elementId),
+      description: formatDescription(node, elementId),
+      labelFor: input instanceof HTMLElement ? input.id : undefined,
+      control: inputElement,
+      fieldName: elementId,
+      wrapperClass: wrapperClass || "",
+      required: Boolean(node.required),
+      maskedLabel: "Show",
+      visibleLabel: "Hide",
     });
   }
 
@@ -398,7 +426,7 @@ const updateArrayItemLabel = (arrayItem: ParentNode | null) => {
 
   if (arrayItem.getAttribute("wa-no-label") === "true") {
     legend.textContent = "";
-    legend.style.display = "none";
+    (legend as HTMLElement).style.display = "none";
     return;
   }
 
@@ -495,14 +523,14 @@ function fixNullBooleans(node: SchemaNode, dataPath: Array<string | number>, con
 
   if (!data || typeof data !== "object") return;
 
-  const hasNullBooleans = Object.entries(node.properties).some(([key, prop]) => prop?.type === "boolean" && data[key] === null);
+  const hasNullBooleans = Object.entries(node.properties as Record<string, SchemaNode>).some(([key, prop]) => prop?.type === "boolean" && data[key] === null);
   if (!hasNullBooleans) return;
 
   window.setTimeout(() => {
     const currentData = { ...(store.getPath(dataPath) || {}) };
     let changed = false;
 
-    for (const [key, prop] of Object.entries(node.properties)) {
+    for (const [key, prop] of Object.entries(node.properties as Record<string, SchemaNode>)) {
       if (prop?.type === "boolean" && currentData[key] === null) {
         currentData[key] = false;
         changed = true;
@@ -631,7 +659,7 @@ const routesRenderer = {
         const routeDataPath = [...dataPath, key];
         const valueHtml = renderNode(context, valueNode, routePath, true, routeDataPath);
         const rowNode = routesRenderer.renderAdditionalPropertyRow(
-          valueHtml,
+          asNode(valueHtml),
           key,
           `${routePath}_key`,
         );
@@ -701,7 +729,7 @@ const createEndpointRenderer = (type: string) => ({
       if (specialRenderer && typeof specialRenderer.render === "function") {
         hiddenFragment.appendChild(specialRenderer.render(hiddenProperties[key], `${_path}.${key}`, `${elementId}.${key}`, [...dataPath, key], context));
       } else {
-        hiddenFragment.appendChild(renderNode(context, hiddenProperties[key], `${elementId}.${key}`, false, [...dataPath, key]));
+        hiddenFragment.appendChild(asNode(renderNode(context, hiddenProperties[key], `${elementId}.${key}`, false, [...dataPath, key])));
       }
     }
     const hiddenWrapper = createWrappedContainer(hiddenFragment, "mqb-form-block");
@@ -749,9 +777,7 @@ const createScalarEndpointRenderer = (
         } else {
           updated = next;
         }
-        const newData = structuredClone(context.data);
-        setPathValue(newData, dataPath, updated);
-        context.onChange(newData);
+        commitPathValue(context, dataPath, updated);
       },
     });
   },
@@ -761,7 +787,7 @@ const rootRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     const originalDescription = node.description;
     node.description = formatDescription(node, elementId);
-    const result = createWrappedContainer(renderObject(context, node, elementId, false, dataPath), "mqb-form-block");
+    const result = createWrappedContainer(asNode(renderObject(context, node, elementId, false, dataPath)), "mqb-form-block");
     node.description = originalDescription;
     return result;
   },
@@ -775,7 +801,7 @@ const baseMiddlewaresRenderer = createTypeSelectArrayRenderer({
 
 const middlewaresRenderer = {
   render: (node: SchemaNode, path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext, isHeadless = false) => {
-    const element = baseMiddlewaresRenderer.render(node, path, elementId, dataPath, context, isHeadless) as HTMLElement;
+    const element = (baseMiddlewaresRenderer as unknown as CustomRenderer).render(node, path, elementId, dataPath, context, isHeadless) as HTMLElement;
     const toggleButton = element.querySelector(`.${rendererConfig.triggers.arrayTypeToggle}`) as HTMLElement | null;
     const typeSelect = element.querySelector(`.${rendererConfig.triggers.arrayTypeSelect}`) as HTMLSelectElement | null;
 
@@ -818,6 +844,23 @@ const middlewaresRenderer = {
 const getPathValue = (root: any, path: Array<string | number>) => path.reduce((current, segment) => current?.[segment], root);
 
 const setPathValue = (root: any, path: Array<string | number>, value: unknown) => {
+  if (path.length === 0) {
+    if (Array.isArray(root) && Array.isArray(value)) {
+      root.splice(0, root.length, ...value);
+      return;
+    }
+
+    if (root && typeof root === "object" && value && typeof value === "object" && !Array.isArray(value)) {
+      Object.keys(root).forEach((key) => {
+        delete root[key];
+      });
+      Object.assign(root, value);
+      return;
+    }
+
+    throw new Error("Cannot replace root form value with a non-object payload");
+  }
+
   let cursor = root;
   path.slice(0, -1).forEach((segment, index) => {
     const nextSegment = path[index + 1];
@@ -830,6 +873,21 @@ const setPathValue = (root: any, path: Array<string | number>, value: unknown) =
 };
 
 const getName = (dataPath: Array<string | number>) => dataPath.map(String).join('.');
+
+const commitPathValue = (
+  context: RendererContext,
+  dataPath: Array<string | number>,
+  value: unknown,
+) => {
+  if (context.store && typeof context.store.setPath === "function") {
+    context.store.setPath(dataPath, value);
+    return;
+  }
+
+  const newData = structuredClone(context.data);
+  setPathValue(newData, dataPath, value);
+  context.onChange(newData);
+};
 
 const descriptionRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>) => {
@@ -845,8 +903,62 @@ const descriptionRenderer = {
   },
 };
 
+const endpointRenderer = {
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    // Primary publisher and consumer endpoint definitions should use the full object editor
+    // instead of being rendered as a reference to another publisher.
+    // Use _path for more robust matching of nested elements.
+    const isPrimaryDefinition =
+      elementId === "root.endpoint" ||
+      elementId === "root.input" ||
+      elementId === "root.output" ||
+      elementId === "input" ||
+      elementId === "output" ||
+      /^publishers\.\d+\.endpoint$/i.test(_path) || /^consumers\.\d+\.(input|output|endpoint)$/i.test(_path);
+
+    if (isPrimaryDefinition) {
+      return renderObject(context, node, elementId, false, dataPath);
+    }
+
+    const currentValue = getPathValue(context.data, dataPath);
+    const currentScalarValue =
+      typeof currentValue === "string"
+        ? currentValue
+        : (currentValue && typeof currentValue === "object" && !Array.isArray(currentValue) && typeof currentValue.ref === "string"
+            ? currentValue.ref
+            : (typeof node.defaultValue === "string" ? node.defaultValue : ""));
+
+    return renderSvelteNode(Endpoint, {
+      title: node.title === "" ? "" : String(node.title || "Ref Endpoint"),
+      description: String(node.description || ""),
+      value: currentScalarValue,
+      name: elementId,
+      onChange: (next: string) => {
+        const existing = getPathValue(context.data, dataPath);
+        const isEndpointObject = node.type === "object";
+
+        let updated;
+        if (isEndpointObject || (existing && typeof existing === "object" && !Array.isArray(existing) && 'ref' in existing)) {
+          updated = {
+            ...(existing && typeof existing === "object" ? existing : {}),
+            ref: next,
+          };
+        } else {
+          updated = next;
+        }
+        commitPathValue(context, dataPath, updated);
+      },
+    });
+  },
+};
+
 const CUSTOM_RENDERERS: Record<string, unknown> = {
+  root: rootRenderer,
+  AppConfig: rootRenderer,
   Route: routeObjectRenderer,
+  route: routeObjectRenderer,
+  Endpoint: endpointRenderer,
+  EndpointConfig: endpointRenderer,
   tls: tlsRenderer,
   basic_auth: basicAuthRenderer,
   custom_headers: customHeadersRenderer,
@@ -854,6 +966,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,
+  "root.endpoint": renderObject,
   "output.mode": { render: () => document.createDocumentFragment() },
   value: {
     render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
@@ -864,7 +977,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
         const ap = domRenderer.renderAdditionalProperties(node, elementId);
         const oneOf = domRenderer.renderOneOf(node, elementId);
         const content = document.createDocumentFragment();
-        content.append(props, ap, oneOf);
+        content.append(props, asNode(ap), asNode(oneOf));
         return domRenderer.renderHeadlessObject(elementId, content);
       }
       const originalDescription = node.description;
@@ -888,6 +1001,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   "http",
   "static",
   "sled",
+  "websocket",
   "sqlx",
   "grpc",
   "ibmmq",
@@ -906,12 +1020,12 @@ CUSTOM_RENDERERS.static = createScalarEndpointRenderer("static", {
 
 CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
   title: "Ref",
-  placeholder: "publisher_name",
+  placeholder: "publisher_id",
   suggestions: () =>
     Array.from(
       new Set(
-        ((mqbApp.config<Record<string, any>>()?.publishers || []) as Array<{ name?: string }>)
-          .map((publisher) => String(publisher?.name || "").trim())
+        ((mqbApp.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
+          .map((publisher) => String(publisher?.id || publisher?.name || "").trim())
           .filter(Boolean),
       ),
     ).sort((a, b) => a.localeCompare(b)),
@@ -919,9 +1033,5 @@ CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
 
 CUSTOM_RENDERERS.RefConfig = CUSTOM_RENDERERS.ref;
 CUSTOM_RENDERERS.StaticConfig = CUSTOM_RENDERERS.static;
-
-CUSTOM_RENDERERS.AppConfig = rootRenderer;
-CUSTOM_RENDERERS.route = routeObjectRenderer;
-CUSTOM_RENDERERS.root = rootRenderer;
 
 forms.setCustomRenderers(CUSTOM_RENDERERS);

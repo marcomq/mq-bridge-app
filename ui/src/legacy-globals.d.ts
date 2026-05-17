@@ -42,11 +42,23 @@ declare global {
       sectionName: string,
       options: { buttonId: string; getValue: () => unknown },
     ) => void;
+    registerBeforeWorkspaceSave: (key: string, callback: () => void | Promise<void>) => void;
+    registerAfterWorkspaceSave: (
+      key: string,
+      callback: (savedConfig: Record<string, unknown>) => void | Promise<void>,
+    ) => void;
     refreshDirtySection: (sectionName: string) => boolean;
     markSectionSaved: (sectionName: string, savedValue?: unknown) => void;
     pollRuntimeStatus: () => Promise<unknown>;
     fetchConfigFromServer: <T>() => Promise<T>;
-    saveConfig: (silent?: boolean, button?: (HTMLElement & { loading?: boolean }) | null) => Promise<boolean>;
+    saveWorkspace: (
+      silent?: boolean,
+      button?: (HTMLElement & { loading?: boolean }) | null,
+    ) => Promise<Record<string, unknown> | boolean | null>;
+    saveConfig: (
+      silent?: boolean,
+      button?: (HTMLElement & { loading?: boolean }) | null,
+    ) => Promise<Record<string, unknown> | boolean | null>;
     saveConfigSection: (
       sectionName: string,
       sectionValue: unknown,
@@ -67,8 +79,8 @@ declare global {
     };
     renderRoutesRuntimeMetrics?: () => void;
     renderConsumersRuntimeStatus?: () => void;
-    initConsumers?: (config: Record<string, any>, schema: Record<string, any>) => void;
-    initPublishers?: (config: Record<string, any>, schema: Record<string, any>) => void;
+    initConsumers?: (...args: any[]) => void | Promise<void>;
+    initPublishers?: (...args: any[]) => void | Promise<void>;
     restoreConsumerState?: (idx: number, options?: { tab?: string }) => void;
     restorePublisherState?: (idx: number, options?: { tab?: string }) => void;
 

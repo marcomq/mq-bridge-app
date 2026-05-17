@@ -1,8 +1,57 @@
 import { nextUniqueName } from "./routes";
+import {
+  BASIC_ENDPOINT_FIELDS,
+  KNOWN_ENDPOINT_ROOT_KEYS,
+} from "./endpoint-metadata";
+import { createLocalEntityId } from "./entity-key";
+
+export type ThemePreference = "auto" | "light" | "dark";
+
+function getEndpointType(endpoint: Record<string, unknown>): string {
+  return Object.keys(endpoint).find((key) => key !== "middlewares" && (KNOWN_ENDPOINT_ROOT_KEYS as readonly string[]).includes(key)) || "http";
+}
 
 export function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
-} 
+}
+
+export function normalizeNamedEntityFormShape<T extends { id?: string; name?: string }>(
+  entity: T,
+  idPrefix: string,
+): T {
+  let data = { ...entity } as any;
+  if (data.root) {
+    const { root, ...rest } = data;
+    data = { ...rest, ...root };
+  }
+  data.id = String(data.id || "").trim() || createLocalEntityId(idPrefix);
+  data.name = String(data.name ?? "");
+  return data as T;
+}
+
+export function getThemePreference(): ThemePreference | undefined {
+  return window.getThemePreference?.() as ThemePreference | undefined;
+}
+
+export function setThemePreference(value: ThemePreference) {
+  window.setThemePreference?.(value);
+}
+
+export function getLabel(node: any) {
+  if (!node) return "";
+  if (node.item && typeof node.label === "string" && node.label.trim()) return node.label;
+  if (typeof node.label === "string" && node.label.trim()) return node.label;
+
+  const entity = node.publisher || node.item || node;
+  const name = entity.name || entity.displayName || "";
+  const endpoint = entity.endpoint || {};
+  const type = entity.endpointType || entity.inputProto || entity.proto || "";
+
+  if (!name && Object.keys(endpoint).length === 0 && !type) return "Unnamed Entity";
+
+  return getEntityDisplayLabel(name, endpoint, type);
+}
+
 export function sanitizeConsumerName(name: string): string {
   const asciiName = String(name || "")
     .normalize("NFKD")
@@ -50,6 +99,62 @@ export function normalizeConsumerResponse(response: unknown): { headers: Record<
     : "";
 
   return Object.keys(headers).length > 0 || payload.trim() ? { headers, payload } : null;
+}
+
+function sanitizeUrlHost(rawUrl: string) {
+  const value = String(rawUrl || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.host;
+  } catch {
+    return value.replace(/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//, "");
+  }
+}
+
+function normalizePathValue(rawPath: string) {
+  const value = String(rawPath || "").trim();
+  if (!value) return "";
+  return value.startsWith("/") ? value : `/${value}`;
+}
+
+export function getTechnicalDisplayLabel(
+  endpoint: Record<string, unknown>,
+  endpointType?: string,
+) {
+  if (!endpoint) return endpointType ? String(endpointType).toUpperCase() : "";
+  const type = String(endpointType || getEndpointType(endpoint)).trim().toLowerCase();
+  const endpointData = (endpoint as Record<string, unknown>)[type];
+  const data = endpointData && typeof endpointData === "object" && !Array.isArray(endpointData)
+    ? endpointData as Record<string, unknown>
+    : endpoint;
+  const fields = BASIC_ENDPOINT_FIELDS[type] || [];
+
+  const values = fields.map((field) => {
+    const rawValue = data[field];
+    if (field === "url") {
+      return sanitizeUrlHost(String(rawValue || ""));
+    }
+    if (field === "path") {
+      return normalizePathValue(String(rawValue || ""));
+    }
+    return String(rawValue || "").trim();
+  }).filter(Boolean);
+
+  return values.join(" ").trim() || type.toUpperCase();
+}
+
+export function getEntityDisplayLabel(
+  name: string | undefined,
+  endpoint: Record<string, unknown>,
+  endpointType?: string,
+) {
+  const title = String(name || "").trim();
+  if (title) return title;
+
+  return getTechnicalDisplayLabel(endpoint, endpointType);
 }
 
 export function handleActionKey(event: KeyboardEvent, action: () => void | Promise<void>) {
@@ -106,19 +211,17 @@ export function stringToUint8ArrayLatin1(str: string): Uint8Array {
   return bytes;
 }
 
-export function normalizeMiddlewares(middlewares: unknown, endpointNormalizer: (endpoint: unknown) => Record<string, any>): any[] {
-  if (Array.isArray(middlewares)) {
-    return middlewares.map((middleware: any) => {
-      if (!middleware || typeof middleware !== "object" || Array.isArray(middleware)) {
-        return {};
-      }
-      if (middleware.dlq && typeof middleware.dlq === "object") {
-        middleware.dlq.endpoint = middleware.dlq.endpoint
-          ? endpointNormalizer(middleware.dlq.endpoint)
-          : { ref: "" };
-      }
-      return middleware;
-    });
+export async function withSelectedFileText(
+  event: Event,
+  onText: (text: string, target: HTMLInputElement) => Promise<void> | void,
+) {
+  const target = event.currentTarget as HTMLInputElement | null;
+  const file = target?.files?.[0];
+  if (!target || !file) return;
+
+  try {
+    await onText(await file.text(), target);
+  } finally {
+    target.value = "";
   }
-  return [];
 }

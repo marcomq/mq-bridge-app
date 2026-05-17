@@ -12,13 +12,14 @@ describe("settings", () => {
   beforeEach(() => {
     document.body.innerHTML = `
       <div id="form-actions" style="display:none;">
-        <button id="js-submit" type="button">Save</button>
       </div>
       <div id="form-container"></div>
     `;
 
     window.appConfig = { consumers: [], publishers: [], default_tab: "publishers" };
     window.registerDirtySection = vi.fn();
+    window.registerBeforeWorkspaceSave = vi.fn();
+    window.registerAfterWorkspaceSave = vi.fn();
     window.refreshDirtySection = vi.fn();
     window.markSectionSaved = vi.fn();
     window.saveConfig = vi.fn().mockResolvedValue(true);
@@ -103,10 +104,11 @@ describe("settings", () => {
       window._mqb_storage_security as any,
     );
 
-    expect((schema.properties.config_security as any).description).toContain("Env secrets + temporary encrypted messages");
+    expect((schema.properties.config_security as any).description).toBe("");
     expect((schema.properties.config_security as any).properties.mode.description).toContain(
       "Env secrets + temporary encrypted messages",
     );
+    expect((schema.properties.config_security as any).properties.mode.description).not.toContain("Sensitive");
   });
 
   test("normalizes legacy security settings into config_security", () => {
@@ -179,9 +181,11 @@ describe("settings", () => {
     );
 
     expect(window.registerDirtySection).toHaveBeenCalledWith("config", {
-      buttonId: "js-submit",
+      buttonId: "workspace-save-button",
       getValue: expect.any(Function),
     });
+    expect(window.registerBeforeWorkspaceSave).toHaveBeenCalledWith("config", expect.any(Function));
+    expect(window.registerAfterWorkspaceSave).toHaveBeenCalledWith("config", expect.any(Function));
     expect(window.VanillaSchemaForms.init).toHaveBeenCalledWith(
       document.getElementById("form-container"),
       {
@@ -200,29 +204,21 @@ describe("settings", () => {
       },
     );
     expect(document.getElementById("form-actions")?.style.display).toBe("flex");
-    expect(document.getElementById("js-storage-security-note")?.textContent).toContain(
-      "Messages are encrypted during the current session and cleared after restart.",
-    );
-    expect(document.getElementById("js-storage-security-note")?.textContent).toContain(
-      "Message history is encrypted at rest to avoid leaving readable broker payloads",
-    );
-    expect(document.getElementById("js-storage-mode-note")?.textContent).toContain(
-      "Env secrets + temporary encrypted messages: Plain config with env placeholders and encrypted message history cleared after restart.",
-    );
+    expect(document.getElementById("storage-security-note")).toBeNull();
+    expect(document.getElementById("storage-mode-note")).toBeNull();
 
-    const submitButton = document.getElementById("js-submit") as HTMLButtonElement;
     (window as any).__settingsData.log_level = "debug";
     (window as any).__settingsData.env_vars = { BASE_URL: "https://changed.test", API_TOKEN: "abc" };
     (window as any).__settingsData.config_security = { mode: "balanced" };
-    await submitButton.onclick?.({ currentTarget: submitButton } as unknown as MouseEvent);
-    expect(window.saveConfig).toHaveBeenCalledWith(false, submitButton);
+    const beforeSaveHook = (window.registerBeforeWorkspaceSave as any).mock.calls[0][1] as () => void;
+    beforeSaveHook();
     expect(window.appConfig.log_level).toBe("debug");
     expect(window.appConfig.env_vars).toEqual({ BASE_URL: "https://changed.test", API_TOKEN: "abc" });
     expect(window.appConfig.config_security).toEqual({ mode: "balanced" });
     expect(window.appConfig.publishers).toEqual([{ name: "pub-a" }]);
 
     const formContainer = document.getElementById("form-container") as HTMLDivElement;
-    formContainer.oninput?.(new Event("input"));
+    formContainer.oninput?.(new InputEvent("input"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(window.refreshDirtySection).toHaveBeenCalledWith("config");
   });
@@ -273,31 +269,4 @@ describe("settings", () => {
     ]);
   });
 
-  test("adds desktop secret actions and reports stored secret summary", async () => {
-    window.__MQB_DESKTOP__ = true;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          routes: {
-            route_a: [{ key: "token", extracted: true, stored: true }],
-          },
-        }),
-      }),
-    );
-
-    await initSettings(window.appConfig as Record<string, unknown>, {});
-
-    const checkButton = document.getElementById("js-check-desktop-secrets") as HTMLButtonElement;
-    expect(checkButton).not.toBeNull();
-    await checkButton.onclick?.(new Event("click"));
-
-    expect(fetch).toHaveBeenCalledWith("/desktop-secrets", { cache: "no-store" });
-    expect(window.mqbAlert).toHaveBeenCalledWith(
-      "Routes:\n- route_a: 1/1 extracted, 1/1 stored",
-      "Stored Secrets",
-    );
-    vi.unstubAllGlobals();
-  });
 });

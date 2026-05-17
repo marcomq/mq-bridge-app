@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
     // When no persisted config file exists (common in http/no-tauri dev mode), ensure
     // UI + metrics are reachable with sane defaults.
     let has_persisted_config = std::path::Path::new(&config_file_path).exists();
-    if !has_persisted_config || (config.routes.is_empty() && config.consumers.is_empty()) {
+    if !has_persisted_config || config.consumers.is_empty() {
         if config.metrics_addr.is_empty() {
             config.metrics_addr = "0.0.0.0:9090".to_string();
         }
@@ -162,24 +162,8 @@ async fn main() -> anyhow::Result<()> {
         info!("Prometheus exporter listening on http://{}", addr);
     }
 
-    // --- Deploy Routes if MCP is disabled ---
-    if config.routes.is_empty() && config.consumers.is_empty() {
-        warn!("No routes or consumers configured. Waiting for configuration via Web UI.");
-    } else {
-        let routes = std::mem::take(&mut config.routes);
-
-        for route in routes.values() {
-            if route.enabled && route.route.is_ref() {
-                route.route.register_output_endpoint(None)?;
-            }
-        }
-
-        for (name, route) in routes {
-            if !route.enabled {
-                continue;
-            }
-            route.route.deploy(&name).await?;
-        }
+    if config.consumers.is_empty() {
+        warn!("No consumers configured. Waiting for configuration via Web UI.");
     }
 
     info!("Bridge running. Waiting for signal.");

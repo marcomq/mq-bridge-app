@@ -1,5 +1,5 @@
 import { saveWholeConfig } from "./config-api";
-import { mqbApp } from "./runtime-window";
+import { getMqbState, mqbApp } from "./runtime-window";
 import {
   ensureWorkspaceCollections,
   isSensitiveConfig,
@@ -7,11 +7,12 @@ import {
   sanitizePublisherHistory,
   sanitizePresets,
   type EnvVars,
+  type HeaderRow,
   type PublisherHistoryStore,
   type PresetsByPublisher,
   type PublisherPreset,
 } from "./workspace-config";
-import { setStoredJson } from "./encrypted-json-storage";
+import { removeStoredJson, setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
 
 export type ImportedRequest = PublisherPreset;
@@ -21,7 +22,6 @@ type ExportBundle = {
   version: 1;
   exportedAt: string;
   config: Record<string, unknown>;
-  presets: PresetsByPublisher;
   envVars: EnvVars;
 };
 
@@ -52,7 +52,6 @@ export function exportFullBundle() {
     version: 1,
     exportedAt: new Date().toISOString(),
     config,
-    presets: sanitizePresets(config.presets),
     envVars: sanitizeEnvVars(config.env_vars),
   };
   triggerJsonDownload(`mqb-export-${isoDateCompact()}.json`, bundle);
@@ -137,7 +136,7 @@ export async function importAppConfigFromJsonText(text: string) {
     normalizeNamedArray<Record<string, unknown>>(incomingConfig.consumers) as Array<Record<string, unknown>>,
   );
 
-  const nextConfig = {
+  const nextConfig: Record<string, unknown> = {
     ...currentConfig,
     ...incomingConfig,
     publishers: mergedPublishers,
@@ -179,7 +178,7 @@ export async function importAppConfigFromJsonText(text: string) {
 export async function resetAppConfigToDefaults() {
   const currentConfig = asObject(structuredClone(mqbApp.config<Record<string, unknown>>()));
   const normalizedCurrentConfig = ensureWorkspaceCollections(currentConfig);
-  const nextConfig = {
+  const nextConfig: Record<string, unknown> = {
     ...currentConfig,
     consumers: [],
     publishers: [],
@@ -516,18 +515,21 @@ export function extractImportedRequests(text: string): {
 }
 
 async function saveImportedConfig(config: Record<string, unknown>) {
-  const refreshed = await saveWholeConfig(fetch, config);
+  const normalizedConfig = ensureWorkspaceCollections(config);
+  const refreshed = await saveWholeConfig(fetch, normalizedConfig);
   const nextConfig = { ...(refreshed as Record<string, unknown>) };
   delete nextConfig.routes;
   const history = sanitizePublisherHistory(nextConfig.history);
   nextConfig.history = history;
-  const storageSecurity = resolveStorageSecurity((window as any)._mqb_storage_security, nextConfig);
-  if (typeof window.localStorage?.setItem === "function" && hasEncryptedMessages(storageSecurity)) {
+  const storageSecurity = resolveStorageSecurity(getMqbState().storage_security, nextConfig);
+  if (hasEncryptedMessages(storageSecurity)) {
     await setStoredJson(PUBLISHER_HISTORY_KEY, history, storageSecurity);
-  } else if (typeof window.localStorage?.setItem === "function" && !isSensitiveConfig(nextConfig)) {
-    window.localStorage.setItem(PUBLISHER_HISTORY_KEY, JSON.stringify(history));
-  } else if (typeof window.localStorage?.removeItem === "function") {
-    window.localStorage.removeItem(PUBLISHER_HISTORY_KEY);
+  } else if (storageSecurity.messagesEncrypted) {
+    removeStoredJson(PUBLISHER_HISTORY_KEY);
+  } else if (!isSensitiveConfig(nextConfig)) {
+    await setStoredJson(PUBLISHER_HISTORY_KEY, history, storageSecurity);
+  } else {
+    removeStoredJson(PUBLISHER_HISTORY_KEY);
   }
   mqbApp.setConfig(nextConfig);
 }

@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const runtimeStatusStoreSet = vi.fn();
 const activeMainTabSet = vi.fn();
+const storageSecurityStoreSet = vi.fn();
+const workspaceDirtyStoreSet = vi.fn();
+const workspaceSavingStoreSet = vi.fn();
 
 let capturedOnStatus: ((status: any) => void) | null = null;
 
@@ -20,6 +23,9 @@ const runtimeState = {
 vi.mock("../../ui/src/lib/stores", () => ({
   activeMainTab: { set: activeMainTabSet },
   runtimeStatusStore: { set: runtimeStatusStoreSet },
+  storageSecurityStore: { set: storageSecurityStoreSet },
+  workspaceDirtyStore: { set: workspaceDirtyStoreSet },
+  workspaceSavingStore: { set: workspaceSavingStoreSet },
 }));
 
 vi.mock("../../ui/src/lib/runtime-status", () => ({
@@ -87,7 +93,10 @@ vi.mock("../../ui/src/lib/config-api", () => ({
 }));
 vi.mock("../../ui/src/lib/consumers-view", () => ({ initConsumers: vi.fn(), restoreConsumerStateFromView: vi.fn() }));
 vi.mock("../../ui/src/lib/publishers-view", () => ({ initPublishers: vi.fn(), restorePublisherStateFromView: vi.fn() }));
-vi.mock("../../ui/src/lib/settings", () => ({ initSettings: vi.fn() }));
+vi.mock("../../ui/src/lib/settings", () => ({
+  extractSettingsConfig: vi.fn((config) => config),
+  initSettings: vi.fn(),
+}));
 vi.mock("../../ui/src/lib/dialogs", () => ({ installDialogs: vi.fn() }));
 vi.mock("../../ui/src/lib/routing", () => ({
   nextHashForTab: vi.fn(() => "#publishers"),
@@ -100,6 +109,9 @@ describe("bootstrap runtime status sync", () => {
     vi.resetModules();
     runtimeStatusStoreSet.mockReset();
     activeMainTabSet.mockReset();
+    storageSecurityStoreSet.mockReset();
+    workspaceDirtyStoreSet.mockReset();
+    workspaceSavingStoreSet.mockReset();
     capturedOnStatus = null;
     runtimeState.runtime_status = {
       active_consumers: [],
@@ -171,6 +183,18 @@ describe("bootstrap runtime status sync", () => {
     await (window as any).saveConfig();
 
     expect(fetchStorageSecurityFromServer).toHaveBeenCalled();
+    expect(storageSecurityStoreSet).toHaveBeenLastCalledWith({
+      target: "cli",
+      encrypted: true,
+      persistent: false,
+      keySource: "ephemeral-process",
+      keyStoreAvailable: false,
+      encryptedConfigAvailable: false,
+      persistentMessagesAvailable: false,
+      configEncrypted: true,
+      messagesEncrypted: true,
+      messagesPersistent: false,
+    });
     expect((window as any)._mqb_storage_security).toEqual({
       target: "cli",
       encrypted: true,

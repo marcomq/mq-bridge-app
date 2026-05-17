@@ -299,6 +299,40 @@ async function loadCustomForm() {
         return row;
       }
 
+      if ("control" in props && "maskedLabel" in props) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "mqb-form-row mqb-password-field-row";
+
+        const label = document.createElement("label");
+        label.textContent = String(props.label || "");
+        wrapper.appendChild(label);
+
+        const content = document.createElement("div");
+        if (props.control) {
+          content.appendChild(props.control);
+        }
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = String(props.maskedLabel || "Show");
+        button.addEventListener("click", () => {
+          const input = content.querySelector("input");
+          if (!(input instanceof HTMLInputElement)) {
+            return;
+          }
+
+          const nextVisible = input.type === "password";
+          input.type = nextVisible ? "text" : "password";
+          button.textContent = nextVisible
+            ? String(props.visibleLabel || "Hide")
+            : String(props.maskedLabel || "Show");
+        });
+
+        content.appendChild(button);
+        wrapper.appendChild(content);
+        return wrapper;
+      }
+
       if ("control" in props) {
         const wrapper = document.createElement("div");
         wrapper.className = "mqb-form-row";
@@ -395,6 +429,22 @@ async function loadCustomForm() {
         });
         fieldset.appendChild(addButton);
 
+        return fieldset;
+      }
+
+      if ("value" in props && "onChange" in props) {
+        const fieldset = document.createElement("fieldset");
+        fieldset.className = "mqb-inline-editor mqb-scalar-endpoint";
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = String(props.value || "");
+        input.placeholder = String(props.placeholder || "");
+        input.addEventListener("input", () => {
+          props.onChange(input.value);
+        });
+
+        fieldset.appendChild(input);
         return fieldset;
       }
 
@@ -524,5 +574,68 @@ describe("custom form runtime", () => {
     expect(reopenedNestedCheckbox).not.toBeNull();
     expect((reopenedNestedCheckbox as HTMLInputElement).checked).toBe(true);
     expect((element.querySelector('input[type="text"]') as HTMLInputElement).value).toBe("mq.example.test");
+  });
+
+  test("scalar endpoint renderers write string values back through the form store", async () => {
+    const forms = await loadCustomForm();
+    const renderStatic = forms.customRenderers.static.render as Function;
+    const store = createStore({
+      endpoint: {
+        middlewares: [],
+        static: "",
+      },
+    });
+    forms.__activeStore = store;
+
+    const element = renderStatic(
+      {
+        type: "object",
+        title: "Static",
+        description: "Inline payload",
+      },
+      "",
+      "root.endpoint.static",
+      ["endpoint"],
+      { store, data: store.data, onChange: vi.fn() },
+    ) as HTMLElement;
+
+    document.body.appendChild(element);
+
+    const input = element.querySelector('input[type="text"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+
+    triggerTextInput(input as HTMLInputElement, "hello world");
+
+    expect(store.getPath(["endpoint", "static"])).toBe("hello world");
+  });
+
+  test("wraps password-format fields with a show-hide toggle", async () => {
+    const forms = await loadCustomForm();
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "root.secret";
+
+    const rendered = forms.domRenderer.renderFieldWrapper(
+      { type: "string", format: "password", title: "Secret Token" },
+      "root.secret",
+      input,
+      "",
+    ) as HTMLElement;
+
+    document.body.appendChild(rendered);
+
+    const passwordInput = rendered.querySelector("input") as HTMLInputElement | null;
+    const toggle = rendered.querySelector("button") as HTMLButtonElement | null;
+
+    expect(passwordInput?.type).toBe("password");
+    expect(toggle?.textContent).toBe("Show");
+
+    toggle?.click();
+    expect(passwordInput?.type).toBe("text");
+    expect(toggle?.textContent).toBe("Hide");
+
+    toggle?.click();
+    expect(passwordInput?.type).toBe("password");
+    expect(toggle?.textContent).toBe("Show");
   });
 });

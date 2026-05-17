@@ -26,7 +26,7 @@ import {
   updateConsumerResponsePayload,
 } from "../../ui/src/lib/consumers-view";
 import { consumersPanelState } from "../../ui/src/lib/stores";
-import { createHyperscriptNode, installBaseWindowStubs } from "./test-helpers";
+import { createHyperscriptNode, installBaseWindowStubs, restoreBaseWindowStubs } from "./test-helpers";
 
 function mountConsumersDom() {
   document.body.innerHTML = `
@@ -119,6 +119,7 @@ describe("initConsumers", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    restoreBaseWindowStubs();
   });
 
   test("renders consumer names and waiting log state", async () => {
@@ -193,9 +194,37 @@ describe("initConsumers", () => {
     await addConsumerAction("nats");
 
     expect(config.consumers).toHaveLength(1);
-    expect(config.consumers[0].name).toBe("nats");
+    expect(config.consumers[0].name).toBe("");
+    expect(config.consumers[0].id).toEqual(expect.any(String));
     expect(config.consumers[0].endpoint).toMatchObject({
       nats: { url: "nats://localhost:4222", subject: "events.created" },
+    });
+  });
+
+  test("includes fallback endpoint metadata for unnamed consumers in the sidebar state", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "",
+          endpoint: { http: { url: "https://api.test", path: "/events", method: "POST" } },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    const schema = {
+      properties: { consumers: { items: {} } },
+      $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+    };
+
+    await initConsumers(config, schema);
+
+    const state = get(consumersPanelState);
+    expect(state.items[0]).toMatchObject({
+      name: "",
+      displayName: "POST api.test /events",
     });
   });
 
@@ -453,7 +482,10 @@ describe("initConsumers", () => {
     setConsumerOutputModeAction("publisher");
 
     expect(get(consumersPanelState).outputMode).toBe("publisher");
-    expect(get(consumersPanelState).publisherOptions).toEqual(["orders_pub", "audit_pub"]);
+    expect(get(consumersPanelState).publisherOptions).toEqual([
+      { value: "orders_pub", label: "orders_pub" },
+      { value: "audit_pub", label: "audit_pub" },
+    ]);
     expect(get(consumersPanelState).selectedPublisher).toBe("");
     expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "" });
   });
@@ -502,7 +534,9 @@ describe("initConsumers", () => {
 
     setConsumerOutputModeAction("publisher");
 
-    expect(get(consumersPanelState).publisherOptions).toEqual(["orders_pub"]);
+    expect(get(consumersPanelState).publisherOptions).toEqual([
+      { value: "orders_pub", label: "orders_pub" },
+    ]);
     expect(get(consumersPanelState).selectedPublisher).toBe("orders_pub");
     expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "orders_pub" });
   });
@@ -713,7 +747,8 @@ describe("initConsumers", () => {
       expect.stringContaining("message-9"),
     );
     const persistedPayload = (window.localStorage.setItem as any).mock.calls.at(-1)?.[1] as string;
-    expect(JSON.parse(persistedPayload).orders_http).toHaveLength(10);
+    const persistedMessages = JSON.parse(persistedPayload);
+    expect(Object.values(persistedMessages)[0]).toHaveLength(10);
   });
 
   test("skips message fetches when capture is disabled", async () => {
@@ -774,7 +809,7 @@ describe("initConsumers", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer=orders_http");
+    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer_id=orders_http");
     expect(get(consumersPanelState).messageCaptureEnabled).toBe(false);
     expect(get(consumersPanelState).messageCaptureKeepLast).toBe(10);
   });
@@ -787,19 +822,6 @@ describe("initConsumers", () => {
       }
       return 1 as any;
     }) as any);
-    window._mqb_runtime_status = {
-      active_consumers: ["orders_http"],
-      active_routes: [],
-      route_throughput: {},
-      consumers: {
-        orders_http: {
-          running: true,
-          status: { healthy: true },
-          message_sequence: 1,
-        },
-      },
-    };
-
     globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith("/messages")) {
@@ -817,18 +839,19 @@ describe("initConsumers", () => {
     }) as any;
 
     try {
+      const config = {
+        consumers: [
+          {
+            name: "orders_http",
+            endpoint: { middlewares: [{ metrics: {} }], http: {} },
+            response: null,
+          },
+        ],
+        routes: {},
+        publishers: [],
+      };
       await initConsumers(
-        {
-          consumers: [
-            {
-              name: "orders_http",
-              endpoint: { middlewares: [{ metrics: {} }], http: {} },
-              response: null,
-            },
-          ],
-          routes: {},
-          publishers: [],
-        },
+        config,
         {
           properties: {
             consumers: {
@@ -848,6 +871,19 @@ describe("initConsumers", () => {
           },
         },
       );
+      const runtimeKey = String(config.consumers[0]?.id || "orders_http");
+      window._mqb_runtime_status = {
+        active_consumers: [runtimeKey],
+        active_routes: [],
+        route_throughput: {},
+        consumers: {
+          [runtimeKey]: {
+            running: true,
+            status: { healthy: true },
+            message_sequence: 1,
+          },
+        },
+      };
       window.renderConsumersRuntimeStatus?.();
 
       expect(scheduled.length).toBeGreaterThan(0);
@@ -861,7 +897,7 @@ describe("initConsumers", () => {
       await Promise.resolve();
 
       expect(get(consumersPanelState).items[0]?.statusClass).toBe("status-ok");
-      expect(globalThis.fetch).not.toHaveBeenCalledWith("/consumer-status?consumer=orders_http");
+      expect(globalThis.fetch).not.toHaveBeenCalledWith(`/consumer-status?consumer_id=${runtimeKey}`);
     } finally {
       setTimeoutSpy.mockRestore();
     }
@@ -914,8 +950,55 @@ describe("initConsumers", () => {
     expect(config.publishers).toEqual([
       expect.objectContaining({
         name: "orders_publisher",
-        endpoint: expect.objectContaining({ http: expect.any(Object) }),
+        endpoint: expect.objectContaining({
+          http: expect.objectContaining({ url: "http://127.0.0.1:8080" }),
+        }),
       }),
+    ]);
+  });
+
+  test("copy consumer creates publisher client URLs with scheme and path", async () => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: { url: "127.0.0.1:8080", path: "/orders" } },
+          response: null,
+        },
+        {
+          name: "orders_ws",
+          endpoint: { middlewares: [{ metrics: {} }], websocket: { url: "127.0.0.1:8081", path: "/socket" } },
+          response: null,
+        },
+        {
+          name: "orders_grpc",
+          endpoint: { middlewares: [{ metrics: {} }], grpc: { url: "127.0.0.1:50051" } },
+          response: null,
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    window.mqbPrompt = vi.fn()
+      .mockResolvedValueOnce("orders_http_publisher")
+      .mockResolvedValueOnce("orders_ws_publisher")
+      .mockResolvedValueOnce("orders_grpc_publisher");
+
+    await initConsumers(config, {
+      properties: { consumers: { items: { properties: { response: {} } } } },
+      $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+    });
+
+    await copyCurrentConsumerAction();
+    await restoreConsumerStateFromView(1, { tab: "definition" });
+    await copyCurrentConsumerAction();
+    await restoreConsumerStateFromView(2, { tab: "definition" });
+    await copyCurrentConsumerAction();
+
+    expect(config.publishers.map((publisher) => publisher.endpoint)).toEqual([
+      expect.objectContaining({ http: expect.objectContaining({ url: "http://127.0.0.1:8080/orders" }) }),
+      expect.objectContaining({ websocket: expect.objectContaining({ url: "ws://127.0.0.1:8081/socket" }) }),
+      expect.objectContaining({ grpc: expect.objectContaining({ url: "grpc://127.0.0.1:50051" }) }),
     ]);
   });
 
@@ -1137,55 +1220,36 @@ describe("initConsumers", () => {
     expect(state.items[0]?.throughputLabel).toBe("");
   });
 
-  test("computes throughput from fetched message count", async () => {
+  test("shows throughput from runtime status while new messages are fetched", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2025-01-01T00:00:00Z"));
-
-    const messageResponses = [
-      { orders_http: [{ payload: "first" }] },
-      {
-        orders_http: Array.from({ length: 30 }, (_, index) => ({
-          payload: `message-${index}`,
-        })),
-      },
-    ];
+    let runtimeKey = "orders_http";
 
     globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith("/messages")) {
         return {
           ok: true,
-          json: async () => messageResponses.shift() ?? { orders_http: [] },
+          json: async () => ({ [runtimeKey]: [{ payload: "first" }] }),
         } as any;
       }
       return { ok: true, json: async () => ({}) } as any;
     }) as any;
 
-    window._mqb_runtime_status = {
-      active_consumers: ["orders_http"],
-      active_routes: [],
-      route_throughput: {},
-      consumers: {
-        orders_http: {
-          running: true,
-          status: { healthy: true },
-          message_sequence: 1,
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
         },
-      },
+      ],
+      routes: {},
+      publishers: [],
     };
 
     await initConsumers(
-      {
-        consumers: [
-          {
-            name: "orders_http",
-            endpoint: { middlewares: [{ metrics: {} }], http: {} },
-            response: null,
-          },
-        ],
-        routes: {},
-        publishers: [],
-      },
+      config,
       {
         properties: {
           consumers: {
@@ -1205,13 +1269,29 @@ describe("initConsumers", () => {
         },
       },
     );
+    runtimeKey = String(config.consumers[0]?.id || "orders_http");
+    window._mqb_runtime_status = {
+      active_consumers: [runtimeKey],
+      active_routes: [],
+      route_throughput: {},
+      consumers: {
+        [runtimeKey]: {
+          running: true,
+          status: { healthy: true },
+          message_sequence: 1,
+        },
+      },
+    };
+    window.renderConsumersRuntimeStatus?.();
 
     await Promise.resolve();
-    window._mqb_runtime_status.consumers.orders_http.message_sequence = 2;
+    window._mqb_runtime_status.consumers[runtimeKey].message_sequence = 2;
+    window._mqb_runtime_status.consumers[runtimeKey].throughput = 30;
     vi.setSystemTime(new Date("2025-01-01T00:00:01Z"));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.resolve();
 
-    expect(parseFloat(get(consumersPanelState).items[0]?.throughputLabel || "0")).toBeGreaterThan(0);
+    expect(get(consumersPanelState).items[0]?.throughputLabel).toBe("30.0 msg/s");
   });
 
   test("keeps editable response header rows in local state and persists filtered headers", async () => {
@@ -1393,14 +1473,26 @@ describe("initConsumers", () => {
     });
     globalThis.fetch = fetchMock as any;
     window._mqb_active_tab = "publishers";
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
     window.pollRuntimeStatus = vi.fn().mockImplementation(async () => {
       statusCallCount += 1;
+      const runtimeKey = String(config.consumers[0]?.id || "orders_http");
       window._mqb_runtime_status = {
-        active_consumers: ["orders_http"],
+        active_consumers: [runtimeKey],
         active_routes: [],
         route_throughput: {},
         consumers: {
-          orders_http: {
+          [runtimeKey]: {
             running: statusCallCount > 0,
             status: { healthy: statusCallCount > 0 },
             message_sequence: 0,
@@ -1411,17 +1503,7 @@ describe("initConsumers", () => {
     });
 
     await initConsumers(
-      {
-        consumers: [
-          {
-            name: "orders_http",
-            endpoint: { middlewares: [{ metrics: {} }], http: {} },
-            response: null,
-          },
-        ],
-        routes: {},
-        publishers: [],
-      },
+      config,
       {
         properties: {
           consumers: {
@@ -1522,9 +1604,9 @@ describe("initConsumers", () => {
       "consumers",
       expect.any(Array),
       false,
-      document.getElementById("cons-save"),
+      undefined,
     );
-    expect(globalThis.fetch).toHaveBeenCalledWith("/consumer-start?consumer=orders_http", { method: "POST" });
+    expect(globalThis.fetch).toHaveBeenCalledWith("/consumer-start?consumer_id=orders_http", { method: "POST" });
 
     startRequest.resolve({ ok: true });
     await Promise.resolve();
@@ -1598,18 +1680,22 @@ describe("initConsumers", () => {
     expect(window.saveConfigSection).toHaveBeenCalledWith(
       "consumers",
       [
-        {
-          name: "Memory_Consumer_2",
+        expect.objectContaining({
+          id: expect.any(String),
+          name: "Mémory Consumer 2",
           endpoint: { middlewares: [{ metrics: {} }], memory: {} },
           message_capture: { enabled: true, keep_last: 100 },
           output: { mode: "none" },
           response: null,
-        },
+        }),
       ],
       false,
-      document.getElementById("cons-save"),
+      undefined,
     );
-    expect(fetchMock).toHaveBeenCalledWith("/consumer-start?consumer=Memory_Consumer_2", { method: "POST" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/consumer-start\?consumer_id=consumer_/),
+      { method: "POST" },
+    );
 
     startRequest.resolve({ ok: true });
     await Promise.resolve();
@@ -1660,7 +1746,7 @@ describe("initConsumers", () => {
       "consumers",
       expect.any(Array),
       false,
-      document.getElementById("cons-save"),
+      undefined,
     );
     expect(window.fetchConfigFromServer).not.toHaveBeenCalled();
   });
@@ -1784,7 +1870,7 @@ describe("initConsumers", () => {
       },
     );
 
-    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer=memory_consumer%202");
+    expect(fetchMock).not.toHaveBeenCalledWith("/messages?consumer_id=memory_consumer%202");
   });
 
   test("freezes the initial saved baseline before later local edits", async () => {
@@ -1836,13 +1922,14 @@ describe("initConsumers", () => {
       await vi.runOnlyPendingTimersAsync();
 
       expect(window.markSectionSaved).toHaveBeenCalledWith("consumers", [
-        {
+        expect.objectContaining({
+          id: expect.any(String),
           name: "saved_http",
           endpoint: { middlewares: [{ metrics: {} }], http: {} },
           message_capture: { enabled: true, keep_last: 100 },
           output: { mode: "none" },
           response: null,
-        },
+        }),
       ]);
     } finally {
       vi.useRealTimers();

@@ -1,4 +1,34 @@
-export function forceRefOnlyEndpoints(itemSchema: any) {
+type MutableSchema = {
+  $defs?: Record<string, MutableSchema>;
+  $ref?: string;
+  type?: string;
+  title?: string;
+  properties?: Record<string, MutableSchema>;
+  items?: MutableSchema;
+  additionalProperties?: MutableSchema;
+  required?: string[];
+  oneOf?: unknown;
+  anyOf?: unknown;
+  allOf?: unknown;
+  enum?: unknown;
+  const?: unknown;
+  default?: unknown;
+  ["wa-no-label"]?: boolean;
+};
+
+function ensureStaticConfigDef(itemSchema: MutableSchema) {
+  // Keep this shared def available for downstream schema consumers that still expect it.
+  if (!itemSchema.$defs?.StaticConfig) {
+    itemSchema.$defs ||= {};
+    itemSchema.$defs.StaticConfig = {
+      type: "object",
+      properties: { static: { type: "string" } },
+      required: ["static"],
+    };
+  }
+}
+
+export function forceRefOnlyEndpoints(itemSchema: MutableSchema): void {
   if (!itemSchema.$defs) itemSchema.$defs = {};
   if (!itemSchema.$defs.RefConfig) {
     itemSchema.$defs.RefConfig = {
@@ -9,15 +39,9 @@ export function forceRefOnlyEndpoints(itemSchema: any) {
       "wa-no-label": true,
     };
   }
-  if (!itemSchema.$defs.StaticConfig) {
-    itemSchema.$defs.StaticConfig = {
-      type: "object",
-      properties: { static: { type: "string" } },
-      required: ["static"],
-    };
-  }
+  ensureStaticConfigDef(itemSchema);
 
-  const forceRef = (obj: any) => {
+  const forceRef = (obj: MutableSchema | undefined) => {
     if (!obj || typeof obj !== "object") return;
     obj.$ref = "#/$defs/RefConfig";
     delete obj.oneOf;

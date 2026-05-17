@@ -1,17 +1,24 @@
 import { writable } from "svelte/store";
 import type { MainTab, RuntimeStatus } from "./runtime-status";
 import { EMPTY_RUNTIME_STATUS } from "./runtime-status";
+import type { PublisherTreeNode } from "./publisher-grouping";
+import { EMPTY_STORAGE_SECURITY, type StorageSecurityInfo } from "./storage-security";
 
 export const activeMainTab = writable<MainTab>("publishers");
 export const runtimeStatusStore = writable<RuntimeStatus>(EMPTY_RUNTIME_STATUS);
+export const storageSecurityStore = writable<StorageSecurityInfo>({ ...EMPTY_STORAGE_SECURITY });
+export const workspaceDirtyStore = writable(false);
+export const workspaceSavingStore = writable(false);
 
 export interface ConsumerSidebarItem {
   name: string;
+  displayName: string;
   inputProto: string;
   statusClass: string;
   messageCount: number;
   throughputLabel: string;
   originalIndex: number;
+  id?: string;
 }
 
 export interface ConsumerLogItem {
@@ -23,7 +30,7 @@ export interface ConsumerLogItem {
 
 export interface ConsumersPanelState {
   hasConsumers: boolean;
-  currentConsumerName: string | null;
+  currentConsumerKey: string | null;
   items: ConsumerSidebarItem[];
   selectedIndex: number;
   activeSubtab: "definition" | "response" | "messages";
@@ -33,7 +40,7 @@ export interface ConsumersPanelState {
   messageCaptureKeepLast: number;
   responseEnabled: boolean;
   outputMode: "none" | "publisher" | "response";
-  publisherOptions: string[];
+  publisherOptions: Array<{ value: string; label: string }>;
   selectedPublisher: string;
   responseSupported: boolean;
   responseHeaders: Array<{ id: number; key: string; value: string; enabled: boolean }>;
@@ -56,7 +63,7 @@ export interface ConsumersPanelState {
 
 export const consumersPanelState = writable<ConsumersPanelState>({
   hasConsumers: false,
-  currentConsumerName: null,
+  currentConsumerKey: null,
   items: [],
   selectedIndex: 0,
   activeSubtab: "messages",
@@ -96,13 +103,10 @@ export interface PublisherHistoryRow {
   pinned: boolean;
 }
 
-export interface PublisherPresetRow {
-  presetIndex: number;
+export interface PublisherSidebarItem {
   name: string;
   endpointType: string;
-  methodLabel: string;
-  targetSummary: string;
-  bodyPreview: string;
+  originalIndex: number;
 }
 
 export interface PublisherRequestFieldState {
@@ -122,8 +126,9 @@ export interface PublisherHeaderRow {
 export interface PublishersPanelState {
   hasPublishers: boolean;
   items: PublisherSidebarItem[];
+  groupedItems: PublisherTreeNode[];
   selectedIndex: number;
-  activeSubtab: "payload" | "headers" | "history" | "presets" | "definition";
+  activeSubtab: "payload" | "headers" | "history" | "definition";
   isNew: boolean;
   deleteLabel: string;
   endpointType: string;
@@ -146,12 +151,12 @@ export interface PublishersPanelState {
   responseHeaders: Array<[string, string]>;
   responsePayload: string;
   historyRows: PublisherHistoryRow[];
-  presetRows: PublisherPresetRow[];
 }
 
 export const publishersPanelState = writable<PublishersPanelState>({
   hasPublishers: false,
   items: [],
+  groupedItems: [],
   selectedIndex: 0,
   activeSubtab: "payload",
   isNew: false,
@@ -176,5 +181,4 @@ export const publishersPanelState = writable<PublishersPanelState>({
   responseHeaders: [],
   responsePayload: "",
   historyRows: [],
-  presetRows: [],
 });

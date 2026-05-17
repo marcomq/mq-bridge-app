@@ -79,7 +79,6 @@
           class="cons-response-header-delete"
           variant="neutral"
           appearance="outlined"
-          size="small"
           role="button"
           tabindex="0"
           onclick={() => onRemove(index)}
@@ -94,7 +93,6 @@
     <wa-button
       variant="neutral"
       appearance="outlined"
-      size="small"
       role="button"
       tabindex="0"
       onclick={onAdd}

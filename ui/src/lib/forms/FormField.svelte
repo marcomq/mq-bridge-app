@@ -1,22 +1,25 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import MountedNode from "./MountedNode.svelte";
 
   interface Props {
     label: string;
     description?: string;
     labelFor?: string;
-    control: Node | null;
+    control?: Node | null;
     wrapperClass?: string;
     required?: boolean;
+    children?: Snippet;
   }
 
   let {
     label,
     description = "",
     labelFor,
-    control,
+    control = null,
     wrapperClass = "",
     required = false,
+    children,
   }: Props = $props();
 </script>
 
@@ -28,7 +31,11 @@
     {/if}
   </label>
   <div class="wa-form-col mqb-form-col">
-    <MountedNode node={control} />
+    {#if children}
+      {@render children()}
+    {:else}
+      <MountedNode node={control} />
+    {/if}
     {#if description}
       <div class="form-description mqb-form-description">{description}</div>
     {/if}

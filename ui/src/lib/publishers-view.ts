@@ -2,31 +2,42 @@ import {
   applyEndpointSchemaDefaults,
   nextUniqueName,
 } from "./routes";
-import { cloneJson } from "./utils";
+import { get } from "svelte/store";
+import { cloneJson, normalizeNamedEntityFormShape } from "./utils";
 import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
 import { publishersPanelState } from "./stores";
 import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
 import {
   extractImportedRequests,
-  exportPresetsForPublisher,
   importFromJsonText,
 } from "./import-export";
 import {
   ensureWorkspaceCollections,
   isSensitiveConfig,
   sanitizePublisherHistory,
+  type PublisherHistoryStore,
+  type PublisherPreset,
 } from "./workspace-config";
 import { setStoredJson } from "./encrypted-json-storage";
 import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
+import { buildPublisherTree } from "./publisher-grouping";
+import {
+  PUBLISHER_TYPE_OPTIONS,
+  REQUEST_BAR_LAYOUTS,
+  type RequestBarFieldDescriptor,
+  type RequestBarLayout,
+} from "./endpoint-metadata";
 import {
   ensureRefOnlyEndpointDefaults,
+  createConsumerEndpointFromPublisherEndpoint as toConsumerEndpoint,
   getEndpointType as getEndpointTypeFromEndpointRecord,
   normalizeMiddlewares,
   normalizeScalarEndpointValue,
   prunePolymorphicEndpointKeys,
 } from "./endpoint-utils";
+import { getEntityDisplayLabel } from "./utils";
+import { createLocalEntityId, getEntityStorageKey } from "./entity-key";
 import { readJson, removeKey, writeJson } from "./storage";
-import { getEntityStorageKey } from "./entity-key";
 import { forceRefOnlyEndpoints } from "./schema-utils";
 import type {
   ConsumerConfig,
@@ -45,19 +56,14 @@ export let clearActivePublisherHistory: () => void = () => {};
 export let copyPublisherResponse: () => void = () => {};
 export let copyPublisherResponseJson: () => void = () => {};
 export let copyPublisherAsCurl: () => void = () => {};
-export let savePublisherHistoryAsPresetAction: (historyIndex: number) => void | Promise<void> = () => {};
+export let savePublisherHistoryAsPublisherAction: (historyIndex: number) => void | Promise<void> = () => {};
 export let resendPublisherHistoryAction: (historyIndex: number) => void | Promise<void> = () => {};
-export let savePublisherPresetAction: () => void | Promise<void> = () => {};
-export let exportPublisherPresetsAction: () => void = () => {};
-export let renamePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
-export let applyPublisherPresetAction: (presetIndex: number) => void = () => {};
-export let deletePublisherPresetAction: (presetIndex: number) => void | Promise<void> = () => {};
 export let importPostmanToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let importOpenApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let importAsyncApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
 export let importMqbToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
-export let presetToPublisherAction: (presetIndex: number) => void | Promise<void> = () => {};
-export let selectPublisherSubtab: (tab: "payload" | "headers" | "history" | "presets" | "definition") => void = () => {};
+export let saveCurrentPublisherVariantAction: () => void | Promise<void> = () => {};
+export let selectPublisherSubtab: (tab: string) => void = () => {};
 export let addPublisherAction: (endpointType: string) => void | Promise<void> = () => {};
 export let copyCurrentPublisherAction: () => void | Promise<void> = () => {};
 export let editEnvironmentVarsAction: () => void | Promise<void> = () => {};
@@ -74,170 +80,41 @@ export let updatePublisherPayload: (value: string) => void = () => {};
 export let updatePublisherMethod: (value: string) => void = () => {};
 export let updatePublisherRequestField: (fieldId: "pub-extra-1" | "pub-extra-2" | "pub-url", value: string) => void = () => {};
 
-type RequestBarFieldDescriptor = {
-  inputId: "pub-extra-1" | "pub-extra-2" | "pub-url";
-  field: string;
-  label: string;
-  placeholder?: string;
+type PublisherSubtab = "payload" | "headers" | "history" | "definition";
+type SchemaObject = Record<string, any> & {
+  properties?: Record<string, any>;
+  required?: string[];
+  $defs?: Record<string, any>;
 };
-
-type RequestBarLayout = {
-  showMethod?: boolean;
-  fields: RequestBarFieldDescriptor[];
-};
-
-type PublisherSubtab = "payload" | "headers" | "history" | "presets" | "definition";
 
 const STORAGE_KEY = "mqb_publisher_state";
 const HISTORY_KEY = "mqb_publisher_history";
 
 const HTTP_METHOD_OPTIONS = ["POST", "GET", "PUT", "DELETE"];
-const PUBLISHER_SUBTABS = new Set<PublisherSubtab>(["payload", "headers", "history", "presets", "definition"]);
+const PUBLISHER_SUBTABS = new Set<PublisherSubtab>(["payload", "headers", "history", "definition"]);
 const REQUEST_BAR_METADATA_PREFIX = "request_bar.";
 
-const ENDPOINT_TYPE_KEYS = [
-  "http",
-  "kafka",
-  "mqtt",
-  "grpc",
-  "amqp",
-  "ibmmq",
-  "nats",
-  "aws",
-  "mongodb",
-  "sqlx",
-  "sled",
-  "file",
-  "static",
-  "memory",
-  "ref",
-  "zeromq",
-  "switch",
-  "fanout",
-  "reader",
-  "response",
-  "custom",
-  "null",
-];
-// Internal or structural types that should not appear in the "New Publisher" dialog.
-// We don't want to support ibmmq yet. But we want to support "static"
-const EXCLUDED_PUBLISHER_TYPES = new Set(["custom", "ref", "response", "reader", "ibmmq", "null"]);
-export const PUBLISHER_TYPE_OPTIONS = ENDPOINT_TYPE_KEYS.filter(
-  (key) => !EXCLUDED_PUBLISHER_TYPES.has(key),
-);
+export { PUBLISHER_TYPE_OPTIONS };
 
-const REQUEST_BAR_LAYOUTS: Record<string, RequestBarLayout> = {
-  http: {
-    showMethod: true,
-    fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "https://example.com/api" }],
-  },
-  kafka: {
-    fields: [
-      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events" },
-      { inputId: "pub-url", field: "url", label: "BROKERS", placeholder: "kafka:9092" },
-    ],
-  },
-  mqtt: {
-    fields: [
-      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events/updates" },
-      { inputId: "pub-url", field: "url", label: "BROKER", placeholder: "tcp://localhost:1883" },
-    ],
-  },
-  grpc: {
-    fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "http://localhost:50051" }],
-  },
-  amqp: {
-    fields: [
-      { inputId: "pub-extra-1", field: "queue", label: "QUEUE", placeholder: "jobs" },
-      { inputId: "pub-url", field: "url", label: "URL", placeholder: "amqp://guest:guest@localhost:5672/%2f" },
-    ],
-  },
-  ibmmq: {
-    fields: [
-      { inputId: "pub-extra-1", field: "queue", label: "QUEUE", placeholder: "DEV.QUEUE.1" },
-      { inputId: "pub-extra-2", field: "topic", label: "TOPIC", placeholder: "topic://events" },
-      { inputId: "pub-url", field: "url", label: "HOST", placeholder: "mq-host(1414)" },
-    ],
-  },
-  nats: {
-    fields: [
-      { inputId: "pub-extra-1", field: "subject", label: "SUBJECT", placeholder: "events.created" },
-      { inputId: "pub-url", field: "url", label: "SERVERS", placeholder: "nats://localhost:4222" },
-    ],
-  },
-  mongodb: {
-    fields: [
-      { inputId: "pub-extra-1", field: "database", label: "DATABASE", placeholder: "app" },
-      { inputId: "pub-extra-2", field: "collection", label: "COLLECTION", placeholder: "messages" },
-      { inputId: "pub-url", field: "url", label: "URL", placeholder: "mongodb://localhost:27017" },
-    ],
-  },
-  sqlx: {
-    fields: [
-      { inputId: "pub-extra-1", field: "table", label: "TABLE", placeholder: "events" },
-      { inputId: "pub-url", field: "url", label: "URL", placeholder: "postgres://user:pass@localhost/db" },
-    ],
-  },
-  zeromq: {
-    fields: [
-      { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "events" },
-      { inputId: "pub-url", field: "url", label: "URL", placeholder: "tcp://127.0.0.1:5555" },
-    ],
-  },
-  file: {
-    fields: [{ inputId: "pub-url", field: "path", label: "PATH", placeholder: "/tmp/messages.jsonl" }],
-  },
-  memory: {
-    fields: [{ inputId: "pub-url", field: "topic", label: "TOPIC", placeholder: "events" }],
-  },
-  sled: {
-    fields: [
-      { inputId: "pub-extra-1", field: "tree", label: "TREE", placeholder: "default" },
-      { inputId: "pub-url", field: "path", label: "PATH", placeholder: "./data/sled" },
-    ],
-  },
-};
-
-const SCHEMA_REQUEST_BAR_FIELDS = {
-  HttpConfig: ["url", "custom_headers"],
-  KafkaConfig: ["url", "topic"],
-  MqttConfig: ["url", "topic"],
-  GrpcConfig: ["url"],
-  AmqpConfig: ["url", "queue"],
-  IbmMqConfig: ["url", "queue", "topic"],
-  NatsConfig: ["url", "subject"],
-  MongoDbConfig: ["url", "database", "collection"],
-  ZeroMqConfig: ["url", "topic"],
-  SqlxConfig: ["url", "table"],
-  FileConfig: ["path"],
-  MemoryConfig: ["topic"],
-  SledConfig: ["path", "tree"],
-} satisfies Record<string, string[]>;
+const SCHEMA_CONFIG_ENDPOINT_TYPES = {
+  HttpConfig: "http",
+  WebSocketConfig: "websocket",
+  KafkaConfig: "kafka",
+  MqttConfig: "mqtt",
+  GrpcConfig: "grpc",
+  AmqpConfig: "amqp",
+  IbmMqConfig: "ibmmq",
+  NatsConfig: "nats",
+  MongoDbConfig: "mongodb",
+  ZeroMqConfig: "zeromq",
+  SqlxConfig: "sqlx",
+  FileConfig: "file",
+  MemoryConfig: "memory",
+  SledConfig: "sled",
+} satisfies Record<string, string>;
 
 export function createConsumerEndpointFromPublisherEndpoint(endpoint: Record<string, any>) {
-  const nextEndpoint = cloneJson(endpoint || {});
-  const http = nextEndpoint.http;
-  if (!http || typeof http !== "object" || typeof http.url !== "string") {
-    return nextEndpoint;
-  }
-
-  try {
-    const parsedUrl = new URL(http.url);
-    const defaultPort = parsedUrl.protocol === "https:" ? "443" : "80";
-    const port = parsedUrl.port || defaultPort;
-    http.url = `0.0.0.0:${port}`;
-
-    const nextPath = `${parsedUrl.pathname || "/"}${parsedUrl.search || ""}`;
-    if (nextPath && nextPath !== "/") {
-      http.path = nextPath;
-    } else {
-      delete http.path;
-    }
-  } catch {
-    // Leave non-URL values unchanged; the user can adjust them manually after copying.
-  }
-
-  return nextEndpoint;
+  return toConsumerEndpoint(endpoint);
 }
 
 function sortEntries(obj: Record<string, any> | undefined | null) {
@@ -265,6 +142,9 @@ function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined)
 }
 
 function normalizePublisherSubtab(tab: string | undefined, fallback: PublisherSubtab = "payload"): PublisherSubtab {
+  if (tab === "presets") {
+    return "definition";
+  }
   return PUBLISHER_SUBTABS.has(tab as PublisherSubtab) ? (tab as PublisherSubtab) : fallback;
 }
 
@@ -281,6 +161,7 @@ function createDefaultPublisherEndpoint(endpointType: string) {
   const defaults: Record<string, Record<string, any>> = {
     http: defaultHttpConfig(),
     grpc: { url: "http://localhost:50051" },
+    websocket: { url: "ws://localhost:8080" },
     nats: { url: "nats://localhost:4222", subject: "events.created" },
     memory: { topic: "events" },
     amqp: { url: "amqp://guest:guest@localhost:5672/%2f", queue: "jobs" },
@@ -298,6 +179,14 @@ function createDefaultPublisherEndpoint(endpointType: string) {
   return {
     ...base,
     [endpointType]: cloneJson(defaults[endpointType] || {}),
+  };
+}
+
+function createEmptyPublisher(): PublisherConfig {
+  return {
+    name: "",
+    endpoint: createDefaultPublisherEndpoint("http"),
+    comment: "",
   };
 }
 
@@ -352,13 +241,7 @@ function ensurePublisherEndpointDefaults(endpoint: unknown): Record<string, any>
 function normalizePublisherConfigShape(publisher: PublisherConfig): PublisherConfig {
   if (!publisher) return publisher;
 
-  // Handle root artifact from form generator
-  let data = { ...publisher } as any;
-  if (data.root) {
-    const { root, ...rest } = data;
-    data = { ...rest, ...root };
-  }
-
+  const data = normalizeNamedEntityFormShape(publisher, "publisher") as any;
   data.endpoint = ensurePublisherEndpointDefaults(data.endpoint);
 
   return data as PublisherConfig;
@@ -371,7 +254,7 @@ function syncConsumerPublisherReferences(
 ) {
   const nextPublisherName = String(nextPublisher.name || "").trim();
   const nextPublisherId = String(nextPublisher.id || "").trim();
-  if (!Array.isArray(consumers) || !previousPublisherName || !nextPublisherName) {
+  if (!Array.isArray(consumers) || (!previousPublisherName && !nextPublisherId)) {
     return;
   }
 
@@ -386,7 +269,7 @@ function syncConsumerPublisherReferences(
       consumer.output = {
         ...consumer.output,
         publisher: nextPublisherName,
-        publisher_id: nextPublisherId || consumer.output.publisher_id,
+        publisher_id: nextPublisherId || consumer.output.publisher_id || undefined,
       };
     }
   });
@@ -465,8 +348,27 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   let historyStore = localHistoryStore.updated_at >= configHistoryStore.updated_at
     ? localHistoryStore
     : configHistoryStore;
+
+  for (const publisher of publishers) {
+    const storageKey = getPublisherStorageKey(publisher);
+    const legacyNameKey = String(publisher.name || "").trim();
+    if (storageKey && legacyNameKey && storageKey !== legacyNameKey && !appState[storageKey] && appState[legacyNameKey]) {
+      appState[storageKey] = appState[legacyNameKey];
+      delete appState[legacyNameKey];
+    }
+    if (
+      storageKey
+      && legacyNameKey
+      && storageKey !== legacyNameKey
+      && !historyStore.publishers?.[storageKey]
+      && historyStore.publishers?.[legacyNameKey]
+    ) {
+      historyStore.publishers[storageKey] = historyStore.publishers[legacyNameKey];
+      delete historyStore.publishers[legacyNameKey];
+    }
+  }
+
   let history = flattenPublisherHistory(historyStore).slice(0, 1000);
-  let presets = workspaceConfig.presets;
   let envVars = workspaceConfig.env_vars;
 
   let savedPublisherKeys = new Set(
@@ -477,13 +379,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const isSavedPublisher = (publisher: Partial<PublisherConfig> | null | undefined) =>
     savedPublisherKeys.has(getPublisherStorageKey(publisher));
 
-  const emptyAlert = document.getElementById("pub-empty-alert") as HTMLElement | null;
-  const mainUi = document.getElementById("pub-main-ui") as HTMLElement | null;
-  if (!container || !emptyAlert || !mainUi) {
+  if (!container) {
     return;
   }
 
-  container.style.display = "contents";
+  container.style.display = "flex";
   let currentIdx = 0;
   let activeSubtab: PublisherSubtab = "payload";
   let pubSplit: unknown;
@@ -504,8 +404,39 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
 
   mqbRuntime.registerDirtySection("publishers", {
-    buttonId: "pub-save",
+    buttonId: "workspace-save-button",
     getValue: () => config.publishers,
+  });
+  mqbRuntime.registerBeforeWorkspaceSave("publishers", async () => {
+    const activeElement = document.activeElement as HTMLElement | null;
+    activeElement?.blur();
+    await Promise.resolve();
+    const mapped = config.publishers.map((publisher, index) => {
+      const nextPublisher = normalizePublisherConfigShape(publisher);
+      nextPublisher.payload = getPublisherState(publisher).payload || "";
+      nextPublisher.headers = getPublisherHeaderRows(publisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
+      if (index === currentIdx && getEndpointType(nextPublisher) === "http") {
+        const httpConfig = ensureHttpConfig(nextPublisher);
+        httpConfig.method = currentMethodValue || httpConfig.method;
+      }
+      return nextPublisher;
+    });
+    config.publishers.splice(0, config.publishers.length, ...mapped);
+  });
+  mqbRuntime.registerAfterWorkspaceSave("publishers", () => {
+    const selectedPublisher = config.publishers[currentIdx];
+    const selectedKey = getPublisherStorageKey(selectedPublisher);
+    const refreshedPublishers = mqbApp.config<PublishersAppConfig>().publishers || [];
+    const refreshedIdx = refreshedPublishers.findIndex(
+      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey,
+    );
+    const pendingRestore = {
+      idx: refreshedIdx === -1 ? Math.min(currentIdx, Math.max(refreshedPublishers.length - 1, 0)) : refreshedIdx,
+      tab: activeSubtab,
+    };
+    getMqbState().pending_publisher_restore = pendingRestore;
+    rememberPublisherView(pendingRestore.idx, activeSubtab);
+    (appWindow() as any)._mqb_pending_publisher_restore = pendingRestore;
   });
   const hadUnsavedChangesBeforeInit = mqbRuntime.refreshDirtySection("publishers");
 
@@ -550,14 +481,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
   };
   const persistWorkspaceCollections = async (silent = true) => {
-    workspaceConfig.presets = presets;
     workspaceConfig.env_vars = envVars;
     workspaceConfig.history = historyStore;
     const nextConfig = mqbApp.config<PublishersAppConfig>();
-    nextConfig.presets = presets;
     nextConfig.env_vars = envVars;
     nextConfig.history = historyStore;
-    await mqbRuntime.saveConfigSection("presets", presets, silent);
     await mqbRuntime.saveConfigSection("env_vars", envVars, silent);
   };
   const applyEnvVars = (value: string) =>
@@ -568,7 +496,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const openPublisherAt = (idx: number, tab = "definition") => {
     openPublisherByIndex(
       idx,
-      tab as "payload" | "headers" | "history" | "presets" | "definition",
+      tab as "payload" | "headers" | "history" | "definition",
       restorePublisherStateFromView,
       () => {
         void initPublishers(config, schema);
@@ -597,8 +525,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!publisher.endpoint.http || typeof publisher.endpoint.http !== "object") {
       publisher.endpoint.http = defaultHttpConfig();
     }
-    publisher.endpoint.http.custom_headers ||= {};
-    return publisher.endpoint.http as Record<string, any>;
+    const httpConfig = publisher.endpoint.http as Record<string, any>;
+    httpConfig.custom_headers ||= {};
+    return httpConfig;
   };
 
   const ensureEndpointConfig = (publisher: PublisherConfig, endpointType: string) => {
@@ -617,7 +546,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const getExistingEndpointConfig = (publisher: PublisherConfig, endpointType = getEndpointType(publisher)) => {
     const endpoint = publisher?.endpoint || {};
     const endpointConfig = endpoint?.[endpointType];
-    return endpointConfig && typeof endpointConfig === "object" ? endpointConfig : null;
+    return endpointConfig && typeof endpointConfig === "object" ? endpointConfig as Record<string, any> : null;
   };
 
   const getRequestBarLayout = (endpointType: string): RequestBarLayout =>
@@ -721,10 +650,10 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const getPublisherState = (publisher: PublisherConfig | null | undefined) => {
     const storageKey = getPublisherStorageKey(publisher);
     if (!storageKey) {
-      return { payload: '{\n  "hello": "world"\n}' };
+      return { payload: String(publisher?.payload || '{}') };
     }
     if (!appState[storageKey]) {
-      appState[storageKey] = { payload: '{\n  "hello": "world"\n}' };
+      appState[storageKey] = { payload: String(publisher?.payload || '{}') };
     }
     return appState[storageKey];
   };
@@ -787,12 +716,22 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     if (!publisher) return [];
     const state = getPublisherState(publisher);
     if (!Array.isArray(state.headers)) {
-      const httpConfig = getEndpointType(publisher) === "http" ? ensureHttpConfig(publisher) : null;
-      state.headers = sortEntries(httpConfig?.custom_headers).map(([key, value]) => ({
+      const savedHeaders = Array.isArray(publisher.headers)
+        ? publisher.headers
+        : sortEntries(getEndpointType(publisher) === "http" ? ensureHttpConfig(publisher)?.custom_headers : {})
+            .map(([key, value]) => ({ key: String(key), value: String(value), enabled: true }));
+      if (getEndpointType(publisher) === "http" && Array.isArray(publisher.headers)) {
+        ensureHttpConfig(publisher).custom_headers = Object.fromEntries(
+          publisher.headers
+            .filter((row) => row.enabled !== false && String(row.key || "").trim().length > 0)
+            .map((row) => [String(row.key).trim(), String(row.value || "")]),
+        );
+      }
+      state.headers = savedHeaders.map((row) => ({
         id: nextPublisherHeaderId++,
-        key: String(key),
-        value: String(value),
-        enabled: true,
+        key: String(row.key || ""),
+        value: String(row.value || ""),
+        enabled: row.enabled !== false,
       }));
       saveAppState();
     } else {
@@ -804,15 +743,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
     syncNextPublisherHeaderId();
     return state.headers;
-  };
-
-  const getPublisherPresets = (publisher: PublisherConfig | undefined) => {
-    const storageKey = getPublisherStorageKey(publisher);
-    if (!storageKey) return [];
-    if (!Array.isArray(presets[storageKey])) {
-      presets[storageKey] = [];
-    }
-    return presets[storageKey];
   };
 
   const getCurrentPublisherUrl = (publisher: PublisherConfig) => {
@@ -837,145 +767,31 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
   };
 
-  const getPresetEndpointType = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) =>
-    preset.endpoint_type || (fallbackPublisher ? getEndpointType(fallbackPublisher) : "http");
+  const getImportedRequestEndpointType = (request: PublisherPreset, fallbackPublisher?: PublisherConfig) =>
+    request.endpoint_type || (fallbackPublisher ? getEndpointType(fallbackPublisher) : "http");
 
-  const getPresetRequestFields = (preset: PublisherPreset) => {
-    const nextFields = { ...(preset.request_fields || {}) };
-    if (preset.url && !nextFields.url) {
-      nextFields.url = preset.url;
+  const getImportedRequestFields = (request: PublisherPreset) => {
+    const nextFields = { ...(request.request_fields || {}) };
+    if (request.url && !nextFields.url) {
+      nextFields.url = request.url;
     }
     return nextFields;
   };
 
-  const getPresetRequestFieldValue = (preset: PublisherPreset, field: string) =>
-    String(getPresetRequestFields(preset)[field] || "");
+  const getImportedRequestFieldValue = (request: PublisherPreset, field: string) =>
+    String(getImportedRequestFields(request)[field] || "");
 
-  const getPresetMethodValue = (preset: PublisherPreset) =>
-    String(preset.method || "").toUpperCase();
+  const getImportedRequestMethodValue = (request: PublisherPreset) =>
+    String(request.method || "").toUpperCase();
 
-  const createPresetFromPublisherState = (
-    publisher: PublisherConfig,
-    presetName: string,
-    payload: string,
-    headers: Array<{ key: string; value: string; enabled: boolean }>,
-  ): PublisherPreset => {
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    const request_fields = Object.fromEntries(
-      layout.fields.map((descriptor) => [descriptor.field, getRequestBarFieldValue(publisher, descriptor).trim()]),
-    );
-
-    return {
-      name: presetName,
-      payload: payload || "",
-      headers: (headers || []).map((row) => ({
-        key: String(row.key || ""),
-        value: String(row.value || ""),
-        enabled: row.enabled !== false,
-      })),
-      endpoint_type: endpointType,
-      method: layout.showMethod ? (currentMethodValue || "POST") : undefined,
-      url: request_fields.url || undefined,
-      request_fields,
-    };
-  };
-
-  const createPresetFromHistoryItem = (
-    publisher: PublisherConfig,
-    item: PublisherHistoryItem,
-    presetName: string,
-  ): PublisherPreset => {
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    const requestMetadata = item.requestMetadata || {};
-    const requestFields = item.request_fields || {};
-    const request_fields = Object.fromEntries(
-      layout.fields.map((descriptor) => {
-        const value = requestFields[descriptor.field]
-          ?? requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
-          ?? requestMetadata[`request_bar.${descriptor.inputId}`]
-          ?? (descriptor.field === "url" ? String(item.url || "") : "");
-        return [descriptor.field, String(value || "")];
-      }),
-    );
-
-    return {
-      name: presetName,
-      payload: item.payload || "",
-      headers: (item.headers?.length ? item.headers : item.metadata || []).map((row: any) => ({
-        key: String(row.key ?? row.k ?? ""),
-        value: String(row.value ?? row.v ?? ""),
-        enabled: row.enabled !== false,
-      })),
-      endpoint_type: endpointType,
-      method: layout.showMethod ? String(item.method || requestMetadata.http_method || currentMethodValue || "POST") : undefined,
-      url: request_fields.url || undefined,
-      request_fields,
-    };
-  };
-
-  const applyPresetToPublisher = (publisher: PublisherConfig, preset: PublisherPreset) => {
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    const requestFields = getPresetRequestFields(preset);
-
-    if (layout.showMethod && preset.method) {
-      currentMethodValue = getPresetMethodValue(preset) || "POST";
-      if (endpointType === "http") {
-        publisher.endpoint.http ||= {};
-        publisher.endpoint.http.method = currentMethodValue;
-      }
-    }
-
-    layout.fields.forEach((descriptor) => {
-      setRequestBarFieldValue(publisher, descriptor, String(requestFields[descriptor.field] || ""));
-    });
-
-    getPublisherState(publisher).payload = preset.payload || "";
-
-    if (endpointType === "http") {
-      const rows = (preset.headers || []).map((header, index) => ({
-        id: nextPublisherHeaderId + index,
-        key: String(header.key || ""),
-        value: String(header.value || ""),
-        enabled: header.enabled !== false,
-      }));
-      nextPublisherHeaderId += rows.length;
-      updatePublisherConfigFromMetadataRows(rows);
-      return;
-    }
-
-    persistConfigState();
-  };
-
-  const summarizePresetRequest = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
-    const endpointType = getPresetEndpointType(preset, fallbackPublisher);
-    const layout = getRequestBarLayout(endpointType);
-    const requestFields = getPresetRequestFields(preset);
-    const targetSummary = layout.fields
-      .map((descriptor) => {
-        const value = String(requestFields[descriptor.field] || "").trim();
-        return value ? `${descriptor.label}: ${value}` : "";
-      })
-      .filter(Boolean)
-      .join(" | ");
-
-    return {
-      endpointType,
-      methodLabel: layout.showMethod ? (getPresetMethodValue(preset) || "POST") : "",
-      targetSummary,
-    };
-  };
-
-  const requestToPublisher = (preset: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
-    const currentNames = (config.publishers || []).map((publisher) => publisher.name);
-    const endpointType = getPresetEndpointType(preset, fallbackPublisher);
-    const baseName = String(preset.name || endpointType).trim().replace(/\s+/g, "_").toLowerCase() || endpointType;
+  const requestToPublisher = (request: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
+    const currentNames = (config.publishers || []).map((publisher) => String(publisher.name || ""));
+    const endpointType = getImportedRequestEndpointType(request, fallbackPublisher);
+    const baseName = String(request.name || endpointType).trim() || endpointType;
     const name = nextUniqueName(baseName, currentNames);
-    const requestFields = getPresetRequestFields(preset);
+    const requestFields = getImportedRequestFields(request);
     const customHeaders = Object.fromEntries(
-      (preset.headers || [])
+      (request.headers || [])
         .filter((row) => row.enabled !== false && String(row.key || "").trim())
         .map((row) => [String(row.key).trim(), String(row.value || "")]),
     );
@@ -991,96 +807,91 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     });
     if (endpointType === "http") {
       const httpConfig = ensureHttpConfig(publisher);
-      httpConfig.method = getPresetMethodValue(preset) || "POST";
+      httpConfig.method = getImportedRequestMethodValue(request) || "POST";
       httpConfig.custom_headers = customHeaders;
     }
-    const headerRows = (preset.headers || []).map((row) => ({
+    const headerRows = (request.headers || []).map((row) => ({
       id: nextPublisherHeaderId++,
       key: String(row.key || ""),
       value: String(row.value || ""),
       enabled: row.enabled !== false,
     }));
     appState[getPublisherStorageKey(publisher)] = {
-      payload: preset.payload || "",
+      payload: request.payload || "",
       headers: headerRows,
     };
+    publisher.payload = request.payload || "";
+    publisher.headers = headerRows.map(({ key, value, enabled }) => ({ key, value, enabled }));
     return publisher;
+  };
+
+  const createPublisherVariantFromCurrentState = async (publisher: PublisherConfig) => {
+    const nextName = await mqbDialogs.prompt("Choose a name for the saved publisher variant.", "Save Publisher Variant", {
+      confirmLabel: "Save",
+      value: "",
+      placeholder: "publisher_name",
+    });
+    if (nextName === null) return null;
+
+    const cloned = normalizePublisherConfigShape(cloneJson(publisher));
+    cloned.id = createLocalEntityId("publisher");
+    cloned.name = nextName.trim();
+    if (getEndpointType(cloned) === "http") {
+      ensureHttpConfig(cloned).method = currentMethodValue || ensureHttpConfig(cloned).method;
+    }
+    cloned.payload = getPublisherState(publisher).payload || "";
+    const nextState = structuredClone(getPublisherState(publisher));
+    appState[getPublisherStorageKey(cloned)] = nextState;
+    cloned.headers = (nextState.headers || []).map(({ key, value, enabled }) => ({ key, value, enabled }));
+    return cloned;
+  };
+
+  const createPublisherVariantFromHistoryItem = async (publisher: PublisherConfig, item: PublisherHistoryItem) => {
+    const nextName = await mqbDialogs.prompt("Choose a name for the saved publisher variant.", "Save Publisher Variant", {
+      confirmLabel: "Save",
+      value: "",
+      placeholder: "publisher_name",
+    });
+    if (nextName === null) return null;
+
+    const cloned = normalizePublisherConfigShape(cloneJson(publisher));
+    cloned.id = createLocalEntityId("publisher");
+    cloned.name = nextName.trim();
+    const state = getPublisherState(cloned);
+    state.payload = item.payload || "";
+    applyHistoryRequestToPublisher(cloned, item);
+    cloned.headers = (item.headers?.length
+      ? item.headers
+      : (item.metadata || []).map(({ k, v }) => ({ key: k, value: v, enabled: true }))
+    ).map(({ key, value, enabled }) => ({ key, value, enabled }));
+    if (getEndpointType(cloned) === "http") {
+      ensureHttpConfig(cloned).method = item.method || item.requestMetadata?.http_method || ensureHttpConfig(cloned).method;
+    }
+    cloned.payload = state.payload;
+    cloned.headers = getPublisherHeaderRows(cloned).map(({ key, value, enabled }) => ({ key, value, enabled }));
+    return cloned;
   };
 
   const importRequestsIntoPublishers = async (
     jsonText: string,
     expectedKind: "postman" | "openapi" | "asyncapi",
   ) => {
-    const activePublisher = publishers[currentIdx];
-    if (!activePublisher) return;
+    const basePublisher = publishers[currentIdx] || createEmptyPublisher();
     const imported = extractImportedRequests(jsonText);
     if (imported.kind !== expectedKind) {
       throw new Error(`Selected file is not a valid ${expectedKind.toUpperCase()} JSON file.`);
     }
 
-    const activePublisherName = activePublisher.name;
-    const activeUrl = getCurrentPublisherUrl(activePublisher);
-    const activePublisherPresets = getPublisherPresets(activePublisher);
-    let importedAsPresets = 0;
     let importedAsPublishers = 0;
+    let firstImportedKey = "";
 
-    if (expectedKind === "postman") {
-      const grouped = new Map<string, typeof imported.requests>();
-      for (const request of imported.requests) {
-        const reqUrl = getPresetRequestFieldValue(request, "url").trim();
-        if (reqUrl && reqUrl === activeUrl) {
-          const preset = structuredClone(request);
-          const existingIndex = activePublisherPresets.findIndex((row) => row.name === preset.name);
-          if (existingIndex >= 0) {
-            activePublisherPresets[existingIndex] = preset;
-          } else {
-            activePublisherPresets.push(preset);
-          }
-          importedAsPresets += 1;
-          continue;
-        }
-        const groupKey = String(request.group || request.name || "Imported Postman Group");
-        if (!grouped.has(groupKey)) grouped.set(groupKey, []);
-        grouped.get(groupKey)!.push(request);
+    for (const request of imported.requests) {
+      const publisher = requestToPublisher(request, basePublisher);
+      if (!firstImportedKey) {
+        firstImportedKey = getPublisherStorageKey(publisher);
       }
-
-      for (const [groupName, requests] of grouped.entries()) {
-        const first = requests[0];
-        if (!first) continue;
-        const publisher = requestToPublisher({
-          ...first,
-          name: groupName,
-        }, activePublisher);
-        config.publishers.push(publisher);
-        const publisherPresets = getPublisherPresets(publisher);
-        for (const request of requests) {
-          const preset = structuredClone(request);
-          const existingIndex = publisherPresets.findIndex((row) => row.name === preset.name);
-          if (existingIndex >= 0) {
-            publisherPresets[existingIndex] = preset;
-          } else {
-            publisherPresets.push(preset);
-          }
-        }
-        importedAsPublishers += 1;
-      }
-    } else {
-      for (const request of imported.requests) {
-        const requestUrl = getPresetRequestFieldValue(request, "url").trim();
-        if (requestUrl && requestUrl === activeUrl) {
-          const preset = structuredClone(request);
-          const existingIndex = activePublisherPresets.findIndex((row) => row.name === preset.name);
-          if (existingIndex >= 0) {
-            activePublisherPresets[existingIndex] = preset;
-          } else {
-            activePublisherPresets.push(preset);
-          }
-          importedAsPresets += 1;
-        } else {
-          config.publishers.push(requestToPublisher(request, activePublisher));
-          importedAsPublishers += 1;
-        }
-      }
+      config.publishers.push(publisher);
+      importedAsPublishers += 1;
     }
 
     envVars = { ...envVars, ...(imported.envVars || {}) };
@@ -1096,12 +907,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
-    const activeIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex((item) => item.name === activePublisherName);
+    const activeIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex(
+      (item) => getPublisherStorageKey(item) === firstImportedKey,
+    );
     if (activeIdx >= 0) {
-      restorePublisherStateFromView(activeIdx, { tab: "presets" });
+      restorePublisherStateFromView(activeIdx, { tab: "definition" });
     }
 
-    return { importedAsPresets, importedAsPublishers };
+    return { importedAsPublishers };
   };
 
   const syncPublishersPanelState = (responseState?: PublisherResponseState) => {
@@ -1118,29 +931,18 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         visible: Boolean(descriptor),
       };
     };
-    const metadataRows = endpointType === "http" && activePublisher ? getPublisherHeaderRows(activePublisher) : [];
-    const presetRows = activePublisher
-      ? getPublisherPresets(activePublisher).map((preset, presetIndex) => {
-          const summary = summarizePresetRequest(preset, activePublisher);
-          return {
-            presetIndex,
-            name: preset.name,
-            endpointType: summary.endpointType.toUpperCase(),
-            methodLabel: summary.methodLabel,
-            targetSummary: summary.targetSummary,
-            bodyPreview: (preset.payload || "").replace(/\s+/g, " ").trim().substring(0, 80),
-          };
-        })
-      : [];
+    const metadataRows = activePublisher ? getPublisherHeaderRows(activePublisher) : [];
     const requestPayload = activePublisher ? getPublisherState(activePublisher).payload : "";
+    const sidebarItems = publishers.map((publisher, index) => ({
+      name: String(publisher.name || ""),
+      endpointType: getEndpointType(publisher).toUpperCase(),
+      originalIndex: index,
+    }));
 
     publishersPanelState.update((current: any) => ({
       hasPublishers: publishers.length > 0,
-      items: publishers.map((publisher, index) => ({
-        name: publisher.name,
-        endpointType: getEndpointType(publisher).toUpperCase(),
-        originalIndex: index,
-      })),
+      items: sidebarItems,
+      groupedItems: buildPublisherTree(publishers),
       selectedIndex: currentIdx,
       activeSubtab,
       isNew: activePublisher ? !isSavedPublisher(activePublisher) : false,
@@ -1177,15 +979,11 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
           pinned: Boolean(item.pinned),
         };
       }),
-      presetRows,
     }));
   };
 
   const renderSidebar = () => {
     syncPublishersPanelState();
-    const hasPublishers = publishers.length > 0;
-    emptyAlert.style.display = hasPublishers ? "none" : "block";
-    mainUi.style.display = hasPublishers ? "contents" : "none";
   };
 
   const setActiveItem = (idx: number, options: { tab?: PublisherSubtab; preserveTab?: boolean } = {}) => {
@@ -1430,16 +1228,18 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }>,
   ) => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const state = getPublisherState(publisher);
     state.headers = rows;
-    const httpConfig = ensureHttpConfig(publisher);
-    httpConfig.custom_headers = Object.fromEntries(
-      rows
-        .filter((row) => row.enabled)
-        .map((row) => [row.key.trim(), row.value] as [string, string])
-        .filter(([key]) => key),
-    );
+    if (getEndpointType(publisher) === "http") {
+      const httpConfig = ensureHttpConfig(publisher);
+      httpConfig.custom_headers = Object.fromEntries(
+        rows
+          .filter((row) => row.enabled)
+          .map((row) => [row.key.trim(), row.value] as [string, string])
+          .filter(([key]) => key),
+      );
+    }
     persistConfigState();
   };
 
@@ -1469,13 +1269,13 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const itemSchema = cloneJson({
       ...(schema.properties?.publishers?.items || {}),
       $defs: schema.$defs,
-    });
+    }) as SchemaObject;
     applyEndpointSchemaDefaults(itemSchema);
     forceRefOnlyEndpoints(itemSchema);
-    Object.entries(SCHEMA_REQUEST_BAR_FIELDS).forEach(([defName, fields]) => {
+    Object.entries(SCHEMA_CONFIG_ENDPOINT_TYPES).forEach(([defName, endpointType]) => {
       const endpointSchema = itemSchema.$defs?.[defName];
       if (!endpointSchema?.properties) return;
-      fields.forEach((fieldName) => {
+      getRequestBarLayout(endpointType).fields.forEach(({ field: fieldName }) => {
         if (endpointSchema.properties[fieldName]) {
           endpointSchema.properties[fieldName].hidden = true;
         }
@@ -1490,6 +1290,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
     if (itemSchema.properties?.id) {
       itemSchema.properties.id.hidden = true;
+    }
+    if (Array.isArray(itemSchema.required)) {
+      itemSchema.required = itemSchema.required.filter((key: string) => key !== "name");
     }
 
     const switchConfig = itemSchema.$defs?.SwitchConfig;
@@ -1514,27 +1317,44 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     state.form_mode = "publisher";
     (window as any)._mqb_form_mode = "publisher";
     
-    await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], async (updated) => {
+    await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], async (updated: PublisherConfig) => {
       const current = publishers[idx];
-      const updatedPublisher = updated as PublisherConfig;
       const previousPublisherName = current?.name || "";
+      const previousStorageKey = getPublisherStorageKey(current);
+      const previousRequestPayload = get(publishersPanelState).requestPayload;
 
-      // 1. Merge form updates into a clone of current to preserve fields not in the form (like presets)
+      // Flatten form output to handle 'root' wrapper and ensure fields like 'name' are present (even if empty).
+      const formOutput = normalizePublisherConfigShape(updated as PublisherConfig);
+
+      // 1. Merge form updates into a clone of current to preserve fields not in the form
       const mergedPublisher = {
         ...current,
-        ...updatedPublisher,
+        ...formOutput,
+        id: current.id, // Always preserve the original stable ID
         endpoint: {
           ...current.endpoint,
-          ...updatedPublisher.endpoint,
+          ...formOutput.endpoint,
         }
       };
 
       const nextPublisher = normalizePublisherConfigShape(mergedPublisher);
+      const nextStorageKey = getPublisherStorageKey(nextPublisher);
+      if (previousStorageKey && nextStorageKey && previousStorageKey !== nextStorageKey && !appState[nextStorageKey]) {
+        const previousState = appState[previousStorageKey];
+        appState[nextStorageKey] = previousState
+          ? { ...previousState }
+          : {
+              payload: previousRequestPayload || String(current?.payload || "{}"),
+              headers: getPublisherHeaderRows(current),
+            };
+        delete appState[previousStorageKey];
+      }
       copyRequestBarFieldValues(current, nextPublisher);
 
       // Preserve custom headers for HTTP (managed in the Headers tab)
       if (getEndpointType(nextPublisher) === "http" && getEndpointType(current) === "http") {
-        nextPublisher.endpoint.http.custom_headers = current.endpoint.http.custom_headers;
+        (nextPublisher.endpoint.http as Record<string, any>).custom_headers =
+          (current.endpoint.http as Record<string, any>).custom_headers;
       }
 
       publishers[idx] = nextPublisher;
@@ -1555,17 +1375,18 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       "Copy to Consumer",
       {
         confirmLabel: "Create",
-        value: nextUniqueName(getEndpointType(current), (config.consumers || []).map((consumer) => consumer.name)),
+        value: "",
         placeholder: "publisher_consumer",
       },
     );
+    if (consumerName === null) return;
     const trimmedConsumerName = String(consumerName || "").trim();
-    if (!trimmedConsumerName) return;
-    if ((config.consumers || []).some((consumer) => consumer.name === trimmedConsumerName)) {
+    if (trimmedConsumerName && (config.consumers || []).some((consumer) => consumer.name === trimmedConsumerName)) {
       await mqbDialogs.alert("Consumer already exists");
       return;
     }
     config.consumers.push({
+      id: createLocalEntityId("consumer"),
       name: trimmedConsumerName,
       endpoint: createConsumerEndpointFromPublisherEndpoint(currentEndpoint),
       comment: current.comment || "",
@@ -1579,7 +1400,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   const addPublisher = (choice: string) => {
     if (choice) {
       config.publishers.push({
-        name: nextUniqueName(choice, (config.publishers || []).map((publisher) => publisher.name)),
+        id: createLocalEntityId("publisher"),
+        name: "",
         endpoint: createDefaultPublisherEndpoint(choice),
         comment: "",
       });
@@ -1595,6 +1417,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   cloneCurrentPublisherAction = () => {
     const current = config.publishers[currentIdx];
     const cloned = cloneJson(current);
+    cloned.id = createLocalEntityId("publisher");
     cloned.name += "_copy";
     if (config.publishers.some((publisher) => publisher.name === cloned.name)) {
       void mqbDialogs.alert("Cloned publisher name already exists. Please choose a different name.");
@@ -1606,7 +1429,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     initPublishers(config, schema);
   };
 
-  deleteCurrentPublisherAction = async (button = document.getElementById("pub-save")) => {
+  deleteCurrentPublisherAction = async (button = null) => {
     const publisher = config.publishers[currentIdx];
     if (!publisher) return;
 
@@ -1643,11 +1466,19 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     await Promise.resolve();
 
     const selectedIdx = currentIdx;
-    const originalName = config.publishers[selectedIdx]?.name || null;
+    const selectedKey = getPublisherStorageKey(config.publishers[selectedIdx]);
     const selectedTab = activeSubtab;
-    const mapped = config.publishers.map((publisher) => normalizePublisherConfigShape(publisher));
+    const mapped = config.publishers.map((publisher, index) => {
+      const nextPublisher = normalizePublisherConfigShape(publisher);
+      nextPublisher.payload = getPublisherState(publisher).payload || "";
+      nextPublisher.headers = getPublisherHeaderRows(publisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
+      if (index === currentIdx && getEndpointType(nextPublisher) === "http") {
+        const httpConfig = ensureHttpConfig(nextPublisher);
+        httpConfig.method = currentMethodValue || httpConfig.method;
+      }
+      return nextPublisher;
+    });
     config.publishers.splice(0, config.publishers.length, ...mapped);
-    const selectedName = config.publishers[selectedIdx]?.name || originalName;
     const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
     if (!saved) {
       // If saveConfigSection failed, we should not proceed with re-initializing
@@ -1670,16 +1501,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       normalizePublisherConfigShape({ ...publisher }),
     );
     
-    // Mark sections as saved
-    if (refreshedConfig.presets) {
-      mqbRuntime.markSectionSaved("presets", refreshedConfig.presets);
-    }
     if (refreshedConfig.history) {
       mqbRuntime.markSectionSaved("history", refreshedConfig.history);
     }
     mqbRuntime.markSectionSaved("publishers", refreshedConfig.publishers);
     const currentPublishers = mqbApp.config<PublishersAppConfig>().publishers || []; // Use the updated mqbApp.config()
-    const refreshedIdx = currentPublishers.findIndex((publisher: PublisherConfig) => publisher.name === selectedName); // Find index in the updated list
+    const refreshedIdx = currentPublishers.findIndex(
+      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey,
+    ); // Find index in the updated list
     const pendingRestore = {
       idx: refreshedIdx === -1 ? Math.min(selectedIdx, Math.max(currentPublishers.length - 1, 0)) : refreshedIdx, // Ensure index is valid
       tab: selectedTab,
@@ -1692,7 +1521,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
   addPublisherMetadataRow = () => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const currentRows = getPublisherHeaderRows(publisher);
     updatePublisherConfigFromMetadataRows([
       ...currentRows,
@@ -1701,7 +1530,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
   updatePublisherMetadataRow = (index, field, value) => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const currentRows = getPublisherHeaderRows(publisher);
     const nextRows = currentRows.map((entry, currentIndex) =>
       currentIndex === index ? { ...entry, [field]: value } : entry,
@@ -1710,7 +1539,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
   togglePublisherMetadataRow = (index: number, enabled: boolean) => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const currentRows = getPublisherHeaderRows(publisher);
     const nextRows = currentRows.map((entry, currentIndex) =>
       currentIndex === index ? { ...entry, enabled } : entry,
@@ -1719,7 +1548,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   };
   removePublisherMetadataRow = (index) => {
     const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return;
+    if (!publisher) return;
     const currentRows = getPublisherHeaderRows(publisher);
     updatePublisherConfigFromMetadataRows(currentRows.filter((_, currentIndex) => currentIndex !== index));
   };
@@ -1753,7 +1582,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
   };
   selectPublisherSubtab = (tab) => {
-    activeSubtab = tab;
+    activeSubtab = normalizePublisherSubtab(tab, activeSubtab);
     rememberPublisherView(currentIdx, activeSubtab);
     syncPublishersPanelState();
   };
@@ -1771,16 +1600,16 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     const publisher = publishers[currentIdx];
-    const name = publisher.name;
+    const name = String(publisher.name || "").trim();
+    const publisherId = getPublisherStorageKey(publisher);
     const endpoint = publisher.endpoint;
     const payload = applyEnvVars(getPublisherState(publisher).payload);
-    const metaArray =
-      getEndpointType(publisher) === "http"
-        ? sortEntries(ensureHttpConfig(publisher).custom_headers).map(([key, value]) => ({
-            k: applyEnvVars(String(key)),
-            v: applyEnvVars(String(value)),
-          }))
-        : [];
+    const metaArray = getPublisherHeaderRows(publisher)
+      .filter((row) => row.enabled && row.key.trim())
+      .map((row) => ({
+        k: applyEnvVars(row.key.trim()),
+        v: applyEnvVars(row.value),
+      }));
     const metadata = buildHttpRequestMetadata();
     Object.keys(metadata).forEach((key) => {
       metadata[key] = applyEnvVars(String(metadata[key]));
@@ -1824,7 +1653,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
         response = await fetch("/publish", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, payload, metadata, endpoint }),
+          body: JSON.stringify({ name, publisher_id: publisherId || undefined, payload, metadata, endpoint }),
           signal: controller.signal,
         });
       } finally {
@@ -1921,9 +1750,15 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     const publisherKey = getPublisherStorageKey(publisher);
     const name = publisher?.name;
     if (!publisherKey && !name) return;
-    history = history.filter((item) =>
-      item.publisher_id !== publisherKey && item.name !== name,
-    );
+    history = history.filter((item) => {
+      if (publisherKey) {
+        return item.publisher_id !== publisherKey;
+      }
+      return !(
+        (item.publisher_id === undefined || item.publisher_id === null || item.publisher_id === "")
+        && item.name === name
+      );
+    });
     saveHistory();
     renderHistory();
     clearPublisherResponse();
@@ -1974,34 +1809,18 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     void navigator.clipboard.writeText(curlCommand);
   };
 
-  savePublisherHistoryAsPresetAction = async (historyIndex: number) => {
+  savePublisherHistoryAsPublisherAction = async (historyIndex: number) => {
     const item = history[historyIndex];
     if (!item) return;
     const publisher = publishers.find((candidate) => matchesHistoryPublisher(item, candidate));
     if (!publisher) return;
 
-    const publisherPresets = getPublisherPresets(publisher);
-    const suggestedName = nextUniqueName(
-      `${publisher.name}_history`,
-      publisherPresets.map((preset) => preset.name),
-    );
+    const variant = await createPublisherVariantFromHistoryItem(publisher, item);
+    if (!variant) return;
 
-    const presetName = await mqbDialogs.prompt("Choose a name for this request preset.", "Save Preset", {
-      confirmLabel: "Save",
-      value: suggestedName,
-      placeholder: "preset_name",
-    });
-    if (!presetName) return;
-
-    const existingIndex = publisherPresets.findIndex((preset) => preset.name === presetName);
-    const preset = createPresetFromHistoryItem(publisher, item, presetName);
-    if (existingIndex >= 0) {
-      publisherPresets[existingIndex] = preset;
-    } else {
-      publisherPresets.push(preset);
-    }
-    await persistWorkspaceCollections(true);
-    syncPublishersPanelState();
+    config.publishers.push(variant);
+    saveAppState();
+    await saveCurrentPublisherAction();
   };
 
   resendPublisherHistoryAction = async (historyIndex: number) => {
@@ -2009,92 +1828,16 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     await sendPublisherAction();
   };
 
-  savePublisherPresetAction = async () => {
+  saveCurrentPublisherVariantAction = async () => {
     const publisher = publishers[currentIdx];
     if (!publisher) return;
 
-    const presetName = await mqbDialogs.prompt("Choose a name for this request preset.", "Save Preset", {
-      confirmLabel: "Save",
-      value: nextUniqueName(`${publisher.name}_preset`, getPublisherPresets(publisher).map((preset) => preset.name)),
-      placeholder: "preset_name",
-    });
-    if (!presetName) return;
+    const variant = await createPublisherVariantFromCurrentState(publisher);
+    if (!variant) return;
 
-    const payload = getPublisherState(publisher).payload || "";
-    const headers = getEndpointType(publisher) === "http"
-      ? getPublisherHeaderRows(publisher).map((row) => ({ key: row.key, value: row.value, enabled: row.enabled }))
-      : [];
-
-    const publisherPresets = getPublisherPresets(publisher);
-    const existingIndex = publisherPresets.findIndex((preset) => preset.name === presetName);
-    const preset = createPresetFromPublisherState(publisher, presetName, payload, headers);
-    if (existingIndex >= 0) {
-      publisherPresets[existingIndex] = preset;
-    } else {
-      publisherPresets.push(preset);
-    }
-    await persistWorkspaceCollections(true);
-    syncPublishersPanelState();
-  };
-
-  exportPublisherPresetsAction = () => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    exportPresetsForPublisher(getPublisherStorageKey(publisher));
-  };
-
-  renamePublisherPresetAction = async (presetIndex: number) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const publisherPresets = getPublisherPresets(publisher);
-    const preset = publisherPresets[presetIndex];
-    if (!preset) return;
-
-    const nextName = await mqbDialogs.prompt("Rename preset", "Rename Preset", {
-      confirmLabel: "Rename",
-      value: preset.name,
-      placeholder: "preset_name",
-    });
-    if (!nextName) return;
-    const trimmed = nextName.trim();
-    if (!trimmed || trimmed === preset.name) return;
-
-    const existingIndex = publisherPresets.findIndex((row, idx) => idx !== presetIndex && row.name === trimmed);
-    if (existingIndex >= 0) {
-      const confirmed = await mqbDialogs.confirm(
-        `A preset named "${trimmed}" already exists. Overwrite it?`,
-        "Overwrite Preset",
-      );
-      if (!confirmed) return;
-      publisherPresets.splice(existingIndex, 1);
-    }
-
-    preset.name = trimmed;
-    await persistWorkspaceCollections(true);
-    syncPublishersPanelState();
-  };
-
-  applyPublisherPresetAction = (presetIndex: number) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const publisherPresets = getPublisherPresets(publisher);
-    const preset = publisherPresets[presetIndex];
-    if (!preset) return;
-
-    applyPresetToPublisher(publisher, preset);
-
-    activeSubtab = "payload";
-    rememberPublisherView(currentIdx, activeSubtab);
-    syncPublishersPanelState();
-  };
-
-  deletePublisherPresetAction = async (presetIndex: number) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const publisherPresets = getPublisherPresets(publisher);
-    publisherPresets.splice(presetIndex, 1);
-    await persistWorkspaceCollections(true);
-    syncPublishersPanelState();
+    config.publishers.push(variant);
+    saveAppState();
+    await saveCurrentPublisherAction();
   };
 
   importPostmanToPublisherAction = async (jsonText: string) => {
@@ -2117,18 +1860,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     if (type === "mqb-presets") {
-      const publisher = publishers[currentIdx];
-      const targetPublisherName = getPublisherStorageKey(publisher);
-      const result = await importFromJsonText(jsonText, {
+      await importFromJsonText(jsonText, {
         includeConfig: false,
         includePresets: true,
-        targetPublisherName,
+        targetPublisherName: "",
       });
-      const refreshedWorkspace = ensureWorkspaceCollections(mqbApp.config<PublishersAppConfig>());
-      presets = refreshedWorkspace.presets;
-      envVars = refreshedWorkspace.env_vars;
+      envVars = ensureWorkspaceCollections(mqbApp.config<PublishersAppConfig>()).env_vars;
       syncPublishersPanelState();
-      return result;
+      return;
     }
 
     const incomingConfig =
@@ -2171,30 +1910,12 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     config.publishers.splice(0, config.publishers.length, ...saved.publishers);
     mqbApp.config<PublishersAppConfig>().publishers = saved.publishers;
     initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
-    const firstImportedName = importedPublishers[0]?.name;
-    const idx = (config.publishers || []).findIndex((publisher) => publisher.name === firstImportedName);
+    const firstImportedKey = getPublisherStorageKey(importedPublishers[0]);
+    const idx = (config.publishers || []).findIndex((publisher) => getPublisherStorageKey(publisher) === firstImportedKey);
     if (idx >= 0) {
       restorePublisherStateFromView(idx, { tab: "definition" });
     }
-    return { importedKind: type, importedPublishers: importedPublishers.length };
-  };
-
-  presetToPublisherAction = async (presetIndex: number) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const publisherPresets = getPublisherPresets(publisher);
-    const preset = publisherPresets[presetIndex];
-    if (!preset) return;
-
-    config.publishers.push(requestToPublisher(preset, publisher));
-    saveAppState();
-    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
-    if (!saved) return;
-
-    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
-    mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
-    state.pending_publisher_restore = { idx: mqbApp.config<PublishersAppConfig>().publishers.length - 1, tab: "definition" };
-    initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
+    return;
   };
 
   showPublisherHistoryEntry = async (historyIndex: number) => {
@@ -2279,27 +2000,4 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   (appWindow() as any)._mqb_publishers_initialized = true;
   appWindow().restorePublisherState = restorePublisherState;
   restorePublisherStateFromView = restorePublisherState;
-
-  addPublisherAction = addPublisher;
-  showPublisherHistoryEntry = showPublisherHistoryEntry;
-  clearActivePublisherHistory = clearActivePublisherHistory;
-  copyPublisherResponse = copyPublisherResponse;
-  copyPublisherResponseJson = copyPublisherResponseJson;
-  copyPublisherAsCurl = copyPublisherAsCurl;
-  savePublisherHistoryAsPresetAction = savePublisherHistoryAsPresetAction;
-  resendPublisherHistoryAction = resendPublisherHistoryAction;
-  savePublisherPresetAction = savePublisherPresetAction;
-  exportPublisherPresetsAction = exportPublisherPresetsAction;
-  renamePublisherPresetAction = renamePublisherPresetAction;
-  applyPublisherPresetAction = applyPublisherPresetAction;
-  deletePublisherPresetAction = deletePublisherPresetAction;
-  importPostmanToPublisherAction = importPostmanToPublisherAction;
-  importOpenApiToPublisherAction = importOpenApiToPublisherAction;
-  importAsyncApiToPublisherAction = importAsyncApiToPublisherAction;
-  importMqbToPublisherAction = importMqbToPublisherAction;
-  presetToPublisherAction = presetToPublisherAction;
-  selectPublisherSubtab = selectPublisherSubtab;
-  editEnvironmentVarsAction = editEnvironmentVarsAction;
-  beautifyPublisherPayloadAction = beautifyPublisherPayloadAction;
-  sendPublisherAction = sendPublisherAction;
 }

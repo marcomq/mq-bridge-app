@@ -78,9 +78,9 @@ async function resetConfig(page, config = BASE_CONFIG) {
 
 async function openPublisherDefinition(page, index = 0) {
   await page.goto(`/#publishers:${index}`);
-  const items = page.locator("#pub-list .pub-item");
-  if ((await items.count()) > index) {
-    await items.nth(index).click();
+  const item = page.locator(`#pub-list .pub-item[data-idx="${index}"]`);
+  if (await item.count()) {
+    await item.first().click();
   }
   await page.locator("#ctab-config").click();
   await expect(page.locator("#pub-config-pane")).toBeVisible();
@@ -169,14 +169,14 @@ test("publisher form hides transport fields already handled by the request bar",
   await expect(page.locator("#pub-url")).toBeVisible();
   await expect(page.locator("#pub-method")).toBeVisible();
 
-  await page.locator("#pub-list .pub-item").nth(1).click();
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("amqp_publisher");
+  await openPublisherDefinition(page, 1);
+  await expect(page.locator("#pub-extra-1")).toHaveValue("jobs");
 
-  await page.locator("#pub-list .pub-item").nth(2).click();
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("kafka_publisher");
+  await openPublisherDefinition(page, 2);
+  await expect(page.locator("#pub-extra-1")).toHaveValue("events");
 
-  await page.locator("#pub-list .pub-item").nth(3).click();
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("mongo_publisher");
+  await openPublisherDefinition(page, 3);
+  await expect(page.locator("#pub-extra-1")).toHaveValue("app");
 });
 
 test("consumer custom response headers can be added and removed", async ({ page }) => {
@@ -196,30 +196,28 @@ test("consumer custom response headers can be added and removed", async ({ page 
 
 test("publisher and consumer save buttons are not dirty on initial load", async ({ page }) => {
   await openPublisherDefinition(page, 0);
-  await expectSaveButtonClean(page, "#pub-save");
+  await expectSaveButtonClean(page, "#workspace-save-button");
 
   await openConsumerDefinition(page, 0);
-  await expectSaveButtonClean(page, "#cons-save");
+  await expectSaveButtonClean(page, "#workspace-save-button");
 });
 
 test("publisher and consumer save buttons become dirty on edit and clean after save", async ({ page }) => {
   await openPublisherDefinition(page, 0);
   await page.locator("#pub-url").fill("http://localhost:8080/api/orders/updated");
-  await expectSaveButtonDirty(page, "#pub-save");
-  await page.locator("#pub-save").click();
-  await expect(page.locator("#pub-save")).toHaveText("Saved");
-  await expectSaveButtonClean(page, "#pub-save");
+  await expectSaveButtonDirty(page, "#workspace-save-button");
+  await page.locator("#workspace-save-button").click();
+  await expectSaveButtonClean(page, "#workspace-save-button");
 
   await openConsumerResponse(page, 0);
   await page.locator("#cons-response-editor").getByText("Add Header", { exact: true }).click();
   const responseRows = page.locator("#cons-response-editor .response-header-row");
   await responseRows.last().locator("input.field-input").nth(0).fill("x-new");
   await responseRows.last().locator("input.field-input").nth(1).fill("123");
-  await expectSaveButtonDirty(page, "#cons-save");
+  await expectSaveButtonDirty(page, "#workspace-save-button");
   await page.locator("#ctab-def").click();
-  await page.locator("#cons-save").click();
-  await expect(page.locator("#cons-save")).toHaveText("Saved");
-  await expectSaveButtonClean(page, "#cons-save");
+  await page.locator("#workspace-save-button").click();
+  await expectSaveButtonClean(page, "#workspace-save-button");
 });
 
 test("http publisher delivers a message to the http consumer within 2 seconds without metrics polling", async ({ page }) => {
@@ -261,10 +259,10 @@ test("http publisher delivers a message to the http consumer within 2 seconds wi
   await page.locator("#ctab-msg").click();
   await page.locator("#cons-toggle").click();
   await expect(page.locator("#cons-toggle")).toHaveText("Stop");
-  await expect(page.locator("#cons-msg-panel")).toContainText("Connected");
+  await expect(page.locator(".consumer-live-badge")).toContainText("Connected");
 
   await page.goto("/#publishers:0");
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("http_local_publisher");
+  await expect(page.locator("#pub-list .pub-item.active .item-name")).toContainText("http_local_publisher");
   await page.locator("#ctab-payload").click();
   await page.locator("#pub-payload .cm-content").fill("{\"hello\":\"ui-test\"}");
   const publishResponsePromise = page.waitForResponse(
@@ -274,13 +272,17 @@ test("http publisher delivers a message to the http consumer within 2 seconds wi
   await expect((await publishResponsePromise).ok()).toBeTruthy();
 
   const messagesResponsePromise = page.waitForResponse(
-    (response) => response.url().includes("/messages?consumer=http_consumer") && response.request().method() === "GET",
+    (response) => response.url().includes("/messages?consumer_id=") && response.request().method() === "GET",
   );
   await page.goto("/#consumers:0");
   await page.locator("#ctab-msg").click();
   await expect
     .poll(async () =>
-      page.evaluate(() => (window._mqb_runtime_status?.consumers?.http_consumer?.message_sequence ?? 0)),
+      page.evaluate(() =>
+        Math.max(
+          0,
+          ...Object.values(window._mqb_runtime_status?.consumers || {}).map((consumer) => consumer?.message_sequence ?? 0),
+        )),
     )
     .toBeGreaterThan(0);
   await expect((await messagesResponsePromise).ok()).toBeTruthy();
@@ -305,14 +307,14 @@ test("publisher can be copied to a new consumer", async ({ page }) => {
   await page.locator("#pub-copy").click();
   const input = page.locator(".mqb-dialog-input");
   await expect(input).toBeVisible();
-  await expect(input).toHaveValue(/http/);
+  await expect(input).toHaveValue("");
   await input.fill("copied_http_consumer");
   await page.locator("wa-button", { hasText: "Create" }).click();
 
   await expect(page.locator("#mtab-consumers")).toHaveClass(/active/);
   await expect(page.locator("#cons-list .cons-item.active .item-name")).toHaveText("copied_http_consumer");
   await expect(page.locator("#cons-config-form")).toBeVisible();
-  await expect(page.locator("#cons-save")).toHaveAttribute("data-dirty", /^(true|false)$/);
+  await expect(page.locator("#workspace-save-button")).toHaveAttribute("data-dirty", /^(true|false)$/);
   expect(consumerStatus404s.length).toBeLessThan(5);
 });
 
@@ -328,17 +330,21 @@ test("consumer can be copied to a new publisher for review", async ({ page }) =>
   await expect(page.locator("#mtab-publishers")).toHaveClass(/active/);
   await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("copied_memory_publisher");
   await expect(page.locator("#pub-config-form")).toBeVisible();
-  await expect(page.locator("#pub-save")).toHaveAttribute("data-dirty", /^(true|false)$/);
+  await expect(page.locator("#workspace-save-button")).toHaveAttribute("data-dirty", /^(true|false)$/);
 });
 
 test("publisher delete can be saved and stays deleted after reload", async ({ page }) => {
   await openPublisherDefinition(page, 3);
-  await expect(page.locator("#pub-list .pub-item.active .item-name")).toHaveText("mongo_publisher");
+  await expect(page.getByRole("textbox", { name: "Name" })).toHaveValue("mongo_publisher");
 
   await page.locator("#pub-delete").click();
+  const deleteSave = page.waitForResponse(
+    (response) => response.url().endsWith("/config") && response.request().method() === "GET",
+  );
   await page.locator("wa-button", { hasText: "Continue" }).click();
+  await expect((await deleteSave).ok()).toBeTruthy();
   await expect(page.locator("#pub-list .pub-item .item-name").filter({ hasText: "mongo_publisher" })).toHaveCount(0);
-  await expect(page.locator("#pub-save")).toHaveText("Saved");
+  await expectSaveButtonClean(page, "#workspace-save-button");
 
   await openPublisherDefinition(page, 0);
   await expect(page.locator("#pub-list .pub-item .item-name").filter({ hasText: "mongo_publisher" })).toHaveCount(0);

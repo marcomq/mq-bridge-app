@@ -4,24 +4,19 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import {
   addPublisherAction,
-  applyPublisherPresetAction,
   addPublisherMetadataRow,
   beautifyPublisherPayloadAction,
   clearActivePublisherHistory,
   cloneCurrentPublisherAction,
   copyCurrentPublisherAction,
   createConsumerEndpointFromPublisherEndpoint,
-  deletePublisherPresetAction,
-  exportPublisherPresetsAction,
   importAsyncApiToPublisherAction,
   importMqbToPublisherAction,
   initPublishers,
-  presetToPublisherAction,
   restorePublisherStateFromView,
-  renamePublisherPresetAction,
   removePublisherMetadataRow,
-  savePublisherPresetAction,
   saveCurrentPublisherAction,
+  saveCurrentPublisherVariantAction,
   sendPublisherAction,
   showPublisherHistoryEntry,
   selectPublisherSubtab,
@@ -31,7 +26,7 @@ import {
   updatePublisherRequestField,
 } from "../../ui/src/lib/publishers-view";
 import { publishersPanelState } from "../../ui/src/lib/stores";
-import { createHyperscriptNode, installBaseWindowStubs } from "./test-helpers";
+import { createHyperscriptNode, installBaseWindowStubs, restoreBaseWindowStubs } from "./test-helpers";
 
 function mountPublishersDom() {
   document.body.innerHTML = `
@@ -155,6 +150,7 @@ describe("initPublishers", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    restoreBaseWindowStubs();
   });
 
   test("renders publisher names and request bar state", () => {
@@ -174,7 +170,7 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).selectedIndex).toBe(0);
     expect(get(publishersPanelState).endpointType).toBe("HTTP");
     expect(get(publishersPanelState).urlField.value).toBe("https://example.test/orders");
-    expect(document.getElementById("pub-empty-alert")?.style.display).toBe("none");
+    expect(get(publishersPanelState).hasPublishers).toBe(true);
   });
 
   test("shows empty state when there are no publishers", () => {
@@ -183,8 +179,7 @@ describe("initPublishers", () => {
       { properties: { publishers: { items: {} } } },
     );
 
-    expect(document.getElementById("pub-empty-alert")?.style.display).toBe("block");
-    expect(document.getElementById("pub-main-ui")?.style.display).toBe("none");
+    expect(get(publishersPanelState).hasPublishers).toBe(false);
   });
 
   test("creates new http publishers with usable local defaults", async () => {
@@ -196,7 +191,8 @@ describe("initPublishers", () => {
 
     expect(config.publishers).toHaveLength(1);
     expect(config.publishers[0]).toMatchObject({
-      name: "http",
+      id: expect.any(String),
+      name: "",
       endpoint: {
         http: {
           url: "http://localhost:8080",
@@ -229,7 +225,8 @@ describe("initPublishers", () => {
     await addPublisherAction("static");
 
     expect(config.publishers[0]).toMatchObject({
-      name: "static",
+      id: expect.any(String),
+      name: "",
       endpoint: { static: "" },
       comment: "",
     });
@@ -237,7 +234,7 @@ describe("initPublishers", () => {
 
     formChange?.({
       name: "static",
-      endpoint: { static: {} },
+      endpoint: { static: "hello world" },
       comment: "",
     });
 
@@ -247,12 +244,15 @@ describe("initPublishers", () => {
       "publishers",
       [
         {
+          id: expect.any(String),
           name: "static",
           endpoint: {
             middlewares: [],
-            static: "",
+            static: "hello world",
           },
           comment: "",
+          payload: '{}',
+          headers: [],
         },
       ],
       false,
@@ -269,7 +269,8 @@ describe("initPublishers", () => {
     await addPublisherAction("kafka");
 
     expect(config.publishers[0]).toMatchObject({
-      name: "amqp",
+      id: expect.any(String),
+      name: "",
       endpoint: {
         amqp: {
           url: "amqp://guest:guest@localhost:5672/%2f",
@@ -278,7 +279,8 @@ describe("initPublishers", () => {
       },
     });
     expect(config.publishers[1]).toMatchObject({
-      name: "kafka",
+      id: expect.any(String),
+      name: "",
       endpoint: {
         kafka: {
           url: "localhost:9092",
@@ -313,7 +315,9 @@ describe("initPublishers", () => {
 
     expect(get(publishersPanelState).items[0]?.name).toBe("orders_http");
     expect(get(publishersPanelState).historyRows).toEqual([]);
-    expect(get(publishersPanelState).presetRows).toEqual([]);
+    expect(get(publishersPanelState).groupedItems).toEqual([
+      expect.objectContaining({ kind: "publisher", publisherIndex: 0 }),
+    ]);
   });
 
   test("hydrates publisher history cache from workspace config when local cache is empty", () => {
@@ -479,7 +483,8 @@ describe("initPublishers", () => {
     expect(window.saveConfigSection).toHaveBeenCalledWith(
       "publishers",
       [
-        {
+        expect.objectContaining({
+          id: expect.any(String),
           name: "renamed_http",
           endpoint: {
             http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} },
@@ -490,12 +495,18 @@ describe("initPublishers", () => {
             ],
           },
           comment: "",
-        },
+          payload: "{}",
+          headers: [],
+        }),
       ],
       false,
       document.getElementById("pub-save"),
     );
-    expect(config.consumers[0].output).toEqual({ mode: "publisher", publisher: "renamed_http" });
+    expect(config.consumers[0].output).toEqual({
+      mode: "publisher",
+      publisher: "renamed_http",
+      publisher_id: expect.any(String),
+    });
     expect(window.fetchConfigFromServer).not.toHaveBeenCalled();
     expect(get(publishersPanelState).activeSubtab).toBe("definition");
     expect(get(publishersPanelState).items[0]?.name).toBe("renamed_http");
@@ -740,7 +751,7 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).urlField.value).toBe("https://api.example.test/new/orders?mode=fast");
   });
 
-  test("applies preset and switches back to payload tab", async () => {
+  test("migrates legacy http presets into saved publisher variants", async () => {
     const config = {
       publishers: [
         {
@@ -777,19 +788,22 @@ describe("initPublishers", () => {
       },
     );
 
-    selectPublisherSubtab("presets");
-    applyPublisherPresetAction(0);
-
-    const state = get(publishersPanelState);
-    expect(state.activeSubtab).toBe("payload");
-    expect(state.methodValue).toBe("PUT");
-    expect(state.urlField.value).toBe("https://api.example.test/orders/42");
-    expect(state.requestPayload).toBe("{\"id\":42}");
-    expect(config.publishers[0].endpoint.http.method).toBe("PUT");
-    expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
+    expect(config.publishers).toHaveLength(2);
+    expect(config.publishers[1]).toMatchObject({
+      id: expect.any(String),
+      name: "orders_http - preset_a",
+      payload: "{\"id\":42}",
+      headers: [{ key: "x-test", value: "yes", enabled: true }],
+    });
+    expect(config.publishers[1].endpoint.http).toMatchObject({
+      method: "PUT",
+      url: "https://api.example.test",
+      path: "/orders/42",
+      custom_headers: { "x-test": "yes" },
+    });
   });
 
-  test("applies non-http preset fields and switches back to payload tab", async () => {
+  test("migrates legacy non-http presets into saved publisher variants", async () => {
     const config = {
       publishers: [
         {
@@ -829,15 +843,13 @@ describe("initPublishers", () => {
       },
     );
 
-    selectPublisherSubtab("presets");
-    applyPublisherPresetAction(0);
-
-    const state = get(publishersPanelState);
-    expect(state.activeSubtab).toBe("payload");
-    expect(state.extraFieldOne.value).toBe("orders.created");
-    expect(state.urlField.value).toBe("kafka-a:9092,kafka-b:9092");
-    expect(state.requestPayload).toBe("{\"id\":42}");
-    expect(config.publishers[0].endpoint.kafka).toMatchObject({
+    expect(config.publishers).toHaveLength(2);
+    expect(config.publishers[1]).toMatchObject({
+      id: expect.any(String),
+      name: "events_kafka - orders_created",
+      payload: "{\"id\":42}",
+    });
+    expect(config.publishers[1].endpoint.kafka).toMatchObject({
       topic: "orders.created",
       url: "kafka-a:9092,kafka-b:9092",
     });
@@ -989,13 +1001,14 @@ describe("initPublishers", () => {
     await sendPublisherAction();
 
     const history = JSON.parse(window.localStorage.getItem("mqb_publisher_history") || "{}");
-    expect(history.publishers.events_kafka[0].requestMetadata).toMatchObject({
+    const historyKey = Object.keys(history.publishers)[0];
+    expect(history.publishers[historyKey][0].requestMetadata).toMatchObject({
       "request_bar.topic": "orders.created",
       "request_bar.pub-extra-1": "orders.created",
       "request_bar.url": "kafka-a:9092,kafka-b:9092",
       "request_bar.pub-url": "kafka-a:9092,kafka-b:9092",
     });
-    expect(history.publishers.events_kafka[0].request_fields).toMatchObject({
+    expect(history.publishers[historyKey][0].request_fields).toMatchObject({
       topic: "orders.created",
       url: "kafka-a:9092,kafka-b:9092",
     });
@@ -1037,21 +1050,17 @@ describe("initPublishers", () => {
 
     const historyCall = (window.saveConfigSection as any).mock.calls.find((call: any[]) => call[0] === "history");
     expect(historyCall).toBeTruthy();
-    expect(historyCall[1]).toMatchObject({
-      version: 1,
-      publishers: {
-        events_kafka: [
-          expect.objectContaining({
-            endpoint_type: "kafka",
-            payload: "event",
-            request_fields: expect.objectContaining({
-              topic: "orders.created",
-              url: "kafka-a:9092,kafka-b:9092",
-            }),
-          }),
-        ],
-      },
-    });
+    expect(historyCall[1]).toMatchObject({ version: 1 });
+    expect(Object.keys(historyCall[1].publishers || {})).toHaveLength(1);
+    const firstHistoryEntries = Object.values(historyCall[1].publishers)[0] as any[];
+    expect(firstHistoryEntries[0]).toEqual(expect.objectContaining({
+      endpoint_type: "kafka",
+      payload: "event",
+      request_fields: expect.objectContaining({
+        topic: "orders.created",
+        url: "kafka-a:9092,kafka-b:9092",
+      }),
+    }));
     expect(historyCall[2]).toBe(true);
   });
 
@@ -1240,7 +1249,7 @@ describe("initPublishers", () => {
     );
   });
 
-  test("imports mq-bridge presets into active publisher", async () => {
+  test("imports mq-bridge presets as publisher variants", async () => {
     initPublishers(
       {
         publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
@@ -1270,7 +1279,7 @@ describe("initPublishers", () => {
       }),
     );
 
-    expect(get(publishersPanelState).presetRows.map((row) => row.name)).toContain("imported_preset");
+    expect(window.appConfig.publishers.map((row) => row.name)).toContain("orders_http - imported_preset");
   });
 
   test("imports AsyncAPI requests as new publishers", async () => {
@@ -1308,93 +1317,16 @@ describe("initPublishers", () => {
     );
 
     expect(config.publishers.length).toBe(2);
-    expect(config.publishers[1].name).toContain("order_events");
+    expect(config.publishers[1].name).toContain("Order events");
   });
 
-  test("converts a preset into a persisted publisher", async () => {
-    const config = {
-      publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
-      routes: {},
-      consumers: [],
-      presets: {
-        orders_http: [
-          {
-            name: "new_http_target",
-            method: "POST",
-            url: "https://api.example.test/orders/new",
-            payload: "{\"ok\":true}",
-            headers: [{ key: "x-id", value: "42", enabled: true }],
-          },
-        ],
-      },
-      env_vars: {},
-    };
-    const schema = {
-      properties: { publishers: { items: {} } },
-      $defs: { HttpConfig: { properties: { custom_headers: {} } } },
-    };
-
-    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
-    window.fetchConfigFromServer = vi.fn().mockImplementation(async () => ({ publishers: config.publishers }));
-
-    initPublishers(config, schema);
-    await presetToPublisherAction(0);
-
-    expect(config.publishers.length).toBe(2);
-    expect(config.publishers[1].name).toContain("new_http_target");
-    expect(config.publishers[1].endpoint.http.url).toBe("https://api.example.test");
-    expect(config.publishers[1].endpoint.http.path).toBe("/orders/new");
-  });
-
-  test("converts a non-http preset into a persisted publisher", async () => {
-    const config = {
-      publishers: [{ name: "messages_mongodb", endpoint: { mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" } } }],
-      routes: {},
-      consumers: [],
-      presets: {
-        messages_mongodb: [
-          {
-            name: "orders_outbox",
-            endpoint_type: "mongodb",
-            payload: "{\"ok\":true}",
-            headers: [],
-            request_fields: {
-              database: "orders",
-              collection: "outbox",
-              url: "mongodb://mongo.local:27017",
-            },
-          },
-        ],
-      },
-      env_vars: {},
-    };
-    const schema = {
-      properties: { publishers: { items: {} } },
-      $defs: { MongoDbConfig: { properties: {} } },
-    };
-
-    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
-    window.fetchConfigFromServer = vi.fn().mockImplementation(async () => ({ publishers: config.publishers }));
-
-    initPublishers(config, schema);
-    await presetToPublisherAction(0);
-
-    expect(config.publishers.length).toBe(2);
-    expect(config.publishers[1].name).toContain("orders_outbox");
-    expect(config.publishers[1].endpoint.mongodb).toMatchObject({
-      database: "orders",
-      collection: "outbox",
-      url: "mongodb://mongo.local:27017",
-    });
-  });
-
-  test("saves current publisher request as a preset", async () => {
+  test("saves current publisher request as a new publisher variant", async () => {
     const config = {
       publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
       routes: {},
       consumers: [],
     };
-    window.mqbPrompt = vi.fn().mockResolvedValue("saved_preset");
+    window.mqbPrompt = vi.fn().mockResolvedValue("saved_variant");
 
     initPublishers(
       config,
@@ -1405,18 +1337,21 @@ describe("initPublishers", () => {
     );
 
     updatePublisherPayload("{\"hello\":true}");
-    await savePublisherPresetAction();
+    await saveCurrentPublisherVariantAction();
 
-    expect(get(publishersPanelState).presetRows.map((row) => row.name)).toContain("saved_preset");
+    expect(config.publishers[1]).toMatchObject({
+      name: "saved_variant",
+      payload: "{\"hello\":true}",
+    });
   });
 
-  test("saves current non-http publisher request as a protocol-aware preset", async () => {
+  test("saves current non-http publisher request as a new publisher variant", async () => {
     const config = {
       publishers: [{ name: "messages_mongodb", endpoint: { mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" } } }],
       routes: {},
       consumers: [],
     };
-    window.mqbPrompt = vi.fn().mockResolvedValue("saved_mongo_preset");
+    window.mqbPrompt = vi.fn().mockResolvedValue("saved_mongo_variant");
 
     initPublishers(
       config,
@@ -1430,72 +1365,17 @@ describe("initPublishers", () => {
     updatePublisherRequestField("pub-extra-2", "outbox");
     updatePublisherRequestField("pub-url", "mongodb://mongo.local:27017");
     updatePublisherPayload("{\"hello\":true}");
-    await savePublisherPresetAction();
+    await saveCurrentPublisherVariantAction();
 
-    expect(config.presets.messages_mongodb[0]).toMatchObject({
-      name: "saved_mongo_preset",
-      endpoint_type: "mongodb",
+    expect(config.publishers[1]).toMatchObject({
+      name: "saved_mongo_variant",
       payload: "{\"hello\":true}",
-      request_fields: {
+    });
+    expect(config.publishers[1].endpoint.mongodb).toMatchObject({
         database: "orders",
         collection: "outbox",
         url: "mongodb://mongo.local:27017",
-      },
     });
-  });
-
-  test("renames preset and handles overwrite cancel branch", async () => {
-    initPublishers(
-      {
-        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
-        routes: {},
-        consumers: [],
-        presets: {
-          orders_http: [
-            { name: "a", method: "POST", url: "https://example.test/a", payload: "", headers: [] },
-            { name: "b", method: "POST", url: "https://example.test/b", payload: "", headers: [] },
-          ],
-        },
-        env_vars: {},
-      },
-      {
-        properties: { publishers: { items: {} } },
-        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
-      },
-    );
-
-    window.mqbPrompt = vi.fn().mockResolvedValue("b");
-    window.mqbConfirm = vi.fn().mockResolvedValue(false);
-    await renamePublisherPresetAction(0);
-
-    expect(get(publishersPanelState).presetRows.map((row) => row.name)).toEqual(["a", "b"]);
-
-    window.mqbPrompt = vi.fn().mockResolvedValue("renamed");
-    await renamePublisherPresetAction(0);
-    expect(get(publishersPanelState).presetRows.map((row) => row.name)).toEqual(["renamed", "b"]);
-  });
-
-  test("deletes preset row", async () => {
-    initPublishers(
-      {
-        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
-        routes: {},
-        consumers: [],
-        presets: {
-          orders_http: [
-            { name: "to_delete", method: "POST", url: "https://example.test/x", payload: "", headers: [] },
-          ],
-        },
-        env_vars: {},
-      },
-      {
-        properties: { publishers: { items: {} } },
-        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
-      },
-    );
-
-    await deletePublisherPresetAction(0);
-    expect(get(publishersPanelState).presetRows).toEqual([]);
   });
 
   test("beautify payload shows alert on invalid JSON", () => {
@@ -1562,32 +1442,6 @@ describe("initPublishers", () => {
     expect(window.mqbAlert).toHaveBeenCalled();
   });
 
-  test("exports presets for active publisher", () => {
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    const createObjectUrlSpy = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:test");
-    const revokeObjectUrlSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
-
-    initPublishers(
-      {
-        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
-        routes: {},
-        consumers: [],
-      },
-      {
-        properties: { publishers: { items: {} } },
-        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
-      },
-    );
-
-    exportPublisherPresetsAction();
-    expect(createObjectUrlSpy).toHaveBeenCalled();
-    expect(clickSpy).toHaveBeenCalled();
-    expect(revokeObjectUrlSpy).toHaveBeenCalled();
-
-    clickSpy.mockRestore();
-    createObjectUrlSpy.mockRestore();
-    revokeObjectUrlSpy.mockRestore();
-  });
 });
 
 describe("publisher to consumer endpoint conversion", () => {
@@ -1602,10 +1456,39 @@ describe("publisher to consumer endpoint conversion", () => {
 
     expect(endpoint).toEqual({
       http: {
-        url: "0.0.0.0:1234",
+        url: "localhost:1234",
         path: "/api/orders/updated?mode=test",
         method: "POST",
         custom_headers: { authorization: "Bearer token" },
+      },
+    });
+  });
+
+  test("converts websocket publisher URLs into consumer listen addresses", () => {
+    const endpoint = createConsumerEndpointFromPublisherEndpoint({
+      websocket: {
+        url: "ws://localhost:8081/socket/events",
+      },
+    });
+
+    expect(endpoint).toEqual({
+      websocket: {
+        url: "localhost:8081",
+        path: "/socket/events",
+      },
+    });
+  });
+
+  test("converts grpc publisher URLs into consumer listen addresses", () => {
+    const endpoint = createConsumerEndpointFromPublisherEndpoint({
+      grpc: {
+        url: "grpc://localhost:50051/bridge.Messages",
+      },
+    });
+
+    expect(endpoint).toEqual({
+      grpc: {
+        url: "localhost:50051",
       },
     });
   });
