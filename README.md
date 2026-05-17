@@ -60,7 +60,9 @@ In short:
 
 > **Note**: This project is currently in **Active Development**.
 
-It originally served as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. It may already work reliably for some use cases. The UI is somewhat rough and may not work in all cases. Always test thoroughly before production use.
+It originally served as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. 
+
+The UI was mostly vibe coded. It was first created as vanilla-js project and then converted to svelte and typescript via codex. Later to tauri too. Early cleanups were missed and are now performed one after another. Final cleanups are performed manually but may still take additional weeks. Don't use the current ui code as reference implementation. It may already work ok for some use cases but I wouldn't recommend to use it in production yet without testing.
 
 ## Features
 
