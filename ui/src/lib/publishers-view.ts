@@ -426,10 +426,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
   mqbRuntime.registerAfterWorkspaceSave("publishers", () => {
     const selectedPublisher = config.publishers[currentIdx];
     const selectedKey = getPublisherStorageKey(selectedPublisher);
-    const selectedName = selectedPublisher?.name || null;
     const refreshedPublishers = mqbApp.config<PublishersAppConfig>().publishers || [];
     const refreshedIdx = refreshedPublishers.findIndex(
-      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey || publisher.name === selectedName,
+      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey,
     );
     const pendingRestore = {
       idx: refreshedIdx === -1 ? Math.min(currentIdx, Math.max(refreshedPublishers.length - 1, 0)) : refreshedIdx,
@@ -884,9 +883,14 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     let importedAsPublishers = 0;
+    let firstImportedKey = "";
 
     for (const request of imported.requests) {
-      config.publishers.push(requestToPublisher(request, basePublisher));
+      const publisher = requestToPublisher(request, basePublisher);
+      if (!firstImportedKey) {
+        firstImportedKey = getPublisherStorageKey(publisher);
+      }
+      config.publishers.push(publisher);
       importedAsPublishers += 1;
     }
 
@@ -903,8 +907,9 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     }
 
     initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
-    const firstImportedName = imported.requests[0]?.name;
-    const activeIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex((item) => item.name === firstImportedName);
+    const activeIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex(
+      (item) => getPublisherStorageKey(item) === firstImportedKey,
+    );
     if (activeIdx >= 0) {
       restorePublisherStateFromView(activeIdx, { tab: "definition" });
     }
@@ -1462,7 +1467,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
 
     const selectedIdx = currentIdx;
     const selectedKey = getPublisherStorageKey(config.publishers[selectedIdx]);
-    const originalName = config.publishers[selectedIdx]?.name || null;
     const selectedTab = activeSubtab;
     const mapped = config.publishers.map((publisher, index) => {
       const nextPublisher = normalizePublisherConfigShape(publisher);
@@ -1475,7 +1479,6 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
       return nextPublisher;
     });
     config.publishers.splice(0, config.publishers.length, ...mapped);
-    const selectedName = config.publishers[selectedIdx]?.name ?? originalName;
     const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
     if (!saved) {
       // If saveConfigSection failed, we should not proceed with re-initializing
@@ -1504,7 +1507,7 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     mqbRuntime.markSectionSaved("publishers", refreshedConfig.publishers);
     const currentPublishers = mqbApp.config<PublishersAppConfig>().publishers || []; // Use the updated mqbApp.config()
     const refreshedIdx = currentPublishers.findIndex(
-      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey || publisher.name === selectedName,
+      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey,
     ); // Find index in the updated list
     const pendingRestore = {
       idx: refreshedIdx === -1 ? Math.min(selectedIdx, Math.max(currentPublishers.length - 1, 0)) : refreshedIdx, // Ensure index is valid
@@ -1907,8 +1910,8 @@ export function initPublishers(config: PublishersAppConfig, schema: PublishersSc
     config.publishers.splice(0, config.publishers.length, ...saved.publishers);
     mqbApp.config<PublishersAppConfig>().publishers = saved.publishers;
     initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
-    const firstImportedName = importedPublishers[0]?.name;
-    const idx = (config.publishers || []).findIndex((publisher) => publisher.name === firstImportedName);
+    const firstImportedKey = getPublisherStorageKey(importedPublishers[0]);
+    const idx = (config.publishers || []).findIndex((publisher) => getPublisherStorageKey(publisher) === firstImportedKey);
     if (idx >= 0) {
       restorePublisherStateFromView(idx, { tab: "definition" });
     }

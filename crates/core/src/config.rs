@@ -714,15 +714,15 @@ impl AppConfig {
         all_secrets: &mut HashMap<String, String>,
     ) {
         let mut endpoint_secrets = HashMap::new();
-        let temp_prefix = "SECRET__";
-        extract_all_secrets_from_endpoint(endpoint, temp_prefix, &mut endpoint_secrets);
+        let id_part = sanitize_id_for_env(id);
+        let final_prefix = format!("MQB__{}__{}__", entity_type, id_part);
+        extract_all_secrets_from_endpoint(endpoint, &final_prefix, &mut endpoint_secrets);
 
         if !endpoint_secrets.is_empty() {
             let name_part = sanitize_name_for_env(name);
-            let id_part = sanitize_id_for_env(id);
 
             for (k, v) in endpoint_secrets {
-                let suffix = k.strip_prefix(temp_prefix).unwrap();
+                let suffix = k.strip_prefix(&final_prefix).unwrap();
                 all_secrets.insert(
                     format!("MQB__{}__{}{}", entity_type, name_part, suffix),
                     v.clone(),

@@ -404,8 +404,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   const getPublisherByKey = (publisherKey: string) => {
     const normalized = String(publisherKey || "").trim();
     return getAvailablePublishers().find((publisher, idx) =>
-      String(getPublisherOptionValue(publisher, idx)).trim() === normalized
-      || String(publisher?.name || "").trim() === normalized,
+      String(getPublisherOptionValue(publisher, idx)).trim() === normalized,
     );
   };
 
@@ -438,14 +437,14 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     activeElement?.blur();
     await Promise.resolve();
     const mapped = (config.consumers || []).map((consumer) => normalizeConsumerConfigShape({ ...consumer }));
+    ensurePersistableConsumerNames(mapped);
     config.consumers.splice(0, config.consumers.length, ...mapped);
   });
   mqbRuntime.registerAfterWorkspaceSave("consumers", () => {
     const selectedConsumer = (config.consumers || [])[currentIdx];
     const selectedKey = selectedConsumer ? getConsumerStorageKey(selectedConsumer) : "";
-    const selectedName = selectedConsumer?.name || null;
     const targetIdx = (mqbApp.config<ConsumersAppConfig>().consumers || []).findIndex(
-      (consumer: ConsumerConfig) => getConsumerStorageKey(consumer) === selectedKey || consumer.name === selectedName,
+      (consumer: ConsumerConfig) => getConsumerStorageKey(consumer) === selectedKey,
     );
     const pendingRestore = { idx: targetIdx === -1 ? currentIdx : targetIdx, tab: activeSubtab };
     getMqbState().pending_consumer_restore = pendingRestore;
@@ -543,6 +542,19 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         .filter(Boolean),
     );
   };
+  function ensurePersistableConsumerNames(source: ConsumerConfig[]) {
+    const usedNames = new Set(
+      source
+        .map((consumer) => String(consumer.name || "").trim())
+        .filter(Boolean),
+    );
+    for (const consumer of source) {
+      if (String(consumer.name || "").trim()) continue;
+      const nextName = nextUniqueName(sanitizeConsumerName("consumer"), usedNames);
+      consumer.name = nextName;
+      usedNames.add(nextName);
+    }
+  }
   syncSavedConsumerNames(
     Array.isArray(state.saved_sections?.consumers) ? state.saved_sections.consumers : consumers,
   );
@@ -563,12 +575,11 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
   const syncConsumersPanelState = () => {
     const currentConsumer = consumers[currentIdx] || null;
-    const currentConsumerName = currentConsumer?.name || null;
     const currentConsumerKey = currentConsumer ? getConsumerStorageKey(currentConsumer) : null;
     const currentConsumerRuntimeKey = currentConsumer ? getConsumerRuntimeKey(currentConsumer) : null;
     const messages = currentConsumerKey ? consumerMessages[currentConsumerKey] || [] : [];
     const status = currentConsumerRuntimeKey
-      ? consumerStatus[currentConsumerRuntimeKey] || (currentConsumerName ? consumerStatus[currentConsumerName] : undefined) || stoppedConsumerStatus()
+      ? consumerStatus[currentConsumerRuntimeKey] || stoppedConsumerStatus()
       : stoppedConsumerStatus();
     const isTogglePending = !!(currentConsumerRuntimeKey && pendingToggle && pendingToggle.key === currentConsumerRuntimeKey);
 
@@ -675,8 +686,8 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       selectedPublisher: (() => {
         if (resolvedOutput.mode !== "publisher") return "";
         const options = getAvailablePublisherOptions();
-        const publisherKey = String(resolvedOutput.publisher || resolvedOutput.publisher_id || "").trim();
-        return options.find((option) => option.value === publisherKey || option.label === publisherKey)?.value || "";
+        const publisherKey = String(resolvedOutput.publisher_id || resolvedOutput.publisher || "").trim();
+        return options.find((option) => option.value === publisherKey)?.value || "";
       })(),
       responseSupported,
       responseHeaders,
@@ -868,7 +879,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       throw new Error("No consumers found in import file.");
     }
 
-    const firstImportedName = importedConsumers[0]?.name || "";
+    const firstImportedKey = getConsumerStorageKey(importedConsumers[0]);
     config.consumers.push(
       ...importedConsumers.map((consumer) => {
         const output = normalizeConsumerOutput(consumer.output, consumer.response);
@@ -890,7 +901,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     syncSavedConsumerNames(saved.consumers || []);
     await initConsumers(config, schema);
 
-    const nextIdx = config.consumers.findIndex((consumer) => consumer.name === firstImportedName);
+    const nextIdx = config.consumers.findIndex((consumer) => getConsumerStorageKey(consumer) === firstImportedKey);
     if (nextIdx >= 0) {
       await restoreConsumerStateFromView(nextIdx, { tab: "definition" });
     } else if (config.consumers.length > 0) {
@@ -925,15 +936,15 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
         return;
       }
       const preferredPublisherKey =
-        existing.mode === "publisher" && existing.publisher
-          ? existing.publisher
+        existing.mode === "publisher" && (existing.publisher_id || existing.publisher)
+          ? String(existing.publisher_id || existing.publisher).trim()
           : publisherOptions.length === 1
             ? publisherOptions[0].value
             : "";
       const preferredPublisherConfig = getPublisherByKey(preferredPublisherKey);
       current.output = {
         mode: "publisher",
-        publisher: String(preferredPublisherConfig?.id || preferredPublisherConfig?.name || "").trim(),
+        publisher: String(preferredPublisherConfig?.name || "").trim(),
         ...(preferredPublisherConfig?.id ? { publisher_id: preferredPublisherConfig.id } : {}),
       };
       current.response = null;
@@ -954,7 +965,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const publisherConfig = getPublisherByKey(publisher);
     current.output = {
       mode: "publisher",
-      publisher: String(publisherConfig?.id || publisherConfig?.name || publisher || "").trim(),
+      publisher: String(publisherConfig?.name || publisher || "").trim(),
       ...(publisherConfig?.id ? { publisher_id: publisherConfig.id } : {}),
     };
     current.response = null;
@@ -994,7 +1005,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   showConsumerMessageDetails = (consumerKey: string, msgIdx: number) => {
-    const consumer = (config.consumers || []).find((entry) => getConsumerRuntimeKey(entry) === consumerKey || entry.name === consumerKey);
+    const consumer = (config.consumers || []).find((entry) => getConsumerRuntimeKey(entry) === consumerKey);
     const message = (consumerMessages[getConsumerStorageKey(consumer)] || [])[msgIdx];
     if (!message) return;
     selectedMessageIndex = msgIdx;
@@ -1009,11 +1020,11 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     const isRunning = consumerStatus[consumerKey]?.running;
     const action = isRunning ? "stop" : "start";
     let targetKey = consumerKey;
-    let targetName = (config.consumers || []).find((consumer) => getConsumerRuntimeKey(consumer) === consumerKey)?.name || consumerKey;
     if (
       action === "start" &&
-      (!isSavedConsumer(consumers.find((consumer) => getConsumerRuntimeKey(consumer) === targetKey || consumer.name === targetName)) || mqbRuntime.refreshDirtySection("consumers"))
+      (!isSavedConsumer(consumers.find((consumer) => getConsumerRuntimeKey(consumer) === targetKey)) || mqbRuntime.refreshDirtySection("consumers"))
     ) {
+      ensurePersistableConsumerNames(config.consumers);
       const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
       if (!saved?.consumers) return;
 
@@ -1022,14 +1033,16 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       mqbApp.config<ConsumersAppConfig>().consumers = consumers;
       syncSavedConsumerNames(consumers);
 
-      const refreshedIdx = consumers.findIndex((consumer) => getConsumerRuntimeKey(consumer) === targetKey || consumer.name === targetName);
+      let refreshedIdx = consumers.findIndex((consumer) => getConsumerRuntimeKey(consumer) === targetKey);
+      if (refreshedIdx === -1) {
+        refreshedIdx = Math.min(currentIdx, consumers.length - 1);
+      }
       if (refreshedIdx === -1) {
         await mqbDialogs.alert("Save completed, but the selected consumer no longer exists.");
         return;
       }
       currentIdx = refreshedIdx;
       targetKey = getConsumerRuntimeKey(consumers[refreshedIdx]) || targetKey;
-      targetName = String(consumers[refreshedIdx].name || "");
     }
 
     pendingToggle = { key: targetKey, action };
@@ -1060,7 +1073,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   };
 
   const clearConsumerHistory = (name: string) => {
-    const consumer = (config.consumers || []).find((entry) => getConsumerRuntimeKey(entry) === name || entry.name === name);
+    const consumer = (config.consumers || []).find((entry) => getConsumerRuntimeKey(entry) === name);
     consumerMessages[getConsumerStorageKey(consumer)] = [];
     saveMessages();
     syncConsumersPanelState();
@@ -1086,9 +1099,6 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     }
     if (itemSchema.properties?.id) {
       itemSchema.properties.id.hidden = true;
-    }
-    if (Array.isArray(itemSchema.required)) {
-      itemSchema.required = itemSchema.required.filter((key: string) => key !== "name");
     }
     const httpConfigSchema = itemSchema.$defs?.HttpConfig;
     if (httpConfigSchema?.properties?.custom_headers) {
@@ -1211,6 +1221,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
       return;
     }
 
+    ensurePersistableConsumerNames(newConsumers);
     const saved = await mqbRuntime.saveConfigSection("consumers", newConsumers, false);
     if (!saved?.consumers) {
       await mqbDialogs.alert("Failed to save consumer deletion.");
@@ -1230,9 +1241,9 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     await Promise.resolve();
     const selectedConsumer = (config.consumers || [])[currentIdx];
     const selectedKey = selectedConsumer ? getConsumerStorageKey(selectedConsumer) : "";
-    const selectedName = selectedConsumer?.name || null;
     const selectedTab = activeSubtab;
     const mapped = (config.consumers || []).map((consumer) => normalizeConsumerConfigShape({ ...consumer }));
+    ensurePersistableConsumerNames(mapped);
     config.consumers.splice(0, config.consumers.length, ...mapped);
     const saved = await mqbRuntime.saveConfigSection("consumers", config.consumers, false);
     if (!saved) return;
@@ -1245,7 +1256,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
     syncSavedConsumerNames(saved.consumers || []);
     mqbRuntime.markSectionSaved("consumers", normalizedSavedConsumers);
     const targetIdx = (mqbApp.config<ConsumersAppConfig>().consumers || []).findIndex(
-      (consumer: ConsumerConfig) => getConsumerStorageKey(consumer) === selectedKey || consumer.name === selectedName,
+      (consumer: ConsumerConfig) => getConsumerStorageKey(consumer) === selectedKey,
     );
     const pendingRestore = { idx: targetIdx === -1 ? currentIdx : targetIdx, tab: selectedTab };
     getMqbState().pending_consumer_restore = pendingRestore;

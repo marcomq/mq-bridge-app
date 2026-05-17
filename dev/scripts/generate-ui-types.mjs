@@ -3,9 +3,10 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const checkOnly = process.argv.includes("--check");
-const repoRoot = resolve(new URL("../..", import.meta.url).pathname);
+const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const outputPath = resolve(repoRoot, "ui/src/lib/generated/ui-types.ts");
 
 const rawSchemas = execFileSync(

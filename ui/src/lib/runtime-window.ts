@@ -206,7 +206,7 @@ export const mqbRuntime = {
     appWindow().registerAfterWorkspaceSave?.(key, callback);
   },
   markSectionSaved(sectionName: string, savedValue?: unknown) {
-    appWindow().markSectionSaved(sectionName, savedValue);
+    appWindow().markSectionSaved?.(sectionName, savedValue);
   },
   saveWorkspace(silent = false, button?: HTMLElement | null) {
     return appWindow().saveWorkspace?.(silent, button);

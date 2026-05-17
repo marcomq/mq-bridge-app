@@ -41,7 +41,8 @@
     $consumersPanelState.items.find((item) => item.originalIndex === $consumersPanelState.selectedIndex),
   );
   const selectedConfig = $derived.by(() => {
-    const idx = $consumersPanelState.selectedIndex;
+    const panelState = $consumersPanelState;
+    const idx = panelState.selectedIndex;
     if (idx == null || idx < 0) return null;
     return mqbApp.config()?.consumers?.[idx];
   });

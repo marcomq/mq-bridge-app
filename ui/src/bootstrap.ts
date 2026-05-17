@@ -246,6 +246,12 @@ function renderRuntimeStatus(status?: typeof EMPTY_RUNTIME_STATUS) {
   runtimeStatusStore.set(status || getMqbState().runtime_status || EMPTY_RUNTIME_STATUS);
 }
 
+function warnMissingRuntimeRenderer(
+  name: "renderRoutesRuntimeMetrics" | "renderConsumersRuntimeStatus",
+) {
+  console.warn(`[mqb] Missing runtime renderer: ${name}`);
+}
+
 function renderStorageSecurity() {
   storageSecurityStore.set(getMqbState().storage_security || { ...EMPTY_STORAGE_SECURITY });
 }
@@ -257,8 +263,17 @@ const runtimeStatusPoller = createRuntimeStatusPoller({
     (appWindow() as unknown as { _mqb_runtime_status?: typeof status })._mqb_runtime_status = status;
     getMqbState().runtime_status = status;
     renderRuntimeStatus(status);
-    appWindow().renderRoutesRuntimeMetrics?.();
-    appWindow().renderConsumersRuntimeStatus?.();
+    const windowRef = appWindow();
+    if (typeof windowRef.renderRoutesRuntimeMetrics === "function") {
+      windowRef.renderRoutesRuntimeMetrics();
+    } else {
+      warnMissingRuntimeRenderer("renderRoutesRuntimeMetrics");
+    }
+    if (typeof windowRef.renderConsumersRuntimeStatus === "function") {
+      windowRef.renderConsumersRuntimeStatus();
+    } else {
+      warnMissingRuntimeRenderer("renderConsumersRuntimeStatus");
+    }
   },
 });
 
