@@ -269,6 +269,7 @@
     background-color: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
     gap: 8px;
+    font-family: var(--font-ui);
   }
 
   .view-mode-selector, .display-options {

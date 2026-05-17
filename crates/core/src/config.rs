@@ -300,8 +300,39 @@ impl SecretStore for EnvFileSecretStore {
     }
 }
 
-fn expand_variables(content: &str) -> Result<String, anyhow::Error> {
-    Ok(shellexpand::env(content)?.to_string())
+fn extract_inline_env_vars(
+    content: &str,
+    format: config::FileFormat,
+) -> HashMap<String, String> {
+    let parsed = match format {
+        config::FileFormat::Json => serde_json::from_str::<serde_json::Value>(content).ok(),
+        _ => serde_yaml_ng::from_str::<serde_json::Value>(content).ok(),
+    };
+
+    let Some(root) = parsed else {
+        return HashMap::new();
+    };
+
+    root.get("env_vars")
+        .or_else(|| root.get("envVars"))
+        .and_then(serde_json::Value::as_object)
+        .map(|env_vars| {
+            env_vars
+                .iter()
+                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn expand_variables(content: &str, format: config::FileFormat) -> Result<String, anyhow::Error> {
+    let inline_env_vars = extract_inline_env_vars(content, format);
+    let expanded = shellexpand::env_with_context_no_errors(content, |key| {
+        std::env::var(key)
+            .ok()
+            .or_else(|| inline_env_vars.get(key).cloned())
+    });
+    Ok(expanded.to_string())
 }
 
 // New helper function to create a config source from a string.
@@ -310,7 +341,7 @@ fn source_from_str(
     content: &str,
     format: config::FileFormat,
 ) -> Result<config::File<config::FileSourceString, config::FileFormat>, anyhow::Error> {
-    let expanded = expand_variables(content)?;
+    let expanded = expand_variables(content, format)?;
     // Using `required(false)` means an empty or whitespace-only string won't cause an error.
     Ok(config::File::from_str(&expanded, format).required(false))
 }
@@ -1105,6 +1136,40 @@ routes:
         } else {
             panic!("Expected Kafka source endpoint");
         }
+    }
+
+    #[test]
+    fn test_config_expands_placeholders_from_inline_env_vars() {
+        let yaml_config = r#"
+env_vars:
+  baseUrl: "https://api.example.test"
+publishers:
+  - name: "orders list"
+    endpoint:
+      http:
+        url: "${baseUrl}/orders"
+"#;
+
+        let (config, _) = load_config_internal(
+            Some("_".to_string()),
+            None,
+            None,
+            Some(yaml_config.to_string()),
+            false,
+            false,
+        )
+        .unwrap();
+
+        match &config.publishers[0].endpoint.endpoint_type {
+            mq_bridge::models::EndpointType::Http(http) => {
+                assert_eq!(http.url, "https://api.example.test/orders");
+            }
+            other => panic!("expected http publisher, got {other:?}"),
+        }
+        assert_eq!(
+            config.env_vars.get("baseUrl").map(String::as_str),
+            Some("https://api.example.test")
+        );
     }
 
     #[test]

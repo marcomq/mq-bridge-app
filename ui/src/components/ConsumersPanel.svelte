@@ -167,7 +167,7 @@
         </div>
       </div>
       <div class="sidebar-list" id="cons-list">
-        <div class="sidebar-group-label">Saved</div>
+        <div class="sidebar-group-label">Receive</div>
         {#each visibleItems as item (item.originalIndex)}
           <button
             type="button"

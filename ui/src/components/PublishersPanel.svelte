@@ -302,7 +302,7 @@
         </div>
       </div>
       <div class="sidebar-list" id="pub-list">
-        <div class="sidebar-group-label">Saved</div>
+        <div class="sidebar-group-label">Send</div>
         {#each visibleTreeRows as row, i (row.id + '-' + i)}
           {#if row.kind === "group"}
             <button
