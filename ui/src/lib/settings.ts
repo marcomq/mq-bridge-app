@@ -5,7 +5,7 @@ interface DesktopSecretEntry {
   error?: string;
 }
 import { cloneSectionState } from "./dirty-state";
-import { appWindow, getMqbState, mqbApp, mqbRuntime } from "./runtime-window";
+import { appShell, getAppState, workspaceRuntime } from "./app-shell";
 import { availableStorageModeValues, type StorageModeValue, type StorageSecurityInfo } from "./storage-security";
 import { ensureWorkspaceCollections } from "./workspace-config";
 
@@ -254,25 +254,25 @@ export function formatDesktopSecretsSummary(summary: DesktopSecretSummary): stri
 }
 
 export async function initSettings(config: Record<string, unknown>, schema: Record<string, unknown>) {
-  const lib = mqbApp.forms();
+  const lib = appShell.forms();
   const container = document.getElementById("form-container");
   if (!container) {
     return;
   }
 
-  const state = getMqbState();
+  const state = getAppState();
   const settingsSchema = buildSettingsSchema(schema, state.storage_security, config);
   let settingsConfig = extractSettingsConfig(config);
   state.saved_sections.config = cloneSectionState(settingsConfig);
 
-  mqbRuntime.registerDirtySection("config", {
+  workspaceRuntime.registerDirtySection("config", {
     buttonId: "workspace-save-button",
     getValue: () => settingsConfig,
   });
-  mqbRuntime.registerBeforeWorkspaceSave("config", () => {
-    mergeSettingsConfig(mqbApp.config<Record<string, unknown>>(), settingsConfig);
+  workspaceRuntime.registerBeforeWorkspaceSave("config", () => {
+    mergeSettingsConfig(appShell.config<Record<string, unknown>>(), settingsConfig);
   });
-  mqbRuntime.registerAfterWorkspaceSave("config", (savedConfig) => {
+  workspaceRuntime.registerAfterWorkspaceSave("config", (savedConfig) => {
     settingsConfig = extractSettingsConfig(savedConfig);
   });
 
@@ -289,7 +289,7 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
     formActions.style.display = "flex";
   }
 
-  const scheduleDirtyRefresh = () => appWindow().setTimeout(() => mqbRuntime.refreshDirtySection("config"), 0);
+  const scheduleDirtyRefresh = () => window.setTimeout(() => workspaceRuntime.refreshDirtySection("config"), 0);
   container.oninput = scheduleDirtyRefresh;
   container.onchange = scheduleDirtyRefresh;
 }

@@ -1,5 +1,5 @@
 import { saveWholeConfig } from "./config-api";
-import { getMqbState, mqbApp } from "./runtime-window";
+import { appShell, getAppState } from "./app-shell";
 import {
   ensureWorkspaceCollections,
   isSensitiveConfig,
@@ -28,7 +28,7 @@ type ExportBundle = {
 const PUBLISHER_HISTORY_KEY = "mqb_publisher_history";
 
 function getWorkspaceConfig() {
-  return ensureWorkspaceCollections(mqbApp.config<Record<string, unknown>>());
+  return ensureWorkspaceCollections(appShell.config<Record<string, unknown>>());
 }
 
 function triggerJsonDownload(filename: string, value: unknown) {
@@ -62,7 +62,7 @@ export function exportConfigOnly() {
     type: "mqb-config",
     version: 1,
     exportedAt: new Date().toISOString(),
-    config: structuredClone(mqbApp.config()),
+    config: structuredClone(appShell.config()),
   };
   triggerJsonDownload(`mqb-config-${isoDateCompact()}.json`, payload);
 }
@@ -176,7 +176,7 @@ export async function importAppConfigFromJsonText(text: string) {
 }
 
 export async function resetAppConfigToDefaults() {
-  const currentConfig = asObject(structuredClone(mqbApp.config<Record<string, unknown>>()));
+  const currentConfig = asObject(structuredClone(appShell.config<Record<string, unknown>>()));
   const normalizedCurrentConfig = ensureWorkspaceCollections(currentConfig);
   const nextConfig: Record<string, unknown> = {
     ...currentConfig,
@@ -521,7 +521,7 @@ async function saveImportedConfig(config: Record<string, unknown>) {
   delete nextConfig.routes;
   const history = sanitizePublisherHistory(nextConfig.history);
   nextConfig.history = history;
-  const storageSecurity = resolveStorageSecurity(getMqbState().storage_security, nextConfig);
+  const storageSecurity = resolveStorageSecurity(getAppState().storage_security, nextConfig);
   if (hasEncryptedMessages(storageSecurity)) {
     await setStoredJson(PUBLISHER_HISTORY_KEY, history, storageSecurity);
   } else if (storageSecurity.messagesEncrypted) {
@@ -531,7 +531,7 @@ async function saveImportedConfig(config: Record<string, unknown>) {
   } else {
     removeStoredJson(PUBLISHER_HISTORY_KEY);
   }
-  mqbApp.setConfig(nextConfig);
+  appShell.setConfig(nextConfig);
 }
 
 export async function importFromJsonText(

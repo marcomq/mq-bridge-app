@@ -39,7 +39,8 @@
   } from "../lib/publishers-view";
   import { registerDismissOnOutsideClick, startSidebarResize as beginSidebarResize } from "../lib/sidebar-ui";
   import { handleActionKey, getLabel } from "../lib/utils";
-  import { getMqbState, mqbDialogs } from "../lib/runtime-window";
+  import { getAppState } from "../lib/app-shell";
+  import { alertDialog } from "../lib/dialogs";
 
   let filterText = $state("");
   let addMenuOpen = $state(false);
@@ -177,8 +178,7 @@
   });
 
   function openPublisher(originalIndex: number) {
-    getMqbState().last_publisher_idx = originalIndex;
-    (window as any)._mqb_last_publisher_idx = originalIndex;
+    getAppState().last_publisher_idx = originalIndex;
     window.history.replaceState(null, "", `#publishers:${originalIndex}`);
     restorePublisherStateFromView(originalIndex);
   }
@@ -252,10 +252,10 @@
       const selectedIndex = get(publishersPanelState).selectedIndex || 0;
       void restorePublisherStateFromView(selectedIndex, { tab: "definition" });
 
-      await mqbDialogs.alert("✅ Import completed successfully.", "Import Success");
+      await alertDialog("✅ Import completed successfully.", "Import Success");
       openSubtab("definition");
     } catch (error) {
-      await mqbDialogs.alert(`Import failed: ${(error as Error).message}`, "Import");
+      await alertDialog(`Import failed: ${(error as Error).message}`, "Import");
     }
   }
 

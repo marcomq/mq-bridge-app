@@ -24,7 +24,6 @@ export type ConsumerStatus = ConsumerStatusResponse & {
 };
 
 export type ConsumerMessageCaptureConfig = Required<GeneratedConsumerMessageCaptureConfig>;
-
 export type ConsumerResponseConfig = Required<GeneratedConsumerResponseConfig>;
 export type ConsumerOutputConfig = GeneratedConsumerOutputConfig;
 

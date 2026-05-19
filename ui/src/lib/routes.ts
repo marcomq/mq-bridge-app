@@ -37,28 +37,6 @@ export function defaultMetricsMiddleware(): Array<{ metrics: Record<string, neve
   return [];
 }
 
-export function isRouteEnabled(route: Pick<RouteDefinition, "enabled"> | null | undefined): boolean {
-  return route?.enabled !== false;
-}
-
-export function hasMetricsMiddleware(
-  route: { input?: RouteEndpoint; output?: RouteEndpoint } | null | undefined,
-): boolean {
-  const hasMetrics = (endpoint: RouteEndpoint | null | undefined) =>
-    (endpoint?.middlewares || []).some((middleware) =>
-      Object.prototype.hasOwnProperty.call(middleware || {}, "metrics"),
-    );
-
-  return hasMetrics(route?.input) || hasMetrics(route?.output);
-}
-
-export function formatThroughput(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "0 msg/s";
-  if (value >= 100) return `${Math.round(value)} msg/s`;
-  if (value >= 10) return `${value.toFixed(1)} msg/s`;
-  return `${value.toFixed(2)} msg/s`;
-}
-
 export function applyEndpointSchemaDefaults(routeSchema: RouteSchema): void {
   const fileConfigSchema = routeSchema.$defs?.FileConfig;
   if (fileConfigSchema?.properties?.format) {
@@ -88,12 +66,10 @@ export function nextUniqueName(baseName: string, existingNames: Iterable<string>
   const names = new Set(existingNames);
   let candidate = baseName;
   let index = 1;
-
   while (names.has(candidate)) {
     candidate = `${baseName}_${index}`;
     index += 1;
   }
-
   return candidate;
 }
 
@@ -101,28 +77,5 @@ export function createRefInputEndpoint(refName: string): RouteEndpoint {
   return {
     middlewares: defaultMetricsMiddleware(),
     ref: refName,
-  };
-}
-
-export function createEmptyRouteConfig(): RouteDefinition {
-  return {
-    enabled: true,
-    batch_size: 128,
-    input: { middlewares: defaultMetricsMiddleware(), null: null },
-    output: { middlewares: defaultMetricsMiddleware(), null: null },
-  };
-}
-
-export function splitRouteFormData(
-  routeName: string,
-  updated: { name?: unknown } | null | undefined,
-): SplitRouteFormDataResult {
-  const nextName = typeof updated?.name === "string" ? updated.name.trim() : "";
-  const routeData = { ...(updated || {}) };
-  delete routeData.name;
-
-  return {
-    nextName: nextName || routeName,
-    routeData,
   };
 }

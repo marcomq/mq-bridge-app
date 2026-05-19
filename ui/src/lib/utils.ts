@@ -3,9 +3,13 @@ import {
   BASIC_ENDPOINT_FIELDS,
   KNOWN_ENDPOINT_ROOT_KEYS,
 } from "./endpoint-metadata";
-import { createLocalEntityId } from "./entity-key";
 
 export type ThemePreference = "auto" | "light" | "dark";
+
+export type NamedEntity = {
+  id?: string | null;
+  name?: string | null;
+};
 
 function getEndpointType(endpoint: Record<string, unknown>): string {
   return Object.keys(endpoint).find((key) => key !== "middlewares" && (KNOWN_ENDPOINT_ROOT_KEYS as readonly string[]).includes(key)) || "http";
@@ -30,11 +34,11 @@ export function normalizeNamedEntityFormShape<T extends { id?: string; name?: st
 }
 
 export function getThemePreference(): ThemePreference | undefined {
-  return window.getThemePreference?.() as ThemePreference | undefined;
+  return (window as Window & { getThemePreference?: () => unknown }).getThemePreference?.() as ThemePreference | undefined;
 }
 
 export function setThemePreference(value: ThemePreference) {
-  window.setThemePreference?.(value);
+  (window as Window & { setThemePreference?: (value: ThemePreference) => void }).setThemePreference?.(value);
 }
 
 export function getLabel(node: any) {
@@ -224,4 +228,16 @@ export async function withSelectedFileText(
   } finally {
     target.value = "";
   }
+}
+export function getEntityStorageKey(entity: NamedEntity | null | undefined): string {
+  const trimmedId = String(entity?.id || "").trim();
+  const trimmedName = String(entity?.name || "").trim();
+  return trimmedId !== "" ? trimmedId : trimmedName;
+}
+
+export function createLocalEntityId(prefix = "ui"): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }

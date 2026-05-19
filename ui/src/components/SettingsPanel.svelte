@@ -1,9 +1,11 @@
 <script lang="ts">
   import '@awesome.me/webawesome/dist/components/callout/callout.js';
+  import { tick } from "svelte";
   import { activeMainTab, storageSecurityStore } from "../lib/stores";
   import { exportFullBundle, importAppConfigFromJsonText, resetAppConfigToDefaults } from "../lib/import-export";
   import { withSelectedFileText } from "../lib/utils";
-  import { mqbDialogs, mqbApp } from "../lib/runtime-window";
+  import { appShell } from "../lib/app-shell";
+  import { alertDialog, confirmDialog } from "../lib/dialogs";
   import type { StorageSecurityInfo } from "../lib/storage-security";
   import { formatDesktopSecretsSummary } from "../lib/settings";
   import { EditorView, basicSetup } from "codemirror";
@@ -13,7 +15,7 @@
   let editorContainer = $state<HTMLElement | null>(null);
   let editorView: EditorView | null = null;
   let importInputEl = $state<HTMLInputElement | null>(null);
-  const isDesktop = mqbApp.isDesktop();
+  const isDesktop = appShell.isDesktop();
   const storageSecurity = $derived($storageSecurityStore);
   const storageNotice = $derived(getStorageNotice(storageSecurity));
 
@@ -25,19 +27,19 @@
     try {
       await withSelectedFileText(event, async (text) => {
         const result = await importAppConfigFromJsonText(text);
-        await mqbDialogs.alert(
+        await alertDialog(
           `Imported ${result.importedPublishers} publishers and ${result.importedConsumers} consumers.`,
           "Import complete",
         );
         window.location.reload();
       });
     } catch (error) {
-      await mqbDialogs.alert(`Import failed: ${(error as Error).message}`, "Import");
+      await alertDialog(`Import failed: ${(error as Error).message}`, "Import");
     }
   }
 
   async function resetConfig() {
-    const confirmed = await mqbDialogs.confirm(
+    const confirmed = await confirmDialog(
       "Reset publishers and consumers? Existing entries will be removed.",
       "Reset App Config",
     );
@@ -46,33 +48,31 @@
     window.location.reload();
   }
 
-  function openJsonModal() {
+  async function openJsonModal() {
     isJsonModalOpen = true;
-    const configData = JSON.stringify(mqbApp.config(), null, 2);
+    const configData = JSON.stringify(appShell.config(), null, 2);
 
-    // Ensure the container is available before initializing CodeMirror
-    setTimeout(() => {
-      if (!editorContainer) return;
-      if (!editorView) {
-        editorView = new EditorView({
-          doc: configData,
-          extensions: [
-            basicSetup,
-            json(),
-            EditorView.editable.of(false),
-            EditorView.theme({
-              "&": { height: "60vh", fontSize: "13px" },
-              ".cm-scroller": { overflow: "auto" },
-            }),
-          ],
-          parent: editorContainer,
-        });
-      } else {
-        editorView.dispatch({
-          changes: { from: 0, to: editorView.state.doc.length, insert: configData },
-        });
-      }
-    }, 0);
+    await tick();
+    if (!editorContainer) return;
+    if (!editorView) {
+      editorView = new EditorView({
+        doc: configData,
+        extensions: [
+          basicSetup,
+          json(),
+          EditorView.editable.of(false),
+          EditorView.theme({
+            "&": { height: "60vh", fontSize: "13px" },
+            ".cm-scroller": { overflow: "auto" },
+          }),
+        ],
+        parent: editorContainer,
+      });
+    } else {
+      editorView.dispatch({
+        changes: { from: 0, to: editorView.state.doc.length, insert: configData },
+      });
+    }
   }
 
   async function checkStoredSecrets() {
@@ -84,15 +84,15 @@
       }
 
       const summary = await response.json();
-      await mqbDialogs.alert(formatDesktopSecretsSummary(summary), "Stored Secrets");
+      await alertDialog(formatDesktopSecretsSummary(summary), "Stored Secrets");
     } catch (error) {
-      await mqbDialogs.alert(`Failed to inspect stored secrets: ${(error as Error).message}`, "Stored Secrets");
+      await alertDialog(`Failed to inspect stored secrets: ${(error as Error).message}`, "Stored Secrets");
     }
   }
 
   async function deleteStoredSecrets() {
     try {
-      const confirmed = await mqbDialogs.confirm(
+      const confirmed = await confirmDialog(
         "Delete all securely stored secrets referenced by the current desktop config?",
         "Delete Stored Secrets",
       );
@@ -108,14 +108,14 @@
 
       const result = await response.json().catch(() => ({ deleted: 0 }));
       const deleted = Number(result?.deleted || 0);
-      await mqbDialogs.alert(
+      await alertDialog(
         deleted > 0
           ? `Deleted ${deleted} stored secret${deleted === 1 ? "" : "s"}.`
           : "No stored secrets were found for the current desktop config.",
         "Stored Secrets",
       );
     } catch (error) {
-      await mqbDialogs.alert(`Failed to delete stored secrets: ${(error as Error).message}`, "Stored Secrets");
+      await alertDialog(`Failed to delete stored secrets: ${(error as Error).message}`, "Stored Secrets");
     }
   }
 

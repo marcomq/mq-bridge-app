@@ -1,102 +1,21 @@
-import {
-  applyEndpointSchemaDefaults,
-  nextUniqueName,
-} from "./routes";
 import { get } from "svelte/store";
-import { cloneJson, normalizeNamedEntityFormShape } from "./utils";
-import { openConsumerByIndex, openPublisherByIndex } from "./view-navigation";
-import { publishersPanelState } from "./stores";
-import { appWindow, currentHash, getMqbState, mqbApp, mqbDialogs, mqbRuntime } from "./runtime-window";
-import {
-  extractImportedRequests,
-  importFromJsonText,
-} from "./import-export";
-import {
-  ensureWorkspaceCollections,
-  isSensitiveConfig,
-  sanitizePublisherHistory,
-  type PublisherHistoryStore,
-  type PublisherPreset,
-} from "./workspace-config";
-import { setStoredJson } from "./encrypted-json-storage";
-import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security";
+import { appShell } from "./app-shell";
+import { browserWindow, replaceHash } from "./browser";
+import { createLocalEntityId, getEntityDisplayLabel } from "./utils";
 import { buildPublisherTree } from "./publisher-grouping";
-import {
-  PUBLISHER_TYPE_OPTIONS,
-  REQUEST_BAR_LAYOUTS,
-  type RequestBarFieldDescriptor,
-  type RequestBarLayout,
-} from "./endpoint-metadata";
-import {
-  ensureRefOnlyEndpointDefaults,
-  createConsumerEndpointFromPublisherEndpoint as toConsumerEndpoint,
-  getEndpointType as getEndpointTypeFromEndpointRecord,
-  normalizeMiddlewares,
-  normalizeScalarEndpointValue,
-  prunePolymorphicEndpointKeys,
-} from "./endpoint-utils";
-import { getEntityDisplayLabel } from "./utils";
-import { createLocalEntityId, getEntityStorageKey } from "./entity-key";
-import { readJson, removeKey, writeJson } from "./storage";
-import { forceRefOnlyEndpoints } from "./schema-utils";
-import type {
-  ConsumerConfig,
-  ConsumerOutputConfig,
-  PublisherConfig,
-  PublisherHistoryItem,
-  PublishersAppConfig,
-  PublishersSchemaRoot,
-  PublisherState,
-  PublisherResponseState,
-} from "./panel-types";
+import { PUBLISHER_TYPE_OPTIONS, REQUEST_BAR_LAYOUTS, type RequestBarFieldDescriptor } from "./endpoint-metadata";
+import { createConsumerEndpointFromPublisherEndpoint, createDefaultEndpoint, ensureEndpointDefaults, getEndpointType } from "./endpoint-utils";
+import { publishersPanelState } from "./stores";
+import { extractImportedRequests } from "./import-export";
+import { applyEndpointSchemaDefaults } from "./routes";
+import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
+import { ensureWorkspaceCollections, sanitizePublisherHistory, type PublisherHistoryEntry, type PublisherHistoryStore } from "./workspace-config";
+import type { ConsumerConfig, PublisherConfig, PublisherResponseState, PublishersAppConfig, PublishersSchemaRoot } from "./panel-types";
+import type { PublishRequest } from "./generated/ui-types";
 
-export let restorePublisherStateFromView: (idx: number, options?: { tab?: string }) => void | Promise<void> = () => {};
-export let showPublisherHistoryEntry: (historyIndex: number) => void | Promise<void> = () => {};
-export let clearActivePublisherHistory: () => void = () => {};
-export let copyPublisherResponse: () => void = () => {};
-export let copyPublisherResponseJson: () => void = () => {};
-export let copyPublisherAsCurl: () => void = () => {};
-export let savePublisherHistoryAsPublisherAction: (historyIndex: number) => void | Promise<void> = () => {};
-export let resendPublisherHistoryAction: (historyIndex: number) => void | Promise<void> = () => {};
-export let importPostmanToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
-export let importOpenApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
-export let importAsyncApiToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
-export let importMqbToPublisherAction: (jsonText: string) => void | Promise<void> = () => {};
-export let saveCurrentPublisherVariantAction: () => void | Promise<void> = () => {};
-export let selectPublisherSubtab: (tab: string) => void = () => {};
-export let addPublisherAction: (endpointType: string) => void | Promise<void> = () => {};
-export let copyCurrentPublisherAction: () => void | Promise<void> = () => {};
-export let editEnvironmentVarsAction: () => void | Promise<void> = () => {};
-export let cloneCurrentPublisherAction: () => void = () => {};
-export let deleteCurrentPublisherAction: (button?: HTMLElement | null) => void | Promise<void> = () => {};
-export let saveCurrentPublisherAction: (button?: HTMLElement | null) => void | Promise<void> = () => {};
-export let beautifyPublisherPayloadAction: () => void | Promise<void> = () => {};
-export let sendPublisherAction: () => void | Promise<void> = () => {};
-export let addPublisherMetadataRow: () => void = () => {};
-export let updatePublisherMetadataRow: (index: number, field: "key" | "value", value: string) => void = () => {};
-export let togglePublisherMetadataRow: (index: number, enabled: boolean) => void = () => {};
-export let removePublisherMetadataRow: (index: number) => void = () => {};
-export let updatePublisherPayload: (value: string) => void = () => {};
-export let updatePublisherMethod: (value: string) => void = () => {};
-export let updatePublisherRequestField: (fieldId: "pub-extra-1" | "pub-extra-2" | "pub-url", value: string) => void = () => {};
-
-type PublisherSubtab = "payload" | "headers" | "history" | "definition";
-type SchemaObject = Record<string, any> & {
-  properties?: Record<string, any>;
-  required?: string[];
-  $defs?: Record<string, any>;
-};
-
-const STORAGE_KEY = "mqb_publisher_state";
-const HISTORY_KEY = "mqb_publisher_history";
-
-const HTTP_METHOD_OPTIONS = ["POST", "GET", "PUT", "DELETE"];
-const PUBLISHER_SUBTABS = new Set<PublisherSubtab>(["payload", "headers", "history", "definition"]);
-const REQUEST_BAR_METADATA_PREFIX = "request_bar.";
-
-export { PUBLISHER_TYPE_OPTIONS };
-
-const SCHEMA_CONFIG_ENDPOINT_TYPES = {
+const PUBLISHER_STATE_KEY = "mqb_publisher_state";
+const PUBLISHER_HISTORY_KEY = "mqb_publisher_history";
+const SCHEMA_CONFIG_ENDPOINT_TYPES: Record<string, string> = {
   HttpConfig: "http",
   WebSocketConfig: "websocket",
   KafkaConfig: "kafka",
@@ -111,1893 +30,1017 @@ const SCHEMA_CONFIG_ENDPOINT_TYPES = {
   FileConfig: "file",
   MemoryConfig: "memory",
   SledConfig: "sled",
-} satisfies Record<string, string>;
+};
 
-export function createConsumerEndpointFromPublisherEndpoint(endpoint: Record<string, any>) {
-  return toConsumerEndpoint(endpoint);
+let activeConfig: PublishersAppConfig = { publishers: [], routes: {}, consumers: [] };
+let activeSchema: PublishersSchemaRoot = {};
+let formDrafts = new Map<number, PublisherConfig>();
+let localPublisherState: Record<string, { payload: string; headers: Array<{ id: number; key: string; value: string; enabled: boolean }> }> = {};
+let historyStore: PublisherHistoryStore = { version: 1, updated_at: 0, publishers: {} };
+let responseStateByPublisher: Record<string, PublisherResponseState> = {};
+let nextHeaderRowId = 1;
+let historySyncTimer: number | null = null;
+
+export { PUBLISHER_TYPE_OPTIONS, createConsumerEndpointFromPublisherEndpoint };
+
+export async function initPublishers(config: PublishersAppConfig, schema: PublishersSchemaRoot) {
+  activeConfig = ensureWorkspaceCollections(config as any) as PublishersAppConfig;
+  activeSchema = schema;
+  formDrafts = new Map();
+  responseStateByPublisher = {};
+  nextHeaderRowId = 1;
+  loadLocalState();
+  hydrateHistory();
+  activeConfig.publishers = (activeConfig.publishers || []).map(normalizePublisher);
+
+  browserWindow().registerDirtySection?.("publishers", {
+    buttonId: "workspace-save-button",
+    getValue: () => activeConfig.publishers,
+  });
+
+  const hashMatch = browserWindow().location.hash.match(/^#publishers:(\d+)$/);
+  const selectedIndex = hashMatch ? Number(hashMatch[1]) : Math.min((browserWindow()._mqb_last_publisher_idx as number | undefined) ?? 0, Math.max(activeConfig.publishers.length - 1, 0));
+  publishersPanelState.update((state) => ({
+    ...state,
+    hasPublishers: activeConfig.publishers.length > 0,
+    items: activeConfig.publishers.map((publisher, index) => ({
+      name: String(publisher.name || ""),
+      endpointType: getEndpointType(publisher.endpoint).toUpperCase(),
+      originalIndex: index,
+    })),
+    groupedItems: buildPublisherTree(activeConfig.publishers),
+    selectedIndex,
+    selectedHistoryIndex: -1,
+  }));
+  await restorePublisherStateFromView(selectedIndex, { tab: (browserWindow()._mqb_last_publisher_tab as string | undefined) || "payload" });
 }
 
-function sortEntries(obj: Record<string, any> | undefined | null) {
-  return Object.entries(obj || {}).sort(([a], [b]) => a.localeCompare(b));
+export async function restorePublisherStateFromView(idx: number, options?: { tab?: string }) {
+  const clamped = Math.min(Math.max(idx, 0), Math.max(activeConfig.publishers.length - 1, 0));
+  const tab = (options?.tab as "payload" | "headers" | "history" | "definition" | undefined) || get(publishersPanelState).activeSubtab || "payload";
+  browserWindow()._mqb_last_publisher_idx = clamped;
+  browserWindow()._mqb_last_publisher_tab = tab;
+  publishersPanelState.update((state) => ({ ...state, selectedIndex: clamped, selectedHistoryIndex: -1, activeSubtab: tab }));
+  replaceHash(`#publishers:${clamped}`);
+  renderSelectedPublisher();
+  await renderPublisherForm();
+  renderSelectedPublisher();
 }
 
-function defaultHttpConfig() {
-  return {
-    url: "http://localhost:8080",
-    path: "/",
-    method: "POST",
-    tls: {
-      required: false,
-      accept_invalid_certs: false,
-    },
-    fire_and_forget: false,
-    compression_enabled: false,
-    basic_auth: ["", ""],
-    custom_headers: {},
-  };
+export function selectPublisherSubtab(tab: string) {
+  publishersPanelState.update((state) => ({ ...state, activeSubtab: tab as any }));
+  browserWindow()._mqb_last_publisher_tab = tab;
 }
 
-function getEndpointType(publisher: Partial<PublisherConfig> | null | undefined): string {
-  return getEndpointTypeFromEndpointRecord(publisher?.endpoint || {});
-}
-
-function normalizePublisherSubtab(tab: string | undefined, fallback: PublisherSubtab = "payload"): PublisherSubtab {
-  if (tab === "presets") {
-    return "definition";
-  }
-  return PUBLISHER_SUBTABS.has(tab as PublisherSubtab) ? (tab as PublisherSubtab) : fallback;
-}
-
-function createDefaultPublisherEndpoint(endpointType: string) {
-  const isScalar = endpointType === "static" || endpointType === "ref";
-  const base = {
-    middlewares: isScalar ? [] : [{ retry: {} }],
-  };
-
-  if (endpointType === "static" || endpointType === "ref") {
-    return { ...base, [endpointType]: "" };
-  }
-
-  const defaults: Record<string, Record<string, any>> = {
-    http: defaultHttpConfig(),
-    grpc: { url: "http://localhost:50051" },
-    websocket: { url: "ws://localhost:8080" },
-    nats: { url: "nats://localhost:4222", subject: "events.created" },
-    memory: { topic: "events" },
-    amqp: { url: "amqp://guest:guest@localhost:5672/%2f", queue: "jobs" },
-    kafka: { url: "localhost:9092", topic: "events" },
-    sqlx: { url: "postgres://postgres:password@localhost/postgres", table: "events" },
-    mqtt: { url: "tcp://localhost:1883", topic: "events/updates" },
-    mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" },
-    zeromq: { url: "tcp://127.0.0.1:5555", topic: "events" },
-    file: { path: "/tmp/messages.jsonl" },
-    sled: { path: "./data/sled", tree: "default" },
-    ibmmq: { url: "localhost(1414)", queue: "DEV.QUEUE.1", topic: "topic://events" },
-    switch: { metadata_key: "type", cases: {}, default: { ref: "" } },
-    fanout: [{ ref: "" }],
-  };
-  return {
-    ...base,
-    [endpointType]: cloneJson(defaults[endpointType] || {}),
-  };
-}
-
-function createEmptyPublisher(): PublisherConfig {
-  return {
+export async function addPublisherAction(endpointType: string) {
+  activeConfig.publishers.push(normalizePublisher({
+    id: createLocalEntityId("publisher"),
     name: "",
-    endpoint: createDefaultPublisherEndpoint("http"),
+    endpoint: createDefaultPublisherEndpoint(endpointType),
     comment: "",
+    payload: "{}",
+    headers: [],
+  } as PublisherConfig));
+  await restorePublisherStateFromView(activeConfig.publishers.length - 1, { tab: "definition" });
+}
+
+export function updatePublisherPayload(value: string) {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  publisher.payload = value;
+  updateLocalPublisherState(publisher, { payload: value });
+  publishersPanelState.update((state) => ({ ...state, requestPayload: value }));
+}
+
+export function updatePublisherMethod(value: string) {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const endpointType = getEndpointType(publisher.endpoint);
+  const endpointConfig = publisher.endpoint[endpointType] as Record<string, unknown>;
+  endpointConfig.method = value;
+  publishersPanelState.update((state) => ({ ...state, methodValue: value }));
+}
+
+export function updatePublisherRequestField(fieldId: "pub-extra-1" | "pub-extra-2" | "pub-url", value: string) {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const endpointType = getEndpointType(publisher.endpoint);
+  const endpointConfig = publisher.endpoint[endpointType] as Record<string, unknown>;
+  const descriptors = REQUEST_BAR_LAYOUTS[endpointType]?.fields || [];
+  const descriptor = descriptors.find((entry) => entry.inputId === fieldId);
+  if (!descriptor) return;
+  if (endpointType === "http" && descriptor.field === "url") {
+    applyHttpUrlToEndpoint(endpointConfig, value);
+  } else {
+    endpointConfig[descriptor.field] = value;
+  }
+  renderSelectedPublisher();
+}
+
+export function addPublisherMetadataRow() {
+  publishersPanelState.update((state) => ({
+    ...state,
+    metadataRows: [...state.metadataRows, { id: nextHeaderRowId++, key: "", value: "", enabled: true }],
+  }));
+  syncMetadataRowsToPublisher();
+}
+
+export function updatePublisherMetadataRow(index: number, field: "key" | "value", value: string) {
+  publishersPanelState.update((state) => ({
+    ...state,
+    metadataRows: state.metadataRows.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row),
+  }));
+  syncMetadataRowsToPublisher();
+}
+
+export function togglePublisherMetadataRow(index: number, enabled: boolean) {
+  publishersPanelState.update((state) => ({
+    ...state,
+    metadataRows: state.metadataRows.map((row, rowIndex) => rowIndex === index ? { ...row, enabled } : row),
+  }));
+  syncMetadataRowsToPublisher();
+}
+
+export function removePublisherMetadataRow(index: number) {
+  publishersPanelState.update((state) => ({
+    ...state,
+    metadataRows: state.metadataRows.filter((_, rowIndex) => rowIndex !== index),
+  }));
+  syncMetadataRowsToPublisher();
+}
+
+export async function saveCurrentPublisherAction(button?: HTMLElement | null) {
+  const publisher = currentPublisher();
+  if (!publisher) return null;
+  await flushPendingFormDraft();
+  const idx = get(publishersPanelState).selectedIndex;
+  const draft = formDrafts.get(idx);
+  const previousPublisherName = String(publisher.name || "");
+  const previousPublisherId = String(publisher.id || "");
+  if (draft) {
+    const next = normalizePublisher({ ...publisher, ...deepClone(draft) });
+    next.payload = publisher.payload;
+    next.headers = get(publishersPanelState).metadataRows.map(({ id, ...row }) => row);
+    activeConfig.publishers[idx] = next;
+  }
+  syncConsumerPublisherReferences(previousPublisherName, previousPublisherId);
+  const saved = await browserWindow().saveConfigSection?.("publishers", activeConfig.publishers, false, button) ?? null;
+  if (saved && Array.isArray((saved as any).publishers)) {
+    activeConfig.publishers = (saved as any).publishers.map(normalizePublisher);
+  }
+  await restorePublisherStateFromView(idx, { tab: get(publishersPanelState).activeSubtab });
+  return saved;
+}
+
+export async function sendPublisherAction() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const requestDetails = buildPublishRequestDetails(publisher);
+  setPublisherResponsePending(publisher);
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch("/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestDetails.request),
+      signal: controller.signal,
+    });
+    const duration = Date.now() - startedAt;
+    const responseText = await response.text();
+    const responseData = parseJsonIfPossible(responseText);
+
+    applyPublisherResponseState(publisher, response, duration, responseData, requestDetails);
+
+    const entry = buildHistoryEntry(
+      publisher,
+      response.status,
+      response.statusText || "OK",
+      duration,
+      responseData,
+      requestDetails.historyMetadata,
+    );
+    const historyKey = historyBucketKeyFor(publisher);
+    historyStore.publishers[historyKey] ||= [];
+    historyStore.publishers[historyKey] = [entry, ...(historyStore.publishers[historyKey] || [])];
+    historyStore.updated_at = Date.now();
+    persistHistory();
+    renderSelectedPublisher();
+    scheduleHistorySync();
+  } catch (error) {
+    const isTimeout = error instanceof DOMException && error.name === "AbortError";
+    const nextResponseState: PublisherResponseState = {
+      responseVisible: true,
+      responseTabLabel: "Response ✓ Error",
+      responseStatusLabel: "Error",
+      responseStatusText: "",
+      responseStatusColor: "var(--accent-kafka)",
+      responseDurationLabel: "",
+      responseSizeLabel: "",
+      requestRows: requestDetails.requestRows,
+      requestHeaders: requestDetails.requestHeaders.map(({ k, v }) => [k, v]),
+      responseHeaders: [],
+      responsePayload: isTimeout
+        ? "Error: Publish request timed out after 10s"
+        : `Error: ${(error as Error).message}`,
+    };
+    setPublisherResponseState(publisher, nextResponseState);
+    publishersPanelState.update((state) => ({
+      ...state,
+      ...nextResponseState,
+    }));
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+export function clearActivePublisherHistory() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  delete historyStore.publishers[historyBucketKeyFor(publisher)];
+  publishersPanelState.update((state) => ({ ...state, selectedHistoryIndex: -1 }));
+  persistHistory();
+  renderSelectedPublisher();
+  scheduleHistorySync();
+}
+
+export async function showPublisherHistoryEntry(historyIndex: number) {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const entry = currentHistoryEntries()[historyIndex];
+  if (!entry) return;
+  publishersPanelState.update((state) => ({ ...state, selectedHistoryIndex: historyIndex }));
+  publisher.payload = entry.payload;
+  applyHistoryRequestFieldsToPublisher(publisher, entry);
+  const headers = entry.metadata.map((row) => ({ id: nextHeaderRowId++, key: row.k, value: row.v, enabled: true }));
+  setLocalPublisherState(publisher, { payload: entry.payload, headers });
+  renderSelectedPublisher();
+}
+
+export async function saveCurrentPublisherVariantAction() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const name = await browserWindow().mqbPrompt?.("Choose a name for the saved publisher variant.", "Save Publisher Variant");
+  if (!name) return;
+  const next = normalizePublisher(deepClone(publisher));
+  next.id = createLocalEntityId("publisher");
+  next.name = name;
+  activeConfig.publishers.push(next);
+  renderSelectedPublisher();
+}
+
+export async function copyCurrentPublisherAction() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const consumerName = await browserWindow().mqbPrompt?.("Choose a name for the consumer.", "Copy Publisher to Consumer");
+  if (!consumerName) return;
+  const consumers = Array.isArray(activeConfig.consumers) ? activeConfig.consumers : (activeConfig.consumers = []);
+  consumers.push({
+    id: createLocalEntityId("consumer"),
+    name: consumerName,
+    endpoint: createConsumerEndpointFromPublisherEndpoint(publisher.endpoint),
+    output: { mode: "none" },
+    response: null,
+  } as ConsumerConfig);
+}
+
+export function cloneCurrentPublisherAction() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const nextName = `${publisher.name}_copy`;
+  if (activeConfig.publishers.some((row) => row !== publisher && row.name === nextName)) {
+    void browserWindow().mqbAlert?.("Cloned publisher name already exists. Please choose a different name.");
+    return;
+  }
+  const cloned = normalizePublisher(deepClone(publisher));
+  cloned.id = createLocalEntityId("publisher");
+  cloned.name = nextName;
+  activeConfig.publishers.push(cloned);
+}
+
+export async function importAsyncApiToPublisherAction(jsonText: string) {
+  const imported = extractImportedRequests(jsonText);
+  for (const request of imported.requests) {
+    activeConfig.publishers.push(normalizePublisher({
+      id: createLocalEntityId("publisher"),
+      name: String((request as any).name || "Imported request"),
+      endpoint: createDefaultPublisherEndpoint("http"),
+      payload: String((request as any).payload || ""),
+      headers: [],
+      comment: "",
+    } as PublisherConfig));
+  }
+  renderSelectedPublisher();
+}
+
+export async function importMqbToPublisherAction(jsonText: string) {
+  const parsed = JSON.parse(jsonText) as any;
+  if (parsed?.type !== "mqb-presets") {
+    throw new Error("Selected file is not a valid mq-bridge export/presets file.");
+  }
+  const imported = ensureWorkspaceCollections({
+    publishers: activeConfig.publishers,
+    consumers: activeConfig.consumers || [],
+    routes: activeConfig.routes || {},
+    presets: parsed.presets,
+  } as any);
+  activeConfig.publishers = imported.publishers as any;
+  browserWindow().appConfig = { ...(browserWindow().appConfig || {}), publishers: activeConfig.publishers };
+  renderSelectedPublisher();
+}
+
+export async function importPostmanToPublisherAction() {}
+export async function importOpenApiToPublisherAction() {}
+export function copyPublisherResponse() {}
+export function copyPublisherResponseJson() {}
+export function copyPublisherAsCurl() {}
+export async function savePublisherHistoryAsPublisherAction() {}
+export async function resendPublisherHistoryAction() {}
+export async function editEnvironmentVarsAction() {}
+export async function deleteCurrentPublisherAction() {}
+
+export function beautifyPublisherPayloadAction() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  try {
+    publisher.payload = JSON.stringify(JSON.parse(String(publisher.payload || "")), null, 2);
+    renderSelectedPublisher();
+  } catch {
+    void browserWindow().mqbAlert?.("Invalid JSON");
+  }
+}
+
+function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function normalizeEndpoint(endpoint: unknown) {
+  return ensureEndpointDefaults(endpoint, normalizeEndpoint);
+}
+
+function createDefaultPublisherEndpoint(endpointType: string): Record<string, unknown> {
+  const endpoint = createDefaultEndpoint(endpointType);
+  const root = endpoint[endpointType] as Record<string, unknown>;
+  if (endpointType === "http") {
+    root.url = "http://localhost:8080";
+    root.path = "/";
+    root.method = "POST";
+    root.custom_headers = {};
+    root.fire_and_forget = false;
+    root.compression_enabled = false;
+  }
+  if (endpointType === "amqp") {
+    root.url = "amqp://guest:guest@localhost:5672/%2f";
+    root.queue = "jobs";
+  }
+  if (endpointType === "kafka") {
+    root.url = "localhost:9092";
+    root.topic = "events";
+  }
+  if (endpointType === "mongodb") {
+    root.url = "mongodb://localhost:27017";
+    root.database = "app";
+    root.collection = "messages";
+  }
+  if (endpointType === "static") {
+    endpoint.static = "";
+  }
+  endpoint.middlewares = endpointType === "static" ? [] : [{ retry: {} }];
+  return endpoint;
+}
+
+function normalizePublisher(input: PublisherConfig): PublisherConfig {
+  const next = deepClone(input);
+  next.id = String(next.id || "").trim() || createLocalEntityId("publisher");
+  next.name = String(next.name || "");
+  next.comment = String(next.comment || "");
+  next.endpoint = normalizePublisherEndpoint(next.endpoint);
+  next.payload = String((next as any).payload || "{}");
+  next.headers = Array.isArray(next.headers) ? next.headers.map((row) => ({
+    key: String(row.key || ""),
+    value: String(row.value || ""),
+    enabled: row.enabled !== false,
+  })) : [];
+  return next;
+}
+
+function currentPublisher(): PublisherConfig | null {
+  const idx = get(publishersPanelState).selectedIndex;
+  if (activeConfig.publishers.length === 0) return null;
+  if (idx < 0 || idx >= activeConfig.publishers.length || !Number.isInteger(idx)) {
+    return activeConfig.publishers[0] || null;
+  }
+  return activeConfig.publishers[idx];
+}
+
+function loadLocalState() {
+  const preloaded = browserWindow()._mqb_storage_cache?.publisher_state;
+  if (preloaded && typeof preloaded === "object") {
+    localPublisherState = preloaded;
+    return;
+  }
+  try {
+    const raw = browserWindow().localStorage?.getItem(PUBLISHER_STATE_KEY);
+    localPublisherState = raw ? JSON.parse(raw) : {};
+  } catch {
+    localPublisherState = {};
+  }
+}
+
+function hydrateHistory() {
+  const preloaded = browserWindow()._mqb_storage_cache?.publisher_history;
+  if (preloaded) {
+    const sanitizedPreloaded = sanitizePublisherHistory(preloaded);
+    if (hasPublisherHistoryEntries(sanitizedPreloaded)) {
+      historyStore = sanitizedPreloaded;
+      return;
+    }
+  }
+  const localRaw = browserWindow().localStorage?.getItem(PUBLISHER_HISTORY_KEY);
+  if (localRaw) {
+    try {
+      const sanitizedLocal = sanitizePublisherHistory(JSON.parse(localRaw));
+      if (hasPublisherHistoryEntries(sanitizedLocal)) {
+        historyStore = sanitizedLocal;
+        return;
+      }
+    } catch {}
+  }
+  historyStore = sanitizePublisherHistory(activeConfig.history);
+  persistHistory();
+}
+
+function hasPublisherHistoryEntries(store: PublisherHistoryStore) {
+  return Object.values(store.publishers || {}).some((entries) => Array.isArray(entries) && entries.length > 0);
+}
+
+function persistLocalState() {
+  browserWindow().localStorage?.setItem(PUBLISHER_STATE_KEY, JSON.stringify(localPublisherState));
+}
+
+function persistHistory() {
+  browserWindow().localStorage?.setItem(PUBLISHER_HISTORY_KEY, JSON.stringify(historyStore));
+}
+
+function historyBucketKeyFor(publisher: PublisherConfig): string {
+  return String(publisher.id || publisher.name || "");
+}
+
+function publisherStorageKeysFor(publisher: PublisherConfig): string[] {
+  const keys = [String(publisher.id || "").trim(), String(publisher.name || "").trim()].filter(Boolean);
+  return Array.from(new Set(keys));
+}
+
+function readLocalPublisherState(publisher: PublisherConfig) {
+  for (const key of publisherStorageKeysFor(publisher)) {
+    const entry = localPublisherState[key];
+    if (entry && typeof entry === "object") {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+function currentHistoryEntries(): PublisherHistoryEntry[] {
+  const publisher = currentPublisher();
+  if (!publisher) return [];
+  for (const key of publisherStorageKeysFor(publisher)) {
+    const entries = historyStore.publishers[key];
+    if (Array.isArray(entries)) return entries;
+  }
+  return [];
+}
+
+function buildMetadataRows(publisher: PublisherConfig) {
+  const localRows = readLocalPublisherState(publisher)?.headers;
+  if (Array.isArray(localRows) && localRows.length > 0) {
+    return normalizeHeaderRows(localRows.map((row) => ({ ...row })));
+  }
+  const endpointType = getEndpointType(publisher.endpoint);
+  const endpointConfig = publisher.endpoint[endpointType] as Record<string, unknown>;
+  const headers = endpointType === "http" && endpointConfig?.custom_headers && typeof endpointConfig.custom_headers === "object"
+    ? Object.entries(endpointConfig.custom_headers as Record<string, unknown>).map(([key, value]) => ({
+      id: nextHeaderRowId++,
+      key,
+      value: String(value),
+      enabled: true,
+    }))
+    : [];
+  return normalizeHeaderRows(headers);
+}
+
+function normalizeHeaderRows(rows: Array<{ id: number; key: string; value: string; enabled: boolean }>) {
+  const seen = new Set<number>();
+  let maxAssignedId = 0;
+  const normalizedRows = rows.map((row) => {
+    let nextId = Number.isInteger(row.id) && row.id > 0 ? row.id : 0;
+    if (!nextId || seen.has(nextId)) {
+      nextId = 1;
+      while (seen.has(nextId)) {
+        nextId += 1;
+      }
+    }
+    seen.add(nextId);
+    maxAssignedId = Math.max(maxAssignedId, nextId);
+    return { ...row, id: nextId };
+  });
+  nextHeaderRowId = Math.max(nextHeaderRowId, maxAssignedId + 1);
+  return normalizedRows;
+}
+
+function currentRequestBarValues(publisher: PublisherConfig) {
+  const endpointType = getEndpointType(publisher.endpoint);
+  const endpointConfig = publisher.endpoint[endpointType] as Record<string, unknown>;
+  const requestBar = REQUEST_BAR_LAYOUTS[endpointType] || { fields: [] };
+  const initial: Record<string, string> = { "pub-extra-1": "", "pub-extra-2": "", "pub-url": "" };
+  for (const field of requestBar.fields || []) {
+    if (endpointType === "http" && field.field === "url") {
+      initial[field.inputId] = composeHttpRequestUrl(endpointConfig);
+    } else {
+      initial[field.inputId] = String(endpointConfig[field.field] || "");
+    }
+  }
+  return { endpointType, endpointConfig, requestBar, values: initial };
+}
+
+function renderSelectedPublisher() {
+  const publisher = currentPublisher();
+  if (!publisher) {
+    publishersPanelState.update((state) => ({ ...state, hasPublishers: false, items: [], groupedItems: [], historyRows: [] }));
+    return;
+  }
+  const { endpointType, requestBar, values } = currentRequestBarValues(publisher);
+  const responseState = getPublisherResponseState(publisher);
+  const metadataRows = buildMetadataRows(publisher);
+  const historyRows = currentHistoryEntries().map((entry, index) => ({
+    historyIndex: index,
+    timeLabel: new Date(entry.time || 0).toLocaleTimeString(),
+    statusLabel: String(entry.status || ""),
+    statusClass: entry.ok === false ? "danger" : "success",
+    payloadPreview: entry.payload,
+    pinned: entry.pinned === true,
+  }));
+
+  publishersPanelState.update((state) => ({
+    ...state,
+    hasPublishers: activeConfig.publishers.length > 0,
+    items: activeConfig.publishers.map((row, index) => ({
+      name: String(row.name || ""),
+      endpointType: getEndpointType(row.endpoint).toUpperCase(),
+      originalIndex: index,
+    })),
+    groupedItems: buildPublisherTree(activeConfig.publishers),
+    selectedIndex: activeConfig.publishers.indexOf(publisher),
+    selectedHistoryIndex: state.selectedHistoryIndex,
+    endpointType: endpointType.toUpperCase(),
+    isNew: false,
+    deleteLabel: "Delete",
+    methodVisible: Boolean(requestBar.showMethod),
+    methodValue: String((publisher.endpoint[endpointType] as Record<string, unknown>)?.method || "POST"),
+    extraFieldOne: fieldStateFor(requestBar.fields?.find((field) => field.inputId === "pub-extra-1"), values["pub-extra-1"]),
+    extraFieldTwo: fieldStateFor(requestBar.fields?.find((field) => field.inputId === "pub-extra-2"), values["pub-extra-2"]),
+    urlField: fieldStateFor(requestBar.fields?.find((field) => field.inputId === "pub-url"), values["pub-url"], "URL"),
+    requestPayload: readLocalPublisherState(publisher)?.payload || publisher.payload || "{}",
+    metadataRows,
+    responseVisible: responseState?.responseVisible ?? true,
+    responseTabLabel: responseState?.responseTabLabel ?? "Response",
+    responseStatusLabel: responseState?.responseStatusLabel ?? "Ready",
+    responseStatusText: responseState?.responseStatusText ?? "",
+    responseStatusColor: responseState?.responseStatusColor ?? "var(--text-primary)",
+    responseDurationLabel: responseState?.responseDurationLabel ?? "",
+    responseSizeLabel: responseState?.responseSizeLabel ?? "",
+    requestRows: responseState?.requestRows ?? [],
+    requestHeaders: responseState?.requestHeaders ?? [],
+    responseHeaders: responseState?.responseHeaders ?? [],
+    responsePayload: responseState?.responsePayload ?? "",
+    historyRows,
+  }));
+}
+
+function fieldStateFor(descriptor: RequestBarFieldDescriptor | undefined, value: string, fallbackLabel = "Target") {
+  return {
+    label: descriptor?.label || fallbackLabel,
+    placeholder: descriptor?.placeholder || "",
+    value,
+    visible: Boolean(descriptor),
   };
 }
 
-function ensurePublisherEndpointDefaults(endpoint: unknown): Record<string, any> {
-  if (typeof endpoint === "string") {
-    return { ref: endpoint, middlewares: [] };
+function syncMetadataRowsToPublisher() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const state = get(publishersPanelState);
+  const rows = state.metadataRows;
+  publisher.headers = rows.map(({ id, ...row }) => row);
+  const endpointType = getEndpointType(publisher.endpoint);
+  const endpointConfig = publisher.endpoint[endpointType] as Record<string, unknown>;
+  if (endpointType === "http") {
+    endpointConfig.custom_headers = Object.fromEntries(
+      rows.filter((row) => row.enabled && row.key.trim()).map((row) => [row.key.trim(), row.value]),
+    );
   }
-  if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) {
-    return createDefaultPublisherEndpoint("http");
+  setLocalPublisherState(publisher, { headers: rows });
+}
+
+function setLocalPublisherState(publisher: PublisherConfig, partial: Partial<{ payload: string; headers: Array<{ id: number; key: string; value: string; enabled: boolean }> }>) {
+  const existing = readLocalPublisherState(publisher);
+  const nextValue = {
+    payload: partial.payload ?? existing?.payload ?? publisher.payload ?? "{}",
+    headers: partial.headers ?? existing?.headers ?? [],
+  };
+  for (const key of publisherStorageKeysFor(publisher)) {
+    localPublisherState[key] = nextValue;
+  }
+  persistLocalState();
+}
+
+function updateLocalPublisherState(publisher: PublisherConfig, partial: Partial<{ payload: string; headers: Array<{ id: number; key: string; value: string; enabled: boolean }> }>) {
+  setLocalPublisherState(publisher, partial);
+}
+
+async function renderPublisherForm() {
+  const publisher = currentPublisher();
+  const container = document.getElementById("pub-config-form");
+  if (!publisher || !container) return;
+  const forms = appShell.forms() as any;
+  (window as any)._mqb_form_mode = "publisher";
+  const schema = resolveRootArrayItemSchema(activeSchema as Record<string, any>, "publishers");
+  applyEndpointSchemaDefaults(schema as any);
+  forceRefOnlyEndpoints(schema as any);
+  Object.entries(SCHEMA_CONFIG_ENDPOINT_TYPES).forEach(([defName, endpointType]) => {
+    const endpointSchema = (schema as any).$defs?.[defName];
+    if (!endpointSchema?.properties) return;
+    (REQUEST_BAR_LAYOUTS[endpointType]?.fields || []).forEach(({ field: fieldName }) => {
+      if (endpointSchema.properties[fieldName]) {
+        endpointSchema.properties[fieldName].hidden = true;
+      }
+      if (Array.isArray(endpointSchema.required)) {
+        endpointSchema.required = endpointSchema.required.filter((key: string) => key !== fieldName);
+      }
+    });
+  });
+  const httpConfigSchema = (schema as any).$defs?.HttpConfig;
+  if (httpConfigSchema?.properties?.custom_headers) {
+    httpConfigSchema.properties.custom_headers.hidden = true;
+  }
+  if ((schema as any).properties?.id) {
+    (schema as any).properties.id.hidden = true;
+  }
+  await forms.init(container, schema, deepClone(publisher), (updated: PublisherConfig) => {
+    formDrafts.set(get(publishersPanelState).selectedIndex, updated);
+    const current = currentPublisher();
+    if (!current) return;
+    Object.assign(current, normalizePublisher({ ...current, ...updated }));
+    renderSelectedPublisher();
+  });
+}
+
+function applyHttpUrlToEndpoint(endpointConfig: Record<string, unknown>, value: string) {
+  try {
+    const parsed = new URL(value);
+    endpointConfig.url = `${parsed.protocol}//${parsed.host}`;
+    endpointConfig.path = `${parsed.pathname || "/"}${parsed.search || ""}`;
+  } catch {
+    endpointConfig.url = value;
+    endpointConfig.path = "/";
+  }
+}
+
+function applyHistoryRequestFieldsToPublisher(publisher: PublisherConfig, entry: PublisherHistoryEntry) {
+  const endpointType = getEndpointType(publisher.endpoint);
+  const endpointConfig = publisher.endpoint[endpointType] as Record<string, unknown>;
+  if (endpointType === "http") {
+    const historyMethod = entry.method || entry.requestMetadata.http_method || "";
+    if (historyMethod) endpointConfig.method = historyMethod;
+    const value = entry.requestMetadata["request_bar.url"]
+      || entry.requestMetadata["request_bar.pub-url"]
+      || entry.request_fields.url
+      || entry.url
+      || "";
+    if (value) applyHttpUrlToEndpoint(endpointConfig, value);
+    if (!value && entry.requestMetadata.http_path) {
+      endpointConfig.path = entry.requestMetadata.http_path;
+    }
+    if (entry.metadata.length > 0) {
+      endpointConfig.custom_headers = Object.fromEntries(entry.metadata.map((row) => [row.k, row.v]));
+    }
+    return;
+  }
+  const layout = REQUEST_BAR_LAYOUTS[endpointType] || { fields: [] };
+  for (const field of layout.fields || []) {
+    const nextValue = entry.requestMetadata[`request_bar.${field.field}`]
+      || entry.requestMetadata[`request_bar.${field.inputId}`]
+      || entry.request_fields[field.field]
+      || "";
+    if (nextValue) {
+      endpointConfig[field.field] = nextValue;
+    }
+  }
+}
+
+function buildHistoryEntry(
+  publisher: PublisherConfig,
+  status: number,
+  statusText: string,
+  duration: number,
+  responseData: unknown,
+  requestMetadataOverride?: Record<string, string>,
+): PublisherHistoryEntry {
+  const endpointType = getEndpointType(publisher.endpoint);
+  const { requestBar, values } = currentRequestBarValues(publisher);
+  const requestMetadata: Record<string, string> = {};
+  const requestFields: Record<string, string> = {};
+  for (const field of requestBar.fields || []) {
+    const value = values[field.inputId];
+    if (!value) continue;
+    requestMetadata[`request_bar.${field.field}`] = value;
+    requestMetadata[`request_bar.${field.inputId}`] = value;
+    requestFields[field.field] = value;
+  }
+  const mergedRequestMetadata = requestMetadataOverride
+    ? { ...requestMetadata, ...requestMetadataOverride }
+    : requestMetadata;
+  return {
+    publisher_id: publisher.id,
+    name: String(publisher.name || ""),
+    payload: String(publisher.payload || ""),
+    headers: (publisher.headers || []).map((row) => ({ key: String(row.key || ""), value: String(row.value || ""), enabled: row.enabled !== false })),
+    metadata: (publisher.headers || []).filter((row) => row.enabled !== false && row.key).map((row) => ({ k: row.key, v: row.value })),
+    endpoint_type: endpointType,
+    method: String((publisher.endpoint[endpointType] as Record<string, unknown>)?.method || ""),
+    url: requestFields.url || "",
+    request_fields: requestFields,
+    requestMetadata: mergedRequestMetadata,
+    status,
+    statusText,
+    duration,
+    time: Date.now(),
+    ok: status >= 200 && status < 300,
+    responseData,
+  };
+}
+
+function buildPublishRequestDetails(publisher: PublisherConfig) {
+  const { endpointType, endpointConfig, requestBar, values } = currentRequestBarValues(publisher);
+  const metadataRows = get(publishersPanelState).metadataRows
+    .filter((row) => row.enabled && row.key.trim())
+    .map((row) => ({ k: row.key.trim(), v: row.value }));
+  const requestMetadata: Record<string, string> = {};
+  const requestFields: Record<string, string> = {};
+
+  for (const field of requestBar.fields || []) {
+    const value = String(values[field.inputId] || "").trim();
+    if (!value) continue;
+    requestMetadata[`request_bar.${field.field}`] = value;
+    requestMetadata[`request_bar.${field.inputId}`] = value;
+    requestFields[field.field] = value;
   }
 
-  const endpointRecord = endpoint as Record<string, any>;
-  const data = endpointRecord.root && typeof endpointRecord.root === "object" ? endpointRecord.root : endpointRecord;
-  const endpointType = getEndpointTypeFromEndpointRecord(data);
+  if (endpointType === "http") {
+    const method = String(endpointConfig.method || "POST").trim();
+    if (method) {
+      requestMetadata.http_method = method;
+    }
+    const requestUrl = String(values["pub-url"] || "").trim();
+    if (requestUrl) {
+      const pathAndQuery = parsePathAndQuery(requestUrl);
+      if (pathAndQuery.path) {
+        requestMetadata.http_path = pathAndQuery.path;
+      }
+      if (pathAndQuery.query) {
+        requestMetadata.http_query = pathAndQuery.query;
+      }
+    }
+  }
 
-  const normalized: Record<string, any> = {
-    ...createDefaultPublisherEndpoint(endpointType),
-    ...cloneJson(data),
+  const metadata = Object.fromEntries(metadataRows.map(({ k, v }) => [k, v]));
+  Object.assign(metadata, Object.fromEntries(
+    Object.entries(requestMetadata).filter(([key]) =>
+      key === "http_method" || key === "http_path" || key === "http_query"),
+  ));
+
+  const requestRows = buildPublisherRequestRows(requestBar, endpointType, endpointConfig, values);
+  const request: PublishRequest = {
+    name: String(publisher.name || ""),
+    publisher_id: publisher.id || null,
+    payload: String(publisher.payload || ""),
+    metadata,
+    endpoint: deepClone(publisher.endpoint) as any,
   };
 
-  prunePolymorphicEndpointKeys(normalized, endpointType);
+  return {
+    request,
+    requestRows,
+    requestHeaders: metadataRows,
+    historyMetadata: requestMetadata,
+  };
+}
 
-  if (endpointType === "switch") {
-    const sw = normalized.switch;
-    if (sw && typeof sw === "object") {
-      if (!sw.metadata_key) sw.metadata_key = "type";
-      const rawCases = cloneJson(sw.cases || {});
-      const normalizedCases: Record<string, any> = {};
-      if (rawCases && typeof rawCases === "object" && !Array.isArray(rawCases)) {
-        for (const [k, v] of Object.entries(rawCases)) {
-          normalizedCases[k] = ensureRefOnlyEndpointDefaults(v);
-        }
-      }
-      sw.cases = normalizedCases;
-      if (sw.default === undefined) sw.default = { ref: "" };
-      sw.default = ensureRefOnlyEndpointDefaults(sw.default);
-    }
-  } else if (endpointType === "fanout") {
-    if (Array.isArray(normalized.fanout)) {
-      normalized.fanout = normalized.fanout.map((item: any) => ensureRefOnlyEndpointDefaults(item));
-    } else {
-      normalized.fanout = [{ ref: "" }];
-    }
+function buildPublisherRequestRows(
+  requestBar: { fields?: readonly RequestBarFieldDescriptor[]; showMethod?: boolean },
+  endpointType: string,
+  endpointConfig: Record<string, unknown>,
+  values: Record<string, string>,
+) {
+  const requestRows: Array<[string, string]> = [];
+  if (requestBar.showMethod) {
+    const method = String(endpointConfig.method || "POST").trim();
+    if (method) requestRows.push(["Method", method]);
   }
+  for (const field of requestBar.fields || []) {
+    const value = String(values[field.inputId] || "").trim();
+    if (!value) continue;
+    requestRows.push([field.label || field.field, value]);
+  }
+  if (endpointType === "http" && requestRows.every(([label]) => label !== "URL")) {
+    const url = String(values["pub-url"] || "").trim();
+    if (url) requestRows.push(["URL", url]);
+  }
+  return requestRows;
+}
 
-  normalized[endpointType] = normalizeScalarEndpointValue(endpointType, normalized[endpointType]);
-  normalized.middlewares = normalizeMiddlewares(normalized.middlewares, ensureRefOnlyEndpointDefaults);
+function setPublisherResponsePending(publisher: PublisherConfig) {
+  const nextResponseState: PublisherResponseState = {
+    responseVisible: true,
+    responseTabLabel: "Response",
+    responseStatusLabel: "Sending",
+    responseStatusText: "",
+    responseStatusColor: "var(--text-primary)",
+    responseDurationLabel: "",
+    responseSizeLabel: "",
+    requestRows: [],
+    requestHeaders: [],
+    responseHeaders: [],
+    responsePayload: "Sending...",
+  };
+  setPublisherResponseState(publisher, nextResponseState);
+  publishersPanelState.update((state) => ({
+    ...state,
+    ...nextResponseState,
+  }));
+}
 
+function parseJsonIfPossible(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function parsePathAndQuery(value: string) {
+  try {
+    const parsed = new URL(value);
+    return {
+      path: parsed.pathname || "/",
+      query: parsed.search.length > 1 ? parsed.search.slice(1) : "",
+    };
+  } catch {
+    const slashIndex = value.indexOf("/", value.indexOf("//") + 2);
+    if (slashIndex >= 0) {
+      const pathWithQuery = value.slice(slashIndex);
+      const [path, query] = pathWithQuery.split("?");
+      return { path: path || "/", query: query || "" };
+    }
+    return { path: "/", query: "" };
+  }
+}
+
+function applyPublisherResponseState(
+  publisher: PublisherConfig,
+  response: Response,
+  duration: number,
+  responseData: unknown,
+  requestDetails: {
+    requestRows: Array<[string, string]>;
+    requestHeaders: Array<{ k: string; v: string }>;
+  },
+) {
+  const statusOk = response.ok;
+  const statusLabel = statusOk ? String(response.status || "OK") : "Error";
+  const statusText = response.statusText || "";
+  const responsePayload = extractPublisherResponsePayload(responseData);
+  const responseHeaders = extractPublisherResponseHeaders(responseData);
+  const payloadString = typeof responsePayload === "string"
+    ? responsePayload
+    : JSON.stringify(responsePayload ?? "", null, 2);
+  const payloadSize = new TextEncoder().encode(payloadString).length;
+
+  const nextResponseState: PublisherResponseState = {
+    responseVisible: true,
+    responseTabLabel: `Response ✓ ${statusLabel}`,
+    responseStatusLabel: statusLabel,
+    responseStatusText: statusText,
+    responseStatusColor: statusOk ? "var(--accent-http)" : "var(--accent-kafka)",
+    responseDurationLabel: `${duration}ms`,
+    responseSizeLabel: payloadSize > 1024 ? `${(payloadSize / 1024).toFixed(2)} KB` : `${payloadSize} B`,
+    requestRows: requestDetails.requestRows,
+    requestHeaders: requestDetails.requestHeaders.map(({ k, v }) => [k, v]),
+    responseHeaders,
+    responsePayload: payloadString,
+  };
+
+  setPublisherResponseState(publisher, nextResponseState);
+  publishersPanelState.update((state) => ({
+    ...state,
+    ...nextResponseState,
+  }));
+}
+
+function getPublisherResponseState(publisher: PublisherConfig): PublisherResponseState | undefined {
+  for (const key of publisherStorageKeysFor(publisher)) {
+    const responseState = responseStateByPublisher[key];
+    if (responseState) return responseState;
+  }
+  return undefined;
+}
+
+function setPublisherResponseState(publisher: PublisherConfig, responseState: PublisherResponseState) {
+  for (const key of publisherStorageKeysFor(publisher)) {
+    responseStateByPublisher[key] = responseState;
+  }
+}
+
+function extractPublisherResponseHeaders(responseData: unknown): Array<[string, string]> {
+  if (!responseData || typeof responseData !== "object" || Array.isArray(responseData)) return [];
+  const metadata = (responseData as Record<string, unknown>).metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
+  return Object.entries(metadata).map(([key, value]) => [key, String(value ?? "")]);
+}
+
+function extractPublisherResponsePayload(responseData: unknown) {
+  if (!responseData || typeof responseData !== "object" || Array.isArray(responseData)) {
+    return responseData;
+  }
+  const status = String((responseData as Record<string, unknown>).status || "");
+  if (status === "Ack") {
+    return "// ACKNOWLEDGED: The backend processed the message successfully.";
+  }
+  if ("payload" in (responseData as Record<string, unknown>)) {
+    return (responseData as Record<string, unknown>).payload ?? "";
+  }
+  return responseData;
+}
+
+function syncConsumerPublisherReferences(previousPublisherName?: string, previousPublisherId?: string) {
+  const publishersByName = new Map(activeConfig.publishers.map((publisher) => [String(publisher.name || ""), publisher]));
+  for (const consumer of activeConfig.consumers || []) {
+    if (consumer.output?.mode !== "publisher") continue;
+    const output = consumer.output as any;
+    let publisher = publishersByName.get(String(output.publisher || ""));
+    if (!publisher && previousPublisherId) {
+      publisher = activeConfig.publishers.find((candidate) => String(candidate.id || "") === previousPublisherId);
+    }
+    if (!publisher && previousPublisherName && String(output.publisher || "") === previousPublisherName) {
+      publisher = activeConfig.publishers.find((candidate) => String(candidate.id || "") === previousPublisherId)
+        || activeConfig.publishers.find((candidate) => String(candidate.name || "") !== previousPublisherName);
+    }
+    if (!publisher) continue;
+    output.publisher = String(publisher.name || output.publisher || "");
+    output.publisher_id = publisher.id;
+  }
+}
+
+function scheduleHistorySync() {
+  if (historySyncTimer != null) window.clearTimeout(historySyncTimer);
+  historySyncTimer = window.setTimeout(() => {
+    void browserWindow().saveConfigSection?.("history", historyStore, true, undefined);
+  }, 2000) as unknown as number;
+}
+
+async function flushPendingFormDraft() {
+  const activeElement = document.activeElement as { blur?: () => void } | null;
+  if (activeElement?.blur && activeElement !== document.body) {
+    activeElement.blur();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+}
+
+function normalizePublisherEndpoint(endpoint: unknown) {
+  const normalized = normalizeEndpoint(endpoint);
+  const endpointType = getEndpointType(normalized);
+  if (endpointType === "static" || endpointType === "ref") {
+    normalized.middlewares = [];
+    return normalized;
+  }
+  if (!Array.isArray(normalized.middlewares) || normalized.middlewares.length === 0) {
+    normalized.middlewares = [{ retry: {} }];
+  }
   return normalized;
 }
 
-function normalizePublisherConfigShape(publisher: PublisherConfig): PublisherConfig {
-  if (!publisher) return publisher;
-
-  const data = normalizeNamedEntityFormShape(publisher, "publisher") as any;
-  data.endpoint = ensurePublisherEndpointDefaults(data.endpoint);
-
-  return data as PublisherConfig;
-}
-
-function syncConsumerPublisherReferences(
-  consumers: ConsumerConfig[] | undefined,
-  previousPublisherName: string,
-  nextPublisher: PublisherConfig,
-) {
-  const nextPublisherName = String(nextPublisher.name || "").trim();
-  const nextPublisherId = String(nextPublisher.id || "").trim();
-  if (!Array.isArray(consumers) || (!previousPublisherName && !nextPublisherId)) {
-    return;
+function composeHttpRequestUrl(endpointConfig: Record<string, unknown>) {
+  const url = String(endpointConfig.url || "");
+  const rawPath = String(endpointConfig.path || "");
+  if (!rawPath || rawPath === "/") {
+    return url;
   }
-
-  consumers.forEach((consumer) => {
-    if (
-      consumer.output?.mode === "publisher"
-      && (
-        (nextPublisherId && String(consumer.output.publisher_id || "").trim() === nextPublisherId)
-        || consumer.output.publisher === previousPublisherName
-      )
-    ) {
-      consumer.output = {
-        ...consumer.output,
-        publisher: nextPublisherName,
-        publisher_id: nextPublisherId || consumer.output.publisher_id || undefined,
-      };
-    }
-  });
-}
-
-function flattenPublisherHistory(store: PublisherHistoryStore): PublisherHistoryItem[] {
-  return Object.values(store.publishers || {})
-    .flatMap((rows) => rows || [])
-    .sort((a, b) => Number(b.time) - Number(a.time));
-}
-
-function buildPublisherHistoryStore(history: PublisherHistoryItem[], updatedAt = Date.now()): PublisherHistoryStore {
-  const publishers: PublisherHistoryStore["publishers"] = {};
-  for (const item of history) {
-    const publisherId = String(item.publisher_id || "").trim();
-    const storageKey = publisherId || String(item.name || "").trim();
-    if (!storageKey) continue;
-    if (!publishers[storageKey]) {
-      publishers[storageKey] = [];
-    }
-    publishers[storageKey].push(item);
+  if (url.endsWith(rawPath)) {
+    return url;
   }
-  return {
-    version: 1,
-    updated_at: updatedAt,
-    publishers,
-  };
-}
-
-export function initPublishers(config: PublishersAppConfig, schema: PublishersSchemaRoot) {
-  mqbApp.setConfig(config as unknown as Record<string, any>);
-  const container = document.getElementById("publishers-container") as HTMLElement | null;
-  const mappedPublishers = (config.publishers || []).map((p) => normalizePublisherConfigShape(p));
-  config.publishers ||= [];
-  if (config.publishers !== mappedPublishers) {
-    config.publishers.splice(0, config.publishers.length, ...mappedPublishers);
-  }
-  const publishers = config.publishers;
-  const getPublisherStorageKey = (publisher: Partial<PublisherConfig> | null | undefined) =>
-    getEntityStorageKey(publisher);
-  const matchesHistoryPublisher = (
-    item: Partial<PublisherHistoryItem> | null | undefined,
-    publisher: Partial<PublisherConfig> | null | undefined,
-  ) => {
-    const publisherKey = getPublisherStorageKey(publisher);
-    if (!publisherKey) {
-      return false;
-    }
-    const historyPublisherId = String(item?.publisher_id || "").trim();
-    if (historyPublisherId) {
-      return historyPublisherId === publisherKey;
-    }
-    return String(item?.name || "").trim() === String(publisher?.name || "").trim();
-  };
-  const workspaceConfig = ensureWorkspaceCollections(config);
-  const state = getMqbState();
-  const storageSecurity = resolveStorageSecurity(state.storage_security, workspaceConfig);
-  const encryptedMessages = hasEncryptedMessages(storageSecurity);
-  const sensitiveMode = isSensitiveConfig(workspaceConfig) && !encryptedMessages;
-  if (sensitiveMode) {
-    removeKey(STORAGE_KEY);
-    removeKey(HISTORY_KEY);
-  }
-  const preloadedStorage = getMqbState().storage_cache;
-  let appState = sensitiveMode
-    ? {}
-    : encryptedMessages && preloadedStorage?.publisher_state
-      ? (preloadedStorage.publisher_state as Record<string, PublisherState>)
-      : readJson<Record<string, PublisherState>>(STORAGE_KEY, {});
-  const localHistoryStore = sensitiveMode
-    ? sanitizePublisherHistory({})
-    : encryptedMessages && preloadedStorage?.publisher_history
-      ? sanitizePublisherHistory(preloadedStorage.publisher_history)
-      : sanitizePublisherHistory(readJson<unknown>(HISTORY_KEY, {}));
-  const configHistoryStore = sanitizePublisherHistory(workspaceConfig.history);
-  let historyStore = localHistoryStore.updated_at >= configHistoryStore.updated_at
-    ? localHistoryStore
-    : configHistoryStore;
-
-  for (const publisher of publishers) {
-    const storageKey = getPublisherStorageKey(publisher);
-    const legacyNameKey = String(publisher.name || "").trim();
-    if (storageKey && legacyNameKey && storageKey !== legacyNameKey && !appState[storageKey] && appState[legacyNameKey]) {
-      appState[storageKey] = appState[legacyNameKey];
-      delete appState[legacyNameKey];
-    }
-    if (
-      storageKey
-      && legacyNameKey
-      && storageKey !== legacyNameKey
-      && !historyStore.publishers?.[storageKey]
-      && historyStore.publishers?.[legacyNameKey]
-    ) {
-      historyStore.publishers[storageKey] = historyStore.publishers[legacyNameKey];
-      delete historyStore.publishers[legacyNameKey];
-    }
-  }
-
-  let history = flattenPublisherHistory(historyStore).slice(0, 1000);
-  let envVars = workspaceConfig.env_vars;
-
-  let savedPublisherKeys = new Set(
-    ((Array.isArray(state.saved_sections?.publishers) ? state.saved_sections.publishers : publishers) || [])
-      .map((publisher: PublisherConfig) => getPublisherStorageKey(publisher))
-      .filter(Boolean),
-  );
-  const isSavedPublisher = (publisher: Partial<PublisherConfig> | null | undefined) =>
-    savedPublisherKeys.has(getPublisherStorageKey(publisher));
-
-  if (!container) {
-    return;
-  }
-
-  container.style.display = "flex";
-  let currentIdx = 0;
-  let activeSubtab: PublisherSubtab = "payload";
-  let pubSplit: unknown;
-  let currentResponsePayload = "";
-  let currentMethodValue = "POST";
-  let nextPublisherHeaderId = 1;
-  let pendingHistorySync: number | null = null;
-
-  const rememberPublisherView = (
-    idx = currentIdx,
-    tab: PublisherSubtab = activeSubtab,
-  ) => {
-    const nextIdx = Math.min(Math.max(0, idx), Math.max(publishers.length - 1, 0));
-    state.last_publisher_idx = nextIdx;
-    state.last_publisher_tab = tab;
-    (appWindow() as any)._mqb_last_publisher_idx = nextIdx;
-    (appWindow() as any)._mqb_last_publisher_tab = tab;
-  };
-
-  mqbRuntime.registerDirtySection("publishers", {
-    buttonId: "workspace-save-button",
-    getValue: () => config.publishers,
-  });
-  mqbRuntime.registerBeforeWorkspaceSave("publishers", async () => {
-    const activeElement = document.activeElement as HTMLElement | null;
-    activeElement?.blur();
-    await Promise.resolve();
-    const mapped = config.publishers.map((publisher, index) => {
-      const nextPublisher = normalizePublisherConfigShape(publisher);
-      nextPublisher.payload = getPublisherState(publisher).payload || "";
-      nextPublisher.headers = getPublisherHeaderRows(publisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
-      if (index === currentIdx && getEndpointType(nextPublisher) === "http") {
-        const httpConfig = ensureHttpConfig(nextPublisher);
-        httpConfig.method = currentMethodValue || httpConfig.method;
-      }
-      return nextPublisher;
-    });
-    config.publishers.splice(0, config.publishers.length, ...mapped);
-  });
-  mqbRuntime.registerAfterWorkspaceSave("publishers", () => {
-    const selectedPublisher = config.publishers[currentIdx];
-    const selectedKey = getPublisherStorageKey(selectedPublisher);
-    const refreshedPublishers = mqbApp.config<PublishersAppConfig>().publishers || [];
-    const refreshedIdx = refreshedPublishers.findIndex(
-      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey,
-    );
-    const pendingRestore = {
-      idx: refreshedIdx === -1 ? Math.min(currentIdx, Math.max(refreshedPublishers.length - 1, 0)) : refreshedIdx,
-      tab: activeSubtab,
-    };
-    getMqbState().pending_publisher_restore = pendingRestore;
-    rememberPublisherView(pendingRestore.idx, activeSubtab);
-    (appWindow() as any)._mqb_pending_publisher_restore = pendingRestore;
-  });
-  const hadUnsavedChangesBeforeInit = mqbRuntime.refreshDirtySection("publishers");
-
-  const updateUrlHash = () => {
-    appWindow().history.replaceState(null, "", `#publishers:${currentIdx || 0}`);
-  };
-
-  const saveAppState = () => {
-    if (sensitiveMode) return;
-    if (encryptedMessages) {
-      void setStoredJson(STORAGE_KEY, appState, storageSecurity);
-      return;
-    }
-    writeJson(STORAGE_KEY, appState);
-  };
-  const syncHistoryToConfig = async (silent = true) => {
-    historyStore = buildPublisherHistoryStore(history);
-    workspaceConfig.history = historyStore;
-    const nextConfig = mqbApp.config<PublishersAppConfig>();
-    nextConfig.history = historyStore;
-    await mqbRuntime.saveConfigSection("history", historyStore, silent);
-  };
-  const scheduleHistorySync = () => {
-    if (pendingHistorySync != null) {
-      appWindow().clearTimeout(pendingHistorySync);
-    }
-    pendingHistorySync = appWindow().setTimeout(() => {
-      pendingHistorySync = null;
-      void syncHistoryToConfig(true);
-    }, 2000);
-  };
-  const saveHistory = (options: { sync?: boolean } = {}) => {
-    history = history.slice(0, 1000);
-    historyStore = buildPublisherHistoryStore(history);
-    if (!sensitiveMode && !encryptedMessages) {
-      writeJson(HISTORY_KEY, historyStore);
-    } else if (encryptedMessages) {
-      void setStoredJson(HISTORY_KEY, historyStore, storageSecurity);
-    }
-    if (options.sync !== false) {
-      scheduleHistorySync();
-    }
-  };
-  const persistWorkspaceCollections = async (silent = true) => {
-    workspaceConfig.env_vars = envVars;
-    workspaceConfig.history = historyStore;
-    const nextConfig = mqbApp.config<PublishersAppConfig>();
-    nextConfig.env_vars = envVars;
-    nextConfig.history = historyStore;
-    await mqbRuntime.saveConfigSection("env_vars", envVars, silent);
-  };
-  const applyEnvVars = (value: string) =>
-    String(value || "").replace(/\$\{([A-Za-z0-9_.-]+)\}/g, (_match, key) =>
-      Object.prototype.hasOwnProperty.call(envVars, key) ? String(envVars[key] ?? "") : `\${${key}}`,
-    );
-
-  const openPublisherAt = (idx: number, tab = "definition") => {
-    openPublisherByIndex(
-      idx,
-      tab as "payload" | "headers" | "history" | "definition",
-      restorePublisherStateFromView,
-      () => {
-        void initPublishers(config, schema);
-      },
-    );
-  };
-
-  const openConsumerAt = (idx: number, tab = "messages") => {
-    openConsumerByIndex(
-      idx,
-      tab as "messages" | "definition" | "response",
-      (consumerIdx, options) => mqbApp.restore.consumer(consumerIdx, options),
-      () => mqbApp.init.consumers(config, mqbApp.schema()),
-    );
-  };
-
-  if (
-    (historyStore.updated_at === configHistoryStore.updated_at && configHistoryStore.updated_at > localHistoryStore.updated_at)
-    || (history.length > 0 && flattenPublisherHistory(localHistoryStore).length === 0 && flattenPublisherHistory(configHistoryStore).length > 0)
-  ) {
-    saveHistory({ sync: false });
-  }
-
-  const ensureHttpConfig = (publisher: PublisherConfig) => {
-    publisher.endpoint ||= {};
-    if (!publisher.endpoint.http || typeof publisher.endpoint.http !== "object") {
-      publisher.endpoint.http = defaultHttpConfig();
-    }
-    const httpConfig = publisher.endpoint.http as Record<string, any>;
-    httpConfig.custom_headers ||= {};
-    return httpConfig;
-  };
-
-  const ensureEndpointConfig = (publisher: PublisherConfig, endpointType: string) => {
-    if (endpointType === "http") return ensureHttpConfig(publisher);
-    publisher.endpoint ||= {};
-
-    // Scalar and reference endpoints are configuration atoms and do not have technical sub-fields
-    if (endpointType === "static" || endpointType === "ref") return null;
-
-    if (!publisher.endpoint[endpointType] || typeof publisher.endpoint[endpointType] !== "object") {
-      publisher.endpoint[endpointType] = {};
-    }
-    return publisher.endpoint[endpointType] as Record<string, any>;
-  };
-
-  const getExistingEndpointConfig = (publisher: PublisherConfig, endpointType = getEndpointType(publisher)) => {
-    const endpoint = publisher?.endpoint || {};
-    const endpointConfig = endpoint?.[endpointType];
-    return endpointConfig && typeof endpointConfig === "object" ? endpointConfig as Record<string, any> : null;
-  };
-
-  const getRequestBarLayout = (endpointType: string): RequestBarLayout =>
-    REQUEST_BAR_LAYOUTS[endpointType] || { fields: [] };
-
-  const getRequestBarFieldValue = (publisher: PublisherConfig, descriptor: { field: string } | undefined) => {
-    if (!descriptor) return "";
-    const endpointType = getEndpointType(publisher);
-    const endpointConfig = getExistingEndpointConfig(publisher, endpointType);
-
-    if (endpointType === "http" && descriptor.field === "url") {
-      const rawUrl = typeof endpointConfig?.url === "string" ? endpointConfig.url.trim() : "";
-      const rawPath = typeof endpointConfig?.path === "string" ? endpointConfig.path.trim() : "";
-      if (!rawUrl) return rawPath || "";
-      if (!rawPath || rawPath === "/") return rawUrl;
-      try {
-        const parsed = new URL(rawUrl);
-        const [pathOnly, query = ""] = rawPath.split("?");
-        const normalizedPath = (pathOnly || "/").startsWith("/") ? (pathOnly || "/") : `/${pathOnly || "/"}`;
-        parsed.pathname = normalizedPath;
-        parsed.search = query ? `?${query}` : "";
-        return parsed.toString();
-      } catch {
-        return `${rawUrl.replace(/\/+$/, "")}/${rawPath.replace(/^\/+/, "")}`;
-      }
-    }
-
-    return typeof endpointConfig?.[descriptor.field] === "string" ? endpointConfig[descriptor.field] : "";
-  };
-
-  const setRequestBarFieldValue = (publisher: PublisherConfig, descriptor: { field: string } | undefined, rawValue: string) => {
-    if (!descriptor) return;
-    const endpointType = getEndpointType(publisher);
-    const endpointConfig = ensureEndpointConfig(publisher, endpointType);
-    if (!endpointConfig) return;
-
-    if (endpointType === "http" && descriptor.field === "url") {
-      const trimmedValue = rawValue.trim();
-      if (!trimmedValue) {
-        endpointConfig.url = "";
-        endpointConfig.path = "/";
-        return;
-      }
-
-      try {
-        const parsed = new URL(trimmedValue);
-        endpointConfig.url = parsed.origin;
-        endpointConfig.path = `${parsed.pathname || "/"}${parsed.search || ""}`;
-        return;
-      } catch {
-        // Accept host/path-like input without protocol.
-        const match = trimmedValue.match(/^([^/]+)(\/.*)?$/);
-        if (match) {
-          endpointConfig.url = match[1];
-          endpointConfig.path = match[2] || "/";
-          return;
-        }
-      }
-    }
-
-    endpointConfig[descriptor.field] = rawValue;
-  };
-
-  const copyRequestBarFieldValues = (fromPublisher: PublisherConfig, toPublisher: PublisherConfig) => {
-    const endpointType = getEndpointType(toPublisher);
-    const layout = getRequestBarLayout(endpointType);
-    layout.fields.forEach((descriptor) => {
-      const sourceValue = getRequestBarFieldValue(fromPublisher, descriptor);
-      setRequestBarFieldValue(toPublisher, descriptor, sourceValue);
-    });
-  };
-
-  const getPublishStatusInfo = (endpointType: string, response: Response, responseData: any) => {
-    if (!response.ok) {
-      return {
-        ok: false,
-        code: response.status,
-        label: String(response.status),
-        text: response.statusText || "Error",
-      };
-    }
-    if (endpointType === "http") {
-      return {
-        ok: true,
-        code: response.status,
-        label: String(response.status),
-        text: response.statusText || "OK",
-      };
-    }
-    if (responseData && typeof responseData === "object") {
-      if (responseData.status === "Ack") {
-        return { ok: true, code: response.status, label: "ACK", text: `${endpointType.toUpperCase()} accepted` };
-      }
-      if (responseData.status === "Response") {
-        return { ok: true, code: response.status, label: "RESP", text: `${endpointType.toUpperCase()} replied` };
-      }
-    }
-    return { ok: true, code: response.status, label: "OK", text: `${endpointType.toUpperCase()} sent` };
-  };
-
-  const getPublisherState = (publisher: PublisherConfig | null | undefined) => {
-    const storageKey = getPublisherStorageKey(publisher);
-    if (!storageKey) {
-      return { payload: String(publisher?.payload || '{}') };
-    }
-    if (!appState[storageKey]) {
-      appState[storageKey] = { payload: String(publisher?.payload || '{}') };
-    }
-    return appState[storageKey];
-  };
-
-  const normalizePublisherHeaderRows = (
-    rows: Array<{ id?: number; key?: unknown; value?: unknown; enabled?: unknown }> | undefined,
-  ) => {
-    if (!Array.isArray(rows)) return { rows: [], changed: false };
-
-    const seenIds = new Set<number>();
-    const claimNextId = () => {
-      while (seenIds.has(nextPublisherHeaderId) || nextPublisherHeaderId <= 0) {
-        nextPublisherHeaderId += 1;
-      }
-      return nextPublisherHeaderId++;
-    };
-    let changed = false;
-    const normalizedRows = rows.map((row) => {
-      const candidateId = Number(row?.id);
-      const nextRow = {
-        id: Number.isInteger(candidateId) && candidateId > 0 ? candidateId : claimNextId(),
-        key: String(row?.key ?? ""),
-        value: String(row?.value ?? ""),
-        enabled: row?.enabled !== false,
-      };
-
-      if (seenIds.has(nextRow.id)) {
-        nextRow.id = claimNextId();
-        changed = true;
-      }
-
-      if (
-        !row ||
-        Number(row.id) !== nextRow.id ||
-        String(row.key ?? "") !== nextRow.key ||
-        String(row.value ?? "") !== nextRow.value ||
-        (row.enabled !== false) !== nextRow.enabled
-      ) {
-        changed = true;
-      }
-
-      seenIds.add(nextRow.id);
-      return nextRow;
-    });
-
-    return { rows: normalizedRows, changed };
-  };
-
-  const syncNextPublisherHeaderId = () => {
-    const maxId = Object.values(appState).reduce((currentMax, state) => {
-      const headerMax = Array.isArray(state.headers)
-        ? state.headers.reduce((rowMax, row) => Math.max(rowMax, Number(row.id) || 0), 0)
-        : 0;
-      return Math.max(currentMax, headerMax);
-    }, 0);
-    nextPublisherHeaderId = Math.max(nextPublisherHeaderId, maxId + 1);
-  };
-
-  const getPublisherHeaderRows = (publisher: PublisherConfig | undefined) => {
-    if (!publisher) return [];
-    const state = getPublisherState(publisher);
-    if (!Array.isArray(state.headers)) {
-      const savedHeaders = Array.isArray(publisher.headers)
-        ? publisher.headers
-        : sortEntries(getEndpointType(publisher) === "http" ? ensureHttpConfig(publisher)?.custom_headers : {})
-            .map(([key, value]) => ({ key: String(key), value: String(value), enabled: true }));
-      if (getEndpointType(publisher) === "http" && Array.isArray(publisher.headers)) {
-        ensureHttpConfig(publisher).custom_headers = Object.fromEntries(
-          publisher.headers
-            .filter((row) => row.enabled !== false && String(row.key || "").trim().length > 0)
-            .map((row) => [String(row.key).trim(), String(row.value || "")]),
-        );
-      }
-      state.headers = savedHeaders.map((row) => ({
-        id: nextPublisherHeaderId++,
-        key: String(row.key || ""),
-        value: String(row.value || ""),
-        enabled: row.enabled !== false,
-      }));
-      saveAppState();
-    } else {
-      const normalized = normalizePublisherHeaderRows(state.headers);
-      state.headers = normalized.rows;
-      if (normalized.changed) {
-        saveAppState();
-      }
-    }
-    syncNextPublisherHeaderId();
-    return state.headers;
-  };
-
-  const getCurrentPublisherUrl = (publisher: PublisherConfig) => {
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    return getRequestBarFieldValue(
-      publisher,
-      layout.fields.find((field) => field.inputId === "pub-url"),
-    ).trim();
-  };
-
-  const splitHttpUrl = (rawUrl: string) => {
-    const value = String(rawUrl || "").trim();
-    if (!value) return { base: "", path: "" };
-    try {
-      const parsed = new URL(value);
-      const base = `${parsed.protocol}//${parsed.host}`;
-      const path = `${parsed.pathname || "/"}${parsed.search || ""}`;
-      return { base, path: path === "/" ? "" : path };
-    } catch {
-      return { base: value, path: "" };
-    }
-  };
-
-  const getImportedRequestEndpointType = (request: PublisherPreset, fallbackPublisher?: PublisherConfig) =>
-    request.endpoint_type || (fallbackPublisher ? getEndpointType(fallbackPublisher) : "http");
-
-  const getImportedRequestFields = (request: PublisherPreset) => {
-    const nextFields = { ...(request.request_fields || {}) };
-    if (request.url && !nextFields.url) {
-      nextFields.url = request.url;
-    }
-    return nextFields;
-  };
-
-  const getImportedRequestFieldValue = (request: PublisherPreset, field: string) =>
-    String(getImportedRequestFields(request)[field] || "");
-
-  const getImportedRequestMethodValue = (request: PublisherPreset) =>
-    String(request.method || "").toUpperCase();
-
-  const requestToPublisher = (request: PublisherPreset, fallbackPublisher?: PublisherConfig) => {
-    const currentNames = (config.publishers || []).map((publisher) => String(publisher.name || ""));
-    const endpointType = getImportedRequestEndpointType(request, fallbackPublisher);
-    const baseName = String(request.name || endpointType).trim() || endpointType;
-    const name = nextUniqueName(baseName, currentNames);
-    const requestFields = getImportedRequestFields(request);
-    const customHeaders = Object.fromEntries(
-      (request.headers || [])
-        .filter((row) => row.enabled !== false && String(row.key || "").trim())
-        .map((row) => [String(row.key).trim(), String(row.value || "")]),
-    );
-    const endpoint = createDefaultPublisherEndpoint(endpointType) as Record<string, any>;
-    const publisher: PublisherConfig = {
-      name,
-      endpoint,
-      comment: "",
-    };
-    const layout = getRequestBarLayout(endpointType);
-    layout.fields.forEach((descriptor) => {
-      setRequestBarFieldValue(publisher, descriptor, String(requestFields[descriptor.field] || ""));
-    });
-    if (endpointType === "http") {
-      const httpConfig = ensureHttpConfig(publisher);
-      httpConfig.method = getImportedRequestMethodValue(request) || "POST";
-      httpConfig.custom_headers = customHeaders;
-    }
-    const headerRows = (request.headers || []).map((row) => ({
-      id: nextPublisherHeaderId++,
-      key: String(row.key || ""),
-      value: String(row.value || ""),
-      enabled: row.enabled !== false,
-    }));
-    appState[getPublisherStorageKey(publisher)] = {
-      payload: request.payload || "",
-      headers: headerRows,
-    };
-    publisher.payload = request.payload || "";
-    publisher.headers = headerRows.map(({ key, value, enabled }) => ({ key, value, enabled }));
-    return publisher;
-  };
-
-  const createPublisherVariantFromCurrentState = async (publisher: PublisherConfig) => {
-    const nextName = await mqbDialogs.prompt("Choose a name for the saved publisher variant.", "Save Publisher Variant", {
-      confirmLabel: "Save",
-      value: "",
-      placeholder: "publisher_name",
-    });
-    if (nextName === null) return null;
-
-    const cloned = normalizePublisherConfigShape(cloneJson(publisher));
-    cloned.id = createLocalEntityId("publisher");
-    cloned.name = nextName.trim();
-    if (getEndpointType(cloned) === "http") {
-      ensureHttpConfig(cloned).method = currentMethodValue || ensureHttpConfig(cloned).method;
-    }
-    cloned.payload = getPublisherState(publisher).payload || "";
-    const nextState = structuredClone(getPublisherState(publisher));
-    appState[getPublisherStorageKey(cloned)] = nextState;
-    cloned.headers = (nextState.headers || []).map(({ key, value, enabled }) => ({ key, value, enabled }));
-    return cloned;
-  };
-
-  const createPublisherVariantFromHistoryItem = async (publisher: PublisherConfig, item: PublisherHistoryItem) => {
-    const nextName = await mqbDialogs.prompt("Choose a name for the saved publisher variant.", "Save Publisher Variant", {
-      confirmLabel: "Save",
-      value: "",
-      placeholder: "publisher_name",
-    });
-    if (nextName === null) return null;
-
-    const cloned = normalizePublisherConfigShape(cloneJson(publisher));
-    cloned.id = createLocalEntityId("publisher");
-    cloned.name = nextName.trim();
-    const state = getPublisherState(cloned);
-    state.payload = item.payload || "";
-    applyHistoryRequestToPublisher(cloned, item);
-    cloned.headers = (item.headers?.length
-      ? item.headers
-      : (item.metadata || []).map(({ k, v }) => ({ key: k, value: v, enabled: true }))
-    ).map(({ key, value, enabled }) => ({ key, value, enabled }));
-    if (getEndpointType(cloned) === "http") {
-      ensureHttpConfig(cloned).method = item.method || item.requestMetadata?.http_method || ensureHttpConfig(cloned).method;
-    }
-    cloned.payload = state.payload;
-    cloned.headers = getPublisherHeaderRows(cloned).map(({ key, value, enabled }) => ({ key, value, enabled }));
-    return cloned;
-  };
-
-  const importRequestsIntoPublishers = async (
-    jsonText: string,
-    expectedKind: "postman" | "openapi" | "asyncapi",
-  ) => {
-    const basePublisher = publishers[currentIdx] || createEmptyPublisher();
-    const imported = extractImportedRequests(jsonText);
-    if (imported.kind !== expectedKind) {
-      throw new Error(`Selected file is not a valid ${expectedKind.toUpperCase()} JSON file.`);
-    }
-
-    let importedAsPublishers = 0;
-    let firstImportedKey = "";
-
-    for (const request of imported.requests) {
-      const publisher = requestToPublisher(request, basePublisher);
-      if (!firstImportedKey) {
-        firstImportedKey = getPublisherStorageKey(publisher);
-      }
-      config.publishers.push(publisher);
-      importedAsPublishers += 1;
-    }
-
-    envVars = { ...envVars, ...(imported.envVars || {}) };
-    await persistWorkspaceCollections(true);
-    saveAppState();
-
-    if (importedAsPublishers > 0) {
-      const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
-      if (saved) {
-        const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
-        mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
-      }
-    }
-
-    initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
-    const activeIdx = (mqbApp.config<PublishersAppConfig>().publishers || []).findIndex(
-      (item) => getPublisherStorageKey(item) === firstImportedKey,
-    );
-    if (activeIdx >= 0) {
-      restorePublisherStateFromView(activeIdx, { tab: "definition" });
-    }
-
-    return { importedAsPublishers };
-  };
-
-  const syncPublishersPanelState = (responseState?: PublisherResponseState) => {
-    const activePublisher = publishers[currentIdx];
-    const filteredHistory = history.filter((item) => matchesHistoryPublisher(item, activePublisher));
-    const endpointType = activePublisher ? getEndpointType(activePublisher) : "";
-    const layout = getRequestBarLayout(endpointType);
-    const getFieldState = (inputId: "pub-extra-1" | "pub-extra-2" | "pub-url", fallbackLabel: string) => {
-      const descriptor = layout.fields.find((field) => field.inputId === inputId);
-      return {
-        label: descriptor?.label || fallbackLabel,
-        placeholder: descriptor?.placeholder || "",
-        value: activePublisher ? getRequestBarFieldValue(activePublisher, descriptor) : "",
-        visible: Boolean(descriptor),
-      };
-    };
-    const metadataRows = activePublisher ? getPublisherHeaderRows(activePublisher) : [];
-    const requestPayload = activePublisher ? getPublisherState(activePublisher).payload : "";
-    const sidebarItems = publishers.map((publisher, index) => ({
-      name: String(publisher.name || ""),
-      endpointType: getEndpointType(publisher).toUpperCase(),
-      originalIndex: index,
-    }));
-
-    publishersPanelState.update((current: any) => ({
-      hasPublishers: publishers.length > 0,
-      items: sidebarItems,
-      groupedItems: buildPublisherTree(publishers),
-      selectedIndex: currentIdx,
-      activeSubtab,
-      isNew: activePublisher ? !isSavedPublisher(activePublisher) : false,
-      deleteLabel: (activePublisher && !isSavedPublisher(activePublisher)) ? "Cancel" : "Delete",
-      endpointType: endpointType === "ibmmq" ? "MQ" : endpointType.toUpperCase(),
-      methodVisible: endpointType === "http" && !!layout.showMethod,
-      methodValue: currentMethodValue,
-      extraFieldOne: getFieldState("pub-extra-1", "Target"),
-      extraFieldTwo: getFieldState("pub-extra-2", "Target"),
-      urlField: getFieldState("pub-url", "URL"),
-      requestPayload,
-      metadataRows,
-      responseVisible: responseState?.responseVisible ?? current.responseVisible,
-      responseTabLabel: responseState?.responseTabLabel ?? current.responseTabLabel,
-      responseStatusLabel: responseState?.responseStatusLabel ?? current.responseStatusLabel,
-      responseStatusText: responseState?.responseStatusText ?? current.responseStatusText,
-      responseStatusColor: responseState?.responseStatusColor ?? current.responseStatusColor,
-      responseDurationLabel: responseState?.responseDurationLabel ?? current.responseDurationLabel,
-      responseSizeLabel: responseState?.responseSizeLabel ?? current.responseSizeLabel,
-      requestRows: responseState?.requestRows ?? current.requestRows,
-      requestHeaders: responseState?.requestHeaders ?? current.requestHeaders,
-      responseHeaders: responseState?.responseHeaders ?? current.responseHeaders,
-      responsePayload: responseState?.responsePayload ?? current.responsePayload,
-      historyRows: [...filteredHistory]
-        .sort((a, b) => Number(b.time) - Number(a.time))
-        .map((item) => {
-        const isOk = typeof item.ok === "boolean" ? item.ok : item.status < 300;
-        return {
-          historyIndex: history.indexOf(item),
-          timeLabel: new Date(item.time).toLocaleString(),
-          statusLabel: String(item.displayStatus || item.status),
-          statusClass: isOk ? "status-ok" : "status-err",
-          payloadPreview: item.payload.substring(0, 100).replace(/\n/g, " "),
-          pinned: Boolean(item.pinned),
-        };
-      }),
-    }));
-  };
-
-  const renderSidebar = () => {
-    syncPublishersPanelState();
-  };
-
-  const setActiveItem = (idx: number, options: { tab?: PublisherSubtab; preserveTab?: boolean } = {}) => {
-    const nextIdx = Math.min(Math.max(0, idx), Math.max(publishers.length - 1, 0));
-    const isSamePublisher = currentIdx === nextIdx;
-    currentIdx = nextIdx;
-    if (options.tab) {
-      activeSubtab = options.tab;
-    } else if (!(options.preserveTab && isSamePublisher)) {
-      activeSubtab = "payload";
-    }
-    rememberPublisherView(currentIdx, activeSubtab);
-    syncPublishersPanelState();
-  };
-
-  const clearPublisherResponse = () => {
-    currentResponsePayload = "";
-    syncPublishersPanelState({
-      responseVisible: false,
-      responseTabLabel: "Response",
-      responseStatusLabel: "Ready",
-      responseStatusText: "",
-      responseStatusColor: "var(--text-primary)",
-      responseDurationLabel: "",
-      responseSizeLabel: "",
-      requestRows: [],
-      requestHeaders: [],
-      responseHeaders: [],
-      responsePayload: "",
-    });
-  };
-
-  const buildHttpRequestMetadata = () => {
-    const publisher = publishers[currentIdx];
-    if (!publisher || getEndpointType(publisher) !== "http") return {};
-
-    const rawUrl = getRequestBarFieldValue(
-      publisher,
-      getRequestBarLayout("http").fields.find((field) => field.inputId === "pub-url"),
-    ).trim();
-    const metadata: Record<string, string> = {};
-    if (currentMethodValue) {
-      metadata.http_method = currentMethodValue;
-    }
-    if (!rawUrl) return metadata;
-
-    try {
-      const parsed = new URL(rawUrl);
-      metadata.http_path = parsed.pathname || "/";
-      if (parsed.search.length > 1) {
-        metadata.http_query = parsed.search.slice(1);
-      }
-    } catch {
-      const slashIndex = rawUrl.indexOf("/", rawUrl.indexOf("//") + 2);
-      if (slashIndex >= 0) {
-        const pathWithQuery = rawUrl.slice(slashIndex);
-        const [path, query] = pathWithQuery.split("?");
-        metadata.http_path = path || "/";
-        if (query) metadata.http_query = query;
-      }
-    }
-
-    return metadata;
-  };
-
-  const buildRequestBarHistoryMetadata = (publisher: PublisherConfig) => {
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    const metadata: Record<string, string> = {};
-
-    if (layout.showMethod && currentMethodValue) {
-      metadata.http_method = currentMethodValue;
-    }
-
-    layout.fields.forEach((descriptor) => {
-      const value = applyEnvVars(getRequestBarFieldValue(publisher, descriptor).trim());
-      metadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`] = value;
-      metadata[`request_bar.${descriptor.inputId}`] = value;
-    });
-
-    return metadata;
-  };
-
-  const applyHistoryRequestToPublisher = (publisher: PublisherConfig | undefined, item: PublisherHistoryItem) => {
-    if (!publisher) return;
-    const endpointType = getEndpointType(publisher);
-    const requestMetadata = item.requestMetadata || {};
-    const requestFields = item.request_fields || {};
-
-    if (item.method || requestMetadata.http_method) {
-      currentMethodValue = String(item.method || requestMetadata.http_method);
-    }
-
-    const layout = getRequestBarLayout(endpointType);
-    layout.fields.forEach((descriptor) => {
-      const value = requestFields[descriptor.field]
-        ?? requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`]
-        ?? requestMetadata[`request_bar.${descriptor.inputId}`];
-      if (typeof value === "string") {
-        setRequestBarFieldValue(publisher, descriptor, value);
-      }
-    });
-
-    if (endpointType !== "http") return;
-
-    const httpConfig = ensureHttpConfig(publisher);
-    httpConfig.custom_headers = Object.fromEntries(
-      (item.headers?.length ? item.headers.map((row) => ({ k: row.key, v: row.value })) : item.metadata || [])
-        .map(({ k, v }) => [k, v]),
-    );
-
-    const hasHistoryUrl = layout.fields.some((descriptor) =>
-      typeof requestMetadata[`${REQUEST_BAR_METADATA_PREFIX}${descriptor.field}`] === "string" ||
-      typeof requestMetadata[`request_bar.${descriptor.inputId}`] === "string",
-    );
-    if (!hasHistoryUrl && typeof item.url === "string") {
-      const parsed = splitHttpUrl(item.url);
-      httpConfig.url = parsed.base || item.url;
-      if (parsed.path) {
-        httpConfig.path = parsed.path;
-      } else {
-        delete httpConfig.path;
-      }
-    }
-
-    if (hasHistoryUrl) return;
-
-    const existingUrl = httpConfig.url || "";
-    if (!requestMetadata.http_path && !requestMetadata.http_query) return;
-
-    try {
-      const parsed = new URL(existingUrl);
-      parsed.pathname = requestMetadata.http_path || "/";
-      parsed.search = requestMetadata.http_query ? `?${requestMetadata.http_query}` : "";
-      httpConfig.url = parsed.toString();
-    } catch {
-      const path = requestMetadata.http_path || "/";
-      const query = requestMetadata.http_query ? `?${requestMetadata.http_query}` : "";
-      httpConfig.url = `${path}${query}`;
-    }
-  };
-
-  const restorePublisherState = (idx: number, options: { tab?: string } = {}) => {
-    if (!publishers[idx]) return;
-    const targetTab = normalizePublisherSubtab(options.tab, state.last_publisher_tab || "payload");
-    if (currentIdx !== idx) setActiveItem(idx, { tab: targetTab });
-    void updateUIFromState();
-    activeSubtab = targetTab;
-    rememberPublisherView(idx, activeSubtab);
-    syncPublishersPanelState();
-  };
-
-  const formatResponseDetails = (
-    statusInfo: { ok: boolean; label: string; text?: string },
-    duration: number,
-    data: any,
-    requestInfo: {
-      headers?: Array<{ k: string; v: string }>;
-      method?: string;
-      path?: string;
-      query?: string;
-      targetLabel?: string;
-      url?: string;
-    } = {},
-  ) => {
-    const statusColor = statusInfo?.ok ? "var(--accent-http)" : "var(--accent-kafka)";
-    const statusLabel = statusInfo?.label || "OK";
-    const statusText = statusInfo?.text || "";
-    const payloadString = typeof data === "string" ? data : JSON.stringify(data, null, 2);
-    const size = new TextEncoder().encode(payloadString).length;
-    const sizeString = size > 1024 ? `${(size / 1024).toFixed(2)} KB` : `${size} B`;
-    let payloadContent = "";
-    const requestHeaders = Array.isArray(requestInfo.headers) ? requestInfo.headers : [];
-    const requestRows: Array<[string, string]> = [];
-    if (requestInfo.method) requestRows.push(["Method", requestInfo.method]);
-    if (requestInfo.url) requestRows.push([requestInfo.targetLabel || "URL", requestInfo.url]);
-    if (requestInfo.path) requestRows.push(["Path", requestInfo.path]);
-    if (requestInfo.query) requestRows.push(["Query", requestInfo.query]);
-    let responseHeaders: Array<[string, string]> = [];
-
-    if (data && typeof data === "object") {
-      const isResponse = data.status === "Response" || (data.metadata && data.payload);
-      if (isResponse) {
-        responseHeaders = sortEntries(data.metadata) as Array<[string, string]>;
-        payloadContent = typeof data.payload === "string" ? data.payload : JSON.stringify(data.payload, null, 2);
-      } else if (data.status === "Ack") {
-        payloadContent = "// ACKNOWLEDGED: The backend processed the message successfully.";
-      } else {
-        payloadContent = JSON.stringify(data, null, 2);
-      }
-    } else {
-      payloadContent = String(data || "");
-    }
-    currentResponsePayload = payloadContent;
-
-    syncPublishersPanelState({
-      responseVisible: true,
-      responseTabLabel: `Response ✓ ${statusLabel}`,
-      responseStatusLabel: statusLabel,
-      responseStatusText: statusText,
-      responseStatusColor: statusColor,
-      responseDurationLabel: `${duration}ms`,
-      responseSizeLabel: sizeString,
-      requestRows,
-      requestHeaders: requestHeaders.map(({ k, v }) => [k, v]),
-      responseHeaders,
-      responsePayload: payloadContent,
-    });
-
-    if (!pubSplit && mqbApp.split()) {
-      pubSplit = mqbApp.split()?.(["#pub-top-content-wrapper", "#pub-response-container"], {
-        direction: "vertical",
-        sizes: [35, 65],
-        minSize: 100,
-        gutterSize: 4,
-        elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
-          "flex-basis": `calc(${size}% - ${gutterSize}px)`,
-        }),
-        gutterStyle: (_dimension: string, gutterSize: number) => ({
-          "flex-basis": `${gutterSize}px`,
-        }),
-      });
-    }
-  };
-
-  const renderHistory = () => {
-    syncPublishersPanelState();
-  };
-
-  const persistConfigState = () => {
-    saveAppState();
-    mqbRuntime.refreshDirtySection("publishers");
-    syncPublishersPanelState();
-  };
-
-  const updatePublisherConfigFromMetadataRows = (
-    rows: Array<{
-      id: number;
-      key: string;
-      value: string;
-      enabled: boolean;
-    }>,
-  ) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const state = getPublisherState(publisher);
-    state.headers = rows;
-    if (getEndpointType(publisher) === "http") {
-      const httpConfig = ensureHttpConfig(publisher);
-      httpConfig.custom_headers = Object.fromEntries(
-        rows
-          .filter((row) => row.enabled)
-          .map((row) => [row.key.trim(), row.value] as [string, string])
-          .filter(([key]) => key),
-      );
-    }
-    persistConfigState();
-  };
-
-  const updateStateFromUI = () => {
-    if (publishers.length === 0) return;
-    const publisher = publishers[currentIdx];
-    currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
-    syncPublishersPanelState();
-  };
-
-  const updateUIFromState = async () => {
-    if (publishers.length === 0) return;
-    const idx = currentIdx;
-
-    clearPublisherResponse();
-
-    const publisher = publishers[idx];
-    currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
-    renderHistory();
-    updateUrlHash();
-    syncPublishersPanelState();
-
-    const configFormContainer = document.getElementById("pub-config-form") as HTMLElement | null;
-    if (!configFormContainer) return;
-    configFormContainer.innerHTML = "";
-
-    const itemSchema = cloneJson({
-      ...(schema.properties?.publishers?.items || {}),
-      $defs: schema.$defs,
-    }) as SchemaObject;
-    applyEndpointSchemaDefaults(itemSchema);
-    forceRefOnlyEndpoints(itemSchema);
-    Object.entries(SCHEMA_CONFIG_ENDPOINT_TYPES).forEach(([defName, endpointType]) => {
-      const endpointSchema = itemSchema.$defs?.[defName];
-      if (!endpointSchema?.properties) return;
-      getRequestBarLayout(endpointType).fields.forEach(({ field: fieldName }) => {
-        if (endpointSchema.properties[fieldName]) {
-          endpointSchema.properties[fieldName].hidden = true;
-        }
-        if (Array.isArray(endpointSchema.required)) {
-          endpointSchema.required = endpointSchema.required.filter((key: string) => key !== fieldName);
-        }
-      });
-    });
-    const httpConfigSchema = itemSchema.$defs?.HttpConfig;
-    if (httpConfigSchema?.properties?.custom_headers) {
-      httpConfigSchema.properties.custom_headers.hidden = true;
-    }
-    if (itemSchema.properties?.id) {
-      itemSchema.properties.id.hidden = true;
-    }
-    if (Array.isArray(itemSchema.required)) {
-      itemSchema.required = itemSchema.required.filter((key: string) => key !== "name");
-    }
-
-    const switchConfig = itemSchema.$defs?.SwitchConfig;
-    if (switchConfig?.properties) {
-      if (switchConfig.properties.default) {
-        switchConfig.properties.default.default = { ref: "" };
-      }
-      if (switchConfig.properties.cases?.additionalProperties) {
-        switchConfig.properties.cases.additionalProperties.default = { ref: "" };
-      }
-    }
-
-    const fanoutConfig = itemSchema.$defs?.FanoutConfig || itemSchema.$defs?.FanOutConfig;
-    if (fanoutConfig) {
-      if (fanoutConfig.items) {
-        fanoutConfig.items.default = { ref: "" };
-      } else if (fanoutConfig.properties?.endpoints?.items) {
-        fanoutConfig.properties.endpoints.items.default = { ref: "" };
-      }
-    }
-
-    state.form_mode = "publisher";
-    (window as any)._mqb_form_mode = "publisher";
-    
-    await mqbApp.forms().init(configFormContainer, itemSchema, publishers[idx], async (updated: PublisherConfig) => {
-      const current = publishers[idx];
-      const previousPublisherName = current?.name || "";
-      const previousStorageKey = getPublisherStorageKey(current);
-      const previousRequestPayload = get(publishersPanelState).requestPayload;
-
-      // Flatten form output to handle 'root' wrapper and ensure fields like 'name' are present (even if empty).
-      const formOutput = normalizePublisherConfigShape(updated as PublisherConfig);
-
-      // 1. Merge form updates into a clone of current to preserve fields not in the form
-      const mergedPublisher = {
-        ...current,
-        ...formOutput,
-        id: current.id, // Always preserve the original stable ID
-        endpoint: {
-          ...current.endpoint,
-          ...formOutput.endpoint,
-        }
-      };
-
-      const nextPublisher = normalizePublisherConfigShape(mergedPublisher);
-      const nextStorageKey = getPublisherStorageKey(nextPublisher);
-      if (previousStorageKey && nextStorageKey && previousStorageKey !== nextStorageKey && !appState[nextStorageKey]) {
-        const previousState = appState[previousStorageKey];
-        appState[nextStorageKey] = previousState
-          ? { ...previousState }
-          : {
-              payload: previousRequestPayload || String(current?.payload || "{}"),
-              headers: getPublisherHeaderRows(current),
-            };
-        delete appState[previousStorageKey];
-      }
-      copyRequestBarFieldValues(current, nextPublisher);
-
-      // Preserve custom headers for HTTP (managed in the Headers tab)
-      if (getEndpointType(nextPublisher) === "http" && getEndpointType(current) === "http") {
-        (nextPublisher.endpoint.http as Record<string, any>).custom_headers =
-          (current.endpoint.http as Record<string, any>).custom_headers;
-      }
-
-      publishers[idx] = nextPublisher;
-      syncConsumerPublisherReferences(config.consumers, previousPublisherName, nextPublisher);
-      currentMethodValue = HTTP_METHOD_OPTIONS.includes(currentMethodValue) ? currentMethodValue : "POST";
-      syncPublishersPanelState();
-      mqbRuntime.refreshDirtySection("publishers");
-    });
-  };
-
-  const copyCurrentPublisher = async () => {
-    const current = config.publishers[currentIdx];
-    if (!current) return;
-    const currentEndpoint = cloneJson(current.endpoint || { null: null });
-    config.consumers ||= [];
-    const consumerName = await mqbDialogs.prompt(
-      "Choose a name for the new consumer. Publisher-specific fields may need adjustment after copying.",
-      "Copy to Consumer",
-      {
-        confirmLabel: "Create",
-        value: "",
-        placeholder: "publisher_consumer",
-      },
-    );
-    if (consumerName === null) return;
-    const trimmedConsumerName = String(consumerName || "").trim();
-    if (trimmedConsumerName && (config.consumers || []).some((consumer) => consumer.name === trimmedConsumerName)) {
-      await mqbDialogs.alert("Consumer already exists");
-      return;
-    }
-    config.consumers.push({
-      id: createLocalEntityId("consumer"),
-      name: trimmedConsumerName,
-      endpoint: createConsumerEndpointFromPublisherEndpoint(currentEndpoint),
-      comment: current.comment || "",
-      response: null,
-      batch_size: 128,
-    });
-    mqbRuntime.refreshDirtySection("consumers");
-    openConsumerAt(config.consumers.length - 1, "definition");
-  };
-
-  const addPublisher = (choice: string) => {
-    if (choice) {
-      config.publishers.push({
-        id: createLocalEntityId("publisher"),
-        name: "",
-        endpoint: createDefaultPublisherEndpoint(choice),
-        comment: "",
-      });
-      state.pending_publisher_restore = { idx: config.publishers.length - 1, tab: "definition" };
-      (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
-      initPublishers(config, schema);
-    }
-  };
-
-  addPublisherAction = addPublisher;
-  copyCurrentPublisherAction = copyCurrentPublisher;
-
-  cloneCurrentPublisherAction = () => {
-    const current = config.publishers[currentIdx];
-    const cloned = cloneJson(current);
-    cloned.id = createLocalEntityId("publisher");
-    cloned.name += "_copy";
-    if (config.publishers.some((publisher) => publisher.name === cloned.name)) {
-      void mqbDialogs.alert("Cloned publisher name already exists. Please choose a different name.");
-      return;
-    }
-    config.publishers.push(cloned);
-    state.pending_publisher_restore = { idx: config.publishers.length - 1, tab: "definition" };
-    (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
-    initPublishers(config, schema);
-  };
-
-  deleteCurrentPublisherAction = async (button = null) => {
-    const publisher = config.publishers[currentIdx];
-    if (!publisher) return;
-
-    const isNew = !isSavedPublisher(publisher);
-    const confirmMsg = isNew ? "Discard this new publisher?" : "Delete this publisher?";
-    const confirmTitle = isNew ? "Discard Publisher" : "Delete Publisher";
-
-    if (!(await mqbDialogs.confirm(confirmMsg, confirmTitle))) return;
-
-    delete appState[getPublisherStorageKey(publisher)];
-    config.publishers.splice(currentIdx, 1);
-    const nextIdx = Math.max(0, currentIdx - 1);
-
-    if (isNew) {
-      state.pending_publisher_restore = { idx: nextIdx, tab: "definition" };
-      (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
-      initPublishers(config, schema);
-      return;
-    }
-
-    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
-    if (!saved) return;
-
-    const refreshedConfig = await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
-    mqbApp.config<PublishersAppConfig>().publishers = refreshedConfig.publishers;
-    state.pending_publisher_restore = { idx: nextIdx, tab: "definition" };
-    (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
-    initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>());
-  };
-
-  saveCurrentPublisherAction = async (button = null) => {
-    const activeElement = document.activeElement as HTMLElement | null;
-    activeElement?.blur();
-    await Promise.resolve();
-
-    const selectedIdx = currentIdx;
-    const selectedKey = getPublisherStorageKey(config.publishers[selectedIdx]);
-    const selectedTab = activeSubtab;
-    const mapped = config.publishers.map((publisher, index) => {
-      const nextPublisher = normalizePublisherConfigShape(publisher);
-      nextPublisher.payload = getPublisherState(publisher).payload || "";
-      nextPublisher.headers = getPublisherHeaderRows(publisher).map(({ key, value, enabled }) => ({ key, value, enabled }));
-      if (index === currentIdx && getEndpointType(nextPublisher) === "http") {
-        const httpConfig = ensureHttpConfig(nextPublisher);
-        httpConfig.method = currentMethodValue || httpConfig.method;
-      }
-      return nextPublisher;
-    });
-    config.publishers.splice(0, config.publishers.length, ...mapped);
-    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false, button);
-    if (!saved) {
-      // If saveConfigSection failed, we should not proceed with re-initializing
-      return;
-    }
-
-    const refreshedConfig = saved?.publishers
-      ? {
-          ...mqbApp.config<PublishersAppConfig>(),
-          ...(saved as PublishersAppConfig),
-          publishers: (saved as PublishersAppConfig).publishers,
-        }
-      : await mqbRuntime.fetchConfigFromServer<PublishersAppConfig>();
-
-    if (!refreshedConfig) return;
-
-    // Update local config with the refreshed data from the backend
-    mqbApp.setConfig(refreshedConfig);
-    const normalizedSavedPublishers = (refreshedConfig.publishers || []).map((publisher: PublisherConfig) =>
-      normalizePublisherConfigShape({ ...publisher }),
-    );
-    
-    if (refreshedConfig.history) {
-      mqbRuntime.markSectionSaved("history", refreshedConfig.history);
-    }
-    mqbRuntime.markSectionSaved("publishers", refreshedConfig.publishers);
-    const currentPublishers = mqbApp.config<PublishersAppConfig>().publishers || []; // Use the updated mqbApp.config()
-    const refreshedIdx = currentPublishers.findIndex(
-      (publisher: PublisherConfig) => getPublisherStorageKey(publisher) === selectedKey,
-    ); // Find index in the updated list
-    const pendingRestore = {
-      idx: refreshedIdx === -1 ? Math.min(selectedIdx, Math.max(currentPublishers.length - 1, 0)) : refreshedIdx, // Ensure index is valid
-      tab: selectedTab,
-    };
-    getMqbState().pending_publisher_restore = pendingRestore;
-    rememberPublisherView(pendingRestore.idx, selectedTab);
-    (appWindow() as any)._mqb_pending_publisher_restore = pendingRestore;
-    initPublishers(mqbApp.config<PublishersAppConfig>(), mqbApp.schema<PublishersSchemaRoot>()); // Re-initialize with the fully updated config
-  };
-
-  addPublisherMetadataRow = () => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const currentRows = getPublisherHeaderRows(publisher);
-    updatePublisherConfigFromMetadataRows([
-      ...currentRows,
-      { id: nextPublisherHeaderId++, key: "", value: "", enabled: true },
-    ]);
-  };
-  updatePublisherMetadataRow = (index, field, value) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const currentRows = getPublisherHeaderRows(publisher);
-    const nextRows = currentRows.map((entry, currentIndex) =>
-      currentIndex === index ? { ...entry, [field]: value } : entry,
-    );
-    updatePublisherConfigFromMetadataRows(nextRows);
-  };
-  togglePublisherMetadataRow = (index: number, enabled: boolean) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const currentRows = getPublisherHeaderRows(publisher);
-    const nextRows = currentRows.map((entry, currentIndex) =>
-      currentIndex === index ? { ...entry, enabled } : entry,
-    );
-    updatePublisherConfigFromMetadataRows(nextRows);
-  };
-  removePublisherMetadataRow = (index) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const currentRows = getPublisherHeaderRows(publisher);
-    updatePublisherConfigFromMetadataRows(currentRows.filter((_, currentIndex) => currentIndex !== index));
-  };
-  updatePublisherPayload = (value) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    getPublisherState(publisher).payload = value;
-    saveAppState();
-    syncPublishersPanelState();
-  };
-  updatePublisherMethod = (value) => {
-    currentMethodValue = value;
-    syncPublishersPanelState();
-  };
-  updatePublisherRequestField = (fieldId, value) => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const endpointType = getEndpointType(publisher);
-    const layout = getRequestBarLayout(endpointType);
-    setRequestBarFieldValue(publisher, layout.fields.find((field) => field.inputId === fieldId), value.trim());
-    persistConfigState();
-  };
-  beautifyPublisherPayloadAction = () => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-    const state = getPublisherState(publisher);
-    try {
-      updatePublisherPayload(JSON.stringify(JSON.parse(state.payload), null, 2));
-    } catch {
-      void mqbDialogs.alert("Invalid JSON");
-    }
-  };
-  selectPublisherSubtab = (tab) => {
-    activeSubtab = normalizePublisherSubtab(tab, activeSubtab);
-    rememberPublisherView(currentIdx, activeSubtab);
-    syncPublishersPanelState();
-  };
-
-  sendPublisherAction = async () => {
-    updateStateFromUI();
-    if (mqbRuntime.refreshDirtySection("publishers")) {
-      const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, true);
-      if (!saved) return;
-    }
-
-    // If sending from the definition tab, switch to Body so the response is visible.
-    if (activeSubtab === "definition") {
-      selectPublisherSubtab("payload");
-    }
-
-    const publisher = publishers[currentIdx];
-    const name = String(publisher.name || "").trim();
-    const publisherId = getPublisherStorageKey(publisher);
-    const endpoint = publisher.endpoint;
-    const payload = applyEnvVars(getPublisherState(publisher).payload);
-    const metaArray = getPublisherHeaderRows(publisher)
-      .filter((row) => row.enabled && row.key.trim())
-      .map((row) => ({
-        k: applyEnvVars(row.key.trim()),
-        v: applyEnvVars(row.value),
-      }));
-    const metadata = buildHttpRequestMetadata();
-    Object.keys(metadata).forEach((key) => {
-      metadata[key] = applyEnvVars(String(metadata[key]));
-    });
-    const requestHistoryMetadata = buildRequestBarHistoryMetadata(publisher);
-
-    // Merge custom headers into metadata for the outgoing request
-    metaArray.forEach(({ k, v }) => {
-      if (k) metadata[k] = v;
-    });
-
-    const requestUrl = getRequestBarFieldValue(
-      publisher,
-      getRequestBarLayout(getEndpointType(publisher)).fields.find((field) => field.inputId === "pub-url"),
-    ).trim();
-    const resolvedRequestUrl = applyEnvVars(requestUrl);
-    const layout = getRequestBarLayout(getEndpointType(publisher));
-    const requestBinding = layout.fields.find((field) => field.inputId === "pub-url") || layout.fields[0] || null;
-
-    syncPublishersPanelState({
-      responseVisible: true,
-      responseTabLabel: "Response",
-      responseStatusLabel: "Sending",
-      responseStatusText: "",
-      responseStatusColor: "var(--text-primary)",
-      responseDurationLabel: "",
-      responseSizeLabel: "",
-      requestRows: [],
-      requestHeaders: [],
-      responseHeaders: [],
-      responsePayload: "Sending...",
-    });
-
-    try {
-      const startTime = Date.now();
-      const endpointType = getEndpointType(publisher);
-      const controller = new AbortController();
-      const timeoutId = appWindow().setTimeout(() => controller.abort(), 10000);
-      let response: Response;
-      try {
-        response = await fetch("/publish", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, publisher_id: publisherId || undefined, payload, metadata, endpoint }),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      const duration = Date.now() - startTime;
-      const text = await response.text();
-      let responseData: any = text;
-      try {
-        responseData = JSON.parse(text);
-      } catch {}
-
-      const statusInfo = getPublishStatusInfo(endpointType, response, responseData);
-      formatResponseDetails(statusInfo, duration, responseData, {
-        headers: metaArray,
-        method: metadata.http_method,
-        path: metadata.http_path,
-        query: metadata.http_query,
-        targetLabel: requestBinding?.label,
-        url: resolvedRequestUrl,
-      });
-
-      history.unshift({
-        publisher_id: getPublisherStorageKey(publisher),
-        name,
-        payload,
-        headers: metaArray.map(({ k, v }) => ({ key: k, value: v, enabled: true })),
-        metadata: [...metaArray],
-        endpoint_type: endpointType,
-        method: layout.showMethod ? currentMethodValue : undefined,
-        request_fields: Object.fromEntries(
-          layout.fields.map((descriptor) => [descriptor.field, getRequestBarFieldValue(publisher, descriptor).trim()]),
-        ),
-        requestMetadata: { ...metadata, ...requestHistoryMetadata },
-        targetLabel: requestBinding?.label,
-        url: resolvedRequestUrl,
-        responseData,
-        ok: statusInfo.ok,
-        status: response.status,
-        statusText: response.statusText,
-        displayStatus: statusInfo.label,
-        displayStatusText: statusInfo.text,
-        status_info: {
-          ok: statusInfo.ok,
-          code: response.status,
-          label: statusInfo.label,
-          text: statusInfo.text,
-        },
-        duration,
-        time: Date.now(),
-      });
-      saveHistory();
-      renderHistory();
-    } catch (error) {
-      const isTimeout = error instanceof DOMException && error.name === "AbortError";
-      currentResponsePayload = isTimeout
-        ? "Error: Publish request timed out after 10s"
-        : `Error: ${(error as Error).message}`;
-      syncPublishersPanelState({
-        responseVisible: true,
-        responseTabLabel: "Response ✓ Error",
-        responseStatusLabel: "Error",
-        responseStatusText: "",
-        responseStatusColor: "var(--accent-kafka)",
-        responseDurationLabel: "",
-        responseSizeLabel: "",
-        requestRows: [],
-        requestHeaders: [],
-        responseHeaders: [],
-        responsePayload: currentResponsePayload,
-      });
-    }
-  };
-
-  if (document.getElementById("tab-publishers")?.classList.contains("active") && !pubSplit && mqbApp.split()) {
-    pubSplit = mqbApp.split()?.(["#pub-top-content-wrapper", "#pub-response-container"], {
-      direction: "vertical",
-      sizes: [35, 65],
-      minSize: 100,
-      gutterSize: 4,
-      elementStyle: (_dimension: string, size: number, gutterSize: number) => ({
-        "flex-basis": `calc(${size}% - ${gutterSize}px)`,
-      }),
-      gutterStyle: (_dimension: string, gutterSize: number) => ({
-        "flex-basis": `${gutterSize}px`,
-      }),
-    });
-  }
-
-  renderSidebar();
-
-  clearActivePublisherHistory = () => {
-    const publisher = publishers[currentIdx];
-    const publisherKey = getPublisherStorageKey(publisher);
-    const name = publisher?.name;
-    if (!publisherKey && !name) return;
-    history = history.filter((item) => {
-      if (publisherKey) {
-        return item.publisher_id !== publisherKey;
-      }
-      return !(
-        (item.publisher_id === undefined || item.publisher_id === null || item.publisher_id === "")
-        && item.name === name
-      );
-    });
-    saveHistory();
-    renderHistory();
-    clearPublisherResponse();
-  };
-
-  copyPublisherResponse = () => {
-    if (!currentResponsePayload) return;
-    void navigator.clipboard.writeText(currentResponsePayload);
-  };
-
-  copyPublisherResponseJson = () => {
-    if (!currentResponsePayload) return;
-    try {
-      const parsed = JSON.parse(currentResponsePayload);
-      void navigator.clipboard.writeText(JSON.stringify(parsed, null, 2));
-    } catch {
-      void navigator.clipboard.writeText(currentResponsePayload);
-    }
-  };
-
-  copyPublisherAsCurl = () => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-
-    const endpointType = getEndpointType(publisher);
-    if (endpointType !== "http") return;
-
-    const layout = getRequestBarLayout("http");
-    const url = applyEnvVars(
-      getRequestBarFieldValue(publisher, layout.fields.find((field) => field.inputId === "pub-url")).trim(),
-    );
-    if (!url) return;
-
-    const payload = applyEnvVars(getPublisherState(publisher).payload || "");
-    const headerParts = sortEntries(ensureHttpConfig(publisher).custom_headers)
-      .map(([key, value]) => `-H ${JSON.stringify(`${applyEnvVars(String(key))}: ${applyEnvVars(String(value))}`)}`);
-    const method = currentMethodValue || "POST";
-    const dataPart = payload ? `--data ${JSON.stringify(payload)}` : "";
-    const curlCommand = [
-      "curl",
-      `-X ${method}`,
-      ...headerParts,
-      dataPart,
-      JSON.stringify(url),
-    ]
-      .filter((part) => String(part).trim().length > 0)
-      .join(" ");
-    void navigator.clipboard.writeText(curlCommand);
-  };
-
-  savePublisherHistoryAsPublisherAction = async (historyIndex: number) => {
-    const item = history[historyIndex];
-    if (!item) return;
-    const publisher = publishers.find((candidate) => matchesHistoryPublisher(item, candidate));
-    if (!publisher) return;
-
-    const variant = await createPublisherVariantFromHistoryItem(publisher, item);
-    if (!variant) return;
-
-    config.publishers.push(variant);
-    saveAppState();
-    await saveCurrentPublisherAction();
-  };
-
-  resendPublisherHistoryAction = async (historyIndex: number) => {
-    await showPublisherHistoryEntry(historyIndex);
-    await sendPublisherAction();
-  };
-
-  saveCurrentPublisherVariantAction = async () => {
-    const publisher = publishers[currentIdx];
-    if (!publisher) return;
-
-    const variant = await createPublisherVariantFromCurrentState(publisher);
-    if (!variant) return;
-
-    config.publishers.push(variant);
-    saveAppState();
-    await saveCurrentPublisherAction();
-  };
-
-  importPostmanToPublisherAction = async (jsonText: string) => {
-    await importRequestsIntoPublishers(jsonText, "postman");
-  };
-
-  importOpenApiToPublisherAction = async (jsonText: string) => {
-    await importRequestsIntoPublishers(jsonText, "openapi");
-  };
-
-  importAsyncApiToPublisherAction = async (jsonText: string) => {
-    await importRequestsIntoPublishers(jsonText, "asyncapi");
-  };
-
-  importMqbToPublisherAction = async (jsonText: string) => {
-    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
-    const type = String(parsed?.type || "");
-    if (type !== "mqb-export" && type !== "mqb-presets" && type !== "mqb-config") {
-      throw new Error("Selected file is not a valid mq-bridge export/presets file.");
-    }
-
-    if (type === "mqb-presets") {
-      await importFromJsonText(jsonText, {
-        includeConfig: false,
-        includePresets: true,
-        targetPublisherName: "",
-      });
-      envVars = ensureWorkspaceCollections(mqbApp.config<PublishersAppConfig>()).env_vars;
-      syncPublishersPanelState();
-      return;
-    }
-
-    const incomingConfig =
-      parsed?.config && typeof parsed.config === "object"
-        ? (parsed.config as Record<string, unknown>)
-        : parsed;
-    const importedPublishersRaw = Array.isArray(incomingConfig.publishers)
-      ? incomingConfig.publishers
-      : [];
-    if (importedPublishersRaw.length === 0) {
-      throw new Error("No publishers found in import file.");
-    }
-
-    const existingNames = new Set((config.publishers || []).map((publisher) => publisher.name));
-    const importedPublishers = importedPublishersRaw
-      .filter((row) => row && typeof row === "object")
-      .map((row) => {
-        const publisher = cloneJson(row as PublisherConfig);
-        const baseName = String(publisher.name || "imported_publisher").trim() || "imported_publisher";
-        let name = baseName;
-        let idx = 1;
-        while (existingNames.has(name)) {
-          name = `${baseName}_${idx++}`;
-        }
-        existingNames.add(name);
-        publisher.name = name;
-        publisher.comment = String(publisher.comment || "");
-        publisher.endpoint = publisher.endpoint && typeof publisher.endpoint === "object"
-          ? publisher.endpoint
-          : createDefaultPublisherEndpoint("http");
-        return publisher;
-      });
-
-    config.publishers.push(...importedPublishers);
-    const saved = await mqbRuntime.saveConfigSection("publishers", config.publishers, false);
-    if (!saved?.publishers) {
-      throw new Error("Failed to save imported publishers.");
-    }
-
-    config.publishers.splice(0, config.publishers.length, ...saved.publishers);
-    mqbApp.config<PublishersAppConfig>().publishers = saved.publishers;
-    initPublishers(mqbApp.config<PublishersAppConfig>(), schema);
-    const firstImportedKey = getPublisherStorageKey(importedPublishers[0]);
-    const idx = (config.publishers || []).findIndex((publisher) => getPublisherStorageKey(publisher) === firstImportedKey);
-    if (idx >= 0) {
-      restorePublisherStateFromView(idx, { tab: "definition" });
-    }
-    return;
-  };
-
-  showPublisherHistoryEntry = async (historyIndex: number) => {
-    const item = history[historyIndex];
-    if (!item) return;
-    const publisherIdx = publishers.findIndex((candidate) => matchesHistoryPublisher(item, candidate));
-    if (publisherIdx === -1) return;
-
-    const state = getPublisherState(publishers[publisherIdx]);
-    state.payload = item.payload;
-    applyHistoryRequestToPublisher(publishers[publisherIdx], item);
-    saveAppState();
-    setActiveItem(publisherIdx);
-    await updateUIFromState();
-    formatResponseDetails(
-      {
-        ok: typeof item.ok === "boolean" ? item.ok : Boolean(item.status_info?.ok ?? item.status < 300),
-        label: String(item.displayStatus || item.status_info?.label || item.status),
-        text: String(item.displayStatusText || item.status_info?.text || item.statusText || ""),
-      },
-      item.duration,
-      item.responseData,
-      {
-        headers: item.metadata?.length
-          ? item.metadata
-          : (item.headers || []).map((row) => ({ k: row.key, v: row.value })),
-        method: item.method || item.requestMetadata?.http_method,
-        path: item.requestMetadata?.http_path,
-        query: item.requestMetadata?.http_query,
-        targetLabel: item.targetLabel,
-        url: item.url,
-      },
-    );
-  };
-
-  editEnvironmentVarsAction = async () => {
-    const current = JSON.stringify(envVars, null, 2);
-    const input = await mqbDialogs.prompt(
-      "Define environment variables as JSON. Example: {\"baseUrl\":\"https://api.local\",\"token\":\"abc\"}",
-      "Environment Variables",
-      {
-        confirmLabel: "Save",
-        value: current,
-      },
-    );
-    if (input == null) return;
-    try {
-      const parsed = JSON.parse(input);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("Expected a JSON object");
-      }
-      envVars = Object.fromEntries(
-        Object.entries(parsed).map(([key, value]) => [String(key), typeof value === "string" ? value : JSON.stringify(value)]),
-      );
-      await persistWorkspaceCollections(true);
-      await mqbDialogs.alert("Environment variables saved. You can now use ${varName} in URL, headers and body.");
-    } catch (error) {
-      await mqbDialogs.alert(`Invalid JSON: ${(error as Error).message}`);
-    }
-  };
-
-  if (publishers.length > 0) {
-    const pendingRestore = state.pending_publisher_restore || (appWindow() as any)._mqb_pending_publisher_restore || null;
-    state.pending_publisher_restore = null;
-    (appWindow() as any)._mqb_pending_publisher_restore = null;
-    const hashMatch = currentHash().match(/^#publishers:(\d+)$/);
-    const hashIdx = hashMatch ? parseInt(hashMatch[1], 10) : null;
-    const initialIdx = pendingRestore?.idx ?? hashIdx ?? state.last_publisher_idx ?? 0;
-    const initialTab = normalizePublisherSubtab(pendingRestore?.tab, state.last_publisher_tab || "payload");
-    setActiveItem(initialIdx, { tab: initialTab });
-    void updateUIFromState().then(() => {
-      if (!hadUnsavedChangesBeforeInit) {
-        mqbRuntime.markSectionSaved("publishers", config.publishers);
-      }
-    });
-    selectPublisherSubtab(initialTab);
-  } else if (!hadUnsavedChangesBeforeInit) {
-    mqbRuntime.markSectionSaved("publishers", config.publishers);
-  }
-
-  state.publishers_initialized = true;
-  (appWindow() as any)._mqb_publishers_initialized = true;
-  appWindow().restorePublisherState = restorePublisherState;
-  restorePublisherStateFromView = restorePublisherState;
+  const normalizedPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+  return `${url.replace(/\/+$/, "")}${normalizedPath}`;
 }

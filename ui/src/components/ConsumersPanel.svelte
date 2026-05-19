@@ -30,12 +30,14 @@
   } from "../lib/consumers-view";
   import { registerDismissOnOutsideClick, startSidebarResize as beginSidebarResize } from "../lib/sidebar-ui";
   import { handleActionKey, getTechnicalDisplayLabel } from "../lib/utils";
-  import { getMqbState, mqbApp } from "../lib/runtime-window";
+  import { appShell, getAppState } from "../lib/app-shell";
 
   let filterText = $state("");
   let addMenuOpen = $state(false);
   let consumersContainerEl = $state<HTMLDivElement | null>(null);
+  let messagesPaneEl = $state<HTMLDivElement | null>(null);
   let sidebarWidth = $state<number | null>(null);
+  let messageListHeightPercent = $state(40);
   const importActions = [
     { key: "asyncapi", label: "Import AsyncAPI" },
     { key: "mqb", label: "Import mq-bridge" },
@@ -48,7 +50,7 @@
     const panelState = $consumersPanelState;
     const idx = panelState.selectedIndex;
     if (idx == null || idx < 0) return null;
-    return mqbApp.config()?.consumers?.[idx];
+    return appShell.config()?.consumers?.[idx];
   });
 
   const selectedSummary = $derived.by(() => {
@@ -80,8 +82,7 @@
   });
 
   function openConsumer(originalIndex: number) {
-    getMqbState().last_consumer_idx = originalIndex;
-    (window as any)._mqb_last_consumer_idx = originalIndex;
+    getAppState().last_consumer_idx = originalIndex;
     window.history.replaceState(null, "", `#consumers:${originalIndex}`);
     restoreConsumerStateFromView(originalIndex);
   }
@@ -133,6 +134,30 @@
     beginSidebarResize(event, consumersContainerEl, (nextWidth) => {
       sidebarWidth = nextWidth;
     });
+  }
+
+  function startMessagePaneResize(event: MouseEvent) {
+    if (!messagesPaneEl) return;
+    event.preventDefault();
+    const container = messagesPaneEl;
+
+    const updateSplit = (clientY: number) => {
+      const rect = container.getBoundingClientRect();
+      const offset = clientY - rect.top;
+      const clampedOffset = Math.min(Math.max(offset, 100), Math.max(rect.height - 100, 100));
+      messageListHeightPercent = Math.min(Math.max((clampedOffset / rect.height) * 100, 20), 80);
+    };
+
+    updateSplit(event.clientY);
+
+    const onMove = (moveEvent: MouseEvent) => updateSplit(moveEvent.clientY);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }
 </script>
 
@@ -424,11 +449,16 @@
           </div>
         </div>
         <div
+          bind:this={messagesPaneEl}
           class="pane-container"
           id="cons-msg-panel"
           style:display={$consumersPanelState.activeSubtab === "messages" ? "flex" : "none"}
         >
-          <div class="pane-top" id="cons-list-pane">
+          <div
+            class="pane-top"
+            id="cons-list-pane"
+            style={`flex: 0 0 calc(${messageListHeightPercent}% - 1.5px);`}
+          >
             <div style="overflow:auto;flex:1;" id="consumer-log-body-wrapper">
               <table class="msg-table">
                 <thead>
@@ -474,10 +504,21 @@
               </table>
             </div>
           </div>
-          <div class="pane-divider" id="cons-pane-divider"></div>
-          <div class="pane-bottom" id="cons-detail-pane">
+          <div
+            class="pane-divider"
+            id="cons-pane-divider"
+            role="separator"
+            aria-orientation="horizontal"
+            style="height: 3px;"
+            onmousedown={startMessagePaneResize}
+          ></div>
+          <div
+            class="pane-bottom"
+            id="cons-detail-pane"
+            style={`height: auto; flex: 1 1 calc(${100 - messageListHeightPercent}% - 1.5px);`}
+          >
             <div class="detail-header">
-              <span id="cons-msg-detail-info">{$consumersPanelState.detailInfo}</span>
+              <span id="cons-msg-detail-info" style="flex:1 1 auto; min-width:0;">{$consumersPanelState.detailInfo}</span>
               <span
                 style="margin-left:auto;cursor:pointer;color:var(--text-dim)"
                 id="cons-msg-copy-btn"

@@ -1,6 +1,6 @@
 <script lang="ts">
   import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
-  import { mqbApp } from "../runtime-window";
+  import { appShell } from "../../lib/app-shell";
 
   interface Props {
     title?: string;
@@ -23,7 +23,7 @@
   const suggestions = $derived(
     Array.from(
       new Set(
-        ((mqbApp.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
+        ((appShell.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
           .map((publisher) => String(publisher?.id || publisher?.name || "").trim())
           .filter(Boolean),
       ),

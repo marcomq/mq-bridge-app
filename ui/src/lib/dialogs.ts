@@ -1,15 +1,14 @@
-import { mount, unmount } from "svelte";
-import DialogComponent from "../components/Dialog.svelte";
+import { get, writable } from "svelte/store";
 
-type DialogMode = "message" | "confirm" | "prompt" | "choose";
-
-interface DialogChoice {
+export interface DialogChoice {
   value: string;
   label: string;
   description?: string;
 }
 
-interface OpenDialogOptions {
+export type DialogMode = "message" | "confirm" | "prompt" | "choose";
+
+export type DialogRequest = {
   title: string;
   message: string;
   confirmLabel?: string;
@@ -18,77 +17,85 @@ interface OpenDialogOptions {
   placeholder?: string;
   mode?: DialogMode;
   choices?: DialogChoice[];
+};
+
+type DialogState = {
+  request: DialogRequest;
+  resolve: (result: boolean | string | null) => void;
+} | null;
+
+export const activeDialog = writable<DialogState>(null);
+
+export function showDialog(request: DialogRequest) {
+  return new Promise<boolean | string | null>((resolve) => {
+    activeDialog.set({ request, resolve });
+  });
 }
 
-interface PromptOptions {
+export function closeDialog(result: boolean | string | null) {
+  const state = get(activeDialog);
+  activeDialog.set(null);
+  state?.resolve(result);
+}
+
+export function alertDialog(message: string, title = "Notice") {
+  return showDialog({
+    title,
+    message,
+    confirmLabel: "OK",
+    mode: "message",
+  }).then(() => undefined);
+}
+
+export function confirmDialog(message: string, title = "Confirm") {
+  return showDialog({
+    title,
+    message,
+    confirmLabel: "Continue",
+    cancelLabel: "Cancel",
+    mode: "confirm",
+  }) as Promise<boolean>;
+}
+
+type PromptOptions = {
   confirmLabel?: string;
   cancelLabel?: string;
   value?: string;
   placeholder?: string;
-}
+};
 
-interface ChooseOptions {
+type ChooseOptions = {
+  confirmLabel?: string;
   cancelLabel?: string;
   choices?: DialogChoice[];
+};
+
+export function promptDialog(message: string, title = "Enter Name", options: PromptOptions = {}) {
+  return showDialog({
+    title,
+    message,
+    confirmLabel: options.confirmLabel || "Create",
+    cancelLabel: options.cancelLabel || "Cancel",
+    value: options.value || "",
+    placeholder: options.placeholder || "",
+    mode: "prompt",
+  }) as Promise<string | null>;
 }
 
-type DialogResult = boolean | string | null;
-
-function openDialog(options: OpenDialogOptions): Promise<DialogResult> {
-  return new Promise((resolve) => {
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-
-    const component = mount(DialogComponent, {
-      target: container,
-      props: {
-        ...options,
-        onResolve: (result: DialogResult) => {
-          unmount(component);
-          container.remove();
-          resolve(result);
-        },
-      },
-    });
-  });
+export function chooseDialog(message: string, title = "Choose", options: ChooseOptions = {}) {
+  return showDialog({
+    title,
+    message,
+    confirmLabel: options.confirmLabel,
+    cancelLabel: options.cancelLabel || "Cancel",
+    mode: "choose",
+    choices: options.choices || [],
+  }) as Promise<string | null>;
 }
 
-export function installDialogs() {
-  window.mqbAlert = async (message: string, title = "Notice") => {
-    await openDialog({
-      title,
-      message,
-      confirmLabel: "OK",
-      mode: "message",
-    });
-  };
-
-  window.mqbConfirm = async (message: string, title = "Confirm") =>
-    openDialog({
-      title,
-      message,
-      confirmLabel: "Continue",
-      cancelLabel: "Cancel",
-      mode: "confirm",
-    }) as Promise<boolean>;
-
-  window.mqbPrompt = async (message: string, title = "Enter Name", options: PromptOptions = {}) =>
-    openDialog({
-      title,
-      message,
-      confirmLabel: options.confirmLabel || "Create",
-      cancelLabel: options.cancelLabel || "Cancel",
-      value: options.value || "",
-      placeholder: options.placeholder || "",
-      mode: "prompt",
-    }) as Promise<string | null>;
-
-  window.mqbChoose = async (message: string, title = "Choose", options: ChooseOptions = {}) =>
-    openDialog({
-      title,
-      message,
-      cancelLabel: options.cancelLabel || "Cancel",
-      mode: "choose",
-      choices: options.choices || [],
-    }) as Promise<string | null>;
+export function installDialogs(target: Window & Record<string, any> = window as Window & Record<string, any>) {
+  target.mqbAlert = alertDialog;
+  target.mqbConfirm = confirmDialog;
+  target.mqbPrompt = promptDialog;
+  target.mqbChoose = chooseDialog;
 }
