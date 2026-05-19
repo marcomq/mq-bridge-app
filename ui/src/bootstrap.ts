@@ -326,14 +326,13 @@ function initializeAppShell() {
         }
         const appConfig = appShell.config<Record<string, unknown>>();
         const refreshedConfig = await replaceConfigFromSave(appConfig);
-        state.saved_sections.publishers = cloneSectionState(appConfig.publishers ?? []);
-        state.saved_sections.consumers = cloneSectionState(appConfig.consumers ?? []);
-        state.saved_sections.config = cloneSectionState(extractSettingsConfig(appConfig));
         for (const hook of Object.values(state.after_workspace_save_hooks)) {
           await hook(appConfig);
         }
         await reinitializeWorkspaceViews();
-        renderWorkspaceDirty();
+        markSectionSaved("publishers", appConfig.publishers ?? []);
+        markSectionSaved("consumers", appConfig.consumers ?? []);
+        markSectionSaved("config", extractSettingsConfig(appConfig));
         return refreshedConfig;
       }, { trackWorkspaceSaving: true });
     },
@@ -348,7 +347,7 @@ function initializeAppShell() {
       return runSaveAction(button, silent, async () => {
         const appConfig = appShell.config<Record<string, unknown>>();
         const refreshedConfig = await replaceConfigFromSave(appConfig);
-        getAppState().saved_sections.config = cloneSectionState(appConfig);
+        markSectionSaved("config", extractSettingsConfig(appConfig));
         return refreshedConfig;
       });
     },
@@ -371,7 +370,7 @@ function initializeAppShell() {
           sectionValue,
         );
         appConfig[sectionName] = (refreshedConfig as Record<string, unknown>)[sectionName];
-        getAppState().saved_sections[sectionName] = cloneSectionState((refreshedConfig as Record<string, unknown>)[sectionName]);
+        markSectionSaved(sectionName, (refreshedConfig as Record<string, unknown>)[sectionName]);
         return refreshedConfig;
       });
     },

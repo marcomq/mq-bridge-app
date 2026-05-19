@@ -1,5 +1,5 @@
 import { get } from "svelte/store";
-import { appShell } from "./app-shell";
+import { appShell, getAppState, switchMainTab } from "./app-shell";
 import { browserWindow, replaceHash } from "./browser";
 import { createLocalEntityId, getEntityDisplayLabel } from "./utils";
 import { buildPublisherTree } from "./publisher-grouping";
@@ -52,6 +52,12 @@ export async function initPublishers(config: PublishersAppConfig, schema: Publis
   loadLocalState();
   hydrateHistory();
   activeConfig.publishers = (activeConfig.publishers || []).map(normalizePublisher);
+  const initialPublishersSnapshot = deepClone(activeConfig.publishers);
+  getAppState().saved_sections.publishers = deepClone(initialPublishersSnapshot);
+  browserWindow()._mqb_saved_sections = {
+    ...(browserWindow()._mqb_saved_sections || {}),
+    publishers: deepClone(initialPublishersSnapshot),
+  };
 
   browserWindow().registerDirtySection?.("publishers", {
     buttonId: "workspace-save-button",
@@ -78,6 +84,8 @@ export async function initPublishers(config: PublishersAppConfig, schema: Publis
 export async function restorePublisherStateFromView(idx: number, options?: { tab?: string }) {
   const clamped = Math.min(Math.max(idx, 0), Math.max(activeConfig.publishers.length - 1, 0));
   const tab = (options?.tab as "payload" | "headers" | "history" | "definition" | undefined) || get(publishersPanelState).activeSubtab || "payload";
+  getAppState().last_publisher_idx = clamped;
+  getAppState().last_publisher_tab = tab;
   browserWindow()._mqb_last_publisher_idx = clamped;
   browserWindow()._mqb_last_publisher_tab = tab;
   publishersPanelState.update((state) => ({ ...state, selectedIndex: clamped, selectedHistoryIndex: -1, activeSubtab: tab }));
@@ -88,6 +96,7 @@ export async function restorePublisherStateFromView(idx: number, options?: { tab
 }
 
 export function selectPublisherSubtab(tab: string) {
+  getAppState().last_publisher_tab = tab as any;
   publishersPanelState.update((state) => ({ ...state, activeSubtab: tab as any }));
   browserWindow()._mqb_last_publisher_tab = tab;
 }
@@ -110,6 +119,7 @@ export function updatePublisherPayload(value: string) {
   publisher.payload = value;
   updateLocalPublisherState(publisher, { payload: value });
   publishersPanelState.update((state) => ({ ...state, requestPayload: value }));
+  refreshPublisherDirty();
 }
 
 export function updatePublisherMethod(value: string) {
@@ -119,6 +129,7 @@ export function updatePublisherMethod(value: string) {
   const endpointConfig = publisher.endpoint[endpointType] as Record<string, unknown>;
   endpointConfig.method = value;
   publishersPanelState.update((state) => ({ ...state, methodValue: value }));
+  refreshPublisherDirty();
 }
 
 export function updatePublisherRequestField(fieldId: "pub-extra-1" | "pub-extra-2" | "pub-url", value: string) {
@@ -135,6 +146,7 @@ export function updatePublisherRequestField(fieldId: "pub-extra-1" | "pub-extra-
     endpointConfig[descriptor.field] = value;
   }
   renderSelectedPublisher();
+  refreshPublisherDirty();
 }
 
 export function addPublisherMetadataRow() {
@@ -304,6 +316,9 @@ export async function copyCurrentPublisherAction() {
     output: { mode: "none" },
     response: null,
   } as ConsumerConfig);
+  getAppState().pending_consumer_restore = { idx: consumers.length - 1, tab: "definition" };
+  browserWindow().refreshDirtySection?.("consumers");
+  await switchMainTab("consumers");
 }
 
 export function cloneCurrentPublisherAction() {
@@ -318,6 +333,48 @@ export function cloneCurrentPublisherAction() {
   cloned.id = createLocalEntityId("publisher");
   cloned.name = nextName;
   activeConfig.publishers.push(cloned);
+}
+
+export async function deleteCurrentPublisherAction() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const confirmed = await browserWindow().mqbConfirm?.(
+    `Delete publisher "${publisher.name || "Untitled Publisher"}"?`,
+    "Delete Publisher",
+  );
+  if (!confirmed) return;
+
+  const selectedIndex = get(publishersPanelState).selectedIndex;
+  activeConfig.publishers.splice(selectedIndex, 1);
+  for (const key of publisherStorageKeysFor(publisher)) {
+    delete localPublisherState[key];
+    delete historyStore.publishers[key];
+    delete responseStateByPublisher[key];
+  }
+  persistLocalState();
+  persistHistory();
+
+  const saved = await browserWindow().saveConfigSection?.("publishers", activeConfig.publishers, false, undefined) ?? null;
+  if (saved && Array.isArray((saved as any).publishers)) {
+    activeConfig.publishers = (saved as any).publishers.map(normalizePublisher);
+  }
+  browserWindow().markSectionSaved?.("publishers", activeConfig.publishers);
+
+  if (activeConfig.publishers.length === 0) {
+    publishersPanelState.update((state) => ({
+      ...state,
+      hasPublishers: false,
+      items: [],
+      groupedItems: [],
+      selectedIndex: -1,
+      selectedHistoryIndex: -1,
+    }));
+    replaceHash("#publishers:0");
+    return;
+  }
+
+  const nextIndex = Math.min(selectedIndex, activeConfig.publishers.length - 1);
+  await restorePublisherStateFromView(nextIndex, { tab: "definition" });
 }
 
 export async function importAsyncApiToPublisherAction(jsonText: string) {
@@ -359,7 +416,6 @@ export function copyPublisherAsCurl() {}
 export async function savePublisherHistoryAsPublisherAction() {}
 export async function resendPublisherHistoryAction() {}
 export async function editEnvironmentVarsAction() {}
-export async function deleteCurrentPublisherAction() {}
 
 export function beautifyPublisherPayloadAction() {
   const publisher = currentPublisher();
@@ -628,6 +684,10 @@ function fieldStateFor(descriptor: RequestBarFieldDescriptor | undefined, value:
   };
 }
 
+function refreshPublisherDirty() {
+  browserWindow().refreshDirtySection?.("publishers");
+}
+
 function syncMetadataRowsToPublisher() {
   const publisher = currentPublisher();
   if (!publisher) return;
@@ -642,6 +702,7 @@ function syncMetadataRowsToPublisher() {
     );
   }
   setLocalPublisherState(publisher, { headers: rows });
+  refreshPublisherDirty();
 }
 
 function setLocalPublisherState(publisher: PublisherConfig, partial: Partial<{ payload: string; headers: Array<{ id: number; key: string; value: string; enabled: boolean }> }>) {
@@ -693,6 +754,7 @@ async function renderPublisherForm() {
     const current = currentPublisher();
     if (!current) return;
     Object.assign(current, normalizePublisher({ ...current, ...updated }));
+    refreshPublisherDirty();
     renderSelectedPublisher();
   });
 }

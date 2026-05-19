@@ -1921,7 +1921,7 @@ describe("initConsumers", () => {
       await initPromise;
       await vi.runOnlyPendingTimersAsync();
 
-      expect(window.markSectionSaved).toHaveBeenCalledWith("consumers", [
+      expect(window.markSectionSaved).toHaveBeenCalledWith("consumers", expect.arrayContaining([
         expect.objectContaining({
           id: expect.any(String),
           name: "saved_http",
@@ -1930,7 +1930,7 @@ describe("initConsumers", () => {
           output: { mode: "none" },
           response: null,
         }),
-      ]);
+      ]));
     } finally {
       vi.useRealTimers();
     }

@@ -1,6 +1,6 @@
 import { tick } from "svelte";
 import { get } from "svelte/store";
-import { appShell, getAppState, workspaceRuntime } from "./app-shell";
+import { appShell, getAppState, switchMainTab, workspaceRuntime } from "./app-shell";
 import { browserWindow, replaceHash } from "./browser";
 import { createLocalEntityId, getEntityDisplayLabel, normalizeConsumerNames, normalizeConsumerResponse, sanitizeConsumerName } from "./utils";
 import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES } from "./endpoint-metadata";
@@ -9,6 +9,8 @@ import { consumersPanelState } from "./stores";
 import { extractImportedRequests } from "./import-export";
 import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
 import { applyEndpointSchemaDefaults } from "./routes";
+import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
+import { EMPTY_STORAGE_SECURITY } from "./storage-security";
 import type {
   ConsumerConfig,
   ConsumerMessage,
@@ -189,23 +191,29 @@ export function normalizeConsumerMessage(raw: unknown, fallbackTime = new Date()
   return { payload: raw, time: fallbackTime };
 }
 
-function readStoredMessages(): Record<string, ConsumerMessage[]> {
+async function readStoredMessages(): Promise<Record<string, ConsumerMessage[]>> {
   const preloaded = getAppState().storage_cache?.consumer_messages;
   if (preloaded && typeof preloaded === "object" && !Array.isArray(preloaded)) {
     return preloaded as Record<string, ConsumerMessage[]>;
   }
-  try {
-    const raw = browserWindow().localStorage?.getItem(MESSAGE_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
+  return await getStoredJson(
+    MESSAGE_STORAGE_KEY,
+    {},
+    getAppState().storage_security || { ...EMPTY_STORAGE_SECURITY },
+  );
 }
 
 function persistMessages() {
-  browserWindow().localStorage?.setItem(MESSAGE_STORAGE_KEY, JSON.stringify(messagesByConsumer));
+  const state = getAppState();
+  state.storage_cache = {
+    ...(state.storage_cache || {}),
+    consumer_messages: deepClone(messagesByConsumer),
+  };
+  void setStoredJson(
+    MESSAGE_STORAGE_KEY,
+    messagesByConsumer,
+    state.storage_security || { ...EMPTY_STORAGE_SECURITY },
+  );
 }
 
 function consumerMessagesFor(consumer: ConsumerConfig): ConsumerMessage[] {
@@ -293,6 +301,11 @@ function applyResponseStateToConsumer(consumer: ConsumerConfig) {
   const nextResponse = { payload: state.responsePayload, headers: enabledHeaders };
   consumer.response = nextResponse;
   consumer.output = { mode: "response", response: nextResponse };
+  refreshConsumerDirty();
+}
+
+function refreshConsumerDirty() {
+  browserWindow().refreshDirtySection?.("consumers");
 }
 
 function renderMessageDetails() {
@@ -316,13 +329,12 @@ function renderMessageDetails() {
 function renderSelectedConsumer() {
   const consumer = currentConsumer();
   if (!consumer) {
-    consumersPanelState.set({
-      ...get(consumersPanelState),
-      hasConsumers: false,
-      items: [],
+    consumersPanelState.update((state) => ({
+      ...state,
+      hasConsumers: activeConfig.consumers.length > 0,
+      items: buildSidebarItems(),
       currentConsumerKey: null,
-      messages: [],
-    });
+    }));
     return;
   }
 
@@ -430,6 +442,15 @@ async function renderConsumerForm() {
   (window as any)._mqb_form_mode = "consumer";
   await forms.init(container, createConsumerFormSchema(), deepClone(consumer), (updated: ConsumerConfig) => {
     formDrafts.set(get(consumersPanelState).selectedIndex, updated);
+    const current = currentConsumer();
+    if (!current) return;
+    const normalized = normalizeConsumerConfig({ ...current, ...updated });
+    normalized.output = current.output;
+    normalized.message_capture = current.message_capture;
+    normalized.response = current.response;
+    Object.assign(current, normalized);
+    refreshConsumerDirty();
+    renderSelectedConsumer();
   });
 }
 
@@ -463,9 +484,14 @@ function scheduleMessagePolling() {
     window.clearTimeout(pollTimer);
   }
   pollTimer = window.setTimeout(async () => {
-    await fetchNewMessagesForRunningConsumers();
-    renderSelectedConsumer();
-    scheduleMessagePolling();
+    try {
+      await fetchNewMessagesForRunningConsumers();
+    } catch (error) {
+      console.error("Failed to refresh consumer messages", error);
+    } finally {
+      renderSelectedConsumer();
+      scheduleMessagePolling();
+    }
   }, 2000) as unknown as number;
 }
 
@@ -512,6 +538,7 @@ export function setConsumerOutputModeAction(mode: "none" | "publisher" | "respon
     const selectedPublisher = options.length === 1 ? options[0].value : (consumer.output?.mode === "publisher" ? String((consumer.output as any).publisher || "") : "");
     consumer.output = { mode: "publisher", publisher: selectedPublisher };
     consumersPanelState.update((state) => ({ ...state, outputMode: "publisher", publisherOptions: options, selectedPublisher }));
+    refreshConsumerDirty();
     return;
   }
   if (mode === "response") {
@@ -521,6 +548,7 @@ export function setConsumerOutputModeAction(mode: "none" | "publisher" | "respon
   }
   consumer.output = { mode: "none" };
   consumersPanelState.update((state) => ({ ...state, outputMode: "none", selectedPublisher: "" }));
+  refreshConsumerDirty();
 }
 
 export function setConsumerOutputPublisherAction(publisher: string) {
@@ -528,6 +556,7 @@ export function setConsumerOutputPublisherAction(publisher: string) {
   if (!consumer) return;
   consumer.output = { mode: "publisher", publisher };
   consumersPanelState.update((state) => ({ ...state, selectedPublisher: publisher }));
+  refreshConsumerDirty();
 }
 
 export function setConsumerMessageCaptureEnabledAction(enabled: boolean) {
@@ -535,6 +564,7 @@ export function setConsumerMessageCaptureEnabledAction(enabled: boolean) {
   if (!consumer) return;
   consumer.message_capture = { ...normalizeMessageCapture(consumer.message_capture), enabled };
   consumersPanelState.update((state) => ({ ...state, messageCaptureEnabled: enabled }));
+  refreshConsumerDirty();
 }
 
 export function setConsumerMessageCaptureKeepLastAction(keepLast: number) {
@@ -550,6 +580,7 @@ export function setConsumerMessageCaptureKeepLastAction(keepLast: number) {
   }
   persistMessages();
   consumersPanelState.update((state) => ({ ...state, messageCaptureKeepLast: nextKeepLast }));
+  refreshConsumerDirty();
 }
 
 export function addConsumerResponseHeader() {
@@ -621,12 +652,56 @@ export async function copyCurrentConsumerAction() {
     headers: [],
   } as PublisherConfig);
   browserWindow().refreshDirtySection?.("publishers");
-  browserWindow().initPublishers?.(activeConfig as any, appShell.schema());
+  getAppState().pending_publisher_restore = { idx: publishers.length - 1, tab: "definition" };
+  await switchMainTab("publishers");
 }
 
-export function cloneCurrentConsumerAction() {}
+export async function cloneCurrentConsumerAction() {
+  const consumer = currentConsumer();
+  if (!consumer) return;
+  const existingNames = new Set(activeConfig.consumers.map((item) => String(item.name || "")));
+  let nextName = `${sanitizeConsumerName(String(consumer.name || "consumer"))}_copy`;
+  let suffix = 1;
+  while (existingNames.has(nextName)) {
+    nextName = `${sanitizeConsumerName(String(consumer.name || "consumer"))}_copy_${suffix++}`;
+  }
+  const cloned = normalizeConsumerConfig(deepClone(consumer));
+  cloned.id = createLocalEntityId("consumer");
+  cloned.name = nextName;
+  activeConfig.consumers.push(cloned);
+  refreshConsumerDirty();
+  await restoreConsumerStateFromView(activeConfig.consumers.length - 1, { tab: get(consumersPanelState).activeSubtab });
+}
 
-export async function deleteCurrentConsumerAction() {}
+export async function deleteCurrentConsumerAction() {
+  const consumer = currentConsumer();
+  if (!consumer) return;
+  const confirmed = await browserWindow().mqbConfirm?.(
+    `Delete consumer "${consumer.name || "Untitled Consumer"}"?`,
+    "Delete Consumer",
+  );
+  if (!confirmed) return;
+  const selectedIndex = get(consumersPanelState).selectedIndex;
+  activeConfig.consumers.splice(selectedIndex, 1);
+  delete messagesByConsumer[getStorageKey(consumer)];
+  persistMessages();
+  refreshConsumerDirty();
+  if (activeConfig.consumers.length === 0) {
+    consumersPanelState.update((state) => ({
+      ...state,
+      hasConsumers: false,
+      items: [],
+      currentConsumerKey: null,
+      selectedIndex: -1,
+      selectedMessageIndex: -1,
+      messages: [],
+    }));
+    replaceHash("#consumers:0");
+    return;
+  }
+  const nextIndex = Math.min(selectedIndex, activeConfig.consumers.length - 1);
+  await restoreConsumerStateFromView(nextIndex, { tab: get(consumersPanelState).activeSubtab });
+}
 
 export async function saveCurrentConsumerAction() {
   const consumer = currentConsumer();
@@ -751,7 +826,7 @@ export async function importMqbToConsumerAction(jsonText: string) {
 export async function initConsumers(config: ConsumersAppConfig, schema: ConsumersSchemaRoot) {
   activeConfig = config;
   activeSchema = schema;
-  messagesByConsumer = readStoredMessages();
+  messagesByConsumer = await readStoredMessages();
   consumerErrorByKey = {};
   formDrafts = new Map();
   nextResponseHeaderId = 1;

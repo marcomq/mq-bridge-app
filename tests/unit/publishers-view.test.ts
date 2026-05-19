@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
+import { getAppState } from "../../ui/src/lib/app-shell";
 import {
   addPublisherAction,
   addPublisherMetadataRow,
@@ -534,6 +535,28 @@ describe("initPublishers", () => {
     expect(window.location.hash).toBe("#publishers:1");
     expect((window as any)._mqb_last_publisher_idx).toBe(1);
     expect((window as any)._mqb_last_publisher_tab).toBe("definition");
+    expect(getAppState().last_publisher_idx).toBe(1);
+    expect(getAppState().last_publisher_tab).toBe("definition");
+  });
+
+  test("selecting a publisher subtab updates remembered app state", async () => {
+    await initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    selectPublisherSubtab("history");
+
+    expect(get(publishersPanelState).activeSubtab).toBe("history");
+    expect((window as any)._mqb_last_publisher_tab).toBe("history");
+    expect(getAppState().last_publisher_tab).toBe("history");
   });
 
   test("save keeps the selected publisher and subtab", async () => {
@@ -576,6 +599,8 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).activeSubtab).toBe("definition");
     expect((window as any)._mqb_last_publisher_idx).toBe(1);
     expect((window as any)._mqb_last_publisher_tab).toBe("definition");
+    expect(getAppState().last_publisher_idx).toBe(1);
+    expect(getAppState().last_publisher_tab).toBe("definition");
   });
 
   test("init restores the selected publisher from the URL hash on reload", async () => {

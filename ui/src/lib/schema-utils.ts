@@ -30,15 +30,22 @@ export function resolveRootArrayItemSchema(rootSchema: RootSchema, propertyName:
   const rootDefs = cloneSchema(rootSchema.$defs || {});
   if (itemSchema.$ref && itemSchema.$ref.startsWith("#/$defs/")) {
     const defName = itemSchema.$ref.slice("#/$defs/".length);
-    const resolved = cloneSchema(rootDefs[defName] || {});
+    const resolved = rootDefs[defName] ? cloneSchema(rootDefs[defName]) : null;
     return {
-      ...resolved,
-      $defs: rootDefs,
+      ...(resolved || itemSchema),
+      $defs: {
+        ...rootDefs,
+        ...(itemSchema.$defs || {}),
+        ...(resolved?.$defs || {}),
+      },
     };
   }
   return {
     ...itemSchema,
-    $defs: rootDefs,
+    $defs: {
+      ...rootDefs,
+      ...(itemSchema.$defs || {}),
+    },
   };
 }
 

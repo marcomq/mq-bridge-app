@@ -107,6 +107,8 @@ const appShellBridge: AppShellBridge = {
   schema: {},
   desktop: false,
 };
+let hasBridgeConfig = false;
+let hasBridgeSchema = false;
 
 function getFormsLibrary(): any {
   return browserWindow().VanillaSchemaForms || VanillaSchemaForms;
@@ -121,6 +123,8 @@ export function resetAppState() {
 }
 
 export function configureAppShell(next: Partial<AppShellBridge>) {
+  if ("config" in next) hasBridgeConfig = true;
+  if ("schema" in next) hasBridgeSchema = true;
   Object.assign(appShellBridge, next);
   Object.assign(browserWindow(), next);
 }
@@ -182,17 +186,19 @@ export const workspaceRuntime = {
 export const appShell = {
   config<T extends Record<string, unknown>>() {
     const windowConfig = browserWindow().appConfig;
-    return ((Object.keys(appShellBridge.config).length > 0 ? appShellBridge.config : windowConfig) || {}) as T;
+    return ((hasBridgeConfig ? appShellBridge.config : windowConfig) || {}) as T;
   },
   setConfig(value: Record<string, unknown>) {
+    hasBridgeConfig = true;
     appShellBridge.config = value;
     browserWindow().appConfig = value;
   },
   schema<T extends Record<string, unknown>>() {
     const windowSchema = browserWindow().appSchema;
-    return ((Object.keys(appShellBridge.schema).length > 0 ? appShellBridge.schema : windowSchema) || {}) as T;
+    return ((hasBridgeSchema ? appShellBridge.schema : windowSchema) || {}) as T;
   },
   setSchema(value: Record<string, unknown>) {
+    hasBridgeSchema = true;
     appShellBridge.schema = value;
     browserWindow().appSchema = value;
   },

@@ -34,7 +34,11 @@ export function normalizeNamedEntityFormShape<T extends { id?: string; name?: st
 }
 
 export function getThemePreference(): ThemePreference | undefined {
-  return (window as Window & { getThemePreference?: () => unknown }).getThemePreference?.() as ThemePreference | undefined;
+  const value = (window as Window & { getThemePreference?: () => unknown }).getThemePreference?.();
+  if (value === "auto" || value === "light" || value === "dark") {
+    return value;
+  }
+  return undefined;
 }
 
 export function setThemePreference(value: ThemePreference) {

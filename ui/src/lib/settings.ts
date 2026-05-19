@@ -289,7 +289,7 @@ export async function initSettings(config: Record<string, unknown>, schema: Reco
     formActions.style.display = "flex";
   }
 
-  const scheduleDirtyRefresh = () => window.setTimeout(() => workspaceRuntime.refreshDirtySection("config"), 0);
+  const scheduleDirtyRefresh = () => setTimeout(() => workspaceRuntime.refreshDirtySection("config"), 0);
   container.oninput = scheduleDirtyRefresh;
   container.onchange = scheduleDirtyRefresh;
 }

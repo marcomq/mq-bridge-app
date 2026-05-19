@@ -25,17 +25,27 @@ type DialogState = {
 } | null;
 
 export const activeDialog = writable<DialogState>(null);
+const pendingDialogs: Array<{
+  request: DialogRequest;
+  resolve: (result: boolean | string | null) => void;
+}> = [];
 
 export function showDialog(request: DialogRequest) {
   return new Promise<boolean | string | null>((resolve) => {
-    activeDialog.set({ request, resolve });
+    const nextDialog = { request, resolve };
+    if (get(activeDialog)) {
+      pendingDialogs.push(nextDialog);
+      return;
+    }
+    activeDialog.set(nextDialog);
   });
 }
 
 export function closeDialog(result: boolean | string | null) {
   const state = get(activeDialog);
-  activeDialog.set(null);
   state?.resolve(result);
+  const next = pendingDialogs.shift() || null;
+  activeDialog.set(next);
 }
 
 export function alertDialog(message: string, title = "Notice") {

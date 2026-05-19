@@ -1,4 +1,4 @@
-import { getStoredJson, setStoredJson } from "./encrypted-json";
+import { getStoredJson, setStoredJson } from "../encrypted-json-storage";
 import type { StorageSecurityInfo } from "../storage-security";
 
 export type ConfigBucket<T> = {

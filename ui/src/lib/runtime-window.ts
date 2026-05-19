@@ -9,6 +9,16 @@ export function appWindow() {
   return browserWindow();
 }
 
+function hydrateLegacyField<T extends keyof AppState>(
+  state: AppState,
+  key: T,
+  value: AppState[T] | undefined,
+) {
+  if (state[key] === undefined && value !== undefined) {
+    state[key] = value;
+  }
+}
+
 function syncLegacyWindowState(state: AppState) {
   const win = browserWindow() as any;
   win.__mqb_state = state;
@@ -39,31 +49,39 @@ function syncLegacyWindowState(state: AppState) {
 export function getMqbState() {
   const win = browserWindow() as any;
   const state = getAppState();
-  if (win.__mqb_state && win.__mqb_state !== state && typeof win.__mqb_state === "object") {
-    Object.assign(state, win.__mqb_state);
+  if (!win.__mqb_state_hydrated) {
+    const legacyState = win.__mqb_state && win.__mqb_state !== state && typeof win.__mqb_state === "object"
+      ? win.__mqb_state as Partial<AppState>
+      : null;
+    if (legacyState) {
+      for (const key of Object.keys(legacyState) as Array<keyof AppState>) {
+        hydrateLegacyField(state, key, legacyState[key]);
+      }
+    }
+    hydrateLegacyField(state, "active_tab", win._mqb_active_tab);
+    hydrateLegacyField(state, "consumers_initialized", win._mqb_consumers_initialized === undefined ? undefined : Boolean(win._mqb_consumers_initialized));
+    hydrateLegacyField(state, "publishers_initialized", win._mqb_publishers_initialized === undefined ? undefined : Boolean(win._mqb_publishers_initialized));
+    hydrateLegacyField(state, "config_initialized", win._mqb_config_initialized === undefined ? undefined : Boolean(win._mqb_config_initialized));
+    hydrateLegacyField(state, "pending_consumer_restore", win._mqb_pending_consumer_restore);
+    hydrateLegacyField(state, "pending_publisher_restore", win._mqb_pending_publisher_restore);
+    hydrateLegacyField(state, "last_consumer_idx", win._mqb_last_consumer_idx);
+    hydrateLegacyField(state, "last_publisher_idx", win._mqb_last_publisher_idx);
+    hydrateLegacyField(state, "last_consumer_tab", win._mqb_last_consumer_tab);
+    hydrateLegacyField(state, "last_publisher_tab", win._mqb_last_publisher_tab);
+    hydrateLegacyField(state, "runtime_status", win._mqb_runtime_status);
+    hydrateLegacyField(state, "storage_security", win._mqb_storage_security);
+    hydrateLegacyField(state, "storage_cache", win._mqb_storage_cache);
+    hydrateLegacyField(state, "before_workspace_save_hooks", win._mqb_before_workspace_save_hooks);
+    hydrateLegacyField(state, "after_workspace_save_hooks", win._mqb_after_workspace_save_hooks);
+    hydrateLegacyField(state, "dirty_sections", win._mqb_dirty_sections);
+    hydrateLegacyField(state, "saved_sections", win._mqb_saved_sections);
+    hydrateLegacyField(state, "runtime_poll_timer", win._mqb_runtime_poll_timer);
+    hydrateLegacyField(state, "consumer_poll_timer", win._mqb_consumer_poll_timer);
+    hydrateLegacyField(state, "consumer_poll_nonce", win._mqb_consumer_poll_nonce);
+    hydrateLegacyField(state, "form_mode", win._mqb_form_mode);
+    hydrateLegacyField(state, "cons_split", win._consSplit);
+    win.__mqb_state_hydrated = true;
   }
-  if (win._mqb_active_tab !== undefined) state.active_tab = win._mqb_active_tab;
-  if (win._mqb_consumers_initialized !== undefined) state.consumers_initialized = Boolean(win._mqb_consumers_initialized);
-  if (win._mqb_publishers_initialized !== undefined) state.publishers_initialized = Boolean(win._mqb_publishers_initialized);
-  if (win._mqb_config_initialized !== undefined) state.config_initialized = Boolean(win._mqb_config_initialized);
-  if (win._mqb_pending_consumer_restore !== undefined) state.pending_consumer_restore = win._mqb_pending_consumer_restore;
-  if (win._mqb_pending_publisher_restore !== undefined) state.pending_publisher_restore = win._mqb_pending_publisher_restore;
-  if (win._mqb_last_consumer_idx !== undefined) state.last_consumer_idx = win._mqb_last_consumer_idx;
-  if (win._mqb_last_publisher_idx !== undefined) state.last_publisher_idx = win._mqb_last_publisher_idx;
-  if (win._mqb_last_consumer_tab !== undefined) state.last_consumer_tab = win._mqb_last_consumer_tab;
-  if (win._mqb_last_publisher_tab !== undefined) state.last_publisher_tab = win._mqb_last_publisher_tab;
-  if (win._mqb_runtime_status !== undefined) state.runtime_status = win._mqb_runtime_status;
-  if (win._mqb_storage_security !== undefined) state.storage_security = win._mqb_storage_security;
-  if (win._mqb_storage_cache !== undefined) state.storage_cache = win._mqb_storage_cache;
-  if (win._mqb_before_workspace_save_hooks !== undefined) state.before_workspace_save_hooks = win._mqb_before_workspace_save_hooks;
-  if (win._mqb_after_workspace_save_hooks !== undefined) state.after_workspace_save_hooks = win._mqb_after_workspace_save_hooks;
-  if (win._mqb_dirty_sections !== undefined) state.dirty_sections = win._mqb_dirty_sections;
-  if (win._mqb_saved_sections !== undefined) state.saved_sections = win._mqb_saved_sections;
-  if (win._mqb_runtime_poll_timer !== undefined) state.runtime_poll_timer = win._mqb_runtime_poll_timer;
-  if (win._mqb_consumer_poll_timer !== undefined) state.consumer_poll_timer = win._mqb_consumer_poll_timer;
-  if (win._mqb_consumer_poll_nonce !== undefined) state.consumer_poll_nonce = win._mqb_consumer_poll_nonce;
-  if (win._mqb_form_mode !== undefined) state.form_mode = win._mqb_form_mode;
-  if (win._consSplit !== undefined) state.cons_split = win._consSplit;
   syncLegacyWindowState(state);
   return state;
 }
@@ -73,6 +91,10 @@ export function clearLegacyPendingRestoreGlobals() {
   state.pending_consumer_restore = null;
   state.pending_publisher_restore = null;
   const win = browserWindow() as any;
+  if (win.__mqb_state && typeof win.__mqb_state === "object") {
+    win.__mqb_state.pending_consumer_restore = null;
+    win.__mqb_state.pending_publisher_restore = null;
+  }
   win._mqb_pending_consumer_restore = null;
   win._mqb_pending_publisher_restore = null;
 }

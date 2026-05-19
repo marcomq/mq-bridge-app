@@ -504,21 +504,21 @@
               </table>
             </div>
           </div>
-          <div
+          <button
+            type="button"
             class="pane-divider"
             id="cons-pane-divider"
-            role="separator"
-            aria-orientation="horizontal"
+            aria-label="Resize consumer message details"
             style="height: 3px;"
             onmousedown={startMessagePaneResize}
-          ></div>
+          ></button>
           <div
             class="pane-bottom"
             id="cons-detail-pane"
             style={`height: auto; flex: 1 1 calc(${100 - messageListHeightPercent}% - 1.5px);`}
           >
             <div class="detail-header">
-              <span id="cons-msg-detail-info" style="flex:1 1 auto; min-width:0;">{$consumersPanelState.detailInfo}</span>
+              <span id="cons-msg-detail-info" style="display:block;width:52%;">{$consumersPanelState.detailInfo}</span>
               <span
                 style="margin-left:auto;cursor:pointer;color:var(--text-dim)"
                 id="cons-msg-copy-btn"
