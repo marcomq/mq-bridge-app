@@ -751,6 +751,56 @@ describe("initConsumers", () => {
     expect(Object.values(persistedMessages)[0]).toHaveLength(10);
   });
 
+  test("falls back to one message when capture keep-last input is invalid", async () => {
+    (window.localStorage.getItem as any).mockReturnValue(JSON.stringify({
+      orders_http: [{ payload: "message-0" }, { payload: "message-1" }],
+    }));
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+          output: { mode: "none" },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+    (window.saveConfigSection as any).mockImplementation(async (_section: string, consumers: any[]) => ({ consumers }));
+
+    await initConsumers(
+      config,
+      {
+        properties: {
+          consumers: {
+            items: {
+              properties: {
+                response: {},
+                output: {},
+                message_capture: {},
+              },
+            },
+          },
+        },
+        $defs: {
+          HttpConfig: {
+            properties: {
+              custom_headers: {},
+            },
+          },
+        },
+      },
+    );
+
+    setConsumerMessageCaptureKeepLastAction(Number.NaN);
+    await saveCurrentConsumerAction();
+
+    const savedConsumers = (window.saveConfigSection as any).mock.calls.at(-1)?.[1];
+    expect(savedConsumers[0].message_capture.keep_last).toBe(1);
+    expect(get(consumersPanelState).messageCaptureKeepLast).toBe(1);
+  });
+
   test("skips message fetches when capture is disabled", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

@@ -20,19 +20,22 @@ export type DialogRequest = {
 };
 
 type DialogState = {
+  id: number;
   request: DialogRequest;
   resolve: (result: boolean | string | null) => void;
 } | null;
 
 export const activeDialog = writable<DialogState>(null);
+let nextDialogId = 1;
 const pendingDialogs: Array<{
+  id: number;
   request: DialogRequest;
   resolve: (result: boolean | string | null) => void;
 }> = [];
 
 export function showDialog(request: DialogRequest) {
   return new Promise<boolean | string | null>((resolve) => {
-    const nextDialog = { request, resolve };
+    const nextDialog = { id: nextDialogId++, request, resolve };
     if (get(activeDialog)) {
       pendingDialogs.push(nextDialog);
       return;
@@ -41,8 +44,9 @@ export function showDialog(request: DialogRequest) {
   });
 }
 
-export function closeDialog(result: boolean | string | null) {
+export function closeDialog(result: boolean | string | null, expectedDialogId?: number) {
   const state = get(activeDialog);
+  if (expectedDialogId !== undefined && state?.id !== expectedDialogId) return;
   state?.resolve(result);
   const next = pendingDialogs.shift() || null;
   activeDialog.set(next);

@@ -39,7 +39,11 @@
   });
 
   function handleClose(result: any) {
-    closeDialog(result);
+    closeDialog(result, $activeDialog?.id);
+  }
+
+  function createAfterHideHandler(dialogId: number) {
+    return () => closeDialog(null, dialogId);
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -55,15 +59,16 @@
 </script>
 
 {#if $activeDialog}
-  <wa-dialog
-    bind:this={dialogEl}
-    label={title}
-    open={isOpen}
-    class="mqb-dialog"
-    onwa-after-hide={() => handleClose(null)}
-  >
-    <div class="mqb-dialog-body">
-      <div class="mqb-message">{message}</div>
+  {#key $activeDialog.id}
+    <wa-dialog
+      bind:this={dialogEl}
+      label={title}
+      open={isOpen}
+      class="mqb-dialog"
+      onwa-after-hide={createAfterHideHandler($activeDialog.id)}
+    >
+      <div class="mqb-dialog-body">
+        <div class="mqb-message">{message}</div>
 
       {#if mode === "prompt"}
         <input
@@ -78,7 +83,7 @@
 
       {#if mode === "choose"}
         <div class="mqb-choice-list">
-          {#each choices as choice}
+          {#each choices as choice (choice.value)}
             <div class="mqb-choice-row">
               <wa-button
                 variant="neutral"
@@ -133,8 +138,9 @@
           </wa-button>
         {/if}
       </div>
-    </div>
-  </wa-dialog>
+      </div>
+    </wa-dialog>
+  {/key}
 {/if}
 
 <style>

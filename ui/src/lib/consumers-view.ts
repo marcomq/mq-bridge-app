@@ -570,7 +570,8 @@ export function setConsumerMessageCaptureEnabledAction(enabled: boolean) {
 export function setConsumerMessageCaptureKeepLastAction(keepLast: number) {
   const consumer = currentConsumer();
   if (!consumer) return;
-  const nextKeepLast = Math.max(1, keepLast);
+  const numericKeepLast = Number.isFinite(keepLast) ? keepLast : 1;
+  const nextKeepLast = Math.max(1, numericKeepLast);
   consumer.message_capture = { ...normalizeMessageCapture(consumer.message_capture), keep_last: nextKeepLast };
   const key = getStorageKey(consumer);
   const legacyNameKey = String(consumer.name || "");
