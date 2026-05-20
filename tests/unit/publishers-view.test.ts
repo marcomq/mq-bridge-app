@@ -529,8 +529,12 @@ describe("initPublishers", () => {
       ],
     };
     let formChange: ((updated: unknown) => void) | null = null;
-    window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, schema, _data, onChange) => {
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation((container, schema, _data, onChange) => {
       expect(schema.required || []).not.toContain("name");
+      const input = document.createElement("input");
+      input.name = "name";
+      input.value = "http";
+      container.appendChild(input);
       formChange = onChange;
       return Promise.resolve();
     });
@@ -555,12 +559,12 @@ describe("initPublishers", () => {
     });
 
     formChange?.({
-      name: "",
+      name: "http",
       endpoint: { http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} } },
       comment: "",
     });
-
-    expect(config.publishers[0].name).toBe("");
+    const nameInput = document.querySelector<HTMLInputElement>('#pub-config-form input[name="name"]');
+    if (nameInput) nameInput.value = "";
 
     await saveCurrentPublisherAction(document.getElementById("pub-save"));
 

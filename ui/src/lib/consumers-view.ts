@@ -5,6 +5,7 @@ import { browserWindow, replaceHash } from "./browser";
 import { createLocalEntityId, getEntityDisplayLabel, normalizeConsumerNames, normalizeConsumerResponse, sanitizeConsumerName } from "./utils";
 import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES } from "./endpoint-metadata";
 import { createDefaultEndpoint, createPublisherEndpointFromConsumerEndpoint, ensureEndpointDefaults, getEndpointType, normalizeScalarEndpointValue } from "./endpoint-utils";
+import { buildConsumerTree } from "./consumer-grouping";
 import { consumersPanelState } from "./stores";
 import { extractImportedRequests } from "./import-export";
 import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
@@ -275,6 +276,10 @@ function buildSidebarItems() {
   }));
 }
 
+function buildGroupedSidebarItems(items = buildSidebarItems()) {
+  return buildConsumerTree(activeConfig.consumers, items);
+}
+
 function currentConsumer(): ConsumerConfig | null {
   const idx = get(consumersPanelState).selectedIndex;
   if (idx < 0 || idx >= activeConfig.consumers.length) return null;
@@ -373,11 +378,13 @@ function renderMessageDetails() {
 
 function renderSelectedConsumer() {
   const consumer = currentConsumer();
+  const items = buildSidebarItems();
   if (!consumer) {
     consumersPanelState.update((state) => ({
       ...state,
       hasConsumers: activeConfig.consumers.length > 0,
-      items: buildSidebarItems(),
+      items,
+      groupedItems: buildGroupedSidebarItems(items),
       currentConsumerKey: null,
     }));
     return;
@@ -397,7 +404,8 @@ function renderSelectedConsumer() {
   consumersPanelState.update((state) => ({
     ...state,
     hasConsumers: activeConfig.consumers.length > 0,
-    items: buildSidebarItems(),
+    items,
+    groupedItems: buildGroupedSidebarItems(items),
     currentConsumerKey: getRuntimeKey(consumer),
     selectedIndex: activeConfig.consumers.indexOf(consumer),
     isNew: !isSavedConsumer(consumer),
@@ -736,6 +744,7 @@ export async function deleteCurrentConsumerAction() {
       ...state,
       hasConsumers: false,
       items: [],
+      groupedItems: [],
       currentConsumerKey: null,
       selectedIndex: -1,
       selectedMessageIndex: -1,
@@ -899,10 +908,12 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
 
   const hashMatch = browserWindow().location.hash.match(/^#consumers:(\d+)$/);
   const selectedIndex = hashMatch ? Number(hashMatch[1]) : Math.min(getAppState().last_consumer_idx ?? 0, Math.max(activeConfig.consumers.length - 1, 0));
+  const items = buildSidebarItems();
   consumersPanelState.update((state) => ({
     ...state,
     hasConsumers: activeConfig.consumers.length > 0,
-    items: buildSidebarItems(),
+    items,
+    groupedItems: buildGroupedSidebarItems(items),
     selectedIndex,
     selectedMessageIndex: -1,
     activeSubtab: "messages",

@@ -1,6 +1,7 @@
 <script lang="ts">
   import "@awesome.me/webawesome/dist/components/details/details.js";
   import { activeMainTab, consumersPanelState } from "../lib/stores";
+  import type { ConsumerTreeNode } from "../lib/consumer-grouping";
   import SidebarImportActions from "./SidebarImportActions.svelte";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
   import PayloadDisplay from "./PayloadDisplay.svelte";
@@ -38,6 +39,8 @@
   let messagesPaneEl = $state<HTMLDivElement | null>(null);
   let sidebarWidth = $state<number | null>(null);
   let messageListHeightPercent = $state(40);
+  let expandedGroupIds = $state<Set<string>>(new Set());
+  let knownGroupIds = $state<Set<string>>(new Set());
   const importActions = [
     { key: "asyncapi", label: "Import AsyncAPI" },
     { key: "mqb", label: "Import mq-bridge" },
@@ -61,16 +64,127 @@
   });
   const selectedProto = $derived(selectedConsumer?.inputProto || "");
 
-  function getConsumerLabel(item: any) {
-    return String(item.displayName || item.name || item.inputProto || "Unnamed Consumer").trim();
+  type VisibleConsumerTreeRow =
+    | { kind: "group"; id: string; label: string; depth: number; expanded: boolean; endpointType?: string; tooltip?: string }
+    | {
+        kind: "consumer";
+        id: string;
+        label: string;
+        depth: number;
+        endpointType: string;
+        consumerIndex: number;
+        statusClass: string;
+        messageCount: number;
+        throughputLabel: string;
+        tooltip?: string;
+      };
+
+  function collectDefaultExpanded(nodes: ConsumerTreeNode[], acc = new Set<string>()) {
+    for (const node of nodes) {
+      if (node.kind === "group") {
+        acc.add(node.id);
+        collectDefaultExpanded(node.children, acc);
+      }
+    }
+    return acc;
   }
 
-  const visibleItems = $derived(
-    $consumersPanelState.items.filter((item) => {
-      const label = getConsumerLabel(item).toLowerCase();
-      return label.includes(filterText.trim().toLowerCase());
-    }),
-  );
+  function treeNodeMatches(node: ConsumerTreeNode, query: string): boolean {
+    const q = query.trim().toLowerCase();
+    if (!q) return false;
+
+    if (node.kind === "consumer") {
+      return node.label.toLowerCase().includes(q)
+        || String(node.tooltip || "").toLowerCase().includes(q)
+        || node.endpointType.toLowerCase().includes(q);
+    }
+
+    return node.label.toLowerCase().includes(q)
+      || String(node.tooltip || "").toLowerCase().includes(q)
+      || String(node.endpointType || "").toLowerCase().includes(q)
+      || node.children.some((child) => treeNodeMatches(child, query));
+  }
+
+  function filterTree(nodes: ConsumerTreeNode[], query: string): ConsumerTreeNode[] {
+    const q = query.trim().toLowerCase();
+    if (!q) return nodes;
+
+    const result: ConsumerTreeNode[] = [];
+    for (const node of nodes) {
+      if (node.kind === "consumer") {
+        if (treeNodeMatches(node, q)) {
+          result.push(node);
+        }
+        continue;
+      }
+
+      const children = filterTree(node.children, q);
+      if (children.length > 0 || treeNodeMatches({ ...node, children: [] }, q)) {
+        result.push({ ...node, children });
+      }
+    }
+    return result;
+  }
+
+  function flattenTree(nodes: ConsumerTreeNode[], depth = 0): VisibleConsumerTreeRow[] {
+    const rows: VisibleConsumerTreeRow[] = [];
+    const isFiltering = filterText.trim().length > 0;
+    for (const node of nodes) {
+      if (node.kind === "group") {
+        const expanded = expandedGroupIds.has(node.id) || (isFiltering && treeNodeMatches(node, filterText));
+        rows.push({
+          kind: "group",
+          id: node.id,
+          label: node.label,
+          depth,
+          expanded,
+          endpointType: node.endpointType,
+          tooltip: node.tooltip,
+        });
+        if (expanded) {
+          rows.push(...flattenTree(node.children, depth + 1));
+        }
+        continue;
+      }
+
+      rows.push({
+        kind: "consumer",
+        id: node.id,
+        label: node.label,
+        depth,
+        endpointType: node.endpointType,
+        consumerIndex: node.consumerIndex,
+        statusClass: node.statusClass,
+        messageCount: node.messageCount,
+        throughputLabel: node.throughputLabel,
+        tooltip: node.tooltip,
+      });
+    }
+    return rows;
+  }
+
+  $effect(() => {
+    const defaults = collectDefaultExpanded($consumersPanelState.groupedItems || []);
+    const nextKnown = new Set(knownGroupIds);
+    const merged = new Set(expandedGroupIds);
+    let changed = false;
+
+    for (const groupId of defaults) {
+      if (!nextKnown.has(groupId)) {
+        nextKnown.add(groupId);
+        merged.add(groupId);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      knownGroupIds = nextKnown;
+      expandedGroupIds = merged;
+    }
+  });
+
+  const visibleTreeRows = $derived.by(() =>
+    flattenTree(filterTree($consumersPanelState.groupedItems || [], filterText)));
 
   onMount(() => {
     return registerDismissOnOutsideClick(
@@ -85,6 +199,16 @@
     getAppState().last_consumer_idx = originalIndex;
     window.history.replaceState(null, "", `#consumers:${originalIndex}`);
     restoreConsumerStateFromView(originalIndex);
+  }
+
+  function toggleGroup(groupId: string) {
+    const next = new Set(expandedGroupIds);
+    if (next.has(groupId)) {
+      next.delete(groupId);
+    } else {
+      next.add(groupId);
+    }
+    expandedGroupIds = next;
   }
 
   function handleAdd(type: string) {
@@ -193,21 +317,42 @@
       </div>
       <div class="sidebar-list" id="cons-list">
         <div class="sidebar-group-label">Receive</div>
-        {#each visibleItems as item (item.originalIndex)}
-          <button
-            type="button"
-            class:active={$consumersPanelState.selectedIndex === item.originalIndex}
-            class="sidebar-item cons-item"
-            data-idx={item.originalIndex}
-            onclick={() => openConsumer(item.originalIndex)}
-          >
-            <span class={`proto-badge proto-${item.inputProto.toLowerCase()}`}>{item.inputProto}</span>
-            <span class="item-name">{getConsumerLabel(item)}</span>
-            <span class="msg-count" style="margin-left:auto;" title={`${item.messageCount} total messages`}>
-              {formatThroughput(item.throughputLabel)}
-            </span>
-            <span class={`item-status ${item.statusClass}`}></span>
-          </button>
+        {#each visibleTreeRows as row, i (row.id + '-' + i)}
+          {#if row.kind === "group"}
+            <button
+              type="button"
+              class="sidebar-item sidebar-item--group"
+              title={row.tooltip}
+              onclick={() => toggleGroup(row.id)}
+              onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => toggleGroup(row.id))}
+            >
+              <span class="tree-guide" aria-hidden="true" style={`width:${row.depth * 14}px;`}></span>
+              {#if row.depth === 0 && row.endpointType}
+                <span class={`proto-badge proto-${row.endpointType.toLowerCase()}`}>{row.endpointType}</span>
+              {/if}
+              <span class="tree-caret">{row.expanded ? "▾" : "▸"}</span>
+              <span class="item-name">{row.label}</span>
+            </button>
+          {:else}
+            <button
+              type="button"
+              class:active={$consumersPanelState.selectedIndex === row.consumerIndex}
+              class="sidebar-item cons-item"
+              data-idx={row.consumerIndex}
+              title={row.tooltip}
+              onclick={() => openConsumer(row.consumerIndex)}
+            >
+              <span class="tree-guide" aria-hidden="true" style={`width:${row.depth * 14}px;`}></span>
+              {#if row.depth === 0}
+                <span class={`proto-badge proto-${row.endpointType.toLowerCase()}`}>{row.endpointType}</span>
+              {/if}
+              <span class="item-name">{row.label}</span>
+              <span class="msg-count" style="margin-left:auto;" title={`${row.messageCount} total messages`}>
+                {formatThroughput(row.throughputLabel)}
+              </span>
+              <span class={`item-status ${row.statusClass}`}></span>
+            </button>
+          {/if}
         {/each}
       </div>
       <SidebarImportActions actions={importActions} onImport={handleImport} />

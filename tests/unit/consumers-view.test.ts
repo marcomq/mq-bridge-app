@@ -157,6 +157,7 @@ describe("initConsumers", () => {
 
     const state = get(consumersPanelState);
     expect(state.items[0]?.name).toBe("orders_http");
+    expect(state.groupedItems[0]).toMatchObject({ kind: "consumer", consumerIndex: 0, label: "orders_http" });
     expect(state.hasConsumers).toBe(true);
     expect(state.messages).toEqual([]);
   });

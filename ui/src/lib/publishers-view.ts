@@ -1096,6 +1096,14 @@ async function flushPendingFormDraft() {
     await Promise.resolve();
     await Promise.resolve();
   }
+  const idx = get(publishersPanelState).selectedIndex;
+  const nameInput = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+    '#pub-config-form input[id$=".name"], #pub-config-form input[name$="[name]"], #pub-config-form input[name="name"], #pub-config-form textarea[id$=".name"], #pub-config-form textarea[name$="[name]"], #pub-config-form textarea[name="name"]',
+  );
+  if (nameInput) {
+    const existingDraft = formDrafts.get(idx) || currentPublisher() || {};
+    formDrafts.set(idx, { ...deepClone(existingDraft as PublisherConfig), name: nameInput.value } as PublisherConfig);
+  }
 }
 
 function normalizePublisherEndpoint(endpoint: unknown) {

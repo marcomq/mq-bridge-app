@@ -1,6 +1,7 @@
 import { writable } from "svelte/store";
 import type { MainTab, RuntimeStatus } from "../runtime-status";
 import { EMPTY_RUNTIME_STATUS } from "../runtime-status";
+import type { ConsumerTreeNode } from "../consumer-grouping";
 import type { PublisherTreeNode } from "../publisher-grouping";
 import { EMPTY_STORAGE_SECURITY, type StorageSecurityInfo } from "../storage-security";
 
@@ -40,6 +41,7 @@ export interface ConsumersPanelState {
   hasConsumers: boolean;
   currentConsumerKey: string | null;
   items: ConsumerSidebarItem[];
+  groupedItems: ConsumerTreeNode[];
   selectedIndex: number;
   selectedMessageIndex: number;
   activeSubtab: "definition" | "response" | "messages";
@@ -73,6 +75,7 @@ export const consumersPanelState = writable<ConsumersPanelState>({
   hasConsumers: false,
   currentConsumerKey: null,
   items: [],
+  groupedItems: [],
   selectedIndex: 0,
   selectedMessageIndex: -1,
   activeSubtab: "messages",
