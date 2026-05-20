@@ -303,7 +303,6 @@
             class="content-tab"
             data-target="cons-response-panel"
             id="cons-response-tab"
-            style:display={$consumersPanelState.responseEnabled ? "flex" : "none"}
             onclick={() => selectConsumerSubtab("response")}
           >
             Output
@@ -371,9 +370,7 @@
         <div
           class="pane-container"
           id="cons-response-panel"
-          style:display={$consumersPanelState.activeSubtab === "response" && $consumersPanelState.responseEnabled
-            ? "flex"
-            : "none"}
+          style:display={$consumersPanelState.activeSubtab === "response" ? "flex" : "none"}
         >
           <div class="pane-top" style="padding:12px;">
             <div id="cons-response-editor">

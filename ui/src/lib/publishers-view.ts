@@ -52,6 +52,7 @@ export async function initPublishers(config: PublishersAppConfig, schema: Publis
   loadLocalState();
   hydrateHistory();
   activeConfig.publishers = (activeConfig.publishers || []).map(normalizePublisher);
+  syncConsumerPublisherReferences();
   const initialPublishersSnapshot = deepClone(activeConfig.publishers);
   getAppState().saved_sections.publishers = deepClone(initialPublishersSnapshot);
   browserWindow()._mqb_saved_sections = {
@@ -324,15 +325,11 @@ export async function copyCurrentPublisherAction() {
 export function cloneCurrentPublisherAction() {
   const publisher = currentPublisher();
   if (!publisher) return;
-  const nextName = `${publisher.name}_copy`;
-  if (activeConfig.publishers.some((row) => row !== publisher && row.name === nextName)) {
-    void browserWindow().mqbAlert?.("Cloned publisher name already exists. Please choose a different name.");
-    return;
-  }
   const cloned = normalizePublisher(deepClone(publisher));
   cloned.id = createLocalEntityId("publisher");
-  cloned.name = nextName;
   activeConfig.publishers.push(cloned);
+  void restorePublisherStateFromView(activeConfig.publishers.length - 1, { tab: get(publishersPanelState).activeSubtab });
+  refreshPublisherDirty();
 }
 
 export async function deleteCurrentPublisherAction() {
@@ -749,6 +746,9 @@ async function renderPublisherForm() {
   if ((schema as any).properties?.id) {
     (schema as any).properties.id.hidden = true;
   }
+  if (Array.isArray((schema as any).required)) {
+    (schema as any).required = (schema as any).required.filter((key: string) => key !== "name");
+  }
   await forms.init(container, schema, deepClone(publisher), (updated: PublisherConfig) => {
     formDrafts.set(get(publishersPanelState).selectedIndex, updated);
     const current = currentPublisher();
@@ -1047,20 +1047,37 @@ function extractPublisherResponsePayload(responseData: unknown) {
 }
 
 function syncConsumerPublisherReferences(previousPublisherName?: string, previousPublisherId?: string) {
-  const publishersByName = new Map(activeConfig.publishers.map((publisher) => [String(publisher.name || ""), publisher]));
+  const publishersById = new Map(
+    activeConfig.publishers
+      .map((publisher) => [String(publisher.id || "").trim(), publisher] as const)
+      .filter(([id]) => id.length > 0),
+  );
+  const publishersByName = new Map<string, PublisherConfig>();
+  for (const publisher of activeConfig.publishers) {
+    const name = String(publisher.name || "").trim();
+    if (!name) continue;
+    if (publishersByName.has(name)) {
+      publishersByName.delete(name);
+      continue;
+    }
+    publishersByName.set(name, publisher);
+  }
   for (const consumer of activeConfig.consumers || []) {
     if (consumer.output?.mode !== "publisher") continue;
     const output = consumer.output as any;
-    let publisher = publishersByName.get(String(output.publisher || ""));
-    if (!publisher && previousPublisherId) {
-      publisher = activeConfig.publishers.find((candidate) => String(candidate.id || "") === previousPublisherId);
+    const outputPublisherId = String(output.publisher_id || "").trim();
+    let publisher = publishersById.get(outputPublisherId);
+    if (!publisher) {
+      publisher = publishersByName.get(String(output.publisher || "").trim());
     }
-    if (!publisher && previousPublisherName && String(output.publisher || "") === previousPublisherName) {
-      publisher = activeConfig.publishers.find((candidate) => String(candidate.id || "") === previousPublisherId)
-        || activeConfig.publishers.find((candidate) => String(candidate.name || "") !== previousPublisherName);
+    if (!publisher && previousPublisherId && outputPublisherId === previousPublisherId) {
+      publisher = publishersById.get(previousPublisherId);
+    }
+    if (!publisher && previousPublisherName && String(output.publisher || "").trim() === previousPublisherName.trim()) {
+      publisher = publishersById.get(String(previousPublisherId || "").trim()) || publishersByName.get(previousPublisherName.trim());
     }
     if (!publisher) continue;
-    output.publisher = String(publisher.name || output.publisher || "");
+    output.publisher = String(publisher.name || "");
     output.publisher_id = publisher.id;
   }
 }

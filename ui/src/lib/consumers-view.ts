@@ -121,7 +121,14 @@ function normalizeMessageCapture(input: ConsumerMessageCaptureConfig | null | un
 function normalizeOutput(input: ConsumerOutputConfig | null | undefined): ConsumerOutputConfig {
   if (!input || typeof input !== "object") return { mode: "none" };
   const mode = input.mode;
-  if (mode === "publisher") return { mode, publisher: String((input as any).publisher || "") };
+  if (mode === "publisher") {
+    const output: ConsumerOutputConfig = { mode, publisher: String((input as any).publisher || "") };
+    const publisherId = String((input as any).publisher_id || "").trim();
+    if (publisherId) {
+      (output as any).publisher_id = publisherId;
+    }
+    return output;
+  }
   if (mode === "response") return { mode, response: (input as any).response ?? { payload: "", headers: {} } };
   return { mode: "none" };
 }
@@ -275,10 +282,48 @@ function currentConsumer(): ConsumerConfig | null {
 }
 
 function nextPublisherOptions() {
-  return getLivePublishers().map((publisher) => ({
-    value: String(publisher.name || ""),
-    label: String(publisher.name || ""),
-  }));
+  const publishers = getLivePublishers();
+  const nameCounts = publishers.reduce((counts, publisher) => {
+    const name = String(publisher.name || "").trim();
+    if (name) counts.set(name, (counts.get(name) || 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+
+  return publishers.map((publisher, index) => {
+    const name = String(publisher.name || "").trim();
+    const id = String(publisher.id || "").trim() || createLocalEntityId("publisher");
+    publisher.id = id;
+    const value = id;
+    const label = name && nameCounts.get(name) === 1
+      ? name
+      : getEntityDisplayLabel("", publisher.endpoint, getEndpointType(publisher.endpoint));
+    return { value, label };
+  });
+}
+
+function findPublisherByOutputValue(value: string): PublisherConfig | undefined {
+  if (!value.trim()) return undefined;
+  const publishers = getLivePublishers();
+  return publishers.find((publisher) => String(publisher.id || "").trim() === value)
+    || publishers.find((publisher) => String(publisher.name || "").trim() === value);
+}
+
+function getSelectedPublisherValue(output: ConsumerOutputConfig | null | undefined): string {
+  if (output?.mode !== "publisher") return "";
+  const publisherId = String((output as any).publisher_id || "").trim();
+  if (publisherId && findPublisherByOutputValue(publisherId)) return publisherId;
+  return String((output as any).publisher || "").trim();
+}
+
+function createConsumerPublisherOutput(value: string): ConsumerOutputConfig {
+  const publisher = findPublisherByOutputValue(value);
+  const publisherName = String(publisher?.name || (publisher ? "" : value)).trim();
+  const output: ConsumerOutputConfig = { mode: "publisher", publisher: publisherName };
+  const publisherId = String(publisher?.id || "").trim();
+  if (publisherId) {
+    (output as any).publisher_id = publisherId;
+  }
+  return output;
 }
 
 function responseRowsFromConsumer(consumer: ConsumerConfig): ConsumerResponseHeaderRow[] {
@@ -359,10 +404,9 @@ function renderSelectedConsumer() {
     deleteLabel: "Delete",
     messageCaptureEnabled: capture.enabled,
     messageCaptureKeepLast: capture.keep_last,
-    responseEnabled: responseCapable,
     outputMode: (output.mode as any) || "none",
     publisherOptions,
-    selectedPublisher: output.mode === "publisher" ? String((output as any).publisher || "") : "",
+    selectedPublisher: getSelectedPublisherValue(output),
     responseSupported: responseCapable,
     responseHeaders: responseRows,
     responsePayload: responseValue.payload || "",
@@ -535,8 +579,8 @@ export function setConsumerOutputModeAction(mode: "none" | "publisher" | "respon
       renderSelectedConsumer();
       return;
     }
-    const selectedPublisher = options.length === 1 ? options[0].value : (consumer.output?.mode === "publisher" ? String((consumer.output as any).publisher || "") : "");
-    consumer.output = { mode: "publisher", publisher: selectedPublisher };
+    const selectedPublisher = options.length === 1 ? options[0].value : getSelectedPublisherValue(consumer.output);
+    consumer.output = createConsumerPublisherOutput(selectedPublisher);
     consumersPanelState.update((state) => ({ ...state, outputMode: "publisher", publisherOptions: options, selectedPublisher }));
     refreshConsumerDirty();
     return;
@@ -554,7 +598,7 @@ export function setConsumerOutputModeAction(mode: "none" | "publisher" | "respon
 export function setConsumerOutputPublisherAction(publisher: string) {
   const consumer = currentConsumer();
   if (!consumer) return;
-  consumer.output = { mode: "publisher", publisher };
+  consumer.output = createConsumerPublisherOutput(publisher);
   consumersPanelState.update((state) => ({ ...state, selectedPublisher: publisher }));
   refreshConsumerDirty();
 }

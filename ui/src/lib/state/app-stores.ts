@@ -47,7 +47,6 @@ export interface ConsumersPanelState {
   deleteLabel: string;
   messageCaptureEnabled: boolean;
   messageCaptureKeepLast: number;
-  responseEnabled: boolean;
   outputMode: "none" | "publisher" | "response";
   publisherOptions: Array<{ value: string; label: string }>;
   selectedPublisher: string;
@@ -81,7 +80,6 @@ export const consumersPanelState = writable<ConsumersPanelState>({
   deleteLabel: "Delete",
   messageCaptureEnabled: true,
   messageCaptureKeepLast: 100,
-  responseEnabled: false,
   outputMode: "none",
   publisherOptions: [],
   selectedPublisher: "",

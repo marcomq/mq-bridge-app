@@ -5,6 +5,7 @@
   import { exportFullBundle, importAppConfigFromJsonText, resetAppConfigToDefaults } from "../lib/import-export";
   import { withSelectedFileText } from "../lib/utils";
   import { appShell } from "../lib/app-shell";
+  import { browserWindow } from "../lib/browser";
   import { alertDialog, confirmDialog } from "../lib/dialogs";
   import type { StorageSecurityInfo } from "../lib/storage-security";
   import { formatDesktopSecretsSummary } from "../lib/settings";
@@ -76,6 +77,7 @@
   }
 
   async function checkStoredSecrets() {
+    const alert = browserWindow().mqbAlert || alertDialog;
     try {
       const response = await fetch("/desktop-secrets", { cache: "no-store" });
       if (!response.ok) {
@@ -84,9 +86,9 @@
       }
 
       const summary = await response.json();
-      await alertDialog(formatDesktopSecretsSummary(summary), "Stored Secrets");
+      await alert(formatDesktopSecretsSummary(summary), "Stored Secrets");
     } catch (error) {
-      await alertDialog(`Failed to inspect stored secrets: ${(error as Error).message}`, "Stored Secrets");
+      await alert(`Failed to inspect stored secrets: ${(error as Error).message}`, "Stored Secrets");
     }
   }
 

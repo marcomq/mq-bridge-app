@@ -37,6 +37,24 @@ export function defaultMetricsMiddleware(): Array<{ metrics: Record<string, neve
   return [];
 }
 
+export function isRouteEnabled(route: Partial<RouteDefinition> | undefined): boolean {
+  return route?.enabled !== false;
+}
+
+export function hasMetricsMiddleware(route: { input?: RouteEndpoint; output?: RouteEndpoint } | undefined): boolean {
+  const hasMetrics = (endpoint: RouteEndpoint | undefined) =>
+    Array.isArray(endpoint?.middlewares)
+    && endpoint.middlewares.some((middleware) => Boolean(middleware?.metrics));
+  return hasMetrics(route?.input) || hasMetrics(route?.output);
+}
+
+export function formatThroughput(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 msg/s";
+  if (value < 10) return `${value.toFixed(2)} msg/s`;
+  if (value < 100) return `${value.toFixed(1)} msg/s`;
+  return `${Math.round(value)} msg/s`;
+}
+
 export function applyEndpointSchemaDefaults(routeSchema: RouteSchema): void {
   const fileConfigSchema = routeSchema.$defs?.FileConfig;
   if (fileConfigSchema?.properties?.format) {
@@ -78,4 +96,13 @@ export function createRefInputEndpoint(refName: string): RouteEndpoint {
     middlewares: defaultMetricsMiddleware(),
     ref: refName,
   };
+}
+
+export function splitRouteFormData(
+  currentName: string,
+  formData: Record<string, unknown>,
+): SplitRouteFormDataResult {
+  const { name, ...routeData } = formData;
+  const nextName = String(name || "").trim() || currentName;
+  return { nextName, routeData };
 }

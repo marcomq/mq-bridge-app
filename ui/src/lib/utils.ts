@@ -122,6 +122,20 @@ function sanitizeUrlHost(rawUrl: string) {
   }
 }
 
+function sanitizeUrlTarget(rawUrl: string, includePath: boolean) {
+  const value = String(rawUrl || "").trim();
+  if (!value) return "";
+  const host = sanitizeUrlHost(value);
+  if (!includePath) return host;
+  try {
+    const parsed = new URL(value);
+    const path = `${parsed.pathname || ""}${parsed.search || ""}`;
+    return `${host}${path && path !== "/" ? path : ""}`.trim();
+  } catch {
+    return host;
+  }
+}
+
 function normalizePathValue(rawPath: string) {
   const value = String(rawPath || "").trim();
   if (!value) return "";
@@ -143,7 +157,7 @@ export function getTechnicalDisplayLabel(
   const values = fields.map((field) => {
     const rawValue = data[field];
     if (field === "url") {
-      return sanitizeUrlHost(String(rawValue || ""));
+      return sanitizeUrlTarget(String(rawValue || ""), !String(data.path || "").trim());
     }
     if (field === "path") {
       return normalizePathValue(String(rawValue || ""));

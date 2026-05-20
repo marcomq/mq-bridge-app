@@ -14,6 +14,7 @@
     addPublisherMetadataRow,
     beautifyPublisherPayloadAction,
     clearActivePublisherHistory,
+    cloneCurrentPublisherAction,
     copyPublisherResponse,
     copyPublisherResponseJson,
     copyPublisherAsCurl,
@@ -26,7 +27,6 @@
     deleteCurrentPublisherAction,
     removePublisherMetadataRow,
     restorePublisherStateFromView,
-    saveCurrentPublisherVariantAction,
     savePublisherHistoryAsPublisherAction,
     selectPublisherSubtab,
     sendPublisherAction,
@@ -556,8 +556,8 @@
                       variant="neutral"
                       appearance="outlined"
                       id="pub-save-variant"
-                      onclick={saveCurrentPublisherVariantAction}
-                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void saveCurrentPublisherVariantAction())}
+                      onclick={cloneCurrentPublisherAction}
+                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentPublisherAction)}
                       role="button"
                       tabindex="0"
                     >Clone</wa-button>
