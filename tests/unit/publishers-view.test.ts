@@ -963,6 +963,10 @@ describe("initPublishers", () => {
           ok: true,
           status: 200,
           statusText: "OK",
+          responseData: {
+            payload: { accepted: true },
+            metadata: { "x-response-id": "abc" },
+          },
           duration: 12,
           time: 1,
         },
@@ -1001,6 +1005,9 @@ describe("initPublishers", () => {
     expect(config.publishers[0].endpoint.http.url).toBe("https://api.example.test");
     expect(config.publishers[0].endpoint.http.path).toBe("/orders/42");
     expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
+    expect(get(publishersPanelState).requestHeaders).toEqual([["x-test", "yes"]]);
+    expect(get(publishersPanelState).responseHeaders).toEqual([["x-response-id", "abc"]]);
+    expect(get(publishersPanelState).responsePayload).toBe(JSON.stringify({ accepted: true }, null, 2));
   });
 
   test("restores all visible non-http request bar fields from history", async () => {
@@ -1490,7 +1497,7 @@ describe("initPublishers", () => {
       routes: {},
       consumers: [],
     };
-    window.mqbPrompt = vi.fn().mockResolvedValue("orders_consumer");
+    window.mqbPrompt = vi.fn();
 
     initPublishers(
       config,
@@ -1501,9 +1508,11 @@ describe("initPublishers", () => {
     );
 
     await copyCurrentPublisherAction();
+    expect(window.mqbPrompt).not.toHaveBeenCalled();
+    expect(window._mqb_saved_sections?.consumers).toEqual([]);
     expect(config.consumers).toEqual([
       expect.objectContaining({
-        name: "orders_consumer",
+        name: "",
         endpoint: expect.objectContaining({ http: expect.any(Object) }),
       }),
     ]);
@@ -1554,7 +1563,7 @@ describe("publisher to consumer endpoint conversion", () => {
 
     expect(endpoint).toEqual({
       http: {
-        url: "localhost:1234",
+        url: "127.0.0.1:1234",
         path: "/api/orders/updated?mode=test",
         method: "POST",
         custom_headers: { authorization: "Bearer token" },
@@ -1571,7 +1580,7 @@ describe("publisher to consumer endpoint conversion", () => {
 
     expect(endpoint).toEqual({
       websocket: {
-        url: "localhost:8081",
+        url: "127.0.0.1:8081",
         path: "/socket/events",
       },
     });
@@ -1586,7 +1595,7 @@ describe("publisher to consumer endpoint conversion", () => {
 
     expect(endpoint).toEqual({
       grpc: {
-        url: "localhost:50051",
+        url: "127.0.0.1:50051",
       },
     });
   });

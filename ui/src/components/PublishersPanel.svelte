@@ -48,6 +48,7 @@
   let copyFeedback = $state("");
   let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   let publishersContainerEl: HTMLDivElement | null = null;
+  let publisherPaneEl = $state<HTMLDivElement | null>(null);
   let selectedImportKind = $state<"postman" | "openapi" | "asyncapi" | "mqb">("postman");
   const importActions = [
     { key: "postman", label: "Import Postman" },
@@ -58,6 +59,7 @@
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
   let sidebarWidth = $state<number | null>(null);
+  let responsePaneHeightPercent = $state(40);
 
   type VisibleTreeRow =
     | { kind: "group"; id: string; label: string; depth: number; expanded: boolean; endpointType?: string; tooltip?: string }
@@ -274,6 +276,31 @@
       sidebarWidth = nextWidth;
     });
   }
+
+  function startResponsePaneResize(event: MouseEvent) {
+    if (!publisherPaneEl) return;
+    event.preventDefault();
+    const container = publisherPaneEl;
+
+    const updateSplit = (clientY: number) => {
+      const rect = container.getBoundingClientRect();
+      const offset = clientY - rect.top;
+      const clampedOffset = Math.min(Math.max(offset, 100), Math.max(rect.height - 100, 100));
+      const topPercent = Math.min(Math.max((clampedOffset / rect.height) * 100, 20), 80);
+      responsePaneHeightPercent = 100 - topPercent;
+    };
+
+    updateSplit(event.clientY);
+
+    const onMove = (moveEvent: MouseEvent) => updateSplit(moveEvent.clientY);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 </script>
 
 <div class:active={$activeMainTab === "publishers"} class="tab-content-panel" id="tab-publishers">
@@ -420,8 +447,11 @@
             {$publishersPanelState.responseTabLabel}
           </div>
         </div>
-        <div class="pane-container">
-          <div id="pub-top-content-wrapper" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+        <div bind:this={publisherPaneEl} class="pane-container">
+          <div
+            id="pub-top-content-wrapper"
+            style={`display: flex; flex-direction: column; overflow: hidden; flex: 0 0 calc(${100 - responsePaneHeightPercent}% - 1.5px);`}
+          >
             <div
               class="pane-top"
               id="pub-payload-pane"
@@ -579,7 +609,21 @@
               </div>
             </div>
           </div>
-          <div class="pane-bottom" id="pub-response-container" style:display={$publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition" ? "flex" : "none"}>
+          <button
+            type="button"
+            class="pane-divider"
+            id="pub-pane-divider"
+            aria-label="Resize publisher response details"
+            style="height: 3px;"
+            style:display={$publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition" ? "block" : "none"}
+            onmousedown={startResponsePaneResize}
+          ></button>
+          <div
+            class="pane-bottom"
+            id="pub-response-container"
+            style={`height: auto; flex: 1 1 calc(${responsePaneHeightPercent}% - 1.5px);`}
+            style:display={$publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition" ? "flex" : "none"}
+          >
             <div class="detail-header">
               <span id="pub-response-status">
                 <span style={`color:${$publishersPanelState.responseStatusColor};font-weight:bold;padding:2px 4px;border-radius:3px;background:rgba(0,0,0,0.2);`}>

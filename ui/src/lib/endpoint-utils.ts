@@ -179,6 +179,12 @@ function splitEndpointUrl(rawUrl: unknown, defaultProtocol: string) {
   }
 }
 
+function normalizeListenHost(host: string) {
+  if (host === "localhost") return "127.0.0.1";
+  if (host.startsWith("localhost:")) return `127.0.0.1:${host.slice("localhost:".length)}`;
+  return host;
+}
+
 function getMutableClientEndpointParts(endpoint: EndpointRecord) {
   const nextEndpoint = cloneJson(endpoint || {});
   const endpointType = getEndpointType(nextEndpoint);
@@ -200,7 +206,7 @@ export function createConsumerEndpointFromPublisherEndpoint(endpoint: EndpointRe
   if (!parts) return cloneJson(endpoint || {});
 
   const { nextEndpoint, endpointType, config, parsed } = parts;
-  config.url = parsed.host;
+  config.url = normalizeListenHost(parsed.host);
   if (PATH_CAPABLE_CLIENT_ENDPOINTS.has(endpointType)) {
     const path = parsed.path || (typeof config.path === "string" ? config.path : "");
     if (path && path !== "/") {

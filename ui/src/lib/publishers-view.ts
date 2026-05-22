@@ -284,11 +284,17 @@ export async function showPublisherHistoryEntry(historyIndex: number) {
   if (!publisher) return;
   const entry = currentHistoryEntries()[historyIndex];
   if (!entry) return;
-  publishersPanelState.update((state) => ({ ...state, selectedHistoryIndex: historyIndex }));
   publisher.payload = entry.payload;
   applyHistoryRequestFieldsToPublisher(publisher, entry);
+  const nextResponseState = buildHistoryResponseState(publisher, entry);
   const headers = entry.metadata.map((row) => ({ id: nextHeaderRowId++, key: row.k, value: row.v, enabled: true }));
   setLocalPublisherState(publisher, { payload: entry.payload, headers });
+  setPublisherResponseState(publisher, nextResponseState);
+  publishersPanelState.update((state) => ({
+    ...state,
+    selectedHistoryIndex: historyIndex,
+    ...nextResponseState,
+  }));
   renderSelectedPublisher();
 }
 
@@ -307,16 +313,22 @@ export async function saveCurrentPublisherVariantAction() {
 export async function copyCurrentPublisherAction() {
   const publisher = currentPublisher();
   if (!publisher) return;
-  const consumerName = await browserWindow().mqbPrompt?.("Choose a name for the consumer.", "Copy Publisher to Consumer");
-  if (!consumerName) return;
   const consumers = Array.isArray(activeConfig.consumers) ? activeConfig.consumers : (activeConfig.consumers = []);
+  const previousConsumers = deepClone(consumers);
   consumers.push({
     id: createLocalEntityId("consumer"),
-    name: consumerName,
+    name: "",
     endpoint: createConsumerEndpointFromPublisherEndpoint(publisher.endpoint),
     output: { mode: "none" },
     response: null,
   } as ConsumerConfig);
+  if (!browserWindow()._mqb_saved_sections || !("consumers" in browserWindow()._mqb_saved_sections)) {
+    browserWindow()._mqb_saved_sections = {
+      ...(browserWindow()._mqb_saved_sections || {}),
+      consumers: previousConsumers,
+    };
+    getAppState().saved_sections.consumers = deepClone(previousConsumers);
+  }
   getAppState().pending_consumer_restore = { idx: consumers.length - 1, tab: "definition" };
   browserWindow().refreshDirtySection?.("consumers");
   await switchMainTab("consumers");
@@ -842,6 +854,54 @@ function buildHistoryEntry(
     ok: status >= 200 && status < 300,
     responseData,
   };
+}
+
+function buildHistoryResponseState(publisher: PublisherConfig, entry: PublisherHistoryEntry): PublisherResponseState {
+  const responsePayload = extractPublisherResponsePayload(entry.responseData);
+  const responseHeaders = extractPublisherResponseHeaders(entry.responseData);
+  const payloadString = typeof responsePayload === "string"
+    ? responsePayload
+    : JSON.stringify(responsePayload ?? "", null, 2);
+  const payloadSize = new TextEncoder().encode(payloadString).length;
+  const endpointType = getEndpointType(publisher.endpoint);
+  const endpointConfig = publisher.endpoint[endpointType] as Record<string, unknown>;
+  const requestBar = REQUEST_BAR_LAYOUTS[endpointType] || { fields: [] };
+  const values = requestValuesFromHistoryEntry(entry, requestBar.fields || []);
+  const statusOk = entry.ok ?? (entry.status >= 200 && entry.status < 300);
+  const statusLabel = entry.displayStatus || (statusOk ? String(entry.status || "OK") : "Error");
+  const statusText = entry.displayStatusText || entry.statusText || "";
+
+  return {
+    responseVisible: true,
+    responseTabLabel: `Response ✓ ${statusLabel}`,
+    responseStatusLabel: statusLabel,
+    responseStatusText: statusText,
+    responseStatusColor: statusOk ? "var(--accent-http)" : "var(--accent-kafka)",
+    responseDurationLabel: Number.isFinite(entry.duration) ? `${entry.duration}ms` : "",
+    responseSizeLabel: payloadSize > 1024 ? `${(payloadSize / 1024).toFixed(2)} KB` : `${payloadSize} B`,
+    requestRows: buildPublisherRequestRows(requestBar, endpointType, endpointConfig, values),
+    requestHeaders: entry.metadata.map((row) => [row.k, row.v]),
+    responseHeaders,
+    responsePayload: payloadString,
+  };
+}
+
+function requestValuesFromHistoryEntry(entry: PublisherHistoryEntry, fields: readonly RequestBarFieldDescriptor[]) {
+  const values: Record<string, string> = {};
+  for (const field of fields) {
+    values[field.inputId] = entry.requestMetadata[`request_bar.${field.field}`]
+      || entry.requestMetadata[`request_bar.${field.inputId}`]
+      || entry.request_fields[field.field]
+      || "";
+  }
+  if (!values["pub-url"]) {
+    values["pub-url"] = entry.requestMetadata["request_bar.url"]
+      || entry.requestMetadata["request_bar.pub-url"]
+      || entry.request_fields.url
+      || entry.url
+      || "";
+  }
+  return values;
 }
 
 function buildPublishRequestDetails(publisher: PublisherConfig) {
