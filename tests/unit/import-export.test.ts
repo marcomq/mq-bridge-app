@@ -9,6 +9,7 @@ import {
   importFromJsonText,
   resetAppConfigToDefaults,
 } from "../../ui/src/lib/import-export";
+import { appShell } from "../../ui/src/lib/app-shell";
 
 describe("import-export", () => {
   const readFixture = (name: string) =>
@@ -19,6 +20,7 @@ describe("import-export", () => {
       window.localStorage.setItem("mqb_publisher_history", JSON.stringify({ version: 1, updated_at: 0, publishers: {} }));
     }
     window.appConfig = { publishers: [{ name: "orders_http" }], routes: {}, consumers: [], presets: {}, env_vars: {}, history: {} };
+    appShell.setConfig(window.appConfig);
     let serverConfig: any = {
       publishers: [{ name: "saved_pub" }],
       routes: { r1: {} },
@@ -183,6 +185,7 @@ describe("import-export", () => {
       presets: {},
       env_vars: {},
     };
+    appShell.setConfig(window.appConfig);
     const bundle = JSON.stringify({
       type: "mqb-export",
       config: {
@@ -216,6 +219,7 @@ describe("import-export", () => {
       env_vars: { baseUrl: "http://x" },
       history: { version: 1, updated_at: 1, publishers: { p1: [{ name: "p1", payload: "", headers: [], metadata: [], request_fields: {}, requestMetadata: {}, status: 200, duration: 1, time: 1 }] } },
     };
+    appShell.setConfig(window.appConfig);
 
     await resetAppConfigToDefaults();
 

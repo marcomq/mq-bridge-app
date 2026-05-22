@@ -22,6 +22,7 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:ui": "npm run build:ui && playwright test",
+    "test:playwright": "playwright test",
     "test:ui:headed": "npm run build:ui && playwright test --headed",
     "test:ui:update-screenshots": "npm run build:ui && playwright test --update-snapshots=all",
     "tauri": "npm run build:ui && cargo run -p mq-bridge-app-desktop",

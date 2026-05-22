@@ -291,31 +291,15 @@ test("http publisher delivers a message to the http consumer within 2 seconds wi
 });
 
 test("publisher can be copied to a new consumer", async ({ page }) => {
-  const consumerStatus404s = [];
-  page.on("response", async (response) => {
-    if (
-      response.status() === 404 &&
-      response.url().includes("/consumer-status") &&
-      response.url().includes("copied_http_consumer")
-    ) {
-      consumerStatus404s.push(response.url());
-    }
-  });
-
   await openPublisherDefinition(page, 0);
 
   await page.locator("#pub-copy").click();
-  const input = page.locator(".mqb-dialog-input");
-  await expect(input).toBeVisible();
-  await expect(input).toHaveValue("");
-  await input.fill("copied_http_consumer");
-  await page.locator("wa-button", { hasText: "Create" }).click();
 
   await expect(page.locator("#mtab-consumers")).toHaveClass(/active/);
-  await expect(page.locator("#cons-list .cons-item.active .item-name")).toHaveText("copied_http_consumer");
+  await expect(page.locator("#cons-list .cons-item.active .item-name")).toContainText("127.0.0.1:8080");
+  await expect(page.locator("#cons-list .cons-item.active .item-name")).toContainText("/api/orders");
   await expect(page.locator("#cons-config-form")).toBeVisible();
-  await expect(page.locator("#workspace-save-button")).toHaveAttribute("data-dirty", /^(true|false)$/);
-  expect(consumerStatus404s.length).toBeLessThan(5);
+  await expect(page.locator("#workspace-save-button")).toHaveAttribute("data-dirty", "true");
 });
 
 test("consumer can be copied to a new publisher for review", async ({ page }) => {

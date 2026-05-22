@@ -14,6 +14,7 @@
     addPublisherMetadataRow,
     beautifyPublisherPayloadAction,
     clearActivePublisherHistory,
+    cloneCurrentPublisherAction,
     copyPublisherResponse,
     copyPublisherResponseJson,
     copyPublisherAsCurl,
@@ -26,7 +27,6 @@
     deleteCurrentPublisherAction,
     removePublisherMetadataRow,
     restorePublisherStateFromView,
-    saveCurrentPublisherVariantAction,
     savePublisherHistoryAsPublisherAction,
     selectPublisherSubtab,
     sendPublisherAction,
@@ -39,7 +39,8 @@
   } from "../lib/publishers-view";
   import { registerDismissOnOutsideClick, startSidebarResize as beginSidebarResize } from "../lib/sidebar-ui";
   import { handleActionKey, getLabel } from "../lib/utils";
-  import { getMqbState, mqbDialogs } from "../lib/runtime-window";
+  import { getAppState } from "../lib/app-shell";
+  import { alertDialog } from "../lib/dialogs";
 
   let filterText = $state("");
   let addMenuOpen = $state(false);
@@ -47,6 +48,7 @@
   let copyFeedback = $state("");
   let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   let publishersContainerEl: HTMLDivElement | null = null;
+  let publisherPaneEl = $state<HTMLDivElement | null>(null);
   let selectedImportKind = $state<"postman" | "openapi" | "asyncapi" | "mqb">("postman");
   const importActions = [
     { key: "postman", label: "Import Postman" },
@@ -57,6 +59,8 @@
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
   let sidebarWidth = $state<number | null>(null);
+  let responsePaneHeightPercent = $state(40);
+  const responsePaneVisible = $derived($publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition");
 
   type VisibleTreeRow =
     | { kind: "group"; id: string; label: string; depth: number; expanded: boolean; endpointType?: string; tooltip?: string }
@@ -177,8 +181,7 @@
   });
 
   function openPublisher(originalIndex: number) {
-    getMqbState().last_publisher_idx = originalIndex;
-    (window as any)._mqb_last_publisher_idx = originalIndex;
+    getAppState().last_publisher_idx = originalIndex;
     window.history.replaceState(null, "", `#publishers:${originalIndex}`);
     restorePublisherStateFromView(originalIndex);
   }
@@ -252,10 +255,10 @@
       const selectedIndex = get(publishersPanelState).selectedIndex || 0;
       void restorePublisherStateFromView(selectedIndex, { tab: "definition" });
 
-      await mqbDialogs.alert("✅ Import completed successfully.", "Import Success");
+      await alertDialog("✅ Import completed successfully.", "Import Success");
       openSubtab("definition");
     } catch (error) {
-      await mqbDialogs.alert(`Import failed: ${(error as Error).message}`, "Import");
+      await alertDialog(`Import failed: ${(error as Error).message}`, "Import");
     }
   }
 
@@ -273,6 +276,50 @@
     beginSidebarResize(event, publishersContainerEl, (nextWidth) => {
       sidebarWidth = nextWidth;
     });
+  }
+
+  function resizeResponsePaneBy(delta: number) {
+    responsePaneHeightPercent = Math.min(Math.max(responsePaneHeightPercent + delta, 20), 80);
+  }
+
+  function startResponsePaneResize(event: MouseEvent) {
+    if (!publisherPaneEl) return;
+    event.preventDefault();
+    const container = publisherPaneEl;
+
+    const updateSplit = (clientY: number) => {
+      const rect = container.getBoundingClientRect();
+      const offset = clientY - rect.top;
+      const clampedOffset = Math.min(Math.max(offset, 100), Math.max(rect.height - 100, 100));
+      const topPercent = Math.min(Math.max((clampedOffset / rect.height) * 100, 20), 80);
+      responsePaneHeightPercent = 100 - topPercent;
+    };
+
+    updateSplit(event.clientY);
+
+    const onMove = (moveEvent: MouseEvent) => updateSplit(moveEvent.clientY);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function handlePubPaneDividerKeydown(event: KeyboardEvent) {
+    const steps: Record<string, number> = {
+      ArrowUp: 5,
+      ArrowDown: -5,
+      PageUp: 15,
+      PageDown: -15,
+      Home: 80 - responsePaneHeightPercent,
+      End: 20 - responsePaneHeightPercent,
+    };
+    const delta = steps[event.key];
+    if (delta === undefined) return;
+    event.preventDefault();
+    resizeResponsePaneBy(delta);
   }
 </script>
 
@@ -420,8 +467,11 @@
             {$publishersPanelState.responseTabLabel}
           </div>
         </div>
-        <div class="pane-container">
-          <div id="pub-top-content-wrapper" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+        <div bind:this={publisherPaneEl} class="pane-container">
+          <div
+            id="pub-top-content-wrapper"
+            style={`display: flex; flex-direction: column; overflow: hidden; flex: 0 0 ${responsePaneVisible ? `calc(${100 - responsePaneHeightPercent}% - 1.5px)` : "100%"};`}
+          >
             <div
               class="pane-top"
               id="pub-payload-pane"
@@ -556,8 +606,8 @@
                       variant="neutral"
                       appearance="outlined"
                       id="pub-save-variant"
-                      onclick={saveCurrentPublisherVariantAction}
-                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void saveCurrentPublisherVariantAction())}
+                      onclick={cloneCurrentPublisherAction}
+                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentPublisherAction)}
                       role="button"
                       tabindex="0"
                     >Clone</wa-button>
@@ -579,7 +629,22 @@
               </div>
             </div>
           </div>
-          <div class="pane-bottom" id="pub-response-container" style:display={$publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition" ? "flex" : "none"}>
+          <button
+            type="button"
+            class="pane-divider"
+            id="pub-pane-divider"
+            aria-label="Resize publisher response details"
+            style="height: 3px;"
+            style:display={responsePaneVisible ? "block" : "none"}
+            onmousedown={startResponsePaneResize}
+            onkeydown={handlePubPaneDividerKeydown}
+          ></button>
+          <div
+            class="pane-bottom"
+            id="pub-response-container"
+            style={`height: auto; flex: 1 1 calc(${responsePaneHeightPercent}% - 1.5px);`}
+            style:display={responsePaneVisible ? "flex" : "none"}
+          >
             <div class="detail-header">
               <span id="pub-response-status">
                 <span style={`color:${$publishersPanelState.responseStatusColor};font-weight:bold;padding:2px 4px;border-radius:3px;background:rgba(0,0,0,0.2);`}>

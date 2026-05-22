@@ -11,7 +11,7 @@ import OptionalSectionField from "./OptionalSectionField.svelte";
 import PasswordField from "./PasswordField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
-import { mqbApp } from "../runtime-window";
+import { appShell } from "../app-shell";
 import { BASIC_ENDPOINT_FIELDS } from "../endpoint-metadata";
 import {
   createTypeSelectArrayRenderer,
@@ -1024,7 +1024,7 @@ CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
   suggestions: () =>
     Array.from(
       new Set(
-        ((mqbApp.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
+        ((appShell.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
           .map((publisher) => String(publisher?.id || publisher?.name || "").trim())
           .filter(Boolean),
       ),

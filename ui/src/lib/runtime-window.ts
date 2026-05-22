@@ -1,260 +1,141 @@
-import Split from "split.js";
-import * as VanillaSchemaForms from "vanilla-schema-forms";
-import type { RuntimeStatus } from "./runtime-status";
-import type { StorageSecurityInfo } from "./storage-security";
+import { appShell, configureAppShell, getAppState, workspaceRuntime, type AppState } from "./app-shell";
+import { browserWindow, currentHash, onHashChange, replaceHash, type AppWindow } from "./browser";
+import { alertDialog, chooseDialog, confirmDialog, promptDialog } from "./dialogs";
+
+export type { AppWindow } from "./browser";
+export type MqbState = AppState;
 
 export function appWindow() {
-  return window;
+  return browserWindow();
 }
 
-export function currentHash() {
-  return appWindow().location.hash;
-}
-
-function getSplit() {
-  return Split;
-}
-
-function getVanillaSchemaForms() {
-  return (appWindow() as any).VanillaSchemaForms || VanillaSchemaForms;
-}
-
-export function replaceHash(nextHash: string) {
-  appWindow().history.replaceState(null, "", nextHash);
-}
-
-export function onHashChange(listener: () => void) {
-  appWindow().addEventListener("hashchange", listener);
-}
-
-export function clearLegacyPendingRestoreGlobals() {
-  const w = appWindow() as any;
-  w._mqb_pending_consumer_restore = null;
-  w._mqb_pending_publisher_restore = null;
-}
-
-const VALID_PUBLISHER_TABS = new Set(["payload", "headers", "history", "definition"]);
-
-function normalizeLegacyPublisherTab(tab: unknown): MqbState["last_publisher_tab"] {
-  return typeof tab === "string" && VALID_PUBLISHER_TABS.has(tab) ? (tab as MqbState["last_publisher_tab"]) : "payload";
-}
-
-export type MqbState = {
-  active_tab?: "publishers" | "consumers" | "config";
-  consumers_initialized?: boolean;
-  publishers_initialized?: boolean;
-  config_initialized?: boolean;
-  pending_consumer_restore?: { idx: number; tab?: string } | null;
-  pending_publisher_restore?: { idx: number; tab?: string } | null;
-  last_consumer_idx?: number;
-  last_publisher_idx?: number;
-  last_consumer_tab?: "definition" | "response" | "messages";
-  last_publisher_tab?: "payload" | "headers" | "history" | "definition";
-  runtime_status: RuntimeStatus;
-  storage_security?: StorageSecurityInfo;
-  storage_cache?: {
-    publisher_state?: Record<string, unknown>;
-    publisher_history?: unknown;
-    consumer_messages?: Record<string, unknown>;
-  };
-  before_workspace_save_hooks: Record<string, () => void | Promise<void>>;
-  after_workspace_save_hooks: Record<string, (savedConfig: Record<string, unknown>) => void | Promise<void>>;
-  dirty_sections: Record<string, { buttonId: string; getValue: () => unknown; baseline: string }>;
-  saved_sections: Record<string, unknown>;
-  runtime_poll_timer?: number;
-  consumer_poll_timer?: number | null;
-  consumer_poll_nonce?: number;
-  form_mode?: string | null;
-  cons_split?: unknown;
-};
-
-export function getMqbState(): MqbState {
-  const w = appWindow() as any;
-  if (!w.__mqb_state) {
-    w.__mqb_state = {
-      active_tab: w._mqb_active_tab,
-      consumers_initialized: w._mqb_consumers_initialized ?? false,
-      publishers_initialized: w._mqb_publishers_initialized ?? false,
-      config_initialized: w._mqb_config_initialized ?? false,
-      pending_consumer_restore: w._mqb_pending_consumer_restore ?? null,
-      pending_publisher_restore: w._mqb_pending_publisher_restore ?? null,
-      last_consumer_idx: Number.isFinite(w._mqb_last_consumer_idx) ? w._mqb_last_consumer_idx : 0,
-      last_publisher_idx: Number.isFinite(w._mqb_last_publisher_idx) ? w._mqb_last_publisher_idx : 0,
-      last_consumer_tab: w._mqb_last_consumer_tab ?? "messages",
-      last_publisher_tab: normalizeLegacyPublisherTab(w._mqb_last_publisher_tab),
-      runtime_status: w._mqb_runtime_status ?? {
-        active_consumers: [],
-        active_routes: [],
-        route_throughput: {},
-        consumers: {},
-      },
-      storage_security: w._mqb_storage_security,
-      storage_cache: w._mqb_storage_cache,
-      before_workspace_save_hooks: w._mqb_before_workspace_save_hooks ?? {},
-      after_workspace_save_hooks: w._mqb_after_workspace_save_hooks ?? {},
-      dirty_sections: w._mqb_dirty_sections ?? {},
-      saved_sections: w._mqb_saved_sections ?? {},
-      runtime_poll_timer: w._mqb_runtime_poll_timer,
-      consumer_poll_timer: w._mqb_consumer_poll_timer ?? null,
-      consumer_poll_nonce: w._mqb_consumer_poll_nonce ?? 0,
-      form_mode: w._mqb_form_mode ?? null,
-      cons_split: w._consSplit,
-    } as MqbState;
+function hydrateLegacyField<T extends keyof AppState>(
+  state: AppState,
+  key: T,
+  value: AppState[T] | undefined,
+) {
+  if (state[key] === undefined && value !== undefined) {
+    state[key] = value;
   }
-  const state = w.__mqb_state as MqbState;
+}
 
-  // Keep migration compatibility with remaining legacy test/setup assignments.
-  if (w._mqb_active_tab !== undefined) state.active_tab = w._mqb_active_tab;
-  if (w._mqb_consumers_initialized !== undefined) state.consumers_initialized = w._mqb_consumers_initialized;
-  if (w._mqb_publishers_initialized !== undefined) state.publishers_initialized = w._mqb_publishers_initialized;
-  if (w._mqb_config_initialized !== undefined) state.config_initialized = w._mqb_config_initialized;
-  if (w._mqb_pending_consumer_restore !== undefined) state.pending_consumer_restore = w._mqb_pending_consumer_restore;
-  if (w._mqb_pending_publisher_restore !== undefined) state.pending_publisher_restore = w._mqb_pending_publisher_restore;
-  if (w._mqb_last_consumer_idx !== undefined) state.last_consumer_idx = w._mqb_last_consumer_idx;
-  if (w._mqb_last_publisher_idx !== undefined) state.last_publisher_idx = w._mqb_last_publisher_idx;
-  if (w._mqb_last_consumer_tab !== undefined) state.last_consumer_tab = w._mqb_last_consumer_tab;
-  if (w._mqb_last_publisher_tab !== undefined) state.last_publisher_tab = normalizeLegacyPublisherTab(w._mqb_last_publisher_tab);
-  if (w._mqb_runtime_status !== undefined) state.runtime_status = w._mqb_runtime_status;
-  if (w._mqb_storage_security !== undefined) state.storage_security = w._mqb_storage_security;
-  if (w._mqb_storage_cache !== undefined) state.storage_cache = w._mqb_storage_cache;
-  if (w._mqb_before_workspace_save_hooks !== undefined) state.before_workspace_save_hooks = w._mqb_before_workspace_save_hooks;
-  if (w._mqb_after_workspace_save_hooks !== undefined) state.after_workspace_save_hooks = w._mqb_after_workspace_save_hooks;
-  if (w._mqb_dirty_sections !== undefined) state.dirty_sections = w._mqb_dirty_sections;
-  if (w._mqb_saved_sections !== undefined) state.saved_sections = w._mqb_saved_sections;
-  if (w._mqb_runtime_poll_timer !== undefined) state.runtime_poll_timer = w._mqb_runtime_poll_timer;
-  if (w._mqb_consumer_poll_timer !== undefined) state.consumer_poll_timer = w._mqb_consumer_poll_timer;
-  if (w._mqb_consumer_poll_nonce !== undefined) state.consumer_poll_nonce = w._mqb_consumer_poll_nonce;
-  if (w._mqb_form_mode !== undefined) state.form_mode = w._mqb_form_mode;
-  if (w._consSplit !== undefined) state.cons_split = w._consSplit;
+function syncLegacyWindowState(state: AppState) {
+  const win = browserWindow() as any;
+  win.__mqb_state = state;
+  win._mqb_active_tab = state.active_tab;
+  win._mqb_consumers_initialized = state.consumers_initialized;
+  win._mqb_publishers_initialized = state.publishers_initialized;
+  win._mqb_config_initialized = state.config_initialized;
+  win._mqb_pending_consumer_restore = state.pending_consumer_restore;
+  win._mqb_pending_publisher_restore = state.pending_publisher_restore;
+  win._mqb_last_consumer_idx = state.last_consumer_idx;
+  win._mqb_last_publisher_idx = state.last_publisher_idx;
+  win._mqb_last_consumer_tab = state.last_consumer_tab;
+  win._mqb_last_publisher_tab = state.last_publisher_tab;
+  win._mqb_runtime_status = state.runtime_status;
+  win._mqb_storage_security = state.storage_security;
+  win._mqb_storage_cache = state.storage_cache;
+  win._mqb_before_workspace_save_hooks = state.before_workspace_save_hooks;
+  win._mqb_after_workspace_save_hooks = state.after_workspace_save_hooks;
+  win._mqb_dirty_sections = state.dirty_sections;
+  win._mqb_saved_sections = state.saved_sections;
+  win._mqb_runtime_poll_timer = state.runtime_poll_timer;
+  win._mqb_consumer_poll_timer = state.consumer_poll_timer;
+  win._mqb_consumer_poll_nonce = state.consumer_poll_nonce;
+  win._mqb_form_mode = state.form_mode;
+  win._consSplit = state.cons_split;
+}
 
-  w._mqb_active_tab = state.active_tab;
-  w._mqb_consumers_initialized = state.consumers_initialized;
-  w._mqb_publishers_initialized = state.publishers_initialized;
-  w._mqb_config_initialized = state.config_initialized;
-  w._mqb_pending_consumer_restore = state.pending_consumer_restore;
-  w._mqb_pending_publisher_restore = state.pending_publisher_restore;
-  w._mqb_last_consumer_idx = state.last_consumer_idx;
-  w._mqb_last_publisher_idx = state.last_publisher_idx;
-  w._mqb_last_consumer_tab = state.last_consumer_tab;
-  w._mqb_last_publisher_tab = state.last_publisher_tab;
-  w._mqb_runtime_status = state.runtime_status;
-  w._mqb_storage_security = state.storage_security;
-  w._mqb_storage_cache = state.storage_cache;
-  w._mqb_before_workspace_save_hooks = state.before_workspace_save_hooks;
-  w._mqb_after_workspace_save_hooks = state.after_workspace_save_hooks;
-  w._mqb_dirty_sections = state.dirty_sections;
-  w._mqb_saved_sections = state.saved_sections;
-  w._mqb_runtime_poll_timer = state.runtime_poll_timer;
-  w._mqb_consumer_poll_timer = state.consumer_poll_timer;
-  w._mqb_consumer_poll_nonce = state.consumer_poll_nonce;
-  w._mqb_form_mode = state.form_mode;
-  w._consSplit = state.cons_split;
-
+export function getMqbState() {
+  const win = browserWindow() as any;
+  const state = getAppState();
+  if (!win.__mqb_state_hydrated) {
+    const legacyState = win.__mqb_state && win.__mqb_state !== state && typeof win.__mqb_state === "object"
+      ? win.__mqb_state as Partial<AppState>
+      : null;
+    if (legacyState) {
+      for (const key of Object.keys(legacyState) as Array<keyof AppState>) {
+        hydrateLegacyField(state, key, legacyState[key]);
+      }
+    }
+    hydrateLegacyField(state, "active_tab", win._mqb_active_tab);
+    hydrateLegacyField(state, "consumers_initialized", win._mqb_consumers_initialized === undefined ? undefined : Boolean(win._mqb_consumers_initialized));
+    hydrateLegacyField(state, "publishers_initialized", win._mqb_publishers_initialized === undefined ? undefined : Boolean(win._mqb_publishers_initialized));
+    hydrateLegacyField(state, "config_initialized", win._mqb_config_initialized === undefined ? undefined : Boolean(win._mqb_config_initialized));
+    hydrateLegacyField(state, "pending_consumer_restore", win._mqb_pending_consumer_restore);
+    hydrateLegacyField(state, "pending_publisher_restore", win._mqb_pending_publisher_restore);
+    hydrateLegacyField(state, "last_consumer_idx", win._mqb_last_consumer_idx);
+    hydrateLegacyField(state, "last_publisher_idx", win._mqb_last_publisher_idx);
+    hydrateLegacyField(state, "last_consumer_tab", win._mqb_last_consumer_tab);
+    hydrateLegacyField(state, "last_publisher_tab", win._mqb_last_publisher_tab);
+    hydrateLegacyField(state, "runtime_status", win._mqb_runtime_status);
+    hydrateLegacyField(state, "storage_security", win._mqb_storage_security);
+    hydrateLegacyField(state, "storage_cache", win._mqb_storage_cache);
+    hydrateLegacyField(state, "before_workspace_save_hooks", win._mqb_before_workspace_save_hooks);
+    hydrateLegacyField(state, "after_workspace_save_hooks", win._mqb_after_workspace_save_hooks);
+    hydrateLegacyField(state, "dirty_sections", win._mqb_dirty_sections);
+    hydrateLegacyField(state, "saved_sections", win._mqb_saved_sections);
+    hydrateLegacyField(state, "runtime_poll_timer", win._mqb_runtime_poll_timer);
+    hydrateLegacyField(state, "consumer_poll_timer", win._mqb_consumer_poll_timer);
+    hydrateLegacyField(state, "consumer_poll_nonce", win._mqb_consumer_poll_nonce);
+    hydrateLegacyField(state, "form_mode", win._mqb_form_mode);
+    hydrateLegacyField(state, "cons_split", win._consSplit);
+    win.__mqb_state_hydrated = true;
+  }
+  syncLegacyWindowState(state);
   return state;
 }
 
+export function clearLegacyPendingRestoreGlobals() {
+  const state = getAppState();
+  state.pending_consumer_restore = null;
+  state.pending_publisher_restore = null;
+  const win = browserWindow() as any;
+  if (win.__mqb_state && typeof win.__mqb_state === "object") {
+    win.__mqb_state.pending_consumer_restore = null;
+    win.__mqb_state.pending_publisher_restore = null;
+  }
+  win._mqb_pending_consumer_restore = null;
+  win._mqb_pending_publisher_restore = null;
+}
+
+export function configureRuntimeBridge(next: Parameters<typeof configureAppShell>[0]) {
+  configureAppShell(next);
+}
+
+export { currentHash, onHashChange, replaceHash };
+
 export const mqbDialogs = {
   alert(message: string, title?: string) {
-    return title === undefined ? appWindow().mqbAlert(message) : appWindow().mqbAlert(message, title);
+    const dialog = browserWindow().mqbAlert;
+    if (dialog && dialog !== mqbDialogs.alert) return dialog(message, title);
+    return alertDialog(message, title);
   },
   confirm(message: string, title?: string) {
-    return title === undefined ? appWindow().mqbConfirm(message) : appWindow().mqbConfirm(message, title);
+    const dialog = browserWindow().mqbConfirm;
+    if (dialog && dialog !== mqbDialogs.confirm) return dialog(message, title);
+    return confirmDialog(message, title);
   },
-  prompt(
-    message: string,
-    title?: string,
-    options?: {
-      confirmLabel?: string;
-      cancelLabel?: string;
-      value?: string;
-      placeholder?: string;
-    },
-  ) {
-    if (title === undefined && options === undefined) return appWindow().mqbPrompt(message);
-    if (options === undefined) return appWindow().mqbPrompt(message, title);
-    return appWindow().mqbPrompt(message, title, options);
+  prompt(message: string, title?: string, options?: {
+    confirmLabel?: string;
+    cancelLabel?: string;
+    value?: string;
+    placeholder?: string;
+  }) {
+    const dialog = browserWindow().mqbPrompt;
+    if (dialog && dialog !== mqbDialogs.prompt) return dialog(message, title, options);
+    return promptDialog(message, title, options);
   },
-  choose(
-    message: string,
-    title?: string,
-    options?: {
-      confirmLabel?: string;
-      cancelLabel?: string;
-      choices?: Array<{ value: string; label: string; description?: string }>;
-    },
-  ) {
-    if (title === undefined && options === undefined) return appWindow().mqbChoose(message);
-    if (options === undefined) return appWindow().mqbChoose(message, title);
-    return appWindow().mqbChoose(message, title, options);
+  choose(message: string, title?: string, options?: {
+    confirmLabel?: string;
+    cancelLabel?: string;
+    choices?: Array<{ value: string; label: string; description?: string }>;
+  }) {
+    const dialog = browserWindow().mqbChoose;
+    if (dialog && dialog !== mqbDialogs.choose) return dialog(message, title, options);
+    return chooseDialog(message, title, options);
   },
 };
 
-export const mqbRuntime = {
-  state() {
-    return getMqbState();
-  },
-  refreshDirtySection(sectionName: string) {
-    return appWindow().refreshDirtySection(sectionName);
-  },
-  registerDirtySection(sectionName: string, options: { buttonId: string; getValue: () => unknown }) {
-    appWindow().registerDirtySection(sectionName, options);
-  },
-  registerBeforeWorkspaceSave(key: string, callback: () => void | Promise<void>) {
-    appWindow().registerBeforeWorkspaceSave?.(key, callback);
-  },
-  registerAfterWorkspaceSave(key: string, callback: (savedConfig: Record<string, unknown>) => void | Promise<void>) {
-    appWindow().registerAfterWorkspaceSave?.(key, callback);
-  },
-  markSectionSaved(sectionName: string, savedValue?: unknown) {
-    appWindow().markSectionSaved?.(sectionName, savedValue);
-  },
-  saveWorkspace(silent = false, button?: HTMLElement | null) {
-    return appWindow().saveWorkspace?.(silent, button);
-  },
-  saveConfigSection(sectionName: string, sectionValue: unknown, silent = false, button?: HTMLElement | null) {
-    return appWindow().saveConfigSection(sectionName, sectionValue, silent, button);
-  },
-  fetchConfigFromServer<T>() {
-    return appWindow().fetchConfigFromServer<T>();
-  },
-};
-
-export const mqbApp = {
-  config<T extends Record<string, any>>() {
-    return appWindow().appConfig as T;
-  },
-  setConfig(value: Record<string, any>) {
-    appWindow().appConfig = value;
-  },
-  schema<T extends Record<string, any>>() {
-    return appWindow().appSchema as T;
-  },
-  setSchema(value: Record<string, any>) {
-    appWindow().appSchema = value;
-  },
-  init: {
-    consumers(config: Record<string, any>, schema: Record<string, any>) {
-      return appWindow().initConsumers?.(config, schema);
-    },
-    publishers(config: Record<string, any>, schema: Record<string, any>) {
-      return appWindow().initPublishers?.(config, schema);
-    },
-  },
-  restore: {
-    consumer(idx: number, options?: { tab?: string }) {
-      appWindow().restoreConsumerState?.(idx, options);
-    },
-    publisher(idx: number, options?: { tab?: string }) {
-      appWindow().restorePublisherState?.(idx, options);
-    },
-  },
-  split() {
-    return getSplit();
-  },
-  forms() {
-    return getVanillaSchemaForms();
-  },
-  isDesktop() {
-    return Boolean(appWindow().__MQB_DESKTOP__);
-  },
-};
+export const mqbRuntime = workspaceRuntime;
+export const mqbApp = appShell;

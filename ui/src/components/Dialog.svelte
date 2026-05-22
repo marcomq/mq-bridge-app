@@ -1,34 +1,27 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { handleActionKey } from "../lib/utils";
-
-  interface DialogChoice {
-    value: string;
-    label: string;
-    description?: string;
-  }
+  import { activeDialog, closeDialog, type DialogChoice } from "../lib/dialogs";
 
   let {
-    title,
-    message,
+    title = "",
+    message = "",
     confirmLabel = "OK",
     cancelLabel = "",
     value = "",
     placeholder = "",
     mode = "message",
     choices = [],
-    onResolve
-  } = $props<{
-    title: string;
-    message: string;
+  } = $derived(($activeDialog?.request ?? {}) as {
+    title?: string;
+    message?: string;
     confirmLabel?: string;
     cancelLabel?: string;
     value?: string;
     placeholder?: string;
     mode?: "message" | "confirm" | "prompt" | "choose";
     choices?: DialogChoice[];
-    onResolve: (result: any) => void;
-  }>();
+  });
 
   let dialogEl: any = $state();
   let inputValue = $state("");
@@ -46,7 +39,11 @@
   });
 
   function handleClose(result: any) {
-    onResolve(result);
+    closeDialog(result, $activeDialog?.id);
+  }
+
+  function createAfterHideHandler(dialogId: number) {
+    return () => closeDialog(null, dialogId);
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -61,88 +58,90 @@
   }
 </script>
 
-<wa-dialog
-  bind:this={dialogEl}
-  label={title}
-  open={isOpen}
-  class="mqb-dialog"
-  onwa-after-hide={() => handleClose(null)}
->
-  <div class="mqb-dialog-body">
-    <div class="mqb-message">{message}</div>
+{#if $activeDialog}
+  {#key $activeDialog.id}
+    <wa-dialog
+      bind:this={dialogEl}
+      label={title}
+      open={isOpen}
+      class="mqb-dialog"
+      onwa-after-hide={createAfterHideHandler($activeDialog.id)}
+    >
+      <div class="mqb-dialog-body">
+        <div class="mqb-message">{message}</div>
 
-    {#if mode === "prompt"}
-      <input
-        type="text"
-        class="mqb-dialog-input"
-        bind:value={inputValue}
-        placeholder={placeholder}
-        onkeydown={handleKeydown}
-        use:useFocus
-      />
-    {/if}
+      {#if mode === "prompt"}
+        <input
+          type="text"
+          class="mqb-dialog-input"
+          bind:value={inputValue}
+          placeholder={placeholder}
+          onkeydown={handleKeydown}
+          use:useFocus
+        />
+      {/if}
 
-    {#if mode === "choose"}
-      <div class="mqb-choice-list">
-        {#each choices as choice}
-          <div class="mqb-choice-row">
+      {#if mode === "choose"}
+        <div class="mqb-choice-list">
+          {#each choices as choice (choice.value)}
+            <div class="mqb-choice-row">
+              <wa-button
+                variant="neutral"
+                appearance="outlined"
+                role="button"
+                tabindex="0"
+                onclick={() => handleClose(choice.value)}
+                onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(choice.value))}
+              >
+                {choice.label}
+              </wa-button>
+              {#if choice.description}
+                <span class="mqb-choice-description">{choice.description}</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+      <div class="mqb-dialog-actions">
+        {#if mode !== "choose"}
+          {#if cancelLabel}
             <wa-button
               variant="neutral"
               appearance="outlined"
               role="button"
               tabindex="0"
-              onclick={() => handleClose(choice.value)}
-              onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(choice.value))}
+              onclick={() => handleClose(mode === "confirm" ? false : null)}
+              onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(mode === "confirm" ? false : null))}
             >
-              {choice.label}
+              {cancelLabel}
             </wa-button>
-            {#if choice.description}
-              <span class="mqb-choice-description">{choice.description}</span>
-            {/if}
-          </div>
-        {/each}
+          {/if}
+          <wa-button
+            variant="brand"
+            role="button"
+            tabindex="0"
+            onclick={() => handleClose(mode === "prompt" ? inputValue.trim() : true)}
+            onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(mode === "prompt" ? inputValue.trim() : true))}
+          >
+            {confirmLabel}
+          </wa-button>
+        {:else if cancelLabel}
+          <wa-button
+            variant="neutral"
+            appearance="outlined"
+            role="button"
+            tabindex="0"
+            onclick={() => handleClose(null)}
+            onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(null))}
+          >
+            {cancelLabel}
+          </wa-button>
+        {/if}
       </div>
-    {/if}
-  </div>
-
-  {#if mode !== "choose"}
-    <div slot="footer">
-      {#if cancelLabel}
-        <wa-button
-          variant="neutral"
-          appearance="outlined"
-          role="button"
-          tabindex="0"
-          onclick={() => handleClose(mode === "confirm" ? false : null)}
-          onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(mode === "confirm" ? false : null))}
-        >
-          {cancelLabel}
-        </wa-button>
-      {/if}
-      <wa-button
-        variant="brand"
-        role="button"
-        tabindex="0"
-        onclick={() => handleClose(mode === "prompt" ? inputValue.trim() : true)}
-        onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(mode === "prompt" ? inputValue.trim() : true))}
-      >
-        {confirmLabel}
-      </wa-button>
-    </div>
-  {:else if cancelLabel}
-     <wa-button
-       slot="footer"
-       variant="neutral"
-       appearance="outlined"
-       role="button"
-       tabindex="0"
-       onclick={() => handleClose(null)}
-       onkeydown={(e: KeyboardEvent) => handleActionKey(e, () => handleClose(null))}
-     >
-       {cancelLabel}
-     </wa-button>
-  {/if}
-</wa-dialog>
+      </div>
+    </wa-dialog>
+  {/key}
+{/if}
 
 <style>
   :global(wa-dialog.mqb-dialog::part(panel)) {
@@ -181,5 +180,11 @@
     font-size: 13px;
     color: var(--text-dim);
     flex: 1;
+  }
+  .mqb-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
   }
 </style>

@@ -5,12 +5,14 @@ import "@awesome.me/webawesome/dist/styles/webawesome.css";
 import Split from "split.js";
 import * as VanillaSchemaForms from "vanilla-schema-forms";
 import { Buffer } from "buffer";
+import type { AppWindow } from "./lib/browser";
 
 globalThis.Buffer = Buffer;
+const appWindow = window as AppWindow;
 
 // Simple dialog implementations for browser mode
-if (typeof window.mqbAlert === "undefined") {
-  window.mqbAlert = async (message: string, title?: string) => {
+if (typeof appWindow.mqbAlert === "undefined") {
+  appWindow.mqbAlert = async (message: string, title?: string) => {
     if (title) {
       alert(`${title}\n\n${message}`);
     } else {
@@ -19,22 +21,22 @@ if (typeof window.mqbAlert === "undefined") {
   };
 }
 
-if (typeof window.mqbConfirm === "undefined") {
-  window.mqbConfirm = async (message: string, title?: string) => {
+if (typeof appWindow.mqbConfirm === "undefined") {
+  appWindow.mqbConfirm = async (message: string, title?: string) => {
     return confirm(title ? `${title}\n\n${message}` : message);
   };
 }
 
-if (typeof window.mqbPrompt === "undefined") {
-  window.mqbPrompt = async (message: string, title?: string, options?: { placeholder?: string; value?: string }) => {
+if (typeof appWindow.mqbPrompt === "undefined") {
+  appWindow.mqbPrompt = async (message: string, title?: string, options?: { placeholder?: string; value?: string }) => {
     const placeholder = options?.placeholder || "";
     const value = options?.value || "";
     return prompt(title ? `${title}\n\n${message}` : message, value || placeholder);
   };
 }
 
-if (typeof window.mqbChoose === "undefined") {
-  window.mqbChoose = async (
+if (typeof appWindow.mqbChoose === "undefined") {
+  appWindow.mqbChoose = async (
     message: string,
     title?: string,
     options?: { choices?: Array<{ value: string; label: string; description?: string }> },

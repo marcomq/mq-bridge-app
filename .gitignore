@@ -42,6 +42,7 @@ db
 /coverage
 config.yml
 static/assets/__vite-browser-external-*.js
+/ui/src/legacy-delete
 
 # Serena + tokensave
 .serena

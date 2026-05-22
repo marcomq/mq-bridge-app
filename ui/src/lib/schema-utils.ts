@@ -16,6 +16,39 @@ type MutableSchema = {
   ["wa-no-label"]?: boolean;
 };
 
+type RootSchema = {
+  properties?: Record<string, MutableSchema>;
+  $defs?: Record<string, MutableSchema>;
+};
+
+function cloneSchema<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+export function resolveRootArrayItemSchema(rootSchema: RootSchema, propertyName: string): MutableSchema {
+  const itemSchema = cloneSchema(rootSchema.properties?.[propertyName]?.items || {});
+  const rootDefs = cloneSchema(rootSchema.$defs || {});
+  if (itemSchema.$ref && itemSchema.$ref.startsWith("#/$defs/")) {
+    const defName = itemSchema.$ref.slice("#/$defs/".length);
+    const resolved = rootDefs[defName] ? cloneSchema(rootDefs[defName]) : null;
+    return {
+      ...(resolved || itemSchema),
+      $defs: {
+        ...rootDefs,
+        ...(itemSchema.$defs || {}),
+        ...(resolved?.$defs || {}),
+      },
+    };
+  }
+  return {
+    ...itemSchema,
+    $defs: {
+      ...rootDefs,
+      ...(itemSchema.$defs || {}),
+    },
+  };
+}
+
 function ensureStaticConfigDef(itemSchema: MutableSchema) {
   // Keep this shared def available for downstream schema consumers that still expect it.
   if (!itemSchema.$defs?.StaticConfig) {

@@ -27,9 +27,9 @@ describe("publisher grouping", () => {
     ] as PublisherConfig[]);
 
     expect(flattenLabels(tree)).toEqual([
-      "HTTP api.test",
-      "/admin/users/",
+      "HTTP api.test/admin/users",
       "list users",
+      "/{id}/",
       "get user",
     ]);
   });
@@ -42,11 +42,8 @@ describe("publisher grouping", () => {
     ] as PublisherConfig[]);
 
     const usersGroup = tree[0];
-    const pathGroup = usersGroup.kind === "group" && usersGroup.children[0]?.kind === "group"
-      ? usersGroup.children[0]
-      : null;
-    expect(pathGroup?.label).toBe("/users/{id}/");
-    expect(pathGroup?.children.map((node) => node.label)).toEqual([
+    const users = usersGroup.kind === "group" ? usersGroup.children : [];
+    expect(users.map((node) => node.label)).toEqual([
       "get user",
       "patch user",
       "delete user",
@@ -88,10 +85,8 @@ describe("publisher grouping", () => {
     ] as PublisherConfig[]);
 
     const usersGroup = tree[0];
-    const pathGroup = usersGroup.kind === "group" && usersGroup.children[0]?.kind === "group"
-      ? usersGroup.children[0]
-      : null;
-    expect(pathGroup?.children.map((node) => node.label)).toEqual([
+    const users = usersGroup.kind === "group" ? usersGroup.children : [];
+    expect(users.map((node) => node.label)).toEqual([
       "get user",
       "delete user",
     ]);
@@ -104,10 +99,8 @@ describe("publisher grouping", () => {
     ] as PublisherConfig[]);
 
     const usersGroup = tree[0];
-    const pathGroup = usersGroup.kind === "group" && usersGroup.children[0]?.kind === "group"
-      ? usersGroup.children[0]
-      : null;
-    expect(pathGroup?.children.map((node) => node.label)).toEqual([
+    const users = usersGroup.kind === "group" ? usersGroup.children : [];
+    expect(users.map((node) => node.label)).toEqual([
       "alpha",
       "beta",
     ]);
@@ -120,11 +113,11 @@ describe("publisher grouping", () => {
     ] as PublisherConfig[]);
 
     const usersGroup = tree[0];
-    const rootUsersNode = usersGroup.kind === "group" && usersGroup.children[0]?.kind === "group"
-      ? usersGroup.children[0]
+    const nestedPath = usersGroup.kind === "group" && usersGroup.children[1]?.kind === "group"
+      ? usersGroup.children[1]
       : null;
-    const nestedLeaf = rootUsersNode?.children[1]?.kind === "publisher"
-      ? rootUsersNode.children[1]
+    const nestedLeaf = nestedPath?.children[0]?.kind === "publisher"
+      ? nestedPath.children[0]
       : null;
 
     expect(nestedLeaf?.publisherIndex).toBe(1);
@@ -148,11 +141,39 @@ describe("publisher grouping", () => {
     ] as PublisherConfig[]);
 
     expect(flattenLabels(tree)).toEqual([
-      "HTTP api.test",
-      "/order/",
+      "HTTP api.test/order",
       "order a",
       "order b",
+      "/1/",
       "order item",
+    ]);
+  });
+
+  test("does not repeat the root URL path as an extra HTTP group", () => {
+    const tree = buildPublisherTree([
+      { name: "order a", endpoint: { http: { url: "https://api.test/order", method: "GET" } } },
+      { name: "order b", endpoint: { http: { url: "https://api.test/order", method: "POST" } } },
+    ] as PublisherConfig[]);
+
+    expect(flattenLabels(tree)).toEqual([
+      "HTTP api.test/order",
+      "order a",
+      "order b",
+    ]);
+  });
+
+  test("keeps HTTP child path groups when they differ below the root URL path", () => {
+    const tree = buildPublisherTree([
+      { name: "order a", endpoint: { http: { url: "https://api.test/order", path: "/order/a", method: "GET" } } },
+      { name: "order b", endpoint: { http: { url: "https://api.test/order", path: "/order/b", method: "GET" } } },
+    ] as PublisherConfig[]);
+
+    expect(flattenLabels(tree)).toEqual([
+      "HTTP api.test/order",
+      "/a/",
+      "order a",
+      "/b/",
+      "order b",
     ]);
   });
 });

@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
+import { getAppState } from "../../ui/src/lib/app-shell";
 import {
   addPublisherAction,
   addPublisherMetadataRow,
@@ -512,6 +513,70 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).items[0]?.name).toBe("renamed_http");
   });
 
+  test("allows clearing a publisher name and keeps consumer output linked by id", async () => {
+    const config = {
+      publishers: [
+        { name: "http", endpoint: { http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} } } },
+      ],
+      routes: {},
+      consumers: [
+        {
+          name: "ingest_http",
+          endpoint: { http: { url: "http://localhost:8081", path: "/", method: "POST", custom_headers: {} } },
+          output: { mode: "publisher", publisher: "http" },
+          response: null,
+        },
+      ],
+    };
+    let formChange: ((updated: unknown) => void) | null = null;
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation((container, schema, _data, onChange) => {
+      expect(schema.required || []).not.toContain("name");
+      const input = document.createElement("input");
+      input.name = "name";
+      input.value = "http";
+      container.appendChild(input);
+      formChange = onChange;
+      return Promise.resolve();
+    });
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
+
+    initPublishers(
+      config,
+      {
+        properties: { publishers: { items: {} } },
+        required: ["name"],
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+    selectPublisherSubtab("definition");
+    await Promise.resolve();
+
+    const publisherId = config.publishers[0].id;
+    expect(config.consumers[0].output).toEqual({
+      mode: "publisher",
+      publisher: "http",
+      publisher_id: publisherId,
+    });
+
+    formChange?.({
+      name: "http",
+      endpoint: { http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} } },
+      comment: "",
+    });
+    const nameInput = document.querySelector<HTMLInputElement>('#pub-config-form input[name="name"]');
+    if (nameInput) nameInput.value = "";
+
+    await saveCurrentPublisherAction(document.getElementById("pub-save"));
+
+    const savedPublishers = (window.saveConfigSection as any).mock.calls.at(-1)?.[1];
+    expect(savedPublishers[0].name).toBe("");
+    expect(config.consumers[0].output).toEqual({
+      mode: "publisher",
+      publisher: "",
+      publisher_id: publisherId,
+    });
+  });
+
   test("restoring a publisher updates the remembered index and hash", () => {
     initPublishers(
       {
@@ -534,6 +599,28 @@ describe("initPublishers", () => {
     expect(window.location.hash).toBe("#publishers:1");
     expect((window as any)._mqb_last_publisher_idx).toBe(1);
     expect((window as any)._mqb_last_publisher_tab).toBe("definition");
+    expect(getAppState().last_publisher_idx).toBe(1);
+    expect(getAppState().last_publisher_tab).toBe("definition");
+  });
+
+  test("selecting a publisher subtab updates remembered app state", async () => {
+    await initPublishers(
+      {
+        publishers: [{ name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } }],
+        routes: {},
+        consumers: [],
+      },
+      {
+        properties: { publishers: { items: {} } },
+        $defs: { HttpConfig: { properties: { custom_headers: {} } } },
+      },
+    );
+
+    selectPublisherSubtab("history");
+
+    expect(get(publishersPanelState).activeSubtab).toBe("history");
+    expect((window as any)._mqb_last_publisher_tab).toBe("history");
+    expect(getAppState().last_publisher_tab).toBe("history");
   });
 
   test("save keeps the selected publisher and subtab", async () => {
@@ -576,6 +663,8 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).activeSubtab).toBe("definition");
     expect((window as any)._mqb_last_publisher_idx).toBe(1);
     expect((window as any)._mqb_last_publisher_tab).toBe("definition");
+    expect(getAppState().last_publisher_idx).toBe(1);
+    expect(getAppState().last_publisher_tab).toBe("definition");
   });
 
   test("init restores the selected publisher from the URL hash on reload", async () => {
@@ -874,6 +963,10 @@ describe("initPublishers", () => {
           ok: true,
           status: 200,
           statusText: "OK",
+          responseData: {
+            payload: { accepted: true },
+            metadata: { "x-response-id": "abc" },
+          },
           duration: 12,
           time: 1,
         },
@@ -912,6 +1005,9 @@ describe("initPublishers", () => {
     expect(config.publishers[0].endpoint.http.url).toBe("https://api.example.test");
     expect(config.publishers[0].endpoint.http.path).toBe("/orders/42");
     expect(config.publishers[0].endpoint.http.custom_headers).toEqual({ "x-test": "yes" });
+    expect(get(publishersPanelState).requestHeaders).toEqual([["x-test", "yes"]]);
+    expect(get(publishersPanelState).responseHeaders).toEqual([["x-response-id", "abc"]]);
+    expect(get(publishersPanelState).responsePayload).toBe(JSON.stringify({ accepted: true }, null, 2));
   });
 
   test("restores all visible non-http request bar fields from history", async () => {
@@ -1401,7 +1497,7 @@ describe("initPublishers", () => {
       routes: {},
       consumers: [],
     };
-    window.mqbPrompt = vi.fn().mockResolvedValue("orders_consumer");
+    window.mqbPrompt = vi.fn();
 
     initPublishers(
       config,
@@ -1412,15 +1508,17 @@ describe("initPublishers", () => {
     );
 
     await copyCurrentPublisherAction();
+    expect(window.mqbPrompt).not.toHaveBeenCalled();
+    expect(window._mqb_saved_sections?.consumers).toEqual([]);
     expect(config.consumers).toEqual([
       expect.objectContaining({
-        name: "orders_consumer",
+        name: "",
         endpoint: expect.objectContaining({ http: expect.any(Object) }),
       }),
     ]);
   });
 
-  test("clone publisher duplicate name shows alert branch", () => {
+  test("clone publisher keeps the current name and creates a new id", async () => {
     const config = {
       publishers: [
         { name: "orders_http", endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } } },
@@ -1439,7 +1537,16 @@ describe("initPublishers", () => {
     );
 
     cloneCurrentPublisherAction();
-    expect(window.mqbAlert).toHaveBeenCalled();
+    await Promise.resolve();
+
+    expect(window.mqbAlert).not.toHaveBeenCalled();
+    expect(config.publishers).toHaveLength(3);
+    expect(config.publishers[2]).toMatchObject({
+      name: "orders_http",
+      endpoint: { http: { url: "https://example.test/orders", custom_headers: {} } },
+    });
+    expect(config.publishers[2].id).toEqual(expect.any(String));
+    expect(config.publishers[2].id).not.toBe(config.publishers[0].id);
   });
 
 });
@@ -1456,7 +1563,7 @@ describe("publisher to consumer endpoint conversion", () => {
 
     expect(endpoint).toEqual({
       http: {
-        url: "localhost:1234",
+        url: "127.0.0.1:1234",
         path: "/api/orders/updated?mode=test",
         method: "POST",
         custom_headers: { authorization: "Bearer token" },
@@ -1473,7 +1580,7 @@ describe("publisher to consumer endpoint conversion", () => {
 
     expect(endpoint).toEqual({
       websocket: {
-        url: "localhost:8081",
+        url: "127.0.0.1:8081",
         path: "/socket/events",
       },
     });
@@ -1488,7 +1595,7 @@ describe("publisher to consumer endpoint conversion", () => {
 
     expect(endpoint).toEqual({
       grpc: {
-        url: "localhost:50051",
+        url: "127.0.0.1:50051",
       },
     });
   });

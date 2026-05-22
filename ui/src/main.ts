@@ -1,7 +1,7 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { bootstrapApp } from "./bootstrap";
-import { appWindow, mqbDialogs } from "./lib/runtime-window";
+import { installDialogs } from "./lib/dialogs";
 
 // Register global styles and common components
 import "@awesome.me/webawesome/dist/components/dialog/dialog.js";
@@ -14,9 +14,9 @@ if (!target) {
   throw new Error("Missing #app mount target");
 }
 
+installDialogs();
 mount(App, { target });
-
-bootstrapApp().catch(async (error) => {
-  console.error(error);
-  await mqbDialogs.alert(`Failed to start UI: ${(error as Error).message}`);
+void bootstrapApp().catch((error) => {
+  console.error("Failed to bootstrap app", error);
+  target.innerHTML = '<div class="app-init-error">Failed to initialize the app.</div>';
 });

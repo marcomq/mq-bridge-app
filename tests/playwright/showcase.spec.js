@@ -89,13 +89,6 @@ test("Generate showcase video", async ({ page }) => {
   await pause(800);
   await page.locator("#pub-copy").click();
   await pause(800);
-
-  const dialogInput = page.locator(".mqb-dialog-input");
-  await expect(dialogInput).toBeVisible();
-  await dialogInput.fill("demo_consumer");
-  await pause(800);
-  await page.locator("wa-button", { hasText: "Create" }).click();
-  await pause(800);
   await page.locator("#cons-save").click();
   await pause();
 

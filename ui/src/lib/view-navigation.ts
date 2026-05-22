@@ -1,11 +1,13 @@
+import { getAppState, hasMainTabSwitch, switchMainTab } from "./app-shell";
+import { replaceHash } from "./browser";
+
 type ConsumerTab = "definition" | "response" | "messages";
 type PublisherTab = "payload" | "headers" | "history" | "definition";
-import { appWindow, getMqbState, replaceHash } from "./runtime-window";
 
 function switchOrRun(mainTab: "consumers" | "publishers", callback: () => void, fallback?: () => void) {
-  if (appWindow().switchMain) {
-    fallback?.(); // Refresh view state before switching tabs
-    appWindow().switchMain(mainTab);
+  if (hasMainTabSwitch()) {
+    fallback?.();
+    void switchMainTab(mainTab);
     return;
   }
 
@@ -19,13 +21,10 @@ export function openConsumerByIndex(
   restoreConsumerState: (idx: number, options?: { tab?: ConsumerTab }) => void,
   fallback?: () => void,
 ) {
-  const state = getMqbState();
+  const state = getAppState();
   state.last_consumer_idx = idx;
   state.last_consumer_tab = tab;
-  (appWindow() as any)._mqb_last_consumer_idx = idx;
-  (appWindow() as any)._mqb_last_consumer_tab = tab;
   state.pending_consumer_restore = { idx, tab };
-  (appWindow() as any)._mqb_pending_consumer_restore = state.pending_consumer_restore;
   replaceHash(`#consumers:${idx}`);
   switchOrRun("consumers", () => restoreConsumerState(idx, { tab }), fallback);
 }
@@ -36,13 +35,10 @@ export function openPublisherByIndex(
   restorePublisherState: (idx: number, options?: { tab?: PublisherTab }) => void,
   fallback?: () => void,
 ) {
-  const state = getMqbState();
+  const state = getAppState();
   state.last_publisher_idx = idx;
   state.last_publisher_tab = tab;
-  (appWindow() as any)._mqb_last_publisher_idx = idx;
-  (appWindow() as any)._mqb_last_publisher_tab = tab;
   state.pending_publisher_restore = { idx, tab };
-  (appWindow() as any)._mqb_pending_publisher_restore = state.pending_publisher_restore;
   replaceHash(`#publishers:${idx}`);
   switchOrRun("publishers", () => restorePublisherState(idx, { tab }), fallback);
 }
