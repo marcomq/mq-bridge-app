@@ -60,6 +60,7 @@
   let knownGroupIds = $state<Set<string>>(new Set());
   let sidebarWidth = $state<number | null>(null);
   let responsePaneHeightPercent = $state(40);
+  const responsePaneVisible = $derived($publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition");
 
   type VisibleTreeRow =
     | { kind: "group"; id: string; label: string; depth: number; expanded: boolean; endpointType?: string; tooltip?: string }
@@ -277,6 +278,10 @@
     });
   }
 
+  function resizeResponsePaneBy(delta: number) {
+    responsePaneHeightPercent = Math.min(Math.max(responsePaneHeightPercent + delta, 20), 80);
+  }
+
   function startResponsePaneResize(event: MouseEvent) {
     if (!publisherPaneEl) return;
     event.preventDefault();
@@ -300,6 +305,21 @@
 
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+  }
+
+  function handlePubPaneDividerKeydown(event: KeyboardEvent) {
+    const steps: Record<string, number> = {
+      ArrowUp: 5,
+      ArrowDown: -5,
+      PageUp: 15,
+      PageDown: -15,
+      Home: 80 - responsePaneHeightPercent,
+      End: 20 - responsePaneHeightPercent,
+    };
+    const delta = steps[event.key];
+    if (delta === undefined) return;
+    event.preventDefault();
+    resizeResponsePaneBy(delta);
   }
 </script>
 
@@ -450,7 +470,7 @@
         <div bind:this={publisherPaneEl} class="pane-container">
           <div
             id="pub-top-content-wrapper"
-            style={`display: flex; flex-direction: column; overflow: hidden; flex: 0 0 calc(${100 - responsePaneHeightPercent}% - 1.5px);`}
+            style={`display: flex; flex-direction: column; overflow: hidden; flex: 0 0 ${responsePaneVisible ? `calc(${100 - responsePaneHeightPercent}% - 1.5px)` : "100%"};`}
           >
             <div
               class="pane-top"
@@ -615,14 +635,15 @@
             id="pub-pane-divider"
             aria-label="Resize publisher response details"
             style="height: 3px;"
-            style:display={$publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition" ? "block" : "none"}
+            style:display={responsePaneVisible ? "block" : "none"}
             onmousedown={startResponsePaneResize}
+            onkeydown={handlePubPaneDividerKeydown}
           ></button>
           <div
             class="pane-bottom"
             id="pub-response-container"
             style={`height: auto; flex: 1 1 calc(${responsePaneHeightPercent}% - 1.5px);`}
-            style:display={$publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition" ? "flex" : "none"}
+            style:display={responsePaneVisible ? "flex" : "none"}
           >
             <div class="detail-header">
               <span id="pub-response-status">
