@@ -1,3 +1,5 @@
+import type { FeatureAvailabilityResponse } from './generated/ui-types';
+
 type EndpointKindMetadata = {
   kind: string;
   basicFields: readonly string[];
@@ -6,6 +8,7 @@ type EndpointKindMetadata = {
   publisher: boolean;
   consumer: boolean;
   responseCapable?: boolean;
+  requiresFeature?: string;
 };
 
 export type RequestBarFieldDescriptor = {
@@ -199,8 +202,9 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "HOST", placeholder: "mq-host(1414)" },
       ],
     },
-    publisher: false,
-    consumer: false,
+    publisher: true,
+    consumer: true,
+    requiresFeature: "ibm_mq",
   },
   { kind: "switch", rootOrder: 16, basicFields: ["metadata_key", "default", "cases"], publisher: true, consumer: false },
   { kind: "fanout", rootOrder: 17, basicFields: ["endpoints"], publisher: true, consumer: false },
@@ -242,3 +246,33 @@ export const RESPONSE_CAPABLE_CONSUMER_TYPES = new Set(
     .filter((entry) => (entry as EndpointKindMetadata).responseCapable)
     .map((entry) => entry.kind),
 ) as ReadonlySet<string>;
+
+/**
+ * Filter endpoint types based on available backend features.
+ * This allows the UI to dynamically show/hide endpoint types like IBM MQ
+ * based on what the backend was compiled with.
+ */
+export function filterEndpointsByFeatures(
+  endpoints: readonly string[],
+  features: FeatureAvailabilityResponse
+): string[] {
+  return endpoints.filter((kind) => {
+    const metadata = ENDPOINT_KIND_METADATA.find((entry) => entry.kind === kind);
+    if (!metadata) return true;
+    
+    // If no feature requirement, always include
+    if (!('requiresFeature' in metadata)) return true;
+    
+    // Check if the required feature is available
+    const featureKey = metadata.requiresFeature as keyof FeatureAvailabilityResponse;
+    return features[featureKey] === true;
+  });
+}
+
+export function getPublisherTypeOptions(features: FeatureAvailabilityResponse): string[] {
+  return filterEndpointsByFeatures(PUBLISHER_TYPE_OPTIONS, features);
+}
+
+export function getConsumerTypeOptions(features: FeatureAvailabilityResponse): string[] {
+  return filterEndpointsByFeatures(CONSUMER_TYPE_OPTIONS, features);
+}

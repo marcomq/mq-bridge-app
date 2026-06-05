@@ -6,7 +6,7 @@ import { buildPublisherTree } from "./publisher-grouping";
 import { PUBLISHER_TYPE_OPTIONS, REQUEST_BAR_LAYOUTS, type RequestBarFieldDescriptor } from "./endpoint-metadata";
 import { createConsumerEndpointFromPublisherEndpoint, createDefaultEndpoint, ensureEndpointDefaults, getEndpointType } from "./endpoint-utils";
 import { publishersPanelState } from "./stores";
-import { extractImportedRequests } from "./import-export";
+import { buildPublisherConfigExport, extractImportedRequests } from "./import-export";
 import { applyEndpointSchemaDefaults } from "./routes";
 import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
 import { ensureWorkspaceCollections, sanitizePublisherHistory, type PublisherHistoryEntry, type PublisherHistoryStore } from "./workspace-config";
@@ -342,6 +342,20 @@ export function cloneCurrentPublisherAction() {
   activeConfig.publishers.push(cloned);
   void restorePublisherStateFromView(activeConfig.publishers.length - 1, { tab: get(publishersPanelState).activeSubtab });
   refreshPublisherDirty();
+}
+
+export async function currentPublisherConfigJson() {
+  const publisher = currentPublisher();
+  if (!publisher) return null;
+  await flushPendingFormDraft();
+  const idx = get(publishersPanelState).selectedIndex;
+  const draft = formDrafts.get(idx);
+  const exportPublisher = draft
+    ? normalizePublisher({ ...publisher, ...deepClone(draft) })
+    : deepClone(publisher);
+  exportPublisher.payload = publisher.payload;
+  exportPublisher.headers = get(publishersPanelState).metadataRows.map(({ id, ...row }) => row);
+  return JSON.stringify(buildPublisherConfigExport(exportPublisher as unknown as Record<string, unknown>), null, 2);
 }
 
 export async function deleteCurrentPublisherAction() {

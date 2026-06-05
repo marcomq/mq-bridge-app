@@ -77,6 +77,20 @@ export interface StorageSecurityInfoResponse {
   kid?: string | null;
 }
 
+export interface FeatureAvailabilityResponse {
+  ibm_mq: boolean;
+  kafka: boolean;
+  nats: boolean;
+  amqp: boolean;
+  mqtt: boolean;
+  http: boolean;
+  grpc: boolean;
+  zeromq: boolean;
+  mongodb: boolean;
+  aws: boolean;
+  sled: boolean;
+}
+
 export interface RouteConfig {
   enabled?: boolean;
   input: Endpoint;

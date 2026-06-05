@@ -34,6 +34,7 @@ function syncLegacyWindowState(state: AppState) {
   win._mqb_last_publisher_tab = state.last_publisher_tab;
   win._mqb_runtime_status = state.runtime_status;
   win._mqb_storage_security = state.storage_security;
+  win._mqb_features = state.features;
   win._mqb_storage_cache = state.storage_cache;
   win._mqb_before_workspace_save_hooks = state.before_workspace_save_hooks;
   win._mqb_after_workspace_save_hooks = state.after_workspace_save_hooks;
@@ -70,6 +71,7 @@ export function getMqbState() {
     hydrateLegacyField(state, "last_publisher_tab", win._mqb_last_publisher_tab);
     hydrateLegacyField(state, "runtime_status", win._mqb_runtime_status);
     hydrateLegacyField(state, "storage_security", win._mqb_storage_security);
+    hydrateLegacyField(state, "features", win._mqb_features);
     hydrateLegacyField(state, "storage_cache", win._mqb_storage_cache);
     hydrateLegacyField(state, "before_workspace_save_hooks", win._mqb_before_workspace_save_hooks);
     hydrateLegacyField(state, "after_workspace_save_hooks", win._mqb_after_workspace_save_hooks);

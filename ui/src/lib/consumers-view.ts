@@ -7,7 +7,7 @@ import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES } from "./endpoi
 import { createDefaultEndpoint, createPublisherEndpointFromConsumerEndpoint, ensureEndpointDefaults, getEndpointType, normalizeScalarEndpointValue } from "./endpoint-utils";
 import { buildConsumerTree } from "./consumer-grouping";
 import { consumersPanelState } from "./stores";
-import { extractImportedRequests } from "./import-export";
+import { buildConsumerConfigExport, extractImportedRequests } from "./import-export";
 import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
 import { applyEndpointSchemaDefaults } from "./routes";
 import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
@@ -724,6 +724,24 @@ export async function cloneCurrentConsumerAction() {
   activeConfig.consumers.push(cloned);
   refreshConsumerDirty();
   await restoreConsumerStateFromView(activeConfig.consumers.length - 1, { tab: get(consumersPanelState).activeSubtab });
+}
+
+export async function currentConsumerConfigJson() {
+  const consumer = currentConsumer();
+  if (!consumer) return null;
+  await flushPendingFormDraft();
+  const draft = formDrafts.get(get(consumersPanelState).selectedIndex);
+  const exportConsumer = draft
+    ? normalizeConsumerConfig({ ...consumer, ...deepClone(draft) })
+    : deepClone(consumer);
+  exportConsumer.output = consumer.output;
+  exportConsumer.message_capture = consumer.message_capture;
+  exportConsumer.response = consumer.response;
+  const endpointType = getEndpointType(exportConsumer.endpoint);
+  if (endpointType === "static" || endpointType === "ref") {
+    exportConsumer.endpoint[endpointType] = normalizeScalarEndpointValue(endpointType, exportConsumer.endpoint[endpointType]);
+  }
+  return JSON.stringify(buildConsumerConfigExport(exportConsumer as unknown as Record<string, unknown>), null, 2);
 }
 
 export async function deleteCurrentConsumerAction() {

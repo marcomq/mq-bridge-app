@@ -385,10 +385,23 @@ export async function bootstrapApp() {
   initializeAppShell();
   const startupHash = currentHash();
   await maybeHandleConfigRecovery(fetch);
-  const [config, schema, storageSecurityRaw] = await Promise.all([
+  const [config, schema, storageSecurityRaw, features] = await Promise.all([
     fetchConfigFromServer<Record<string, any>>(fetch),
     fetch("/schema.json").then((response) => response.json()),
     fetchStorageSecurityFromServer(fetch).catch(() => EMPTY_STORAGE_SECURITY),
+    fetch("/features").then((response) => response.json()).catch(() => ({
+      ibm_mq: false,
+      kafka: true,
+      nats: true,
+      amqp: true,
+      mqtt: true,
+      http: true,
+      grpc: true,
+      zeromq: true,
+      mongodb: true,
+      aws: true,
+      sled: true,
+    })),
   ]);
   const storageSecurity = normalizeStorageSecurityInfo(storageSecurityRaw);
   delete config.routes;
@@ -396,7 +409,9 @@ export async function bootstrapApp() {
   appShell.setSchema(schema);
   const state = getAppState();
   state.storage_security = storageSecurity;
+  state.features = features;
   browserWindow()._mqb_storage_security = storageSecurity;
+  browserWindow()._mqb_features = features;
   renderStorageSecurity();
   state.storage_cache = {
     publisher_state: await getStoredJson("mqb_publisher_state", {}, storageSecurity),

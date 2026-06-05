@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  buildConsumerConfigExport,
+  buildPublisherConfigExport,
   exportFullBundle,
   importAppConfigFromJsonText,
   importFromJsonText,
@@ -175,6 +177,48 @@ describe("import-export", () => {
     expect(click).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
     createElementSpy.mockRestore();
+  });
+
+  test("builds one consumer as an importable config payload", () => {
+    window.appConfig.env_vars = { baseUrl: "https://api.local" };
+    appShell.setConfig(window.appConfig);
+
+    const payload = buildConsumerConfigExport({
+      name: "orders_in",
+      endpoint: { http: { url: "${baseUrl}", path: "/orders" } },
+      output: { mode: "none" },
+    });
+
+    expect(payload.type).toBe("mqb-config");
+    expect(payload.config.consumers).toEqual([
+      {
+        name: "orders_in",
+        endpoint: { http: { url: "${baseUrl}", path: "/orders" } },
+        output: { mode: "none" },
+      },
+    ]);
+    expect(payload.config.env_vars).toEqual({ baseUrl: "https://api.local" });
+  });
+
+  test("builds one publisher as an importable config payload", () => {
+    window.appConfig.env_vars = { baseUrl: "https://api.local" };
+    appShell.setConfig(window.appConfig);
+
+    const payload = buildPublisherConfigExport({
+      name: "orders_http",
+      endpoint: { http: { url: "${baseUrl}", path: "/orders" } },
+      payload: "{}",
+    });
+
+    expect(payload.type).toBe("mqb-config");
+    expect(payload.config.publishers).toEqual([
+      {
+        name: "orders_http",
+        endpoint: { http: { url: "${baseUrl}", path: "/orders" } },
+        payload: "{}",
+      },
+    ]);
+    expect(payload.config.env_vars).toEqual({ baseUrl: "https://api.local" });
   });
 
   test("app config import merges entries and keeps existing data", async () => {

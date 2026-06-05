@@ -837,6 +837,7 @@ impl UiApp {
             ("GET", "/config") => self.ok_json(&self.get_config().await, false),
             ("GET", "/config-recovery") => self.ok_json(&self.config_recovery(), true),
             ("GET", "/storage-security") => self.ok_json(&self.storage_security(), true),
+            ("GET", "/features") => self.ok_json(&FeatureAvailabilityResponse::detect(), true),
             ("GET", "/consumer-status") => {
                 let consumer_key = query_param(&msg, "consumer_id")
                     .or_else(|| query_param(&msg, "consumer"))
@@ -1649,6 +1650,39 @@ pub struct StorageSecurityInfoResponse {
     pub message_key_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kid: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+pub struct FeatureAvailabilityResponse {
+    pub ibm_mq: bool,
+    pub kafka: bool,
+    pub nats: bool,
+    pub amqp: bool,
+    pub mqtt: bool,
+    pub http: bool,
+    pub grpc: bool,
+    pub zeromq: bool,
+    pub mongodb: bool,
+    pub aws: bool,
+    pub sled: bool,
+}
+
+impl FeatureAvailabilityResponse {
+    pub fn detect() -> Self {
+        Self {
+            ibm_mq: cfg!(feature = "ibm-mq"),
+            kafka: cfg!(feature = "kafka") || cfg!(feature = "full"),
+            nats: cfg!(feature = "nats") || cfg!(feature = "full"),
+            amqp: cfg!(feature = "amqp") || cfg!(feature = "full"),
+            mqtt: cfg!(feature = "mqtt") || cfg!(feature = "full"),
+            http: cfg!(feature = "http") || cfg!(feature = "full"),
+            grpc: cfg!(feature = "grpc") || cfg!(feature = "full"),
+            zeromq: cfg!(feature = "zeromq") || cfg!(feature = "full"),
+            mongodb: cfg!(feature = "mongodb") || cfg!(feature = "full"),
+            aws: cfg!(feature = "aws") || cfg!(feature = "full"),
+            sled: cfg!(feature = "sled") || cfg!(feature = "full"),
+        }
+    }
 }
 
 #[cfg(test)]
