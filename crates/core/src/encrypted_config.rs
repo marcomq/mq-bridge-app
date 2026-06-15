@@ -1,11 +1,12 @@
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit, Payload},
+    aead::{Aead, AeadCore, KeyInit, OsRng, Payload},
 };
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use config::FileFormat;
 use std::sync::{OnceLock, RwLock};
+use zeroize::Zeroizing;
 
 pub const CONFIG_MASTER_KEY_ENV: &str = "MQB_CONFIG_MASTER_KEY";
 const CONFIG_ENVELOPE_VERSION: u8 = 1;
@@ -86,7 +87,7 @@ pub fn clear_process_config_master_key() {
     *guard = None;
 }
 
-fn read_config_master_key() -> Result<(Vec<u8>, &'static str), anyhow::Error> {
+fn read_config_master_key() -> Result<(Zeroizing<Vec<u8>>, &'static str), anyhow::Error> {
     let in_memory = config_master_key_memory()
         .read()
         .unwrap_or_else(|error| error.into_inner())
@@ -111,19 +112,18 @@ fn read_config_master_key() -> Result<(Vec<u8>, &'static str), anyhow::Error> {
     if bytes.len() != 32 {
         anyhow::bail!("{} must contain exactly 32 bytes", CONFIG_MASTER_KEY_ENV);
     }
-    Ok((bytes, kid))
+    Ok((Zeroizing::new(bytes), kid))
 }
 
 fn encrypt_config_payload(plaintext: &str) -> Result<EncryptedEnvelope, anyhow::Error> {
     let (key, kid) = read_config_master_key()?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| anyhow::anyhow!("Failed to initialize config encryption"))?;
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes.copy_from_slice(&uuid::Uuid::new_v4().as_bytes()[..12]);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    // 96-bit nonce from the OS CSPRNG (best practice), not a UUID.
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let ciphertext = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: plaintext.as_bytes(),
                 aad: CONFIG_ENVELOPE_AAD,
@@ -135,7 +135,7 @@ fn encrypt_config_payload(plaintext: &str) -> Result<EncryptedEnvelope, anyhow::
         v: CONFIG_ENVELOPE_VERSION,
         alg: CONFIG_ENVELOPE_ALG.to_string(),
         kid: kid.to_string(),
-        nonce: BASE64.encode(nonce_bytes),
+        nonce: BASE64.encode(nonce.as_slice()),
         ciphertext: BASE64.encode(ciphertext),
     })
 }

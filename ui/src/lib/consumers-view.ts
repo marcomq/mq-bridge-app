@@ -159,6 +159,20 @@ function parseStructuredValue(raw: unknown): unknown {
   }
 }
 
+// Render a (possibly structured) payload for display without mangling raw strings.
+// Strings are returned verbatim so invalid JSON like `"test":a` is shown as-is
+// instead of being re-escaped by JSON.stringify (`"\"test\":a"`). Only objects
+// and arrays are pretty-printed.
+function payloadToDisplayString(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 function normalizeStringMap(raw: unknown): Record<string, string> | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const entries = Object.entries(raw as Record<string, unknown>)
@@ -366,9 +380,9 @@ function renderMessageDetails() {
   consumersPanelState.update((state) => ({
     ...state,
     detailInfo: selected ? formatTimeAgoLabel(selected.time || new Date().toISOString()) : "Select a message to view details",
-    detailRequestPayload: selected ? JSON.stringify(selected.payload, null, 2) : "",
+    detailRequestPayload: selected ? payloadToDisplayString(selected.payload) : "",
     detailRequestHeaders: selected ? sortDetailMetadataEntries(Object.entries(selected.metadata || {})) : [],
-    detailResponsePayload: selected && selected.response !== undefined ? JSON.stringify(selected.response) : "",
+    detailResponsePayload: selected && selected.response !== undefined ? payloadToDisplayString(selected.response) : "",
     detailResponseHeaders: selected ? sortDetailMetadataEntries(Object.entries(selected.response_metadata || {})) : [],
     detailRequestContentType: selected?.metadata?.["content-type"] || "",
     detailResponseContentType: selected?.response_metadata?.["content-type"] || "",
@@ -810,7 +824,12 @@ export async function toggleActiveConsumer() {
   }));
   try {
     let runtimeKey = getRuntimeKey(consumer);
-    if (!currentlyRunning && hasUnsavedConsumers()) {
+    // Auto-save before starting so the backend knows about the consumer. Besides
+    // the general dirty check, explicitly cover newly-created consumers that have
+    // never been persisted (e.g. the first consumer in a fresh workspace, where
+    // `_mqb_saved_sections.consumers` doesn't exist yet and hasUnsavedConsumers()
+    // would report false).
+    if (!currentlyRunning && (hasUnsavedConsumers() || !isSavedConsumer(consumer))) {
       const saved = await saveConsumersSection(activeConfig.consumers);
       if (saved && Array.isArray((saved as any).consumers)) {
         const rawSavedConsumer = (saved as any).consumers[get(consumersPanelState).selectedIndex];

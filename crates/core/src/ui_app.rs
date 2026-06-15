@@ -6,7 +6,7 @@ use crate::encrypted_config::has_config_master_key;
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
-use mq_bridge::models::{Endpoint, EndpointType, MemoryConfig, Route};
+use mq_bridge::models::{Endpoint, EndpointType, MemoryConfig, Route, StaticConfig};
 use mq_bridge::route::RouteHandle;
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
@@ -550,8 +550,6 @@ struct CollectorContext {
     counter: Arc<AtomicU64>,
     output: ResolvedConsumerOutput,
     capture_enabled: bool,
-    response_payload: Option<String>,
-    response_metadata: Option<String>,
 }
 
 fn resolve_consumer_output(
@@ -1522,21 +1520,17 @@ impl UiApp {
             let output_for_route = match &resolved_output {
                 ResolvedConsumerOutput::None => Endpoint::null(),
                 ResolvedConsumerOutput::Publisher { endpoint, .. } => (*endpoint).as_ref().clone(),
-                ResolvedConsumerOutput::Response { .. } => Endpoint::new_response(),
-            };
-
-            let (response_payload, response_metadata) = match &resolved_output {
-                ResolvedConsumerOutput::Response { response } => {
-                    if let Some(r) = response {
-                        (
-                            Some(r.payload.clone()),
-                            serde_json::to_string(&r.headers).ok(),
-                        )
-                    } else {
-                        (None, None)
-                    }
-                }
-                _ => (None, None),
+                // A `Static` output endpoint emits the configured payload as the
+                // route response, attaching `metadata` as response headers. This
+                // replaces the previous hand-built response message.
+                ResolvedConsumerOutput::Response { response } => match response {
+                    Some(r) => Endpoint::new(EndpointType::Static(StaticConfig {
+                        body: r.payload.clone(),
+                        raw: true,
+                        metadata: r.headers.clone(),
+                    })),
+                    None => Endpoint::null(),
+                },
             };
 
             let context = Arc::new(CollectorContext {
@@ -1545,8 +1539,6 @@ impl UiApp {
                 counter: sequence_counter,
                 output: resolved_output,
                 capture_enabled,
-                response_payload,
-                response_metadata,
             });
 
             let route = Route::new(consumer.endpoint.clone(), output_for_route)
@@ -1565,11 +1557,14 @@ impl UiApp {
                                 chrono::Utc::now().timestamp_millis().to_string(),
                             );
 
-                            if let Some(p) = &ctx.response_payload {
-                                meta.insert("ui_response_payload".into(), p.clone());
-                            }
-                            if let Some(m) = &ctx.response_metadata {
-                                meta.insert("ui_response_metadata".into(), m.clone());
+                            if let ResolvedConsumerOutput::Response {
+                                response: Some(r),
+                            } = &ctx.output
+                            {
+                                meta.insert("ui_response_payload".into(), r.payload.clone());
+                                if let Ok(headers) = serde_json::to_string(&r.headers) {
+                                    meta.insert("ui_response_metadata".into(), headers);
+                                }
                             }
 
                             // Use non-blocking send to avoid stalling the bridge when the UI capture buffer is full.
@@ -1592,11 +1587,10 @@ impl UiApp {
                                 }
                             }
                             ResolvedConsumerOutput::Response { response } => {
-                                if let Some(response_config) = response {
-                                    let mut response_msg =
-                                        CanonicalMessage::from(response_config.payload.clone());
-                                    response_msg.metadata = response_config.headers.clone();
-                                    Ok(Handled::Publish(response_msg))
+                                // The `Static` output endpoint produces the response
+                                // (payload + headers); we just trigger it.
+                                if response.is_some() {
+                                    Ok(Handled::Publish(msg))
                                 } else {
                                     Ok(Handled::Ack)
                                 }

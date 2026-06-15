@@ -16,8 +16,9 @@ export async function getAvailableFeatures(): Promise<FeatureAvailabilityRespons
     if (!response.ok) {
       throw new Error(`Failed to fetch features: ${response.statusText}`);
     }
-    cachedFeatures = await response.json();
-    return cachedFeatures;
+    const features = (await response.json()) as FeatureAvailabilityResponse;
+    cachedFeatures = features;
+    return features;
   } catch (error) {
     console.error('Failed to fetch feature availability:', error);
     // Return a default set of features (assume all are available as fallback)

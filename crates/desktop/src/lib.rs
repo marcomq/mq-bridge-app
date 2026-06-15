@@ -24,12 +24,16 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 const DESKTOP_SECRET_SERVICE: &str = "com.marcomq.mqbridgeapp";
 
-fn generate_ephemeral_message_key() -> (String, String) {
+/// Generates a 32-byte key as hex, filled directly from the OS CSPRNG.
+fn generate_random_key_hex() -> String {
     let mut bytes = [0u8; 32];
-    bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    getrandom::fill(&mut bytes).expect("OS CSPRNG is required to generate encryption keys");
+    hex::encode(bytes)
+}
+
+fn generate_ephemeral_message_key() -> (String, String) {
     let kid = uuid::Uuid::new_v4().to_string();
-    (hex::encode(bytes), kid)
+    (generate_random_key_hex(), kid)
 }
 
 static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
@@ -103,13 +107,6 @@ impl SecretStore for DesktopKeyringSecretStore {
 
 fn desktop_key_account(kind: &str, config_path: &Path) -> String {
     format!("{kind}:{}", config_path.display())
-}
-
-fn generate_random_key_hex() -> String {
-    let mut bytes = [0u8; 32];
-    bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    hex::encode(bytes)
 }
 
 fn load_or_create_desktop_hex_key(
