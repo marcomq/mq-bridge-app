@@ -37,6 +37,7 @@ import {
 import { EMPTY_STORAGE_SECURITY, normalizeStorageSecurityInfo } from "./lib/storage-security";
 import { getStoredJson } from "./lib/encrypted-json-storage";
 import { browserWindow } from "./lib/browser";
+import { getAvailableFeatures } from "./lib/feature-detection";
 
 type ConfigRecoveryStatus = {
   mode?: string;
@@ -389,19 +390,7 @@ export async function bootstrapApp() {
     fetchConfigFromServer<Record<string, any>>(fetch),
     fetch("/schema.json").then((response) => response.json()),
     fetchStorageSecurityFromServer(fetch).catch(() => EMPTY_STORAGE_SECURITY),
-    fetch("/features").then((response) => response.json()).catch(() => ({
-      ibm_mq: false,
-      kafka: true,
-      nats: true,
-      amqp: true,
-      mqtt: true,
-      http: true,
-      grpc: true,
-      zeromq: true,
-      mongodb: true,
-      aws: true,
-      sled: true,
-    })),
+    getAvailableFeatures(),
   ]);
   const storageSecurity = normalizeStorageSecurityInfo(storageSecurityRaw);
   delete config.routes;

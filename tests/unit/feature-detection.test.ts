@@ -1,11 +1,19 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { getAvailableFeatures, isFeatureAvailable, clearFeatureCache } from '../../ui/src/lib/feature-detection';
 import type { FeatureAvailabilityResponse } from '../../ui/src/lib/generated/ui-types';
 
 describe('Feature Detection', () => {
+  const originalFetch = global.fetch;
+
   beforeEach(() => {
     clearFeatureCache();
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    // Tests reassign global.fetch directly (not via vi.spyOn), so restoreAllMocks
+    // won't undo them; restore the original reference to avoid cross-test pollution.
+    global.fetch = originalFetch;
   });
 
   it('should fetch features from the backend', async () => {

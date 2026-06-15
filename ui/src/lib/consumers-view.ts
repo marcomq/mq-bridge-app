@@ -830,6 +830,9 @@ export async function toggleActiveConsumer() {
     // `_mqb_saved_sections.consumers` doesn't exist yet and hasUnsavedConsumers()
     // would report false).
     if (!currentlyRunning && (hasUnsavedConsumers() || !isSavedConsumer(consumer))) {
+      // Flush any focused form field so its draft is merged into the consumer
+      // config before we persist and hand it to the runtime.
+      await flushPendingFormDraft();
       const saved = await saveConsumersSection(activeConfig.consumers);
       if (saved && Array.isArray((saved as any).consumers)) {
         const rawSavedConsumer = (saved as any).consumers[get(consumersPanelState).selectedIndex];

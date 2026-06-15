@@ -25,15 +25,18 @@ use tracing_subscriber::fmt::format::FmtSpan;
 const DESKTOP_SECRET_SERVICE: &str = "com.marcomq.mqbridgeapp";
 
 /// Generates a 32-byte key as hex, filled directly from the OS CSPRNG.
-fn generate_random_key_hex() -> String {
+fn generate_random_key_hex() -> anyhow::Result<String> {
     let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("OS CSPRNG is required to generate encryption keys");
-    hex::encode(bytes)
+    getrandom::fill(&mut bytes).context("OS CSPRNG is required to generate encryption keys")?;
+    Ok(hex::encode(bytes))
 }
 
 fn generate_ephemeral_message_key() -> (String, String) {
     let kid = uuid::Uuid::new_v4().to_string();
-    (generate_random_key_hex(), kid)
+    // The ephemeral key is provisioned once via a process-wide LazyLock; a CSPRNG
+    // failure here is a fatal startup condition with no recovery path, so panic.
+    let key = generate_random_key_hex().expect("OS CSPRNG is required to generate encryption keys");
+    (key, kid)
 }
 
 static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
@@ -121,7 +124,7 @@ fn load_or_create_desktop_hex_key(
     match entry.get_password() {
         Ok(value) => Ok(value),
         Err(keyring::Error::NoEntry) => {
-            let value = generate_random_key_hex();
+            let value = generate_random_key_hex()?;
             entry
                 .set_password(&value)
                 .with_context(|| format!("Failed to store desktop config key '{account}'"))?;

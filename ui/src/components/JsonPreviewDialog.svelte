@@ -1,7 +1,7 @@
 <script lang="ts">
   import "@awesome.me/webawesome/dist/components/button/button.js";
   import "@awesome.me/webawesome/dist/components/dialog/dialog.js";
-  import { tick } from "svelte";
+  import { tick, onDestroy } from "svelte";
   import { EditorView, basicSetup } from "codemirror";
   import { json } from "@codemirror/lang-json";
 
@@ -53,14 +53,28 @@
   }
 
   async function copyJson() {
-    await navigator.clipboard.writeText(value);
-    copyLabel = "Copied";
+    try {
+      await navigator.clipboard.writeText(value);
+      copyLabel = "Copied";
+    } catch (error) {
+      console.error("Failed to copy JSON to clipboard:", error);
+      copyLabel = "Copy failed";
+    }
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
       copyLabel = "Copy";
       copyTimer = null;
     }, 1200);
   }
+
+  onDestroy(() => {
+    if (copyTimer) {
+      clearTimeout(copyTimer);
+      copyTimer = null;
+    }
+    editorView?.destroy();
+    editorView = null;
+  });
 </script>
 
 <wa-dialog label={title} open={open} class="json-preview-dialog" onwa-hide={onClose}>
