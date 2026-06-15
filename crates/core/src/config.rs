@@ -300,10 +300,7 @@ impl SecretStore for EnvFileSecretStore {
     }
 }
 
-fn extract_inline_env_vars(
-    content: &str,
-    format: config::FileFormat,
-) -> HashMap<String, String> {
+fn extract_inline_env_vars(content: &str, format: config::FileFormat) -> HashMap<String, String> {
     let parsed = match format {
         config::FileFormat::Json => serde_json::from_str::<serde_json::Value>(content).ok(),
         _ => serde_yaml_ng::from_str::<serde_json::Value>(content).ok(),
@@ -319,7 +316,9 @@ fn extract_inline_env_vars(
         .map(|env_vars| {
             env_vars
                 .iter()
-                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default()

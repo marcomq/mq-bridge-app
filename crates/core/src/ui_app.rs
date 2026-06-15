@@ -1557,9 +1557,8 @@ impl UiApp {
                                 chrono::Utc::now().timestamp_millis().to_string(),
                             );
 
-                            if let ResolvedConsumerOutput::Response {
-                                response: Some(r),
-                            } = &ctx.output
+                            if let ResolvedConsumerOutput::Response { response: Some(r) } =
+                                &ctx.output
                             {
                                 meta.insert("ui_response_payload".into(), r.payload.clone());
                                 if let Ok(headers) = serde_json::to_string(&r.headers) {
