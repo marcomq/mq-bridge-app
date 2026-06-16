@@ -1,5 +1,5 @@
 # --- Builder Stage ---
-FROM --platform=$BUILDPLATFORM rust:1.92-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1.94-bookworm AS builder
 ARG TARGETARCH
 ARG BUILDPLATFORM
 ARG ENABLE_IBM_MQ=false
