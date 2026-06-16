@@ -7,7 +7,7 @@ import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES } from "./endpoi
 import { createDefaultEndpoint, createPublisherEndpointFromConsumerEndpoint, ensureEndpointDefaults, getEndpointType, normalizeScalarEndpointValue } from "./endpoint-utils";
 import { buildConsumerTree } from "./consumer-grouping";
 import { consumersPanelState } from "./stores";
-import { extractImportedRequests } from "./import-export";
+import { buildConsumerConfigExport, extractImportedRequests } from "./import-export";
 import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
 import { applyEndpointSchemaDefaults } from "./routes";
 import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
@@ -156,6 +156,20 @@ function parseStructuredValue(raw: unknown): unknown {
     return JSON.parse(trimmed);
   } catch {
     return raw;
+  }
+}
+
+// Render a (possibly structured) payload for display without mangling raw strings.
+// Strings are returned verbatim so invalid JSON like `"test":a` is shown as-is
+// instead of being re-escaped by JSON.stringify (`"\"test\":a"`). Only objects
+// and arrays are pretty-printed.
+function payloadToDisplayString(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
   }
 }
 
@@ -366,9 +380,9 @@ function renderMessageDetails() {
   consumersPanelState.update((state) => ({
     ...state,
     detailInfo: selected ? formatTimeAgoLabel(selected.time || new Date().toISOString()) : "Select a message to view details",
-    detailRequestPayload: selected ? JSON.stringify(selected.payload, null, 2) : "",
+    detailRequestPayload: selected ? payloadToDisplayString(selected.payload) : "",
     detailRequestHeaders: selected ? sortDetailMetadataEntries(Object.entries(selected.metadata || {})) : [],
-    detailResponsePayload: selected && selected.response !== undefined ? JSON.stringify(selected.response) : "",
+    detailResponsePayload: selected && selected.response !== undefined ? payloadToDisplayString(selected.response) : "",
     detailResponseHeaders: selected ? sortDetailMetadataEntries(Object.entries(selected.response_metadata || {})) : [],
     detailRequestContentType: selected?.metadata?.["content-type"] || "",
     detailResponseContentType: selected?.response_metadata?.["content-type"] || "",
@@ -726,6 +740,24 @@ export async function cloneCurrentConsumerAction() {
   await restoreConsumerStateFromView(activeConfig.consumers.length - 1, { tab: get(consumersPanelState).activeSubtab });
 }
 
+export async function currentConsumerConfigJson() {
+  const consumer = currentConsumer();
+  if (!consumer) return null;
+  await flushPendingFormDraft();
+  const draft = formDrafts.get(get(consumersPanelState).selectedIndex);
+  const exportConsumer = draft
+    ? normalizeConsumerConfig({ ...consumer, ...deepClone(draft) })
+    : deepClone(consumer);
+  exportConsumer.output = consumer.output;
+  exportConsumer.message_capture = consumer.message_capture;
+  exportConsumer.response = consumer.response;
+  const endpointType = getEndpointType(exportConsumer.endpoint);
+  if (endpointType === "static" || endpointType === "ref") {
+    exportConsumer.endpoint[endpointType] = normalizeScalarEndpointValue(endpointType, exportConsumer.endpoint[endpointType]);
+  }
+  return JSON.stringify(buildConsumerConfigExport(exportConsumer as unknown as Record<string, unknown>), null, 2);
+}
+
 export async function deleteCurrentConsumerAction() {
   const consumer = currentConsumer();
   if (!consumer) return;
@@ -792,7 +824,15 @@ export async function toggleActiveConsumer() {
   }));
   try {
     let runtimeKey = getRuntimeKey(consumer);
-    if (!currentlyRunning && hasUnsavedConsumers()) {
+    // Auto-save before starting so the backend knows about the consumer. Besides
+    // the general dirty check, explicitly cover newly-created consumers that have
+    // never been persisted (e.g. the first consumer in a fresh workspace, where
+    // `_mqb_saved_sections.consumers` doesn't exist yet and hasUnsavedConsumers()
+    // would report false).
+    if (!currentlyRunning && (hasUnsavedConsumers() || !isSavedConsumer(consumer))) {
+      // Flush any focused form field so its draft is merged into the consumer
+      // config before we persist and hand it to the runtime.
+      await flushPendingFormDraft();
       const saved = await saveConsumersSection(activeConfig.consumers);
       if (saved && Array.isArray((saved as any).consumers)) {
         const rawSavedConsumer = (saved as any).consumers[get(consumersPanelState).selectedIndex];

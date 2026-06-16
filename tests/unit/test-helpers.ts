@@ -49,7 +49,16 @@ export function installBaseWindowStubs() {
   };
   window.registerDirtySection = vi.fn();
   window.refreshDirtySection = vi.fn().mockReturnValue(false);
-  window.markSectionSaved = vi.fn();
+  // Mirror the production markSectionSaved: record the snapshot in
+  // _mqb_saved_sections so saved/dirty checks (e.g. isSavedConsumer,
+  // hasUnsavedConsumers) behave like the real app instead of treating every
+  // loaded entity as unsaved.
+  window.markSectionSaved = vi.fn((sectionName?: string, savedValue?: unknown) => {
+    if (typeof sectionName !== "string") return;
+    const current = (window._mqb_saved_sections || {}) as Record<string, unknown>;
+    current[sectionName] = savedValue === undefined ? undefined : JSON.parse(JSON.stringify(savedValue));
+    window._mqb_saved_sections = current;
+  });
   window.saveConfigSection = vi.fn().mockResolvedValue({});
   window.fetchConfigFromServer = vi.fn().mockResolvedValue({});
   window.mqbAlert = vi.fn().mockResolvedValue(undefined);

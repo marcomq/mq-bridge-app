@@ -4,6 +4,7 @@
   import type { ConsumerTreeNode } from "../lib/consumer-grouping";
   import SidebarImportActions from "./SidebarImportActions.svelte";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
+  import JsonPreviewDialog from "./JsonPreviewDialog.svelte";
   import PayloadDisplay from "./PayloadDisplay.svelte";
   import { onMount } from "svelte";
   import {
@@ -13,6 +14,7 @@
     cloneCurrentConsumerAction,
     CONSUMER_TYPE_OPTIONS,
     copyCurrentConsumerAction,
+    currentConsumerConfigJson,
     deleteCurrentConsumerAction,
     importAsyncApiToConsumerAction,
     importMqbToConsumerAction,
@@ -41,6 +43,8 @@
   let messageListHeightPercent = $state(40);
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
+  let configJsonOpen = $state(false);
+  let configJsonValue = $state("");
   const importActions = [
     { key: "asyncapi", label: "Import AsyncAPI" },
     { key: "mqb", label: "Import mq-bridge" },
@@ -63,6 +67,13 @@
     return "";
   });
   const selectedProto = $derived(selectedConsumer?.inputProto || "");
+
+  async function showCurrentConsumerJson() {
+    const value = await currentConsumerConfigJson();
+    if (!value) return;
+    configJsonValue = value;
+    configJsonOpen = true;
+  }
 
   type VisibleConsumerTreeRow =
     | { kind: "group"; id: string; label: string; depth: number; expanded: boolean; endpointType?: string; tooltip?: string }
@@ -490,6 +501,19 @@
                     onkeydown={(event: KeyboardEvent) => handleActionKey(event, cloneCurrentConsumerAction)}
                     >Clone</wa-button
                   >
+                  <wa-button
+                    variant="neutral"
+                    appearance="outlined"
+                    class="icon-button"
+                    id="cons-export-config"
+                    title="Show consumer JSON"
+                    aria-label="Show consumer JSON"
+                    role="button"
+                    tabindex="0"
+                    onclick={() => void showCurrentConsumerJson()}
+                    onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void showCurrentConsumerJson())}
+                    >{"{}"}</wa-button
+                  >
                 </div>
                 <div class="toolbar-divider" aria-hidden="true"></div>
                 <div class="editor-action-cluster">
@@ -719,6 +743,13 @@
     </div>
   </div>
 </div>
+
+<JsonPreviewDialog
+  open={configJsonOpen}
+  title="Consumer Configuration JSON"
+  value={configJsonValue}
+  onClose={() => (configJsonOpen = false)}
+/>
 
 <style>
   .consumer-message-controls {

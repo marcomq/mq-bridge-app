@@ -1,7 +1,8 @@
 use mq_bridge_app::{
     config::{AppConfig, ConsumerConfig, PublisherClient},
     ui_app::{
-        ConsumerStatusResponse, PublishRequest, RuntimeStatusResponse, StorageSecurityInfoResponse,
+        ConsumerStatusResponse, FeatureAvailabilityResponse, PublishRequest, RuntimeStatusResponse,
+        StorageSecurityInfoResponse,
     },
 };
 use serde_json::json;
@@ -15,6 +16,7 @@ fn main() {
         "RuntimeStatusResponse": schemars::schema_for!(RuntimeStatusResponse),
         "ConsumerStatusResponse": schemars::schema_for!(ConsumerStatusResponse),
         "StorageSecurityInfoResponse": schemars::schema_for!(StorageSecurityInfoResponse),
+        "FeatureAvailabilityResponse": schemars::schema_for!(FeatureAvailabilityResponse),
     });
 
     println!(

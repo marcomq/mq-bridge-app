@@ -4,6 +4,7 @@ import type { MainTab, RuntimeStatus } from "./runtime-status";
 import { EMPTY_RUNTIME_STATUS } from "./runtime-status";
 import { browserWindow } from "./browser";
 import { EMPTY_STORAGE_SECURITY, type StorageSecurityInfo } from "./storage-security";
+import type { FeatureAvailabilityResponse } from "./generated/ui-types";
 
 export type AppState = {
   active_tab?: MainTab;
@@ -18,6 +19,7 @@ export type AppState = {
   last_publisher_tab?: "payload" | "headers" | "history" | "definition";
   runtime_status: RuntimeStatus;
   storage_security?: StorageSecurityInfo;
+  features?: FeatureAvailabilityResponse;
   storage_cache?: {
     publisher_state?: Record<string, unknown>;
     publisher_history?: unknown;

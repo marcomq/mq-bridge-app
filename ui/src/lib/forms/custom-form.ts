@@ -124,7 +124,7 @@ forms.setConfig({
       const formMode = String((window as any)._mqb_form_mode || "");
       const fieldName = lowerPath.split(".").pop() || "";
 
-      if (formMode === "publisher" && ["id", "presets", "url", "method", "queue", "topic", "database", "path", "collection"].includes(fieldName)) {
+      if (formMode === "publisher" && ["id", "presets", "url", "method", "queue", "topic", "database", "path", "collection", "payload", "headers", "sort_order"].includes(fieldName)) {
         return false;
       }
 

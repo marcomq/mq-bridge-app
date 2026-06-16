@@ -4,6 +4,7 @@
   import type { PublisherTreeNode } from "../lib/publisher-grouping";
   import SidebarImportActions from "./SidebarImportActions.svelte";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
+  import JsonPreviewDialog from "./JsonPreviewDialog.svelte";
   import "@awesome.me/webawesome/dist/components/button/button.js";
   import "@awesome.me/webawesome/dist/components/details/details.js";
   import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
@@ -19,6 +20,7 @@
     copyPublisherResponseJson,
     copyPublisherAsCurl,
     copyCurrentPublisherAction,
+    currentPublisherConfigJson,
     importAsyncApiToPublisherAction,
     importMqbToPublisherAction,
     importOpenApiToPublisherAction,
@@ -60,6 +62,8 @@
   let knownGroupIds = $state<Set<string>>(new Set());
   let sidebarWidth = $state<number | null>(null);
   let responsePaneHeightPercent = $state(40);
+  let configJsonOpen = $state(false);
+  let configJsonValue = $state("");
   const responsePaneVisible = $derived($publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition");
 
   type VisibleTreeRow =
@@ -74,6 +78,13 @@
       }
     }
     return acc;
+  }
+
+  async function showCurrentPublisherJson() {
+    const value = await currentPublisherConfigJson();
+    if (!value) return;
+    configJsonValue = value;
+    configJsonOpen = true;
   }
 
   function filterTree(nodes: PublisherTreeNode[], query: string): PublisherTreeNode[] {
@@ -611,6 +622,18 @@
                       role="button"
                       tabindex="0"
                     >Clone</wa-button>
+                    <wa-button
+                      variant="neutral"
+                      appearance="outlined"
+                      class="icon-button"
+                      id="pub-export-config"
+                      title="Show publisher JSON"
+                      aria-label="Show publisher JSON"
+                      onclick={() => void showCurrentPublisherJson()}
+                      onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void showCurrentPublisherJson())}
+                      role="button"
+                      tabindex="0"
+                    >{"{}"}</wa-button>
                   </div>
                   <div class="toolbar-divider" aria-hidden="true"></div>
                   <div class="editor-action-cluster">
@@ -744,6 +767,13 @@
     </div>
   </div>
 </div>
+
+<JsonPreviewDialog
+  open={configJsonOpen}
+  title="Publisher Configuration JSON"
+  value={configJsonValue}
+  onClose={() => (configJsonOpen = false)}
+/>
 
 <style>
   .hidden-file-input {

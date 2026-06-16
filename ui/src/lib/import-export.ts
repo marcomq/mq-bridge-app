@@ -67,6 +67,36 @@ export function exportConfigOnly() {
   triggerJsonDownload(`mqb-config-${isoDateCompact()}.json`, payload);
 }
 
+function buildSingleConfig(
+  section: "consumers" | "publishers",
+  entry: Record<string, unknown>,
+  extraConfig: Record<string, unknown> = {},
+) {
+  return {
+    type: "mqb-config",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    config: {
+      ...extraConfig,
+      [section]: [structuredClone(entry)],
+    },
+  };
+}
+
+export function buildConsumerConfigExport(consumer: Record<string, unknown>) {
+  const config = appShell.config<Record<string, unknown>>();
+  return buildSingleConfig("consumers", consumer, {
+    env_vars: sanitizeEnvVars(config.env_vars),
+  });
+}
+
+export function buildPublisherConfigExport(publisher: Record<string, unknown>) {
+  const config = appShell.config<Record<string, unknown>>();
+  return buildSingleConfig("publishers", publisher, {
+    env_vars: sanitizeEnvVars(config.env_vars),
+  });
+}
+
 function nextUniqueName(base: string, existing: Set<string>) {
   let index = 1;
   let candidate = base;

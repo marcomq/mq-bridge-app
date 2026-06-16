@@ -1763,6 +1763,7 @@ describe("initConsumers", () => {
 
     await Promise.resolve();
     await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(window.saveConfigSection).toHaveBeenCalledWith(
       "consumers",
@@ -1840,6 +1841,7 @@ describe("initConsumers", () => {
 
     await Promise.resolve();
     await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(window.saveConfigSection).toHaveBeenCalledWith(
       "consumers",

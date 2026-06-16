@@ -21,7 +21,9 @@ It provides a complete developer and operator workflow:
 - maintain request presets and import definitions (Postman/OpenAPI/AsyncAPI/mq-bridge export)
 - run as CLI/server or desktop app (Tauri)
 
-Supported integration types include **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **AWS SQS**, **MQTT**, **IBM MQ**, **HTTP**, **gRPC**, **ZeroMQ**, **MongoDB**, **sqlx(MySQL, MariaDB, PostgreSQL)**, and filesystem endpoints.
+Supported integration types include **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **AWS SQS**, **MQTT**, **IBM MQ** (optional), **HTTP**, **gRPC**, **ZeroMQ**, **MongoDB**, **sqlx(MySQL, MariaDB, PostgreSQL)**, and filesystem endpoints.
+
+> **Note:** IBM MQ support is available as an optional feature. See [IBM MQ Setup Guide](dev/docs/IBM_MQ_SETUP.md) for build instructions.
 
 ## How It Differs
 

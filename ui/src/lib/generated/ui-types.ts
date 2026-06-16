@@ -29,6 +29,10 @@ export interface ConsumerConfig {
   concurrency?: number;
   batch_size?: number;
   commit_concurrency_limit?: number;
+  startup_timeout_ms?: number;
+  reconnect_interval_ms?: number;
+  empty_batch_delay_ms?: number;
+  allow_fault_injection?: boolean;
 }
 
 export interface PublisherClient {
@@ -77,6 +81,20 @@ export interface StorageSecurityInfoResponse {
   kid?: string | null;
 }
 
+export interface FeatureAvailabilityResponse {
+  ibm_mq: boolean;
+  kafka: boolean;
+  nats: boolean;
+  amqp: boolean;
+  mqtt: boolean;
+  http: boolean;
+  grpc: boolean;
+  zeromq: boolean;
+  mongodb: boolean;
+  aws: boolean;
+  sled: boolean;
+}
+
 export interface RouteConfig {
   enabled?: boolean;
   input: Endpoint;
@@ -85,6 +103,10 @@ export interface RouteConfig {
   concurrency?: number;
   batch_size?: number;
   commit_concurrency_limit?: number;
+  startup_timeout_ms?: number;
+  reconnect_interval_ms?: number;
+  empty_batch_delay_ms?: number;
+  allow_fault_injection?: boolean;
 }
 
 export interface Endpoint {
@@ -210,13 +232,20 @@ export interface FileConfig {
 
 export type FileFormat = "normal" | "json" | "text" | "raw";
 
+export interface StaticConfig {
+  body: string;
+  raw: boolean;
+  metadata: Record<string, string>;
+}
+
 export interface MemoryConfig {
-  topic: string;
+  topic?: string;
   capacity?: number | null;
   request_reply?: boolean;
   request_timeout_ms?: number | null;
   subscribe_mode?: boolean;
   enable_nack?: boolean;
+  url?: string;
 }
 
 export interface SledConfig {
@@ -291,6 +320,10 @@ export interface HttpConfig {
   request_timeout_ms?: number | null;
   internal_buffer_size?: number | null;
   fire_and_forget?: boolean;
+  receive_streamable?: boolean;
+  inline_response_fast_path?: boolean | null;
+  server_protocol?: HttpServerProtocol;
+  stream_response_to?: Endpoint | null;
   batch_concurrency?: number | null;
   tcp_keepalive_ms?: number | null;
   pool_idle_timeout_ms?: number | null;
@@ -300,6 +333,8 @@ export interface HttpConfig {
   basic_auth?: unknown[] | null;
   custom_headers?: Record<string, string>;
 }
+
+export type HttpServerProtocol = "auto" | "http1_only" | "http2_only";
 
 export interface WebSocketConfig {
   url: string;
@@ -364,6 +399,12 @@ export interface SqlxConfig {
   acquire_timeout_ms?: number | null;
   idle_timeout_ms?: number | null;
   max_lifetime_ms?: number | null;
+}
+
+export interface StreamBufferConfig {
+  topic: string;
+  correlation_id?: string | null;
+  capacity?: number | null;
 }
 
 export interface SwitchConfig {
