@@ -104,7 +104,7 @@ jobs:
             target: aarch64-apple-darwin
             binary_name: mq-bridge-cli
             use_cross: false
-          - os: windows-latest
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             binary_name: mq-bridge-cli.exe
             use_cross: false
@@ -340,7 +340,7 @@ jobs:
             rust_targets: aarch64-apple-darwin
             tauri_args: --target aarch64-apple-darwin --config tauri.release.conf.json
           - name: windows
-            platform: windows-latest
+            platform: windows-2022
             rust_targets: ''
             tauri_args: --config tauri.release.conf.json
           - name: linux
