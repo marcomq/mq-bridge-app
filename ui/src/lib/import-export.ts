@@ -17,6 +17,9 @@ import { hasEncryptedMessages, resolveStorageSecurity } from "./storage-security
 
 export type ImportedRequest = PublisherPreset;
 
+// One selectable format in the config-JSON preview dialog.
+export type ConfigJsonVariant = { id: string; label: string; value: string };
+
 type ExportBundle = {
   type: "mqb-export";
   version: 1;
@@ -95,6 +98,122 @@ export function buildPublisherConfigExport(publisher: Record<string, unknown>) {
   return buildSingleConfig("publishers", publisher, {
     env_vars: sanitizeEnvVars(config.env_vars),
   });
+}
+
+// Route-level option fields shared between an mq-bridge `ConsumerConfig` and a
+// native `RouteConfig`. App-only fields (id, name, comment, message_capture,
+// response, output) are intentionally excluded.
+const ROUTE_OPTION_FIELDS = [
+  "enabled",
+  "description",
+  "concurrency",
+  "batch_size",
+  "commit_concurrency_limit",
+  "startup_timeout_ms",
+  "reconnect_interval_ms",
+  "empty_batch_delay_ms",
+  "allow_fault_injection",
+] as const;
+
+function resolveConsumerOutputEndpoint(
+  output: unknown,
+  publishers: Array<Record<string, unknown>>,
+): Record<string, unknown> | null {
+  const cfg = asObject(output);
+  const mode = String(cfg.mode || "none");
+  if (mode === "response") {
+    // Mirrors the backend: a response output becomes a `static` endpoint that
+    // emits the configured payload with metadata as response headers.
+    const response = asObject(cfg.response);
+    return {
+      static: {
+        body: typeof response.payload === "string" ? response.payload : "",
+        raw: true,
+        metadata: asObject(response.headers),
+      },
+    };
+  }
+  if (mode === "publisher") {
+    const publisherId = cfg.publisher_id ? String(cfg.publisher_id) : "";
+    const publisherName = cfg.publisher ? String(cfg.publisher) : "";
+    const match = publishers.find(
+      (entry) =>
+        (publisherId && String(entry.id || "") === publisherId) ||
+        (publisherName && String(entry.name || "") === publisherName),
+    );
+    const endpoint = match ? asObject(match.endpoint) : {};
+    return Object.keys(endpoint).length > 0 ? structuredClone(endpoint) : null;
+  }
+  return null;
+}
+
+// A bare mq-bridge `Endpoint` dict, usable directly with
+// `Publisher.from_config(endpoint, name)` in mq-bridge-py.
+export function buildPublisherEndpointDoc(publisher: Record<string, unknown>) {
+  return structuredClone(asObject(publisher.endpoint));
+}
+
+// A single mq-bridge `Route` dict (`input`/`output` + options), usable directly
+// with `Route.from_config(route, name)` in mq-bridge-py.
+export function buildConsumerRouteDoc(
+  consumer: Record<string, unknown>,
+  publishers: Array<Record<string, unknown>> = [],
+) {
+  const route: Record<string, unknown> = {
+    input: structuredClone(asObject(consumer.endpoint)),
+  };
+  const output = resolveConsumerOutputEndpoint(consumer.output, publishers);
+  if (output) {
+    route.output = output;
+  }
+  for (const field of ROUTE_OPTION_FIELDS) {
+    const value = consumer[field];
+    if (value !== undefined && value !== null) {
+      route[field] = structuredClone(value);
+    }
+  }
+  return route;
+}
+
+// `from_config` mappings. `from_config(mapping, name)` selects a named entry
+// from a config document, so the mappings are wrapped under `publishers`/`routes`
+// keyed by the entry name — matching mq-bridge-py's ConfigDocument.
+
+// Usable with `Publisher.from_config(doc, name)` in mq-bridge-py.
+export function buildPublisherConfigDocument(publisher: Record<string, unknown>) {
+  const name = String(publisher.name || "publisher");
+  return { publishers: { [name]: buildPublisherEndpointDoc(publisher) } };
+}
+
+// A consumer's source endpoint as a publisher document, usable with
+// `Publisher.from_config(doc, name)` (the endpoint-centric entry point).
+export function buildConsumerPublisherDocument(consumer: Record<string, unknown>) {
+  const name = String(consumer.name || "consumer");
+  return { publishers: { [name]: buildPublisherEndpointDoc(consumer) } };
+}
+
+// A publisher's endpoint as a route's `output`, fed by a memory `input` channel,
+// usable with `Route.from_config(doc, name)`. Send into the memory topic and the
+// route forwards to the publisher endpoint.
+export function buildPublisherConfigRouteDocument(publisher: Record<string, unknown>) {
+  const name = String(publisher.name || "publisher");
+  return {
+    routes: {
+      [name]: {
+        input: { memory: { topic: `${name}.in` } },
+        output: buildPublisherEndpointDoc(publisher),
+      },
+    },
+  };
+}
+
+// Usable with `Route.from_config(doc, name)` in mq-bridge-py.
+export function buildConsumerConfigDocument(
+  consumer: Record<string, unknown>,
+  publishers: Array<Record<string, unknown>> = [],
+) {
+  const name = String(consumer.name || "consumer");
+  return { routes: { [name]: buildConsumerRouteDoc(consumer, publishers) } };
 }
 
 function nextUniqueName(base: string, existing: Set<string>) {

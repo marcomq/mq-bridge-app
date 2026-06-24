@@ -14,7 +14,7 @@
     cloneCurrentConsumerAction,
     CONSUMER_TYPE_OPTIONS,
     copyCurrentConsumerAction,
-    currentConsumerConfigJson,
+    currentConsumerConfigVariants,
     deleteCurrentConsumerAction,
     importAsyncApiToConsumerAction,
     importMqbToConsumerAction,
@@ -44,7 +44,7 @@
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
   let configJsonOpen = $state(false);
-  let configJsonValue = $state("");
+  let configJsonVariants = $state<Array<{ id: string; label: string; value: string }>>([]);
   const importActions = [
     { key: "asyncapi", label: "Import AsyncAPI" },
     { key: "mqb", label: "Import mq-bridge" },
@@ -69,9 +69,9 @@
   const selectedProto = $derived(selectedConsumer?.inputProto || "");
 
   async function showCurrentConsumerJson() {
-    const value = await currentConsumerConfigJson();
-    if (!value) return;
-    configJsonValue = value;
+    const variants = await currentConsumerConfigVariants();
+    if (!variants) return;
+    configJsonVariants = variants;
     configJsonOpen = true;
   }
 
@@ -504,7 +504,6 @@
                   <wa-button
                     variant="neutral"
                     appearance="outlined"
-                    class="icon-button"
                     id="cons-export-config"
                     title="Show consumer JSON"
                     aria-label="Show consumer JSON"
@@ -747,7 +746,7 @@
 <JsonPreviewDialog
   open={configJsonOpen}
   title="Consumer Configuration JSON"
-  value={configJsonValue}
+  variants={configJsonVariants}
   onClose={() => (configJsonOpen = false)}
 />
 

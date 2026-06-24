@@ -7,7 +7,7 @@ import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES } from "./endpoi
 import { createDefaultEndpoint, createPublisherEndpointFromConsumerEndpoint, ensureEndpointDefaults, getEndpointType, normalizeScalarEndpointValue } from "./endpoint-utils";
 import { buildConsumerTree } from "./consumer-grouping";
 import { consumersPanelState } from "./stores";
-import { buildConsumerConfigExport, extractImportedRequests } from "./import-export";
+import { buildConsumerConfigDocument, buildConsumerPublisherDocument, extractImportedRequests, type ConfigJsonVariant } from "./import-export";
 import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
 import { applyEndpointSchemaDefaults } from "./routes";
 import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
@@ -740,7 +740,7 @@ export async function cloneCurrentConsumerAction() {
   await restoreConsumerStateFromView(activeConfig.consumers.length - 1, { tab: get(consumersPanelState).activeSubtab });
 }
 
-export async function currentConsumerConfigJson() {
+export async function currentConsumerConfigVariants(): Promise<ConfigJsonVariant[] | null> {
   const consumer = currentConsumer();
   if (!consumer) return null;
   await flushPendingFormDraft();
@@ -749,13 +749,24 @@ export async function currentConsumerConfigJson() {
     ? normalizeConsumerConfig({ ...consumer, ...deepClone(draft) })
     : deepClone(consumer);
   exportConsumer.output = consumer.output;
-  exportConsumer.message_capture = consumer.message_capture;
-  exportConsumer.response = consumer.response;
   const endpointType = getEndpointType(exportConsumer.endpoint);
   if (endpointType === "static" || endpointType === "ref") {
     exportConsumer.endpoint[endpointType] = normalizeScalarEndpointValue(endpointType, exportConsumer.endpoint[endpointType]);
   }
-  return JSON.stringify(buildConsumerConfigExport(exportConsumer as unknown as Record<string, unknown>), null, 2);
+  const record = exportConsumer as unknown as Record<string, unknown>;
+  const publishers = (activeConfig.publishers ?? []) as unknown as Array<Record<string, unknown>>;
+  return [
+    {
+      id: "publisher",
+      label: "Publisher.from_config",
+      value: JSON.stringify(buildConsumerPublisherDocument(record), null, 2),
+    },
+    {
+      id: "route",
+      label: "Route.from_config",
+      value: JSON.stringify(buildConsumerConfigDocument(record, publishers), null, 2),
+    },
+  ];
 }
 
 export async function deleteCurrentConsumerAction() {

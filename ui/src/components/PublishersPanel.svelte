@@ -20,7 +20,7 @@
     copyPublisherResponseJson,
     copyPublisherAsCurl,
     copyCurrentPublisherAction,
-    currentPublisherConfigJson,
+    currentPublisherConfigVariants,
     importAsyncApiToPublisherAction,
     importMqbToPublisherAction,
     importOpenApiToPublisherAction,
@@ -63,7 +63,7 @@
   let sidebarWidth = $state<number | null>(null);
   let responsePaneHeightPercent = $state(40);
   let configJsonOpen = $state(false);
-  let configJsonValue = $state("");
+  let configJsonVariants = $state<Array<{ id: string; label: string; value: string }>>([]);
   const responsePaneVisible = $derived($publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition");
 
   type VisibleTreeRow =
@@ -81,9 +81,9 @@
   }
 
   async function showCurrentPublisherJson() {
-    const value = await currentPublisherConfigJson();
-    if (!value) return;
-    configJsonValue = value;
+    const variants = await currentPublisherConfigVariants();
+    if (!variants) return;
+    configJsonVariants = variants;
     configJsonOpen = true;
   }
 
@@ -625,7 +625,6 @@
                     <wa-button
                       variant="neutral"
                       appearance="outlined"
-                      class="icon-button"
                       id="pub-export-config"
                       title="Show publisher JSON"
                       aria-label="Show publisher JSON"
@@ -771,7 +770,7 @@
 <JsonPreviewDialog
   open={configJsonOpen}
   title="Publisher Configuration JSON"
-  value={configJsonValue}
+  variants={configJsonVariants}
   onClose={() => (configJsonOpen = false)}
 />
 

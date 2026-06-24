@@ -5,26 +5,36 @@
   import { EditorView, basicSetup } from "codemirror";
   import { json } from "@codemirror/lang-json";
 
+  type ConfigJsonVariant = { id: string; label: string; value: string };
+
   let {
     open = false,
     title = "JSON",
     value = "",
+    variants = [],
     onClose = () => {},
   }: {
     open?: boolean;
     title?: string;
     value?: string;
+    variants?: ConfigJsonVariant[];
     onClose?: () => void;
   } = $props();
 
   let editorContainer = $state<HTMLElement | null>(null);
   let copyLabel = $state("Copy");
+  let selectedVariantId = $state<string | null>(null);
   let editorView: EditorView | null = null;
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
+  const activeVariant = $derived(
+    variants.length > 0 ? (variants.find((variant) => variant.id === selectedVariantId) ?? variants[0]) : null,
+  );
+  const displayValue = $derived(activeVariant ? activeVariant.value : value);
+
   $effect(() => {
     if (open) {
-      void renderJson(value);
+      void renderJson(displayValue);
     }
   });
 
@@ -54,7 +64,7 @@
 
   async function copyJson() {
     try {
-      await navigator.clipboard.writeText(value);
+      await navigator.clipboard.writeText(displayValue);
       copyLabel = "Copied";
     } catch (error) {
       console.error("Failed to copy JSON to clipboard:", error);
@@ -80,21 +90,39 @@
 <wa-dialog label={title} open={open} class="json-preview-dialog" onwa-hide={onClose}>
   <div bind:this={editorContainer} class="json-preview-container"></div>
   <div slot="footer" class="json-preview-actions">
-    <wa-button
-      variant="neutral"
-      appearance="outlined"
-      role="button"
-      tabindex="0"
-      onclick={() => void copyJson()}
-      onkeydown={(event: KeyboardEvent) => event.key === "Enter" && void copyJson()}>{copyLabel}</wa-button
-    >
-    <wa-button
-      variant="brand"
-      role="button"
-      tabindex="0"
-      onclick={onClose}
-      onkeydown={(event: KeyboardEvent) => event.key === "Enter" && onClose()}>Close</wa-button
-    >
+    {#if variants.length > 1}
+      <div class="json-preview-variants" role="group" aria-label="Format">
+        {#each variants as variant (variant.id)}
+          <wa-button
+            size="small"
+            variant={activeVariant?.id === variant.id ? "brand" : "neutral"}
+            appearance={activeVariant?.id === variant.id ? "filled" : "outlined"}
+            role="button"
+            tabindex="0"
+            onclick={() => (selectedVariantId = variant.id)}
+            onkeydown={(event: KeyboardEvent) => event.key === "Enter" && (selectedVariantId = variant.id)}
+            >{variant.label}</wa-button
+          >
+        {/each}
+      </div>
+    {/if}
+    <div class="json-preview-actions-right">
+      <wa-button
+        variant="neutral"
+        appearance="outlined"
+        role="button"
+        tabindex="0"
+        onclick={() => void copyJson()}
+        onkeydown={(event: KeyboardEvent) => event.key === "Enter" && void copyJson()}>{copyLabel}</wa-button
+      >
+      <wa-button
+        variant="brand"
+        role="button"
+        tabindex="0"
+        onclick={onClose}
+        onkeydown={(event: KeyboardEvent) => event.key === "Enter" && onClose()}>Close</wa-button
+      >
+    </div>
   </div>
 </wa-dialog>
 
@@ -112,8 +140,20 @@
 
   .json-preview-actions {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    align-items: center;
     gap: 8px;
+  }
+
+  .json-preview-variants {
+    display: flex;
+    gap: 6px;
+  }
+
+  .json-preview-actions-right {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
   }
 
   :global(.cm-editor) {

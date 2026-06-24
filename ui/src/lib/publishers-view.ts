@@ -6,7 +6,7 @@ import { buildPublisherTree } from "./publisher-grouping";
 import { PUBLISHER_TYPE_OPTIONS, REQUEST_BAR_LAYOUTS, type RequestBarFieldDescriptor } from "./endpoint-metadata";
 import { createConsumerEndpointFromPublisherEndpoint, createDefaultEndpoint, ensureEndpointDefaults, getEndpointType } from "./endpoint-utils";
 import { publishersPanelState } from "./stores";
-import { buildPublisherConfigExport, extractImportedRequests } from "./import-export";
+import { buildPublisherConfigDocument, buildPublisherConfigRouteDocument, extractImportedRequests, type ConfigJsonVariant } from "./import-export";
 import { applyEndpointSchemaDefaults } from "./routes";
 import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
 import { ensureWorkspaceCollections, sanitizePublisherHistory, type PublisherHistoryEntry, type PublisherHistoryStore } from "./workspace-config";
@@ -344,7 +344,7 @@ export function cloneCurrentPublisherAction() {
   refreshPublisherDirty();
 }
 
-export async function currentPublisherConfigJson() {
+export async function currentPublisherConfigVariants(): Promise<ConfigJsonVariant[] | null> {
   const publisher = currentPublisher();
   if (!publisher) return null;
   await flushPendingFormDraft();
@@ -353,9 +353,19 @@ export async function currentPublisherConfigJson() {
   const exportPublisher = draft
     ? normalizePublisher({ ...publisher, ...deepClone(draft) })
     : deepClone(publisher);
-  exportPublisher.payload = publisher.payload;
-  exportPublisher.headers = get(publishersPanelState).metadataRows.map(({ id, ...row }) => row);
-  return JSON.stringify(buildPublisherConfigExport(exportPublisher as unknown as Record<string, unknown>), null, 2);
+  const record = exportPublisher as unknown as Record<string, unknown>;
+  return [
+    {
+      id: "publisher",
+      label: "Publisher.from_config",
+      value: JSON.stringify(buildPublisherConfigDocument(record), null, 2),
+    },
+    {
+      id: "route",
+      label: "Route.from_config",
+      value: JSON.stringify(buildPublisherConfigRouteDocument(record), null, 2),
+    },
+  ];
 }
 
 export async function deleteCurrentPublisherAction() {
