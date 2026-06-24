@@ -1,84 +1,114 @@
-# IBM MQ Integration Setup
+# IBM MQ Setup
 
-This guide explains how to build and use `mq-bridge-app` with IBM MQ support.
+How to build and install `mq-bridge-app` (CLI/server **and** the Tauri desktop app)
+with IBM MQ support.
 
-## Overview
+IBM MQ is an **optional, opt-in feature** (`--features ibm-mq`). It is not part of
+the default `full` feature set because it links against IBM's native MQ client
+library, which is not redistributable on crates.io and has no arm64 build. The UI
+auto-detects whether the running backend was built with IBM MQ and shows/hides the
+IBM MQ endpoint type accordingly (via the `/features` endpoint).
 
-IBM MQ support is available as an optional feature that must be explicitly enabled during compilation. The UI will automatically detect whether IBM MQ support is available in the running backend and show/hide the IBM MQ endpoint options accordingly.
+## 1. Install the IBM MQ client library
 
-## Prerequisites
+You need IBM's native MQ C client before building.
 
-### IBM MQ Client Library
+1. Download the **IBM MQ redistributable C client** for your platform from the
+   [IBM MQ downloads page](https://www.ibm.com/support/pages/downloading-ibm-mq-94):
+   - Linux: `IBM-MQC-Redist-LinuxX64.tar.gz`
+   - macOS: `IBM-MQC-Redist-MacX64.tar.gz`
+   - Windows: `IBM-MQC-Redist-Win64.zip`
 
-To build with IBM MQ support, you need the IBM MQ client library installed on your system:
+2. Extract it and point `MQ_INSTALLATION_PATH` at it (skip the env var if you use
+   the default `/opt/mqm`):
 
-1. **Download the IBM MQ Client**
-   - Visit the [IBM MQ Downloads page](https://www.ibm.com/support/pages/downloading-ibm-mq-94)
-   - Download the "IBM MQ C client" redistributable package for your platform
-   - For Linux: `IBM-MQC-Redist-LinuxX64.tar.gz`
-   - For macOS: `IBM-MQC-Redist-MacX64.tar.gz`
-   - For Windows: `IBM-MQC-Redist-Win64.zip`
-
-2. **Install the Client Library**
-
-   **Linux/macOS:**
+   **Linux / macOS**
    ```bash
-   # Extract to /opt/mqm (default location)
-   sudo mkdir -p /opt/mqm
-   sudo tar -xzf IBM-MQC-Redist-*.tar.gz -C /opt/mqm
-   
-   # Or extract to a custom location and set MQ_INSTALLATION_PATH
-   tar -xzf IBM-MQC-Redist-*.tar.gz -C ~/ibm-mq
+   mkdir -p ~/ibm-mq && tar -xzf IBM-MQC-Redist-*.tar.gz -C ~/ibm-mq
    export MQ_INSTALLATION_PATH=~/ibm-mq
    ```
 
-   **Windows:**
+   **Windows (PowerShell)** — extract the zip, then:
    ```powershell
-   # Extract to C:\IBM\MQ (or your preferred location)
-   # Set environment variable
    $env:MQ_INSTALLATION_PATH = "C:\IBM\MQ"
    ```
 
-## Building with IBM MQ Support
+> IBM MQ client libraries are **x86_64 only**. There is no arm64 redistributable
+> client, so arm64 builds cannot include IBM MQ (even on Apple Silicon — build the
+> x86_64 binary instead).
 
-### Using Cargo
+## 2. Install mq-bridge-app with IBM MQ
+
+The build reads `MQ_INSTALLATION_PATH` (or `MQ_HOME`, default `/opt/mqm`) to locate
+the client library, so make sure it is exported in the shell you run `cargo` from.
+
+### CLI / server (web UI)
 
 ```bash
-# Set the MQ installation path if not using /opt/mqm
-export MQ_INSTALLATION_PATH=/path/to/mqm
-
-# Build with IBM MQ feature
-cargo build --release --features=ibm-mq
-
-# Or install directly
-cargo install --path crates/cli --features=ibm-mq
+export MQ_INSTALLATION_PATH=~/ibm-mq          # where you extracted the client
+cargo install mq-bridge-app --features ibm-mq
+mq-bridge-app                                  # then open http://localhost:9091
 ```
 
-### Using Docker
+The web UI is embedded directly in the binary, so a plain `cargo install` serves
+the full UI — no `static/` folder or extra files to ship. (`--features ibm-mq` keeps
+the default `full` feature set on and adds IBM MQ; you don't need `--features
+ibm-mq,full`.)
 
-The project includes Docker build support for IBM MQ. The Dockerfile automatically downloads and includes the IBM MQ client library for AMD64 builds:
+### Desktop app (Tauri)
+
+The desktop crate is not published to crates.io, so install it straight from git.
+The committed UI bundle is reused, so no `npm` build is required:
 
 ```bash
-# Build with IBM MQ support (AMD64 only)
+export MQ_INSTALLATION_PATH=~/ibm-mq
+cargo install --git https://github.com/marcomq/mq-bridge-app \
+  mq-bridge-app-desktop --features ibm-mq
+mq-bridge-app-desktop
+```
+
+The desktop build also needs the usual [Tauri prerequisites](https://tauri.app/start/prerequisites/)
+(WebKitGTK + build tools on Linux; Xcode command-line tools on macOS; WebView2 on
+Windows).
+
+### From a local checkout
+
+```bash
+git clone https://github.com/marcomq/mq-bridge-app
+cd mq-bridge-app
+export MQ_INSTALLATION_PATH=~/ibm-mq
+
+# CLI / server
+cargo install --path crates/cli --features ibm-mq
+# or desktop
+cargo install --path crates/desktop --features ibm-mq
+```
+
+### Docker (CLI / server, amd64 only)
+
+A prebuilt IBM MQ image is published as the `ibm-mq` / `latest-ibm-mq` tags:
+
+```bash
+docker run --rm -p 9091:9091 ghcr.io/marcomq/mq-bridge-app:latest-ibm-mq
+```
+
+Or build it yourself (the Dockerfile downloads the MQ client automatically):
+
+```bash
 docker build --build-arg ENABLE_IBM_MQ=true -t mq-bridge-app:ibm-mq .
-
-# Run the container
-docker run --rm -p 9091:9091 mq-bridge-app:ibm-mq
 ```
 
-**Note:** IBM MQ client libraries are only available for AMD64 architecture. ARM64 builds will not include IBM MQ support even if `ENABLE_IBM_MQ=true` is set.
+## 3. Verify IBM MQ is enabled
 
-### Pre-built Binaries
+```bash
+curl http://localhost:9091/features
+# => {"ibm_mq":true, "kafka":true, ...}
+```
 
-Pre-built binaries with IBM MQ support are not included in the standard releases to keep download sizes manageable. You can:
+When `ibm_mq` is `true`, the IBM MQ endpoint type appears in the publisher and
+consumer dropdowns in the UI.
 
-1. Build from source using the instructions above
-2. Use the Docker image with IBM MQ support
-3. Request IBM MQ-enabled binaries for your platform
-
-## Configuration
-
-Once built with IBM MQ support, you can configure IBM MQ endpoints in your configuration:
+## 4. Configure an IBM MQ endpoint
 
 ```yaml
 publishers:
@@ -87,7 +117,7 @@ publishers:
       ibmmq:
         connection_manager: "QM1"
         queue: "DEV.QUEUE.1"
-        # Or use topic instead of queue
+        # ...or a topic instead of a queue:
         # topic: "topic://events"
         url: "mq-host(1414)"
         channel: "DEV.APP.SVRCONN"
@@ -106,108 +136,50 @@ consumers:
         password: "${MQ_PASSWORD}"
 ```
 
-## UI Feature Detection
-
-The UI automatically detects whether IBM MQ support is available:
-
-- **With IBM MQ:** The IBM MQ endpoint type appears in publisher and consumer dropdowns
-- **Without IBM MQ:** The IBM MQ endpoint type is hidden from the UI
-
-This detection happens automatically when the app starts by querying the `/features` endpoint.
-
-## Verifying IBM MQ Support
-
-You can verify whether your build includes IBM MQ support:
-
-### Via API
-
-```bash
-curl http://localhost:9091/features
-```
-
-Response:
-```json
-{
-  "ibm_mq": true,
-  "kafka": true,
-  "nats": true,
-  ...
-}
-```
-
-### Via CLI
-
-```bash
-# Check if the binary was built with IBM MQ
-mq-bridge-app --version
-# Look for "ibm-mq" in the features list (if implemented)
-```
-
 ## Troubleshooting
 
-### Library Not Found Errors
+**Build can't find the client library** — confirm `MQ_INSTALLATION_PATH` (or
+`MQ_HOME`) points at the directory that contains `lib64/` (64-bit). The build script
+links against `$MQ_INSTALLATION_PATH/lib64`. Make sure you installed the C client,
+not the Java client, and that it matches your architecture (x86_64).
 
-If you see errors like `cannot open shared object file: libmqic_r.so`:
+**Runtime: `cannot open shared object file: libmqic_r.so` (Linux) /
+`libmqic_r.dylib` (macOS)** — the loader needs the library at runtime:
 
-1. Ensure the IBM MQ client is installed
-2. Set `LD_LIBRARY_PATH` (Linux) or `DYLD_LIBRARY_PATH` (macOS):
-   ```bash
-   export LD_LIBRARY_PATH=/opt/mqm/lib64:$LD_LIBRARY_PATH
-   ```
-3. On Linux, you can also add the library path to `/etc/ld.so.conf.d/`:
-   ```bash
-   echo "/opt/mqm/lib64" | sudo tee /etc/ld.so.conf.d/ibm-mq.conf
-   sudo ldconfig
-   ```
+```bash
+# Linux
+export LD_LIBRARY_PATH=$MQ_INSTALLATION_PATH/lib64:$LD_LIBRARY_PATH
+# macOS
+export DYLD_LIBRARY_PATH=$MQ_INSTALLATION_PATH/lib64:$DYLD_LIBRARY_PATH
+```
 
-### Build Errors
+On Linux you can make it permanent:
+```bash
+echo "$MQ_INSTALLATION_PATH/lib64" | sudo tee /etc/ld.so.conf.d/ibm-mq.conf
+sudo ldconfig
+```
+(The CLI build adds an rpath automatically for GNU/Linux targets, so this is usually
+only needed for the desktop app or non-default install paths.)
 
-If compilation fails:
+**Connection errors** — verify the queue manager is running, the `channel`/`queue`
+exist, the port (default 1414) is reachable, and credentials are correct. Check the
+MQ error logs for detail.
 
-1. Verify `MQ_INSTALLATION_PATH` or `MQ_HOME` is set correctly
-2. Ensure the client library matches your system architecture (64-bit vs 32-bit)
-3. Check that you have the C client library, not just the Java client
+## Platform notes
 
-### Connection Errors
+| Platform | Default path | Library dir | Native library |
+|----------|--------------|-------------|----------------|
+| Linux    | `/opt/mqm`   | `lib64`     | `libmqic_r.so` |
+| macOS    | `/opt/mqm`   | `lib64`     | `libmqic_r.dylib` (may need a security exception for the unsigned lib) |
+| Windows  | `C:\Program Files\IBM\MQ` | `bin64` | `mqic.dll` |
 
-If you can't connect to IBM MQ:
+## License
 
-1. Verify the queue manager is running
-2. Check firewall rules allow connections on the MQ port (default 1414)
-3. Ensure the channel and queue exist
-4. Verify credentials are correct
-5. Check MQ error logs for detailed error messages
+The IBM MQ client library is redistributable under IBM's own license terms. If you
+distribute binaries built with IBM MQ support, include IBM's license files (from
+`$MQ_INSTALLATION_PATH/licenses`) and comply with IBM's redistribution terms.
 
-## Platform-Specific Notes
+## Further reading
 
-### Linux
-
-- Default installation path: `/opt/mqm`
-- Library path: `/opt/mqm/lib64` (64-bit) or `/opt/mqm/lib` (32-bit)
-- Requires `libmqic_r.so` and dependencies
-
-### macOS
-
-- Default installation path: `/opt/mqm`
-- Library path: `/opt/mqm/lib64`
-- May require security exceptions for unsigned libraries
-
-### Windows
-
-- Default installation path: `C:\Program Files\IBM\MQ`
-- Library path: `C:\Program Files\IBM\MQ\bin64`
-- Requires `mqic.dll` and dependencies
-
-## License Considerations
-
-The IBM MQ client library is redistributable under IBM's license terms. When distributing binaries with IBM MQ support:
-
-1. Include the IBM MQ license files from `/opt/mqm/licenses`
-2. Comply with IBM's redistribution terms
-3. Consider providing IBM MQ-enabled builds separately from standard builds
-
-## Further Reading
-
-- [IBM MQ Documentation](https://www.ibm.com/docs/en/ibm-mq)
-- [IBM MQ Client Downloads](https://www.ibm.com/support/pages/downloading-ibm-mq-94)
-- [mq-bridge IBM MQ Support](https://github.com/marcomq/mq-bridge#ibm-mq)
+- [IBM MQ documentation](https://www.ibm.com/docs/en/ibm-mq)
+- [IBM MQ client downloads](https://www.ibm.com/support/pages/downloading-ibm-mq-94)

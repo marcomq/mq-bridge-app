@@ -289,20 +289,33 @@ fn sanitize_relative_path(request_path: &str) -> Option<PathBuf> {
     }
 }
 
-fn resolve_static_asset_path(request_path: &str) -> Option<PathBuf> {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+/// The web UI bundle, embedded into the binary at compile time so a single
+/// `cargo install`ed executable can serve the UI without shipping a `static/`
+/// directory. In debug builds rust-embed reads the files from disk (live edit);
+/// in release builds the bytes are baked into the binary.
+#[derive(rust_embed::RustEmbed)]
+#[folder = "static/"]
+struct StaticAssets;
 
+/// Maps an HTTP request path to a key inside the embedded [`StaticAssets`]
+/// bundle. Returns `None` for paths that try to escape the asset root.
+fn embedded_asset_key(request_path: &str) -> Option<String> {
     if request_path == "/" || request_path.is_empty() {
-        return Some(workspace_root.join("static/index.html"));
-    }
-
-    if let Some(relative) = request_path.strip_prefix("/node_modules/") {
-        return sanitize_relative_path(relative)
-            .map(|path| workspace_root.join("node_modules").join(path));
+        return Some("index.html".to_string());
     }
 
     let relative = request_path.trim_start_matches('/');
-    sanitize_relative_path(relative).map(|path| workspace_root.join("static").join(path))
+    // rust-embed keys are always forward-slash separated.
+    sanitize_relative_path(relative).map(|path| path.to_string_lossy().replace('\\', "/"))
+}
+
+/// Resolves a `/node_modules/...` request to an on-disk path. This only matters
+/// for the dev server; production bundles inline their dependencies, so an
+/// installed binary never serves from here.
+fn resolve_node_modules_path(request_path: &str) -> Option<PathBuf> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let relative = request_path.strip_prefix("/node_modules/")?;
+    sanitize_relative_path(relative).map(|path| workspace_root.join("node_modules").join(path))
 }
 
 fn query_param(msg: &CanonicalMessage, key: &str) -> Option<String> {
@@ -1411,18 +1424,33 @@ impl UiApp {
     }
 
     fn handle_static_asset(&self, request_path: &str) -> Result<Handled, HandlerError> {
-        let Some(file_path) = resolve_static_asset_path(request_path) else {
+        // Dev server only: serve node_modules from disk.
+        if request_path.starts_with("/node_modules/") {
+            let Some(file_path) = resolve_node_modules_path(request_path) else {
+                return Ok(Handled::Publish(msg!("Not Found").with_status_code("404")));
+            };
+            return match std::fs::read(&file_path) {
+                Ok(contents) => Ok(Handled::Publish(msg!(contents).with_content_type(
+                    mq_bridge::endpoints::http::guess_content_type(&file_path.to_string_lossy()),
+                ))),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(Handled::Publish(msg!("Not Found").with_status_code("404")))
+                }
+                Err(err) => Err(HandlerError::NonRetryable(err.into())),
+            };
+        }
+
+        // Everything else is served from the embedded UI bundle.
+        let Some(key) = embedded_asset_key(request_path) else {
             return Ok(Handled::Publish(msg!("Not Found").with_status_code("404")));
         };
 
-        match std::fs::read(&file_path) {
-            Ok(contents) => Ok(Handled::Publish(msg!(contents).with_content_type(
-                mq_bridge::endpoints::http::guess_content_type(&file_path.to_string_lossy()),
-            ))),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Handled::Publish(msg!("Not Found").with_status_code("404")))
-            }
-            Err(err) => Err(HandlerError::NonRetryable(err.into())),
+        match StaticAssets::get(&key) {
+            Some(asset) => Ok(Handled::Publish(
+                msg!(asset.data.into_owned())
+                    .with_content_type(mq_bridge::endpoints::http::guess_content_type(&key)),
+            )),
+            None => Ok(Handled::Publish(msg!("Not Found").with_status_code("404"))),
         }
     }
 
