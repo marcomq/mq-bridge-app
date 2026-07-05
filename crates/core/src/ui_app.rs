@@ -312,6 +312,7 @@ fn embedded_asset_key(request_path: &str) -> Option<String> {
 /// Resolves a `/node_modules/...` request to an on-disk path. This only matters
 /// for the dev server; production bundles inline their dependencies, so an
 /// installed binary never serves from here.
+#[cfg(debug_assertions)]
 fn resolve_node_modules_path(request_path: &str) -> Option<PathBuf> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let relative = request_path.strip_prefix("/node_modules/")?;
@@ -1424,7 +1425,9 @@ impl UiApp {
     }
 
     fn handle_static_asset(&self, request_path: &str) -> Result<Handled, HandlerError> {
-        // Dev server only: serve node_modules from disk.
+        // Dev server only: serve node_modules from disk. Compiled out of release
+        // builds so only debug builds can hit the filesystem here.
+        #[cfg(debug_assertions)]
         if request_path.starts_with("/node_modules/") {
             let Some(file_path) = resolve_node_modules_path(request_path) else {
                 return Ok(Handled::Publish(msg!("Not Found").with_status_code("404")));
@@ -1686,6 +1689,7 @@ pub struct FeatureAvailabilityResponse {
     pub mongodb: bool,
     pub aws: bool,
     pub sled: bool,
+    pub redis_streams: bool,
 }
 
 impl FeatureAvailabilityResponse {
@@ -1702,6 +1706,7 @@ impl FeatureAvailabilityResponse {
             mongodb: cfg!(feature = "mongodb") || cfg!(feature = "full"),
             aws: cfg!(feature = "aws") || cfg!(feature = "full"),
             sled: cfg!(feature = "sled") || cfg!(feature = "full"),
+            redis_streams: cfg!(feature = "redis-streams") || cfg!(feature = "full"),
         }
     }
 }

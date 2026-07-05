@@ -11,6 +11,7 @@
   import { onMount } from "svelte";
   import { PUBLISHER_TYPE_OPTIONS } from "../lib/publishers-view";
   import { formatEndpointTypeLabel } from "../lib/endpoint-metadata";
+  import type { ConfigJsonVariant } from "../lib/import-export";
   import {
     addPublisherAction,
     addPublisherMetadataRow,
@@ -64,7 +65,7 @@
   let sidebarWidth = $state<number | null>(null);
   let responsePaneHeightPercent = $state(40);
   let configJsonOpen = $state(false);
-  let configJsonVariants = $state<Array<{ id: string; label: string; value: string }>>([]);
+  let configJsonVariants = $state<ConfigJsonVariant[]>([]);
   const responsePaneVisible = $derived($publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition");
 
   type VisibleTreeRow =

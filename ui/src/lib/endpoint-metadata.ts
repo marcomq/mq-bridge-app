@@ -225,6 +225,7 @@ const ENDPOINT_KIND_METADATA = [
     },
     publisher: true,
     consumer: true,
+    requiresFeature: "redis_streams",
   },
 ] as const satisfies readonly EndpointKindMetadata[];
 

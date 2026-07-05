@@ -93,6 +93,7 @@ export interface FeatureAvailabilityResponse {
   mongodb: boolean;
   aws: boolean;
   sled: boolean;
+  redis_streams: boolean;
 }
 
 export interface RouteConfig {

@@ -4,8 +4,7 @@
   import { tick, onDestroy } from "svelte";
   import { EditorView, basicSetup } from "codemirror";
   import { json } from "@codemirror/lang-json";
-
-  type ConfigJsonVariant = { id: string; label: string; value: string };
+  import type { ConfigJsonVariant } from "../lib/import-export";
 
   let {
     open = false,

@@ -34,6 +34,7 @@
   import { registerDismissOnOutsideClick, startSidebarResize as beginSidebarResize } from "../lib/sidebar-ui";
   import { handleActionKey, getTechnicalDisplayLabel } from "../lib/utils";
   import { formatEndpointTypeLabel } from "../lib/endpoint-metadata";
+  import type { ConfigJsonVariant } from "../lib/import-export";
   import { appShell, getAppState } from "../lib/app-shell";
 
   let filterText = $state("");
@@ -45,7 +46,7 @@
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
   let configJsonOpen = $state(false);
-  let configJsonVariants = $state<Array<{ id: string; label: string; value: string }>>([]);
+  let configJsonVariants = $state<ConfigJsonVariant[]>([]);
   const importActions = [
     { key: "asyncapi", label: "Import AsyncAPI" },
     { key: "mqb", label: "Import mq-bridge" },
