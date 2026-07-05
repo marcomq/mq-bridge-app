@@ -114,6 +114,23 @@ async fn main() -> anyhow::Result<()> {
     let prometheus_handle = recorder.handle();
     metrics::set_global_recorder(recorder).context("Failed to install Prometheus recorder")?;
 
+    // `metrics-exporter-prometheus` only drains its histogram buckets during
+    // upkeep. The `build()` (http-listener) branch above spawns its own upkeep
+    // task, but `build_recorder()` does not, so without this the per-message
+    // `queue_message_processing_duration_seconds` samples recorded by mq-bridge
+    // accumulate in an unbounded AtomicBucket and slowly leak memory. Drive
+    // upkeep manually whenever we built the recorder without a listener.
+    if metrics_task.is_none() {
+        let upkeep_handle = prometheus_handle.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                upkeep_handle.run_upkeep();
+            }
+        });
+    }
+
     metrics::describe_gauge!(
         "mq_bridge_app_info",
         "Information about the mq-bridge-app application"

@@ -22,12 +22,14 @@ const proxiedPaths = [
 
 module.exports = defineConfig({
   root: resolve(__dirname, "ui"),
-  publicDir: resolve(__dirname, "static"),
+  publicDir: resolve(__dirname, "crates/core/static"),
   plugins: [svelte({ configFile: resolve(__dirname, "svelte.config.js") })],
   resolve: {
     alias: {
-      // Map absolute paths in index.html to the physical /static folder
-      "/style.css": resolve(__dirname, "static/style.css"),
+      // Map absolute paths in index.html to the physical static folder.
+      // It lives inside the core crate so it is embedded into the published
+      // binary (see crates/core/src/ui_app.rs) and bundled by Tauri.
+      "/style.css": resolve(__dirname, "crates/core/static/style.css"),
     },
   },
   server: {
@@ -53,7 +55,7 @@ module.exports = defineConfig({
   build: {
     emptyOutDir: false,
     chunkSizeWarningLimit: 2000,
-    outDir: resolve(__dirname, "static"),
+    outDir: resolve(__dirname, "crates/core/static"),
     copyPublicDir: false,
     rollupOptions: {
       input: resolve(__dirname, "ui/index.html"),

@@ -980,6 +980,22 @@ pub fn run() {
             metrics::set_global_recorder(recorder)
                 .context("Failed to install Prometheus recorder")?;
 
+            // `metrics-exporter-prometheus` only drains its histogram buckets
+            // during upkeep, and `build_recorder()` does not spawn an upkeep
+            // task. Without this, the per-message
+            // `queue_message_processing_duration_seconds` samples recorded by
+            // mq-bridge accumulate in an unbounded AtomicBucket and slowly leak
+            // memory. Drive upkeep on a timer.
+            let upkeep_handle = prometheus_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    upkeep_handle.run_upkeep();
+                }
+            });
+
             metrics::describe_gauge!(
                 "mq_bridge_app_info",
                 "Information about the mq-bridge-app application"

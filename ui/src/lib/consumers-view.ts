@@ -3,11 +3,11 @@ import { get } from "svelte/store";
 import { appShell, getAppState, switchMainTab, workspaceRuntime } from "./app-shell";
 import { browserWindow, replaceHash } from "./browser";
 import { createLocalEntityId, getEntityDisplayLabel, normalizeConsumerNames, normalizeConsumerResponse, sanitizeConsumerName } from "./utils";
-import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES } from "./endpoint-metadata";
+import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES, formatEndpointTypeLabel } from "./endpoint-metadata";
 import { createDefaultEndpoint, createPublisherEndpointFromConsumerEndpoint, ensureEndpointDefaults, getEndpointType, normalizeScalarEndpointValue } from "./endpoint-utils";
 import { buildConsumerTree } from "./consumer-grouping";
 import { consumersPanelState } from "./stores";
-import { buildConsumerConfigExport, extractImportedRequests } from "./import-export";
+import { buildConsumerConfigDocument, buildConsumerPublisherDocument, extractImportedRequests, type ConfigJsonVariant } from "./import-export";
 import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
 import { applyEndpointSchemaDefaults } from "./routes";
 import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
@@ -40,6 +40,7 @@ const CONSUMER_ENDPOINT_DEFAULTS: Record<string, Record<string, unknown> | strin
   mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" },
   sqlx: { url: "postgres://user:pass@localhost/db", table: "events" },
   zeromq: { url: "tcp://127.0.0.1:5555", topic: "events" },
+  redis_streams: { url: "redis://localhost:6379", stream: "events", group: "mq-bridge" },
   file: { path: "/tmp/messages.jsonl" },
   static: "",
 };
@@ -281,7 +282,7 @@ function buildSidebarItems() {
   return activeConfig.consumers.map((consumer, index) => ({
     name: String(consumer.name || ""),
     displayName: getEntityDisplayLabel(consumer.name, consumer.endpoint, getEndpointType(consumer.endpoint)),
-    inputProto: getEndpointType(consumer.endpoint).toUpperCase(),
+    inputProto: formatEndpointTypeLabel(getEndpointType(consumer.endpoint)),
     statusClass: getStatusClass(consumer),
     messageCount: consumerMessagesFor(consumer).length,
     throughputLabel: formatThroughput(consumer),
@@ -740,7 +741,7 @@ export async function cloneCurrentConsumerAction() {
   await restoreConsumerStateFromView(activeConfig.consumers.length - 1, { tab: get(consumersPanelState).activeSubtab });
 }
 
-export async function currentConsumerConfigJson() {
+export async function currentConsumerConfigVariants(): Promise<ConfigJsonVariant[] | null> {
   const consumer = currentConsumer();
   if (!consumer) return null;
   await flushPendingFormDraft();
@@ -749,13 +750,24 @@ export async function currentConsumerConfigJson() {
     ? normalizeConsumerConfig({ ...consumer, ...deepClone(draft) })
     : deepClone(consumer);
   exportConsumer.output = consumer.output;
-  exportConsumer.message_capture = consumer.message_capture;
-  exportConsumer.response = consumer.response;
   const endpointType = getEndpointType(exportConsumer.endpoint);
   if (endpointType === "static" || endpointType === "ref") {
     exportConsumer.endpoint[endpointType] = normalizeScalarEndpointValue(endpointType, exportConsumer.endpoint[endpointType]);
   }
-  return JSON.stringify(buildConsumerConfigExport(exportConsumer as unknown as Record<string, unknown>), null, 2);
+  const record = exportConsumer as unknown as Record<string, unknown>;
+  const publishers = (activeConfig.publishers ?? []) as unknown as Array<Record<string, unknown>>;
+  return [
+    {
+      id: "publisher",
+      label: "Publisher.from_config",
+      value: JSON.stringify(buildConsumerPublisherDocument(record), null, 2),
+    },
+    {
+      id: "route",
+      label: "Route.from_config",
+      value: JSON.stringify(buildConsumerConfigDocument(record, publishers), null, 2),
+    },
+  ];
 }
 
 export async function deleteCurrentConsumerAction() {

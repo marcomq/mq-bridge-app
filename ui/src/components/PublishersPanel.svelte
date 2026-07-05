@@ -10,6 +10,8 @@
   import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
   import { onMount } from "svelte";
   import { PUBLISHER_TYPE_OPTIONS } from "../lib/publishers-view";
+  import { formatEndpointTypeLabel } from "../lib/endpoint-metadata";
+  import type { ConfigJsonVariant } from "../lib/import-export";
   import {
     addPublisherAction,
     addPublisherMetadataRow,
@@ -20,7 +22,7 @@
     copyPublisherResponseJson,
     copyPublisherAsCurl,
     copyCurrentPublisherAction,
-    currentPublisherConfigJson,
+    currentPublisherConfigVariants,
     importAsyncApiToPublisherAction,
     importMqbToPublisherAction,
     importOpenApiToPublisherAction,
@@ -63,7 +65,7 @@
   let sidebarWidth = $state<number | null>(null);
   let responsePaneHeightPercent = $state(40);
   let configJsonOpen = $state(false);
-  let configJsonValue = $state("");
+  let configJsonVariants = $state<ConfigJsonVariant[]>([]);
   const responsePaneVisible = $derived($publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition");
 
   type VisibleTreeRow =
@@ -81,9 +83,9 @@
   }
 
   async function showCurrentPublisherJson() {
-    const value = await currentPublisherConfigJson();
-    if (!value) return;
-    configJsonValue = value;
+    const variants = await currentPublisherConfigVariants();
+    if (!variants) return;
+    configJsonVariants = variants;
     configJsonOpen = true;
   }
 
@@ -353,7 +355,7 @@
           {#if addMenuOpen}
             <div class="add-menu">
               {#each PUBLISHER_TYPE_OPTIONS as type (type)}
-                <button type="button" onclick={() => handleAdd(type)}>{type.toUpperCase()}</button>
+                <button type="button" onclick={() => handleAdd(type)}>{formatEndpointTypeLabel(type)}</button>
               {/each}
             </div>
           {/if}
@@ -625,7 +627,6 @@
                     <wa-button
                       variant="neutral"
                       appearance="outlined"
-                      class="icon-button"
                       id="pub-export-config"
                       title="Show publisher JSON"
                       aria-label="Show publisher JSON"
@@ -771,7 +772,7 @@
 <JsonPreviewDialog
   open={configJsonOpen}
   title="Publisher Configuration JSON"
-  value={configJsonValue}
+  variants={configJsonVariants}
   onClose={() => (configJsonOpen = false)}
 />
 

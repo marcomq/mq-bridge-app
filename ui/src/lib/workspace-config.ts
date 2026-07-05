@@ -105,6 +105,7 @@ function createDefaultRawPublisherEndpoint(endpointType: string) {
     file: { path: "/tmp/messages.jsonl" },
     sled: { path: "./data/sled", tree: "default" },
     ibmmq: { url: "localhost(1414)", queue: "DEV.QUEUE.1", topic: "topic://events" },
+    redis_streams: { url: "redis://localhost:6379", stream: "events" },
   };
 
   return {

@@ -1005,6 +1005,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   "sqlx",
   "grpc",
   "ibmmq",
+  "redis_streams",
   "zeromq",
   "switch",
   "response",

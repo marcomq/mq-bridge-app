@@ -2,6 +2,7 @@ import { nextUniqueName } from "./routes";
 import {
   BASIC_ENDPOINT_FIELDS,
   KNOWN_ENDPOINT_ROOT_KEYS,
+  formatEndpointTypeLabel,
 } from "./endpoint-metadata";
 
 export type ThemePreference = "auto" | "light" | "dark";
@@ -146,7 +147,7 @@ export function getTechnicalDisplayLabel(
   endpoint: Record<string, unknown>,
   endpointType?: string,
 ) {
-  if (!endpoint) return endpointType ? String(endpointType).toUpperCase() : "";
+  if (!endpoint) return endpointType ? formatEndpointTypeLabel(endpointType) : "";
   const type = String(endpointType || getEndpointType(endpoint)).trim().toLowerCase();
   const endpointData = (endpoint as Record<string, unknown>)[type];
   const data = endpointData && typeof endpointData === "object" && !Array.isArray(endpointData)
@@ -165,7 +166,7 @@ export function getTechnicalDisplayLabel(
     return String(rawValue || "").trim();
   }).filter(Boolean);
 
-  return values.join(" ").trim() || type.toUpperCase();
+  return values.join(" ").trim() || formatEndpointTypeLabel(type);
 }
 
 export function getEntityDisplayLabel(

@@ -213,6 +213,20 @@ const ENDPOINT_KIND_METADATA = [
   { kind: "custom", rootOrder: 20, basicFields: [], publisher: false, consumer: false },
   { kind: "null", rootOrder: 21, basicFields: [], publisher: false, consumer: false },
   { kind: "aws", rootOrder: 22, basicFields: ["region", "access_key_id", "secret_access_key"], publisher: true, consumer: true },
+  {
+    kind: "redis_streams",
+    rootOrder: 23,
+    basicFields: ["url", "stream", "group"],
+    requestBar: {
+      fields: [
+        { inputId: "pub-extra-1", field: "stream", label: "STREAM", placeholder: "events" },
+        { inputId: "pub-url", field: "url", label: "URL", placeholder: "redis://localhost:6379" },
+      ],
+    },
+    publisher: true,
+    consumer: true,
+    requiresFeature: "redis_streams",
+  },
 ] as const satisfies readonly EndpointKindMetadata[];
 
 export type EndpointKind = typeof ENDPOINT_KIND_METADATA[number]["kind"];
@@ -275,4 +289,12 @@ export function getPublisherTypeOptions(features: FeatureAvailabilityResponse): 
 
 export function getConsumerTypeOptions(features: FeatureAvailabilityResponse): string[] {
   return filterEndpointsByFeatures(CONSUMER_TYPE_OPTIONS, features);
+}
+
+/**
+ * Human-facing label for an endpoint kind: uppercased with underscores rendered
+ * as spaces (e.g. "redis_streams" -> "REDIS STREAMS").
+ */
+export function formatEndpointTypeLabel(type: string | null | undefined): string {
+  return String(type ?? "").replace(/_/g, " ").toUpperCase();
 }

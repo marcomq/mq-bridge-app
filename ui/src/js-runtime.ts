@@ -1,4 +1,4 @@
-import "../../static/tauri-bridge.js";
+import "../../crates/core/static/tauri-bridge.js";
 import "./lib/forms/custom-form";
 import "@awesome.me/webawesome/dist/webawesome.js";
 import "@awesome.me/webawesome/dist/styles/webawesome.css";
