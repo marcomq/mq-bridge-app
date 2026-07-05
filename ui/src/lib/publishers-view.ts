@@ -3,7 +3,7 @@ import { appShell, getAppState, switchMainTab } from "./app-shell";
 import { browserWindow, replaceHash } from "./browser";
 import { createLocalEntityId, getEntityDisplayLabel } from "./utils";
 import { buildPublisherTree } from "./publisher-grouping";
-import { PUBLISHER_TYPE_OPTIONS, REQUEST_BAR_LAYOUTS, type RequestBarFieldDescriptor } from "./endpoint-metadata";
+import { PUBLISHER_TYPE_OPTIONS, REQUEST_BAR_LAYOUTS, formatEndpointTypeLabel, type RequestBarFieldDescriptor } from "./endpoint-metadata";
 import { createConsumerEndpointFromPublisherEndpoint, createDefaultEndpoint, ensureEndpointDefaults, getEndpointType } from "./endpoint-utils";
 import { publishersPanelState } from "./stores";
 import { buildPublisherConfigDocument, buildPublisherConfigRouteDocument, extractImportedRequests, type ConfigJsonVariant } from "./import-export";
@@ -23,6 +23,7 @@ const SCHEMA_CONFIG_ENDPOINT_TYPES: Record<string, string> = {
   GrpcConfig: "grpc",
   AmqpConfig: "amqp",
   IbmMqConfig: "ibmmq",
+  RedisStreamsConfig: "redis_streams",
   NatsConfig: "nats",
   MongoDbConfig: "mongodb",
   ZeroMqConfig: "zeromq",
@@ -72,7 +73,7 @@ export async function initPublishers(config: PublishersAppConfig, schema: Publis
     hasPublishers: activeConfig.publishers.length > 0,
     items: activeConfig.publishers.map((publisher, index) => ({
       name: String(publisher.name || ""),
-      endpointType: getEndpointType(publisher.endpoint).toUpperCase(),
+      endpointType: formatEndpointTypeLabel(getEndpointType(publisher.endpoint)),
       originalIndex: index,
     })),
     groupedItems: buildPublisherTree(activeConfig.publishers),
@@ -677,13 +678,13 @@ function renderSelectedPublisher() {
     hasPublishers: activeConfig.publishers.length > 0,
     items: activeConfig.publishers.map((row, index) => ({
       name: String(row.name || ""),
-      endpointType: getEndpointType(row.endpoint).toUpperCase(),
+      endpointType: formatEndpointTypeLabel(getEndpointType(row.endpoint)),
       originalIndex: index,
     })),
     groupedItems: buildPublisherTree(activeConfig.publishers),
     selectedIndex: activeConfig.publishers.indexOf(publisher),
     selectedHistoryIndex: state.selectedHistoryIndex,
-    endpointType: endpointType.toUpperCase(),
+    endpointType: formatEndpointTypeLabel(endpointType),
     isNew: false,
     deleteLabel: "Delete",
     methodVisible: Boolean(requestBar.showMethod),

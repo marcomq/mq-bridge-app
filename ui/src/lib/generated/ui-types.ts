@@ -192,6 +192,8 @@ export interface KafkaConfig {
   delayed_ack?: boolean;
   producer_options?: unknown[][] | null;
   consumer_options?: unknown[][] | null;
+  shared?: boolean | null;
+  partitions?: number | null;
 }
 
 export interface TlsConfig {
@@ -220,6 +222,7 @@ export interface NatsConfig {
   deliver_policy?: NatsDeliverPolicy | null;
   stream_max_bytes?: number | null;
   prefetch_count?: number | null;
+  shared?: boolean | null;
 }
 
 export type NatsDeliverPolicy = "all" | "last" | "new" | "last_per_subject";
@@ -232,11 +235,7 @@ export interface FileConfig {
 
 export type FileFormat = "normal" | "json" | "text" | "raw";
 
-export interface StaticConfig {
-  body: string;
-  raw: boolean;
-  metadata: Record<string, string>;
-}
+export type StaticConfig = string | Record<string, never>;
 
 export interface MemoryConfig {
   topic?: string;
@@ -287,6 +286,7 @@ export interface MongoDbConfig {
   cursor_id?: string | null;
   receive_query?: string | null;
   meta_collection?: string | null;
+  shared?: boolean | null;
 }
 
 export type MongoDbFormat = "normal" | "json" | "text" | "raw";
@@ -332,6 +332,7 @@ export interface HttpConfig {
   concurrency_limit?: number | null;
   basic_auth?: unknown[] | null;
   custom_headers?: Record<string, string>;
+  shared?: boolean | null;
 }
 
 export type HttpServerProtocol = "auto" | "http1_only" | "http2_only";
@@ -340,8 +341,12 @@ export interface WebSocketConfig {
   url: string;
   path?: string | null;
   message_id_header?: string | null;
-  internal_buffer_size?: number | null;
+  routed_queue_capacity?: number | null;
+  backlog?: number | null;
+  execution_mode?: WebSocketExecutionMode;
 }
+
+export type WebSocketExecutionMode = "auto" | "direct_only" | "routed";
 
 export interface IbmMqConfig {
   url: string;
@@ -351,12 +356,21 @@ export interface IbmMqConfig {
   channel: string;
   username?: string | null;
   password?: string | null;
-  cipher_spec?: string | null;
-  tls?: TlsConfig;
+  tls?: IbmTlsConfig;
   max_message_size?: number;
   wait_timeout_ms?: number;
   internal_buffer_size?: number | null;
   disable_status_inq?: boolean;
+}
+
+export interface IbmTlsConfig {
+  required?: boolean;
+  cipher_spec?: string | null;
+  cert_file?: string | null;
+  cert_password?: string | null;
+  accept_invalid_certs?: boolean;
+  key_repository?: string | null;
+  key_repository_password?: string | null;
 }
 
 export interface ZeroMqConfig {
@@ -368,6 +382,23 @@ export interface ZeroMqConfig {
 }
 
 export type ZeroMqSocketType = "push" | "pull" | "pub" | "sub" | "req" | "rep";
+
+export interface RedisStreamsConfig {
+  url: string;
+  stream?: string | null;
+  group?: string | null;
+  consumer_name?: string | null;
+  subscriber_mode?: boolean;
+  block_ms?: number | null;
+  read_from_start?: boolean;
+  redelivery_timeout_ms?: number | null;
+  maxlen?: number | null;
+  approx_trim?: boolean | null;
+  username?: string | null;
+  password?: string | null;
+  internal_buffer_size?: number | null;
+  reader_connections?: number | null;
+}
 
 export interface GrpcConfig {
   url: string;
@@ -381,6 +412,7 @@ export interface GrpcConfig {
   http2_keepalive_interval_ms?: number | null;
   http2_keepalive_timeout_ms?: number | null;
   max_decoding_message_size?: number | null;
+  shared?: boolean | null;
 }
 
 export interface SqlxConfig {
@@ -399,6 +431,7 @@ export interface SqlxConfig {
   acquire_timeout_ms?: number | null;
   idle_timeout_ms?: number | null;
   max_lifetime_ms?: number | null;
+  shared?: boolean | null;
 }
 
 export interface StreamBufferConfig {

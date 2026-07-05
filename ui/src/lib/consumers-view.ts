@@ -3,7 +3,7 @@ import { get } from "svelte/store";
 import { appShell, getAppState, switchMainTab, workspaceRuntime } from "./app-shell";
 import { browserWindow, replaceHash } from "./browser";
 import { createLocalEntityId, getEntityDisplayLabel, normalizeConsumerNames, normalizeConsumerResponse, sanitizeConsumerName } from "./utils";
-import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES } from "./endpoint-metadata";
+import { CONSUMER_TYPE_OPTIONS, RESPONSE_CAPABLE_CONSUMER_TYPES, formatEndpointTypeLabel } from "./endpoint-metadata";
 import { createDefaultEndpoint, createPublisherEndpointFromConsumerEndpoint, ensureEndpointDefaults, getEndpointType, normalizeScalarEndpointValue } from "./endpoint-utils";
 import { buildConsumerTree } from "./consumer-grouping";
 import { consumersPanelState } from "./stores";
@@ -40,6 +40,7 @@ const CONSUMER_ENDPOINT_DEFAULTS: Record<string, Record<string, unknown> | strin
   mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" },
   sqlx: { url: "postgres://user:pass@localhost/db", table: "events" },
   zeromq: { url: "tcp://127.0.0.1:5555", topic: "events" },
+  redis_streams: { url: "redis://localhost:6379", stream: "events", group: "mq-bridge" },
   file: { path: "/tmp/messages.jsonl" },
   static: "",
 };
@@ -281,7 +282,7 @@ function buildSidebarItems() {
   return activeConfig.consumers.map((consumer, index) => ({
     name: String(consumer.name || ""),
     displayName: getEntityDisplayLabel(consumer.name, consumer.endpoint, getEndpointType(consumer.endpoint)),
-    inputProto: getEndpointType(consumer.endpoint).toUpperCase(),
+    inputProto: formatEndpointTypeLabel(getEndpointType(consumer.endpoint)),
     statusClass: getStatusClass(consumer),
     messageCount: consumerMessagesFor(consumer).length,
     throughputLabel: formatThroughput(consumer),

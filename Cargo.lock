@@ -212,6 +212,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1268,7 +1274,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
+ "futures-core",
  "memchr",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -3768,6 +3778,10 @@ name = "libmqm-sys"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d888946090ed1e149d6978906143db293b9232c9a8cca0b369a1dc4668d9082a"
+dependencies = [
+ "dlopen2",
+ "libc",
+]
 
 [[package]]
 name = "libredox"
@@ -4166,9 +4180,9 @@ dependencies = [
 
 [[package]]
 name = "mq-bridge"
-version = "0.3.0"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e652aa1259498dd2e725f3e2d66091267c93fb194517a3d2642050ed86dd5f8"
+checksum = "a612d59840aa751f599b94528dbf783c2b2f307bb2a7d4024ae3eae5a829b54e"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4190,6 +4204,7 @@ dependencies = [
  "hyper-rustls 0.27.7",
  "hyper-util",
  "lapin",
+ "libmqm-sys",
  "metrics",
  "mongodb",
  "mqi",
@@ -4198,6 +4213,7 @@ dependencies = [
  "protoc-bin-vendored",
  "rand 0.10.1",
  "rdkafka 0.39.0",
+ "redis",
  "rmp-serde",
  "rumqttc",
  "rustls 0.23.40",
@@ -4300,6 +4316,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "298bea58d1259df694242dc973b07ce156660c897a7b3a421e324b1f37905cdc"
 dependencies = [
  "derive_more 2.1.0",
+ "dlopen2",
  "libmqm-constants",
  "libmqm-default",
  "libmqm-sys",
@@ -5699,6 +5716,36 @@ dependencies = [
  "libz-sys",
  "num_enum",
  "pkg-config",
+]
+
+[[package]]
+name = "redis"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fa6f8e4b491d7a8ef3a9550a4d71969bd0064f46e32b8dbbcc7fc60dad94fed"
+dependencies = [
+ "arc-swap",
+ "arcstr",
+ "async-lock",
+ "backon",
+ "bytes",
+ "cfg-if",
+ "combine",
+ "futures-channel",
+ "futures-util",
+ "itoa",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustls 0.23.40",
+ "rustls-native-certs",
+ "ryu",
+ "socket2 0.6.3",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tokio-util",
+ "url",
+ "webpki-roots 1.0.6",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -9385,6 +9432,12 @@ name = "xmlparser"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d93c89cdc2d3a63c3ec48ffe926931bdc069eafa8e4402fe6d8f790c9d1e576"
 
 [[package]]
 name = "yaml-rust2"

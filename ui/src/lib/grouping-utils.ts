@@ -1,4 +1,5 @@
 import { getEndpointType } from "./endpoint-utils";
+import { formatEndpointTypeLabel } from "./endpoint-metadata";
 
 export type GroupTreeLeafBase<Kind extends string> = {
   kind: Kind;
@@ -326,9 +327,9 @@ export function buildNonHttpGroupInfo(endpoint: Record<string, unknown> | undefi
   ).trim();
   const firstSegment = splitMessagingSegments(target)[0] || target || "Ungrouped";
   return {
-    endpointType: endpointType.toUpperCase(),
+    endpointType: formatEndpointTypeLabel(endpointType),
     groupKey: `${endpointType}:${safeUrl}:${firstSegment}`,
-    groupLabel: `${endpointType.toUpperCase()} ${displayUrlWithoutScheme(safeUrl) || firstSegment}`.trim(),
+    groupLabel: `${formatEndpointTypeLabel(endpointType)} ${displayUrlWithoutScheme(safeUrl) || firstSegment}`.trim(),
     tooltip: safeUrl || target,
     leafTooltip: target || safeUrl,
     sortTarget: target || safeUrl || firstSegment,

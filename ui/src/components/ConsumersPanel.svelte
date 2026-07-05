@@ -33,6 +33,7 @@
   } from "../lib/consumers-view";
   import { registerDismissOnOutsideClick, startSidebarResize as beginSidebarResize } from "../lib/sidebar-ui";
   import { handleActionKey, getTechnicalDisplayLabel } from "../lib/utils";
+  import { formatEndpointTypeLabel } from "../lib/endpoint-metadata";
   import { appShell, getAppState } from "../lib/app-shell";
 
   let filterText = $state("");
@@ -320,7 +321,7 @@
           {#if addMenuOpen}
             <div class="add-menu">
               {#each CONSUMER_TYPE_OPTIONS as type (type)}
-                <button type="button" onclick={() => handleAdd(type)}>{type.toUpperCase()}</button>
+                <button type="button" onclick={() => handleAdd(type)}>{formatEndpointTypeLabel(type)}</button>
               {/each}
             </div>
           {/if}

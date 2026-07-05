@@ -10,6 +10,7 @@
   import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
   import { onMount } from "svelte";
   import { PUBLISHER_TYPE_OPTIONS } from "../lib/publishers-view";
+  import { formatEndpointTypeLabel } from "../lib/endpoint-metadata";
   import {
     addPublisherAction,
     addPublisherMetadataRow,
@@ -353,7 +354,7 @@
           {#if addMenuOpen}
             <div class="add-menu">
               {#each PUBLISHER_TYPE_OPTIONS as type (type)}
-                <button type="button" onclick={() => handleAdd(type)}>{type.toUpperCase()}</button>
+                <button type="button" onclick={() => handleAdd(type)}>{formatEndpointTypeLabel(type)}</button>
               {/each}
             </div>
           {/if}
