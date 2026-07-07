@@ -113,7 +113,6 @@ ENV RUSTFLAGS="-L native=/opt/mqm/lib64"
 WORKDIR /usr/src/mq-bridge-app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY static ./static
 
 # DEBUG: run cmake standalone so the full error is visible in GHA logs
 # even when cargo's output is truncated. Remove once build is stable.
