@@ -159,6 +159,55 @@ cargo install mq-bridge-app
 ./mq-bridge-app
 ```
 
+### Prebuilt binary via `cargo binstall`
+
+To skip compilation, use [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) to download the prebuilt CLI from the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases) instead of building from source:
+
+```bash
+cargo binstall mq-bridge-app
+```
+
+Prebuilt binaries are available for `x86_64` Linux, Apple Silicon macOS, and `x86_64` Windows.
+
+### One-shot `copy` (no config file / no UI)
+
+For ad-hoc data moves (queue→DB, DB→DB) you don't need to hand-write a YAML
+config. The `copy` subcommand builds a single route from two endpoint URIs and
+runs it headlessly (no web UI):
+
+```bash
+# DB → DB, drain the source table then exit (exit code 0 on success)
+mq-bridge-app copy \
+  --from 'postgres://user:pass@localhost/db?table=src' \
+  --to   'postgres://user:pass@localhost/db?table=dst' \
+  --drain
+
+# Queue → DB as a continuous bridge (runs until Ctrl-C; omit --drain)
+mq-bridge-app copy \
+  --from 'nats://localhost:4222?subject=orders' \
+  --to   'postgres://user:pass@localhost/db?table=orders'
+```
+
+The URLs use a generic `scheme://…?param=a&next=b` convention: the
+**scheme selects the endpoint** and **query parameters set its config**. Any query
+key that matches a field of that endpoint's config becomes endpoint config; every
+other query param stays on the connection URL, so driver params pass through
+unchanged (e.g. `postgres://…/db?table=src&sslmode=disable`). No per-field flags.
+
+- Schemes: `postgres` / `postgresql` / `mysql` / `mariadb` / `sqlite` → sqlx,
+  `nats` → NATS, `mongodb` → MongoDB, `redis` → Redis streams, `file` → file.
+- Common config params: `table`, `insert_query` (URL-encoded; supports the
+  `${metadata:<key>}` / `${payload:<field>}` token mapping), `delete_after_read`,
+  `subject`, `stream`, `collection`, `database`, `format`, … — anything on the
+  endpoint's config struct.
+- For `nats`/`redis`, the dominant target field can also be given as the URL
+  path instead of a query param — `nats://localhost:4222/orders` is equivalent
+  to `nats://localhost:4222?subject=orders` (matching the UI's short-display
+  convention); the query form wins if both are given.
+- `--drain` — exit gracefully once the source is empty (drain-then-exit). Without
+  it, `copy` runs as a continuous bridge until Ctrl-C.
+- `--concurrency <N>` / `--batch-size <N>` — route tuning passthrough.
+
 ## Build from Source
 
 ### Prerequisites
