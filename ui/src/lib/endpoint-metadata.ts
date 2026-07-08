@@ -298,3 +298,19 @@ export function getConsumerTypeOptions(features: FeatureAvailabilityResponse): s
 export function formatEndpointTypeLabel(type: string | null | undefined): string {
   return String(type ?? "").replace(/_/g, " ").toUpperCase();
 }
+
+/**
+ * Unique, sorted list of publisher ids (falling back to name) used as datalist
+ * suggestions when referencing a publisher from an endpoint ref field.
+ */
+export function collectPublisherIdSuggestions(
+  publishers: ReadonlyArray<{ id?: string; name?: string }> | null | undefined,
+): string[] {
+  return Array.from(
+    new Set(
+      (publishers || [])
+        .map((publisher) => String(publisher?.id || publisher?.name || "").trim())
+        .filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b));
+}

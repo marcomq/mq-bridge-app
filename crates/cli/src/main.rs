@@ -329,15 +329,21 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 /// Maps an endpoint URI to an mq-bridge [`Endpoint`]: the scheme
 /// selects the endpoint, and `?param=a&next=b` query parameters set its config.
 ///
-/// Query keys that match a field of the target endpoint's config struct become
-/// endpoint config (e.g. `table`, `insert_query`, `subject`, `delete_after_read`);
-/// any other query params stay on the connection URL, so driver params like
-/// `sslmode` or `replicaSet` pass through unchanged. `file` URIs map the path to
-/// the `path` field. For `nats`/`redis`, the dominant target field (`subject`/
-/// `stream`) may also be given as the URL path (`nats://host:4222/orders`),
-/// matching the UI's short-display convention, as an alternative to the query
-/// form (`?subject=orders`); the query form wins if both are present. This keeps
-/// the mapping fully generic — no per-field flags.
+/// Query keys that match a *scalar* field of the target endpoint's config struct
+/// become endpoint config (e.g. `table`, `insert_query`, `subject`,
+/// `delete_after_read`); any other query params — including ones whose name
+/// matches an object-typed config field like `tls` — stay on the connection URL,
+/// so driver options such as `sslmode`, `replicaSet` or `tls=true` pass through
+/// unchanged. `file` URIs map the path to the `path` field. For `nats`, the
+/// dominant target field `subject` may also be given as the URL path
+/// (`nats://host:4222/orders`) as an alternative to `?subject=orders` (the query
+/// form wins if both are present); redis is excluded because a redis URL path is
+/// the database number, not the stream.
+///
+/// Escaped mode: pass the full connection string percent-encoded as `?url=...`
+/// to use it verbatim (e.g. `mongodb://_/?url=<encoded>&collection=orders`); its
+/// own `?a=b` options are then never re-interpreted as config, which is the
+/// escape hatch for any driver option that collides with a config field name.
 fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     use anyhow::bail;
     use mq_bridge::models::{
@@ -369,20 +375,31 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
         ),
     };
 
-    // Split query params: recognised config fields become endpoint config,
+    // Split query params: recognised scalar config fields become endpoint config,
     // everything else is kept on the connection URL (driver params).
     let mut config = serde_json::Map::new();
     let mut driver_params: Vec<(String, String)> = Vec::new();
+    // Escaped mode: `?url=<percent-encoded connection string>` supplies the exact
+    // connection URL verbatim, so its own `?a=b` options are never re-interpreted
+    // as config fields. Use it when a driver option would otherwise collide.
+    let mut escaped_url: Option<String> = None;
     for (k, v) in parsed.query_pairs() {
         let (k, v) = (k.into_owned(), v.into_owned());
-        // The connection endpoint is always taken from the base URI, never a param.
-        if k == "url" || k == "path" {
+        if k == "path" {
             continue;
         }
-        if let Some(&ty) = fields.get(&k) {
-            config.insert(k, coerce_scalar(v, ty));
-        } else {
-            driver_params.push((k, v));
+        if k == "url" {
+            escaped_url = Some(v);
+            continue;
+        }
+        match fields.get(&k).copied() {
+            // Object/array config fields (e.g. `tls`) can't be populated from a
+            // scalar query param, and their names routinely collide with driver
+            // options (`?tls=true`), so leave such params on the connection URL.
+            Some(FieldType::Object) | None => driver_params.push((k, v)),
+            Some(ty) => {
+                config.insert(k, coerce_scalar(v, ty));
+            }
         }
     }
 
@@ -393,14 +410,22 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
             bail!("file URI '{uri}' must include a path");
         }
         config.insert("path".into(), serde_json::Value::String(path.to_string()));
+    } else if let Some(url) = escaped_url {
+        // Escaped mode: the connection string is authoritative and complete, so
+        // any leftover non-config param is ambiguous — it belongs inside `url=`.
+        if let Some((k, _)) = driver_params.first() {
+            bail!(
+                "in escaped mode (url=...), put driver options inside the encoded connection string; unexpected query param '{k}' in URI '{uri}'"
+            );
+        }
+        config.insert("url".into(), serde_json::Value::String(url));
     } else {
         // For endpoints with a single dominant "target" field, also accept it as
         // the URL path (e.g. `nats://host:4222/orders`), matching the UI's short
         // display convention, alongside the query-param form (`?subject=orders`).
-        // Only for schemes whose URL path isn't otherwise meaningful to the driver.
+        // Only for `nats`: a redis URL path is the database number, not the stream.
         let path_field = match tag {
             "nats" => Some("subject"),
-            "redis" => Some("stream"),
             _ => None,
         };
         let mut base = parsed.clone();
@@ -437,7 +462,10 @@ enum FieldType {
     Bool,
     Integer,
     Number,
-    /// Strings, enums, and anything non-scalar — kept as a JSON string.
+    /// An object or array field (e.g. a nested config struct): it cannot be set
+    /// from a scalar query param, so such params are routed to driver options.
+    Object,
+    /// Strings, enums, and anything else scalar — kept as a JSON string.
     StringLike,
 }
 
@@ -522,6 +550,9 @@ fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
     if has("number") {
         return FieldType::Number;
     }
+    if has("object") || has("array") {
+        return FieldType::Object;
+    }
     // Option<scalar> is often modelled as anyOf/oneOf of the scalar and null.
     for key in ["anyOf", "oneOf"] {
         if let Some(arr) = sub.get(key).and_then(|a| a.as_array()) {
@@ -555,7 +586,9 @@ fn coerce_scalar(s: String, ty: FieldType) -> serde_json::Value {
             Ok(f) => serde_json::Value::from(f),
             Err(_) => serde_json::Value::String(s),
         },
-        FieldType::StringLike => serde_json::Value::String(s),
+        // Object/array fields are routed to driver params before reaching here;
+        // keep the raw string as a defensive fallback.
+        FieldType::StringLike | FieldType::Object => serde_json::Value::String(s),
     }
 }
 
@@ -629,4 +662,74 @@ async fn platform_specific_shutdown() {
     #[cfg(not(unix))]
     // On non-unix, ctrl_c is the primary mechanism. This future never completes.
     std::future::pending::<()>().await
+}
+
+#[cfg(test)]
+mod uri_tests {
+    use super::endpoint_from_uri;
+
+    fn config(uri: &str, tag: &str) -> serde_json::Value {
+        let ep = endpoint_from_uri(uri).expect("uri should parse");
+        serde_json::to_value(&ep).unwrap()[tag].clone()
+    }
+
+    // A driver option whose name matches an object-typed config field (`tls` is a
+    // TlsConfig struct) must stay on the connection URL, not be hijacked as config.
+    #[test]
+    fn mongodb_tls_option_stays_on_url() {
+        let cfg = config("mongodb://host:27017/?tls=true&database=appdb", "mongodb");
+        assert_eq!(cfg["url"], "mongodb://host:27017/?tls=true");
+        assert_eq!(cfg["database"], "appdb");
+    }
+
+    // A recognised scalar field becomes config; an unrecognised param is a driver
+    // option and passes through on the URL unchanged.
+    #[test]
+    fn mongodb_scalar_field_vs_driver_param() {
+        let cfg = config(
+            "mongodb://host/?collection=orders&database=appdb&replicaSet=rs0",
+            "mongodb",
+        );
+        assert_eq!(cfg["collection"], "orders");
+        assert_eq!(cfg["url"], "mongodb://host/?replicaSet=rs0");
+    }
+
+    // A redis URL path is the database number, not the stream, so it must remain on
+    // the connection URL.
+    #[test]
+    fn redis_path_is_database_not_stream() {
+        let cfg = config("redis://host:6379/0", "redis_streams");
+        assert_eq!(cfg["url"], "redis://host:6379/0");
+        assert!(cfg["stream"].is_null());
+    }
+
+    // Escaped mode: `?url=<encoded>` is used verbatim (its own options are never
+    // re-interpreted), while sibling params still set config fields.
+    #[test]
+    fn escaped_url_is_verbatim() {
+        let inner = "mongodb://u:p@host/db?tls=true&replicaSet=rs0";
+        let mut outer = url::Url::parse("mongodb://_/").unwrap();
+        outer
+            .query_pairs_mut()
+            .append_pair("url", inner)
+            .append_pair("collection", "orders")
+            .append_pair("database", "appdb");
+        let cfg = config(outer.as_str(), "mongodb");
+        assert_eq!(cfg["url"], inner);
+        assert_eq!(cfg["collection"], "orders");
+    }
+
+    // In escaped mode the connection string is complete, so a stray driver-style
+    // param is rejected rather than silently dropped.
+    #[test]
+    fn escaped_url_rejects_stray_param() {
+        let mut outer = url::Url::parse("mongodb://_/").unwrap();
+        outer
+            .query_pairs_mut()
+            .append_pair("url", "mongodb://host/db")
+            .append_pair("database", "appdb")
+            .append_pair("bogus", "x");
+        let err = endpoint_from_uri(outer.as_str()).unwrap_err();
+        assert!(err.to_string().contains("escaped mode"), "got: {err}");
+    }
 }

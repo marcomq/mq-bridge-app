@@ -1,6 +1,7 @@
 <script lang="ts">
   import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
   import { appShell } from "../../lib/app-shell";
+  import { collectPublisherIdSuggestions } from "../endpoint-metadata";
 
   interface Props {
     title?: string;
@@ -21,13 +22,7 @@
   }: Props = $props();
 
   const suggestions = $derived(
-    Array.from(
-      new Set(
-        ((appShell.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
-          .map((publisher) => String(publisher?.id || publisher?.name || "").trim())
-          .filter(Boolean),
-      ),
-    ).sort((a, b) => a.localeCompare(b)),
+    collectPublisherIdSuggestions(appShell.config<Record<string, any>>()?.publishers),
   );
 </script>
 
