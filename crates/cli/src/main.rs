@@ -347,19 +347,115 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     use anyhow::bail;
     use mq_bridge::models::{
-        Endpoint, EndpointType, FileConfig, MongoDbConfig, NatsConfig, RedisStreamsConfig,
-        SqlxConfig,
+        Endpoint, EndpointType, FileConfig, MongoDbConfig, NatsConfig, PostgresCdcConfig,
+        RedisStreamsConfig, SqlxConfig,
     };
     use std::collections::HashMap;
     use url::Url;
 
     let parsed = Url::parse(uri).with_context(|| format!("not a valid URI: {uri}"))?;
 
+    // Endpoints without a connection URL are built directly — they don't fit the
+    // scalar-field-routing path below (which always attaches a `url`).
+    match parsed.scheme() {
+        // A sink that discards everything. `null:` (any trailing content ignored).
+        "null" => return Ok(Endpoint::new(EndpointType::Null)),
+        // A source that endlessly produces a fixed message (config-only load
+        // generator) or a sink. Body from `?body=`, or read a file with
+        // `?body_file=`. `raw=true` sends the body verbatim (no JSON re-encode) —
+        // use it so a generated JSON row is the payload as-is. Any other query
+        // param becomes message metadata.
+        "static" => {
+            let mut body: Option<String> = None;
+            let mut raw = false;
+            let mut metadata: HashMap<String, String> = HashMap::new();
+            for (k, v) in parsed.query_pairs() {
+                match k.as_ref() {
+                    "body" => body = Some(v.into_owned()),
+                    "body_file" => {
+                        body =
+                            Some(std::fs::read_to_string(v.as_ref()).with_context(|| {
+                                format!("failed to read static body_file '{}'", v)
+                            })?);
+                    }
+                    "raw" => raw = v == "true",
+                    _ => {
+                        metadata.insert(k.into_owned(), v.into_owned());
+                    }
+                }
+            }
+            let mut cfg = serde_json::Map::new();
+            cfg.insert(
+                "body".into(),
+                serde_json::Value::String(body.unwrap_or_default()),
+            );
+            cfg.insert("raw".into(), serde_json::Value::Bool(raw));
+            cfg.insert("metadata".into(), serde_json::to_value(metadata)?);
+            let mut tagged = serde_json::Map::new();
+            tagged.insert("static".into(), serde_json::Value::Object(cfg));
+            let endpoint_type: EndpointType =
+                serde_json::from_value(serde_json::Value::Object(tagged)).with_context(|| {
+                    format!("could not build a 'static' endpoint from URI '{uri}'")
+                })?;
+            return Ok(Endpoint::new(endpoint_type));
+        }
+        // In-process channel. Topic is the host (+path): `memory://my-topic`.
+        // `?capacity=`, `?subscribe_mode=` are recognised; other params ignored.
+        "memory" => {
+            let host = parsed.host_str().unwrap_or("");
+            let path = parsed.path().trim_matches('/');
+            let topic = if path.is_empty() {
+                host.to_string()
+            } else if host.is_empty() {
+                path.to_string()
+            } else {
+                format!("{host}/{path}")
+            };
+            if topic.is_empty() {
+                anyhow::bail!("memory URI '{uri}' must include a topic, e.g. memory://my-topic");
+            }
+            let mut cfg = serde_json::Map::new();
+            cfg.insert("topic".into(), serde_json::Value::String(topic));
+            for (k, v) in parsed.query_pairs() {
+                match k.as_ref() {
+                    "capacity" => {
+                        if let Ok(n) = v.parse::<u64>() {
+                            cfg.insert("capacity".into(), serde_json::Value::from(n));
+                        }
+                    }
+                    "subscribe_mode" => {
+                        cfg.insert(
+                            "subscribe_mode".into(),
+                            serde_json::Value::Bool(v == "true"),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            let mut tagged = serde_json::Map::new();
+            tagged.insert("memory".into(), serde_json::Value::Object(cfg));
+            let endpoint_type: EndpointType =
+                serde_json::from_value(serde_json::Value::Object(tagged)).with_context(|| {
+                    format!("could not build a 'memory' endpoint from URI '{uri}'")
+                })?;
+            return Ok(Endpoint::new(endpoint_type));
+        }
+        _ => {}
+    }
+
     // scheme -> (EndpointType tag, recognised config fields with their types).
     let (tag, fields): (&str, HashMap<String, FieldType>) = match parsed.scheme() {
         "postgres" | "postgresql" | "mysql" | "mariadb" | "sqlite" => {
             ("sqlx", schema_fields(schemars::schema_for!(SqlxConfig)))
         }
+        // Logical-replication CDC source. The connection URL is rebuilt with a
+        // plain `postgres` scheme; `publication`, `slot_name`, etc. are scalar
+        // config fields set via query params. (An underscore is not a legal URI
+        // scheme character, so the scheme is spelled `postgres-cdc`/`pgcdc`.)
+        "postgres-cdc" | "pgcdc" => (
+            "postgres_cdc",
+            schema_fields(schemars::schema_for!(PostgresCdcConfig)),
+        ),
         "nats" => ("nats", schema_fields(schemars::schema_for!(NatsConfig))),
         "mongodb" => (
             "mongodb",
@@ -445,7 +541,18 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
                 qs.append_pair(k, v);
             }
         }
-        config.insert("url".into(), serde_json::Value::String(base.to_string()));
+        // The postgres_cdc endpoint takes a plain `postgres://` connection URL;
+        // the `postgres_cdc`/`pgcdc` scheme only selects the endpoint kind.
+        let mut url = base.to_string();
+        if tag == "postgres_cdc" {
+            for prefix in ["postgres-cdc://", "pgcdc://"] {
+                if let Some(rest) = url.strip_prefix(prefix) {
+                    url = format!("postgres://{rest}");
+                    break;
+                }
+            }
+        }
+        config.insert("url".into(), serde_json::Value::String(url));
     }
 
     let mut tagged = serde_json::Map::new();
@@ -504,7 +611,8 @@ fn collect_props(
 
     if let Some(props) = obj.get("properties").and_then(|p| p.as_object()) {
         for (name, sub) in props {
-            out.entry(name.clone()).or_insert_with(|| field_type(root, sub));
+            out.entry(name.clone())
+                .or_insert_with(|| field_type(root, sub));
         }
     }
 
@@ -717,6 +825,44 @@ mod uri_tests {
         let cfg = config(outer.as_str(), "mongodb");
         assert_eq!(cfg["url"], inner);
         assert_eq!(cfg["collection"], "orders");
+    }
+
+    // `null:` builds the discard sink regardless of trailing content. A flattened
+    // unit `Null` variant serializes as a `null` key with a null value.
+    #[test]
+    fn null_scheme_builds_null_endpoint() {
+        let ep = endpoint_from_uri("null:").expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert!(v.get("null").is_some(), "expected a null endpoint, got {v}");
+    }
+
+    // `static:` carries its payload in `?body=`; `raw=true` sends it verbatim.
+    #[test]
+    fn static_scheme_body_and_raw() {
+        let cfg = config("static:?body=hello&raw=true", "static");
+        assert_eq!(cfg["body"], "hello");
+        assert_eq!(cfg["raw"], true);
+    }
+
+    // `memory://topic` maps the host to the channel topic.
+    #[test]
+    fn memory_scheme_topic_from_host() {
+        let cfg = config("memory://my-topic?capacity=1000", "memory");
+        assert_eq!(cfg["topic"], "my-topic");
+        assert_eq!(cfg["capacity"], 1000);
+    }
+
+    // `postgres_cdc://` selects the CDC endpoint; the connection URL is rebuilt
+    // with a plain `postgres` scheme, and `publication` is a scalar config field.
+    #[test]
+    fn postgres_cdc_scheme_rewrites_url_and_takes_publication() {
+        let cfg = config(
+            "postgres-cdc://u:p@host:5432/db?publication=mqb_pub&slot_name=mqb_slot",
+            "postgres_cdc",
+        );
+        assert_eq!(cfg["url"], "postgres://u:p@host:5432/db");
+        assert_eq!(cfg["publication"], "mqb_pub");
+        assert_eq!(cfg["slot_name"], "mqb_slot");
     }
 
     // In escaped mode the connection string is complete, so a stray driver-style

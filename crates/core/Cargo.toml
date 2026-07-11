@@ -16,7 +16,7 @@ name = "mq_bridge_app"
 path = "src/lib.rs"
 
 [dependencies]
-# mq-bridge = { version = "0.3.3", features = ["schema"] }
+# mq-bridge = { version = "0.3.4", features = ["schema"] }
 mq-bridge = { git = "https://github.com/marcomq/mq-bridge", branch = "dev", features = ["schema"] }
 
 config = { version = "0.15.22", features = ["yaml"] }
@@ -53,6 +53,16 @@ integration-test = []
 ibm-mq = ["mq-bridge/ibm-mq"]
 arm64-cross-compile = ["rdkafka", "rdkafka/cmake-build"]
 full = ["mq-bridge/full"]
+# Lean feature set for the ETL/CDC benchmarks (benches/etl): Postgres bulk-insert
+# (sqlx) + logical-replication CDC + per-route metrics, with a TLS provider so the
+# binary links. Avoids the heavy `full` deps (rdkafka/librdkafka, grpc/protoc,
+# ibm-mq) that aren't needed to move Postgres data.
+bench = [
+    "mq-bridge/sqlx",
+    "mq-bridge/postgres-cdc",
+    "mq-bridge/middleware",
+    "mq-bridge/rustls-aws-lc",
+]
 middleware = ["mq-bridge/middleware"]
 mongodb = ["mq-bridge/mongodb"]
 http = ["mq-bridge/http"]

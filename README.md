@@ -64,7 +64,7 @@ In short:
 
 It originally served as the primary reference implementation and testbed for the [mq-bridge](https://github.com/marcomq/mq-bridge) library. 
 
-The UI was mostly vibe coded. It was first created as vanilla-js project and then converted to svelte and typescript via codex. Later to tauri too. Early cleanups were missed and are now performed one after another. Final cleanups are performed manually but may still take additional weeks. Don't use the current ui code as reference implementation. It may already work ok for some use cases but I wouldn't recommend to use it in production yet without testing.
+The UI was unfortunately mostly vibe coded. It doesn't mirror the general mq-bridge or mq-bridge-app core/cli standards. Don't use the current UI / tauri code as reference implementation - I wouldn't recommend to use it in production yet without testing.
 
 ## Features
 

@@ -40,6 +40,8 @@ url = "2.5.7"
 [features]
 default = ["full"]
 integration-test = ["mq_bridge_app/integration-test"]
+# Lean feature set for the ETL/CDC benchmarks (benches/etl): see the core crate.
+bench = ["mq_bridge_app/bench"]
 ibm-mq = ["mq_bridge_app/ibm-mq"]
 arm64-cross-compile = ["mq_bridge_app/arm64-cross-compile"]
 full = ["mq_bridge_app/full"]
