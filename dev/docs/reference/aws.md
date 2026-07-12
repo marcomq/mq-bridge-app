@@ -2,7 +2,7 @@
 
 # AWS SQS / SNS
 
-Schemes: `aws://`
+Schemes: `aws://`, `aws-sqs://`
 
 Query parameters recognised as config fields for this connector. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
 

@@ -8,7 +8,7 @@ Query parameters recognised as config fields for this connector. Any other `?key
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `delete` | boolean | no | `false` |  |
+| `delete` | boolean | no | `false` | If true, processed lines are physically removed from the file once they are successfully acknowledged. |
 | `delimiter` | string | no | — | Optional delimiter for messages. Defaults to newline ("\n"). Can be a string or a hex sequence (e.g. "0x00"). Currently only single-byte delimiters are supported. |
 | `format` | `normal` \| `json` \| `text` \| `raw` \| `csv` | no | `normal` | The format for writing messages to the file (Publisher) or interpreting them (Consumer). Defaults to `normal`. |
 | `group_id` | string | no | — | The consumer group ID that is used for offset tracking. Should be unique. |

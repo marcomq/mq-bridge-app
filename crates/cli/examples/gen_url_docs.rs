@@ -110,7 +110,7 @@ fn main() -> std::io::Result<()> {
         Connector {
             slug: "aws",
             title: "AWS SQS / SNS",
-            schemes: &["aws"],
+            schemes: &["aws", "aws-sqs"],
             schema: schemars::schema_for!(AwsConfig),
         },
         Connector {
@@ -122,7 +122,7 @@ fn main() -> std::io::Result<()> {
         Connector {
             slug: "ibmmq",
             title: "IBM MQ",
-            schemes: &["ibmmq"],
+            schemes: &["ibmmq", "ibm-mq"],
             schema: schemars::schema_for!(IbmMqConfig),
         },
     ];
@@ -290,12 +290,17 @@ fn render_nested(field_name: &str, root: &Value, schema: &Value) -> String {
         .get("description")
         .and_then(|d| d.as_str())
         .unwrap_or("");
+    let description = sanitize_description(description);
 
     let mut out = format!("### `{field_name}`\n\n{description}\n\n");
     out.push_str("| Name | Type | Required | Default | Description |\n");
     out.push_str("|------|------|----------|---------|-------------|\n");
     for nf in &nested_fields {
-        let default_cell = nf.default.as_ref().map(describe_value).unwrap_or_else(|| "—".to_string());
+        let default_cell = nf
+            .default
+            .as_ref()
+            .map(describe_value)
+            .unwrap_or_else(|| "—".to_string());
         out.push_str(&format!(
             "| `{}` | {} | {} | {} | {} |\n",
             nf.name,
@@ -306,6 +311,31 @@ fn render_nested(field_name: &str, root: &Value, schema: &Value) -> String {
         ));
     }
     out.push('\n');
+    out
+}
+
+/// Rustdoc descriptions embedded in a nested field's `### field` section may
+/// contain their own `#`-headings and bare ``` ``` fences (from `# Examples`
+/// blocks). Demote headings so they stay below the surrounding `###` section
+/// and label bare fences as `rust` (the only language rustdoc examples use).
+fn sanitize_description(desc: &str) -> String {
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in desc.lines() {
+        let trimmed = line.trim_start();
+        if trimmed == "```" {
+            out.push_str(if in_fence { "```" } else { "```rust" });
+            in_fence = !in_fence;
+        } else if !in_fence && trimmed.starts_with('#') {
+            let level = trimmed.chars().take_while(|&c| c == '#').count();
+            let rest = trimmed.trim_start_matches('#');
+            out.push_str(&"#".repeat((level + 3).min(6)));
+            out.push_str(rest);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
     out
 }
 
@@ -387,7 +417,11 @@ fn describe_type(root: &Value, node: &Value) -> String {
     if let Some(reference) = node.get("$ref").and_then(|r| r.as_str()) {
         return match resolve_ref(root, reference) {
             Some(target) => describe_type(root, target),
-            None => reference.rsplit('/').next().unwrap_or(reference).to_string(),
+            None => reference
+                .rsplit('/')
+                .next()
+                .unwrap_or(reference)
+                .to_string(),
         };
     }
 
@@ -419,13 +453,20 @@ fn describe_type(root: &Value, node: &Value) -> String {
         }
         Some(Value::String(s)) => s.clone(),
         Some(Value::Array(arr)) => {
-            let non_null: Vec<String> = arr
+            let non_null: Vec<&str> = arr
                 .iter()
                 .filter_map(|v| v.as_str())
                 .filter(|s| *s != "null")
-                .map(str::to_string)
                 .collect();
-            non_null.join(" \\| ")
+            if non_null == ["array"] {
+                let item = node
+                    .get("items")
+                    .map(|i| describe_type(root, i))
+                    .unwrap_or_else(|| "any".to_string());
+                format!("array of {item}")
+            } else {
+                non_null.join(" \\| ")
+            }
         }
         Some(_) | None => {
             for key in ["anyOf", "oneOf"] {

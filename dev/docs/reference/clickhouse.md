@@ -35,9 +35,9 @@ TLS configuration for secure connections.
 Configures Transport Layer Security (TLS/SSL) for encrypted communication.
 Supports both client certificate (mutual TLS) and server certificate validation.
 
-# Examples
+#### Examples
 
-```
+```rust
 use mq_bridge::models::TlsConfig;
 
 let tls = TlsConfig {
@@ -48,6 +48,7 @@ let tls = TlsConfig {
     ..Default::default()
 };
 ```
+
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|

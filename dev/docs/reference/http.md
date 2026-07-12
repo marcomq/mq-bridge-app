@@ -8,11 +8,11 @@ Query parameters recognised as config fields for this connector. Any other `?key
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `basic_auth` | array | no | — |  |
+| `basic_auth` | array of any | no | — | HTTP Basic Authentication credentials (username, password). For consumers: validates incoming requests. For publishers: adds Authorization header. |
 | `batch_concurrency` | integer | no | — | (Publisher only) The number of concurrent HTTP requests to send in a batch. Defaults to 20. |
 | `compression_enabled` | boolean | no | `false` | Enable gzip compression for request/response bodies exceeding the threshold. Defaults to false. |
 | `compression_threshold_bytes` | integer | no | `null` | Minimum message size in bytes to compress. Messages smaller than this are sent uncompressed. Defaults to 1024 bytes. |
-| `concurrency_limit` | integer | no | — | HTTP Basic Authentication credentials (username, password). For consumers: validates incoming requests. For publishers: adds Authorization header. (Consumer only) Maximum number of concurrent requests to handle. Defaults to 100. |
+| `concurrency_limit` | integer | no | — | (Consumer only) Maximum number of concurrent requests to handle. Defaults to 100. |
 | `custom_headers` | object | no | — | Custom headers as key-value pairs (e.g., {"X-API-Key": "token123"}). Added to outgoing HTTP headers for both consumers and publishers. |
 | `fire_and_forget` | boolean | no | `false` | (Consumer only) If true, respond immediately with 202 Accepted without waiting for downstream processing. Defaults to false. |
 | `inline_response_fast_path` | boolean | no | `true` | (Consumer only) If true, compatible `http -> response` routes may bypass the normal route consumer/worker/disposition pipeline and reply inline for lower latency. Defaults to true. Set to false to force the normal route path. |
@@ -40,9 +40,9 @@ TLS configuration for secure connections.
 Configures Transport Layer Security (TLS/SSL) for encrypted communication.
 Supports both client certificate (mutual TLS) and server certificate validation.
 
-# Examples
+#### Examples
 
-```
+```rust
 use mq_bridge::models::TlsConfig;
 
 let tls = TlsConfig {
@@ -53,6 +53,7 @@ let tls = TlsConfig {
     ..Default::default()
 };
 ```
+
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|

@@ -32,7 +32,7 @@ mq-bridge copy \
   --to kafka://kafka.local:9092?topic=webhooks
 ```
 
-**Fire-and-forget publisher (don't block waiting for a response):**
+**Non-blocking publisher (don't wait for the downstream response):**
 
 ```bash
 mq-bridge copy --drain \

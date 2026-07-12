@@ -17,6 +17,6 @@ Auto-generated from the same JSON Schemas `mq-bridge copy` uses to parse `--from
 - [NATS](./nats.md) — schemes: `nats://`
 - [Redis Streams](./redis.md) — schemes: `redis://`, `rediss://`, `redis_streams://`
 - [gRPC](./grpc.md) — schemes: `grpc://`, `grpcs://`
-- [AWS SQS / SNS](./aws.md) — schemes: `aws://`
+- [AWS SQS / SNS](./aws.md) — schemes: `aws://`, `aws-sqs://`
 - [ZeroMQ](./zeromq.md) — schemes: `zeromq://`, `zmq://`
-- [IBM MQ](./ibmmq.md) — schemes: `ibmmq://`
+- [IBM MQ](./ibmmq.md) — schemes: `ibmmq://`, `ibm-mq://`

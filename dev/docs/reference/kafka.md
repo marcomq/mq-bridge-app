@@ -8,13 +8,13 @@ Query parameters recognised as config fields for this connector. Any other `?key
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `consumer_options` | array | no | `null` | (Consumer only) Additional librdkafka consumer configuration options (key-value pairs). |
+| `consumer_options` | array of array of any | no | `null` | (Consumer only) Additional librdkafka consumer configuration options (key-value pairs). |
 | `delayed_ack` | boolean | no | `false` | (Publisher only) If true, do not wait for an acknowledgement when sending to broker. Defaults to false. |
 | `group_id` | string | no | — | (Consumer only) Consumer group ID. If not provided, the consumer acts in **Subscriber mode**: it generates a unique, ephemeral group ID and starts consuming from the latest offset. |
 | `partition_key` | string | no | `null` | (Publisher only) Name of a metadata field whose value is used as the Kafka record key (drives partitioning/ordering). Unset, or absent on a given message, falls back to the message id. Default unset. |
 | `partitions` | integer | no | `6` | (Publisher only) Partition count used when auto-creating the topic (default: 6). Higher values raise write/consume parallelism; ordering is only guaranteed per partition key (message_id), not across the whole topic. Ignored if the topic exists. |
 | `password` | string | no | — | Optional password for SASL authentication. |
-| `producer_options` | array | no | `null` | (Publisher only) Additional librdkafka producer configuration options (key-value pairs). |
+| `producer_options` | array of array of any | no | `null` | (Publisher only) Additional librdkafka producer configuration options (key-value pairs). |
 | `shared` | boolean | no | `true` | (Publisher only) Share one producer per connection (default: true); false gives a dedicated producer. |
 | `tls` | object | no | [see below](#tls) | TLS configuration. |
 | `topic` | string | no | — | The Kafka topic to produce to or consume from. |
@@ -30,9 +30,9 @@ TLS configuration for secure connections.
 Configures Transport Layer Security (TLS/SSL) for encrypted communication.
 Supports both client certificate (mutual TLS) and server certificate validation.
 
-# Examples
+#### Examples
 
-```
+```rust
 use mq_bridge::models::TlsConfig;
 
 let tls = TlsConfig {
@@ -43,6 +43,7 @@ let tls = TlsConfig {
     ..Default::default()
 };
 ```
+
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|

@@ -2,7 +2,7 @@
 
 # IBM MQ
 
-Schemes: `ibmmq://`
+Schemes: `ibmmq://`, `ibm-mq://`
 
 Query parameters recognised as config fields for this connector. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
 
@@ -29,6 +29,7 @@ TLS configuration for the IBM MQ native client.
 
 The IBM MQ client doesn't consume PEM files, so this uses MQ-native field
 names rather than the generic [`TlsConfig`] used by the other endpoints.
+
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
