@@ -234,10 +234,12 @@ unchanged (e.g. `postgres://…/db?table=src&sslmode=disable`). No per-field fla
   `${metadata:<key>}` / `${payload:<field>}` token mapping), `delete_after_read`,
   `subject`, `stream`, `collection`, `database`, `format`, … — anything on the
   endpoint's config struct.
-- For `nats`/`redis`, the dominant target field can also be given as the URL
+- For `nats`, the dominant target field can also be given as the URL
   path instead of a query param — `nats://localhost:4222/orders` is equivalent
   to `nats://localhost:4222?subject=orders` (matching the UI's short-display
-  convention); the query form wins if both are given.
+  convention); the query form wins if both are given. (A `redis` path is the
+  connection's database number and stays on the URL, so a redis stream target
+  must be set with `?stream=…`.)
 - MongoDB sources are **non-destructive by default** here: `copy` (and the UI)
   default `consume` to `capture_all` (read existing documents, then watch for
   changes) so pointing at an existing collection never claims or deletes its

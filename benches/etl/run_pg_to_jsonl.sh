@@ -60,7 +60,7 @@ run_one() {
     t0="$(now)"
     copy_guarded --from "$from" --to "$to" --drain --batch-size "$batch" --concurrency "$conc" || true
     t1="$(now)"
-    landed="$(wc -l < "$OUT_FILE" | tr -d ' ')"
+    landed="$( [[ -f "$OUT_FILE" ]] && wc -l < "$OUT_FILE" | tr -d ' ' || echo 0 )"
     if [[ "$landed" != "$MSG_COUNT" ]]; then
       echo "  WARNING: run $i landed ${landed} != expected ${MSG_COUNT}" >&2
     fi

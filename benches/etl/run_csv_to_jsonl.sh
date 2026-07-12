@@ -78,7 +78,7 @@ for ((i = 1; i <= REPEATS; i++)); do
   t0="$(now)"
   copy_guarded --from "$from" --to "$to" --drain --batch-size 1024 --concurrency 1 || true
   t1="$(now)"
-  landed="$(wc -l < "$OUT_FILE" | tr -d ' ')"
+  landed="$( [[ -f "$OUT_FILE" ]] && wc -l < "$OUT_FILE" | tr -d ' ' || echo 0 )"
   [[ "$landed" == "$ROWS" ]] || echo "  WARNING: mq-bridge-app run $i landed ${landed} != expected ${ROWS}" >&2
   elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"
   echo "  mq-bridge-app run $i: ${elapsed}s"
@@ -103,7 +103,7 @@ for ((i = 1; i <= REPEATS; i++)); do
   t0="$(now)"
   run_meltano_once
   t1="$(now)"
-  landed="$(wc -l < "$MELTANO_PROJECT/output/bench.jsonl" | tr -d ' ')"
+  landed="$( f="$MELTANO_PROJECT/output/bench.jsonl"; [[ -f "$f" ]] && wc -l < "$f" | tr -d ' ' || echo 0 )"
   [[ "$landed" == "$ROWS" ]] || echo "  WARNING: meltano run $i landed ${landed} != expected ${ROWS}" >&2
   elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"
   echo "  meltano run $i: ${elapsed}s"

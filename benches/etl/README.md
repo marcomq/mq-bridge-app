@@ -78,7 +78,8 @@ cargo build -p mq-bridge-app --no-default-features --features bench --release
 benches/etl/seed.sh up
 ```
 
-Requires Docker, `curl`, and `python3` (sub-second timing) on PATH. A host `psql`
+Requires Docker, `curl`, `python3` (sub-second timing), and `uv` (used by
+`seed.sh` to run `gen_bench_data.py` for the §5/§6 dataset) on PATH. A host `psql`
 is used if present; otherwise the harness runs `psql` inside the compose container,
 so no host Postgres client is needed.
 

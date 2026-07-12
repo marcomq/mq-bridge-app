@@ -84,14 +84,18 @@ wait_drain() {
     sleep "$poll_s"
   done
   echo "  WARNING: processed counter did not settle (last=${last})" >&2
+  return 1
 }
 
 run_one() {
   local bytes="$1"
   insert_rows "$WARMUP_COUNT" "$bytes" >/dev/null      # pre-roll (primes the stream)
-  wait_drain
+  wait_drain || echo "  WARNING: ${bytes}B warmup drain did not settle" >&2
   insert_rows "$MSG_COUNT" "$bytes" >/dev/null          # measured
-  wait_drain
+  if ! wait_drain; then
+    echo "  SKIP: ${bytes}B measured drain did not settle — not recording quantiles" >&2
+    return 0
+  fi
   local p50 p95 p99
   p50="$(scrape_quantile queue_message_processing_duration_seconds 0.5)"
   p95="$(scrape_quantile queue_message_processing_duration_seconds 0.95)"
