@@ -352,8 +352,9 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     use anyhow::bail;
     use mq_bridge::models::{
-        Endpoint, EndpointType, FileConfig, MongoDbConfig, NatsConfig, PostgresCdcConfig,
-        RedisStreamsConfig, SqlxConfig,
+        AmqpConfig, AwsConfig, ClickHouseConfig, Endpoint, EndpointType, FileConfig, GrpcConfig,
+        HttpConfig, IbmMqConfig, KafkaConfig, MongoDbConfig, MqttConfig, NatsConfig,
+        PostgresCdcConfig, RedisStreamsConfig, SqlxConfig, WebSocketConfig, ZeroMqConfig,
     };
     use std::collections::HashMap;
     use url::Url;
@@ -471,8 +472,35 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
             schema_fields(schemars::schema_for!(RedisStreamsConfig)),
         ),
         "file" => ("file", schema_fields(schemars::schema_for!(FileConfig))),
+        "kafka" => ("kafka", schema_fields(schemars::schema_for!(KafkaConfig))),
+        "mqtt" | "mqtts" => ("mqtt", schema_fields(schemars::schema_for!(MqttConfig))),
+        // AMQP is RabbitMQ's wire protocol; both scheme spellings are accepted.
+        "amqp" | "amqps" | "rabbitmq" | "rabbitmqs" => {
+            ("amqp", schema_fields(schemars::schema_for!(AmqpConfig)))
+        }
+        "http" | "https" => ("http", schema_fields(schemars::schema_for!(HttpConfig))),
+        // ClickHouse is accessed over its HTTP interface; the `clickhouse(s)`
+        // scheme here just picks the endpoint kind and is rewritten to
+        // `http(s)://` below.
+        "clickhouse" | "clickhouses" => (
+            "clickhouse",
+            schema_fields(schemars::schema_for!(ClickHouseConfig)),
+        ),
+        "ws" | "wss" => (
+            "websocket",
+            schema_fields(schemars::schema_for!(WebSocketConfig)),
+        ),
+        // `grpc(s)` only selects the endpoint kind and is rewritten to
+        // `http(s)://` below, matching the client-mode URL GrpcConfig expects.
+        "grpc" | "grpcs" => ("grpc", schema_fields(schemars::schema_for!(GrpcConfig))),
+        "ibmmq" | "ibm-mq" => ("ibmmq", schema_fields(schemars::schema_for!(IbmMqConfig))),
+        // AWS SQS/SNS has no single connection URL: `queue_url`/`topic_arn` are
+        // scalar config fields set via query params, so the URI's own
+        // authority is just a placeholder (e.g. `aws://_/?queue_url=...`).
+        "aws" | "aws-sqs" => ("aws", schema_fields(schemars::schema_for!(AwsConfig))),
+        "zeromq" | "zmq" => ("zeromq", schema_fields(schemars::schema_for!(ZeroMqConfig))),
         other => bail!(
-            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file"
+            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq"
         ),
     };
 
@@ -510,7 +538,8 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     // then watch) so pointing at an existing collection never mutates it. Only
     // applied when the user gave neither `consume` nor the deprecated
     // `change_stream`, so any explicit choice still wins.
-    if tag == "mongodb" && !config.contains_key("consume") && !config.contains_key("change_stream") {
+    if tag == "mongodb" && !config.contains_key("consume") && !config.contains_key("change_stream")
+    {
         config.insert(
             "consume".into(),
             serde_json::Value::String("capture_all".into()),
@@ -570,7 +599,44 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
                 }
             }
         }
-        config.insert("url".into(), serde_json::Value::String(url));
+        // A few schemes exist only to pick the endpoint kind from the CLI and
+        // are rewritten to the connection scheme the underlying driver expects.
+        let rewrites: &[(&str, &str)] = match tag {
+            // rdkafka's bootstrap.servers is a bare host:port list, no scheme.
+            "kafka" => &[("kafka://", "")],
+            "mqtt" => &[("mqtts://", "ssl://"), ("mqtt://", "tcp://")],
+            "amqp" => &[("rabbitmqs://", "amqps://"), ("rabbitmq://", "amqp://")],
+            "clickhouse" => &[("clickhouses://", "https://"), ("clickhouse://", "http://")],
+            "grpc" => &[("grpcs://", "https://"), ("grpc://", "http://")],
+            "zeromq" => &[("zeromq://", "tcp://"), ("zmq://", "tcp://")],
+            _ => &[],
+        };
+        for (prefix, replacement) in rewrites {
+            if let Some(rest) = url.strip_prefix(prefix) {
+                url = format!("{replacement}{rest}");
+                break;
+            }
+        }
+        if tag == "kafka" {
+            url = url.trim_end_matches('/').to_string();
+        }
+        // IBM MQ's driver expects `host(port)` (with comma-separated hosts for
+        // failover), not a URI authority, so `host:port` is reformatted here.
+        if tag == "ibmmq"
+            && let Some(rest) = url.strip_prefix("ibmmq://")
+        {
+            let rest = rest.trim_end_matches('/');
+            url = match rest.rsplit_once(':') {
+                Some((host, port)) => format!("{host}({port})"),
+                None => rest.to_string(),
+            };
+        }
+        // AwsConfig has no `url` field (`queue_url`/`topic_arn` carry the
+        // connection info as scalar config fields), so the placeholder
+        // authority is discarded rather than attached as an unknown field.
+        if tag != "aws" {
+            config.insert("url".into(), serde_json::Value::String(url));
+        }
     }
 
     let mut tagged = serde_json::Map::new();
@@ -825,7 +891,10 @@ mod uri_tests {
     // so pointing at an existing collection never claims/deletes its documents.
     #[test]
     fn mongodb_defaults_to_non_destructive_capture_all() {
-        let cfg = config("mongodb://host/?collection=orders&database=appdb", "mongodb");
+        let cfg = config(
+            "mongodb://host/?collection=orders&database=appdb",
+            "mongodb",
+        );
         assert_eq!(cfg["consume"], "capture_all");
     }
 
@@ -922,5 +991,120 @@ mod uri_tests {
             .append_pair("bogus", "x");
         let err = endpoint_from_uri(outer.as_str()).unwrap_err();
         assert!(err.to_string().contains("escaped mode"), "got: {err}");
+    }
+
+    // `kafka://` selects the Kafka endpoint; the scheme is stripped so `url`
+    // (rdkafka's bootstrap.servers) is a bare host:port, and `topic` is scalar.
+    #[test]
+    fn kafka_scheme_strips_prefix_and_takes_topic() {
+        let cfg = config("kafka://broker:9092?topic=orders", "kafka");
+        assert_eq!(cfg["url"], "broker:9092");
+        assert_eq!(cfg["topic"], "orders");
+    }
+
+    // `mqtt://` is rewritten to `tcp://` (what rumqtt expects); `mqtts://`
+    // becomes `ssl://`.
+    #[test]
+    fn mqtt_scheme_rewrites_to_tcp_and_ssl() {
+        let cfg = config("mqtt://broker:1883?topic=sensors", "mqtt");
+        assert_eq!(cfg["url"], "tcp://broker:1883");
+        assert_eq!(cfg["topic"], "sensors");
+
+        let cfg = config("mqtts://broker:8883?topic=sensors", "mqtt");
+        assert_eq!(cfg["url"], "ssl://broker:8883");
+    }
+
+    // `rabbitmq://` is accepted as an alias for `amqp://`, rewritten to the
+    // native scheme; `queue` is a scalar config field.
+    #[test]
+    fn rabbitmq_scheme_rewrites_to_amqp() {
+        let cfg = config(
+            "rabbitmq://guest:guest@host:5672/vhost?queue=orders",
+            "amqp",
+        );
+        assert_eq!(cfg["url"], "amqp://guest:guest@host:5672/vhost");
+        assert_eq!(cfg["queue"], "orders");
+    }
+
+    // `http://`/`https://` pass through unchanged, with the target path already
+    // part of the URL; `method` is a scalar config field.
+    #[test]
+    fn http_scheme_passthrough_and_scalar_fields() {
+        let cfg = config("http://api.example.com/ingest?method=POST", "http");
+        assert_eq!(cfg["url"], "http://api.example.com/ingest");
+        assert_eq!(cfg["method"], "POST");
+    }
+
+    // `clickhouse://` is rewritten to `http://` (ClickHouse's HTTP interface);
+    // `table` and `database` are scalar config fields.
+    #[test]
+    fn clickhouse_scheme_rewrites_to_http() {
+        let cfg = config(
+            "clickhouse://host:8123?table=events&database=analytics",
+            "clickhouse",
+        );
+        assert_eq!(cfg["url"], "http://host:8123");
+        assert_eq!(cfg["table"], "events");
+        assert_eq!(cfg["database"], "analytics");
+    }
+
+    // `ws://`/`wss://` pass through unchanged.
+    #[test]
+    fn websocket_scheme_passthrough() {
+        let cfg = config("ws://0.0.0.0:9000", "websocket");
+        assert_eq!(cfg["url"], "ws://0.0.0.0:9000/");
+    }
+
+    // `grpc://` is rewritten to `http://` (the client-mode URL GrpcConfig
+    // expects); `topic` is a scalar config field.
+    #[test]
+    fn grpc_scheme_rewrites_to_http() {
+        let cfg = config("grpc://localhost:50051?topic=orders", "grpc");
+        assert_eq!(cfg["url"], "http://localhost:50051");
+        assert_eq!(cfg["topic"], "orders");
+    }
+
+    // `ibmmq://` is reformatted to the driver's `host(port)` connection string;
+    // `queue_manager` and `channel` are required scalar config fields.
+    #[test]
+    fn ibmmq_scheme_reformats_host_port() {
+        let cfg = config(
+            "ibmmq://qmhost:1414?queue_manager=QM1&channel=DEV.APP.SVRCONN&queue=orders",
+            "ibmmq",
+        );
+        assert_eq!(cfg["url"], "qmhost(1414)");
+        assert_eq!(cfg["queue_manager"], "QM1");
+        assert_eq!(cfg["channel"], "DEV.APP.SVRCONN");
+        assert_eq!(cfg["queue"], "orders");
+    }
+
+    // AWS SQS/SNS has no connection URL: the placeholder authority is dropped,
+    // and `queue_url`/`region` are scalar config fields set via query params.
+    #[test]
+    fn aws_scheme_has_no_url_field() {
+        let cfg = config(
+            "aws://_/?queue_url=https://sqs.us-east-1.amazonaws.com/123/orders&region=us-east-1",
+            "aws",
+        );
+        assert!(
+            cfg.get("url").is_none(),
+            "aws config should have no url field, got {cfg}"
+        );
+        assert_eq!(
+            cfg["queue_url"],
+            "https://sqs.us-east-1.amazonaws.com/123/orders"
+        );
+        assert_eq!(cfg["region"], "us-east-1");
+    }
+
+    // `zeromq://`/`zmq://` are rewritten to `tcp://`, the transport ZeroMQ expects.
+    #[test]
+    fn zeromq_scheme_rewrites_to_tcp() {
+        let cfg = config("zeromq://127.0.0.1:5555?socket_type=push", "zeromq");
+        assert_eq!(cfg["url"], "tcp://127.0.0.1:5555");
+        assert_eq!(cfg["socket_type"], "push");
+
+        let cfg = config("zmq://127.0.0.1:5555", "zeromq");
+        assert_eq!(cfg["url"], "tcp://127.0.0.1:5555");
     }
 }
