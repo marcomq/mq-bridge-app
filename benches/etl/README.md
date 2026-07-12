@@ -8,6 +8,13 @@ the scenarios and fixed parameters in the library's
 so the output pastes straight into that document's **Results** section next to the
 Debezium / OpenMessaging / Airbyte baselines.
 
+**The two headline scenarios (§5 Postgres → JSONL and §6 CSV → JSONL)** are
+full-dataset ETL jobs on a 1,000,000-row seed-42 dataset, reporting throughput
+**and** peak RSS against a Meltano (`tap-*` → `target-jsonl`) baseline (see
+[Results](#results--the-two-headline-etl-scenarios-1m-rows)). The remaining
+scenarios (1 & 3 table→table copy, 2 CDC latency, 4 local IPC) are additional
+coverage.
+
 ## Why this path is credible
 
 Competing ETL/CDC tools publish "config in → data moved out" numbers. So do we:
@@ -16,13 +23,43 @@ scenarios 1 & 3 run through the app's zero-code `copy` command (a Postgres table
 config applied over the app's HTTP API — the same action as clicking *Save* in
 the UI. No scenario uses a Criterion micro-harness or hand-written Rust.
 
+## Results — the two headline ETL scenarios (1M rows)
+
+The two most common ETL jobs — **CSV → JSONL** and **Postgres → JSONL** — run on
+the same seeded (seed 42) 7-column mixed-type dataset of 1,000,000 rows, against a
+Meltano (`tap-*` → `target-jsonl`) baseline, reporting throughput **and** peak RSS
+(detailed writeups in §5 and §6 below). Both columns are measured on the same
+machine (this repo's Apple M1 host, on battery).
+
+### A — CSV → JSONL (1,000,000 rows, ~116 MiB)
+
+| Metric            | mq-bridge-app       | Meltano        |
+| ----------------- | ------------------- | -------------- |
+| Throughput        | **833,333 rows/s**  | ~19,500 rows/s |
+| Median wall-clock | 1.20 s              | ~51 s          |
+| Peak RSS          | 20.0 MiB            | 443.8 MiB      |
+| Rows out          | 1,000,000           | 1,000,000      |
+
+### B — Postgres → JSONL (1,000,000 rows, 7-col)
+
+| Metric            | mq-bridge-app       | Meltano        |
+| ----------------- | ------------------- | -------------- |
+| Throughput        | **266,951 rows/s**  | 15,356 rows/s  |
+| Median wall-clock | 3.75 s              | 65.1 s         |
+| Peak RSS          | 19.9 MiB            | 599.7 MiB      |
+| Rows out          | 1,000,000           | 1,000,000      |
+
+`mq-bridge-app` moves the same 1M rows at **~20 MiB peak RSS** — an order of
+magnitude leaner than Meltano's Python pipeline (444–600 MiB). Throughput and RSS
+are single-machine, single-process batch numbers.
+
 ## Fixed parameters (printed next to every number)
 
 | Parameter     | Value                                             |
 | ------------- | ------------------------------------------------- |
 | Payload       | 256 B and 4 KiB JSON rows (both reported)         |
 | Message count | 1 000 000 per run                                 |
-| Batch sizes   | 1 (unbatched) and 128 (batched)                   |
+| Batch sizes   | 1 / 128 (table→table §1 & §3); 1024 (§5 & §6)     |
 | Concurrency   | 1 and 4 route workers                             |
 | Postgres      | `postgres:16-alpine`, `wal_level=logical`         |
 | Warm-up       | 5 000-message pre-roll, excluded from timing      |
@@ -157,12 +194,12 @@ Meltano side: `benches/etl/meltano_project/bench` (`meltano.yml` configures
 `tap-postgres` selecting only `public-bench.*`, and `target-jsonl`), run via
 `meltano run tap-postgres target-jsonl`, wall-clocked the same way.
 
-| Tool | Config | rows/s |
-| --- | --- | --- |
-| mq-bridge-app `copy` | batch_size 1024, concurrency 1 | **266,951** |
-| Meltano (`tap-postgres` → `target-jsonl`) | default Singer config | 15,356 |
+| Tool | Config | rows/s | peak RSS |
+| --- | --- | --- | --- |
+| mq-bridge-app `copy` | batch_size 1024, concurrency 1 | **266,951** | 19.9 MiB |
+| Meltano (`tap-postgres` → `target-jsonl`) | default Singer config | 15,356 | 599.7 MiB |
 
-**mq-bridge-app is ~17.4x faster** in this scenario. No `metrics` middleware
+**mq-bridge-app is ~17.4x faster** (and ~30x leaner in peak memory) in this scenario. No `metrics` middleware
 involved here either — the `copy` CLI command never attaches a handler (see
 scenario 4's CommandPublisher bug/fix note), so there's no metrics path to
 accidentally measure in the first place.
@@ -192,12 +229,12 @@ Meltano side: same `meltano_project/bench` project with a `tap-csv` extractor
 `meltano run tap-csv target-jsonl`. Install the plugin once with
 `(cd meltano_project/bench && ../.venv/bin/meltano install extractor tap-csv)`.
 
-| Tool | Config | rows/s |
-| --- | --- | --- |
-| mq-bridge-app `copy` | batch_size 1024, concurrency 1 | **833,333** (median of 2 clean runs: 1.210s / 1.190s) |
-| Meltano (`tap-csv` → `target-jsonl`) | default Singer config | ~19,500 (clean runs 49.7s / 53.1s; fuller 5-run median pending) |
+| Tool | Config | rows/s | peak RSS |
+| --- | --- | --- | --- |
+| mq-bridge-app `copy` | batch_size 1024, concurrency 1 | **833,333** (median of 2 clean runs: 1.210s / 1.190s) | 20.0 MiB |
+| Meltano (`tap-csv` → `target-jsonl`) | default Singer config | ~19,500 (clean runs 49.7s / 53.1s; fuller 5-run median pending) | 443.8 MiB |
 
-**mq-bridge-app is ~43x faster** in this scenario.
+**mq-bridge-app is ~43x faster** (and ~22x leaner in peak memory) in this scenario.
 
 **A note on this benchmark:**
 
@@ -218,41 +255,4 @@ Meltano side: same `meltano_project/bench` project with a `tap-csv` extractor
 
 ```bash
 benches/etl/seed.sh down
-```
-
-## Results block to paste into the library's `ETL_BENCHMARKS.md`
-
-Fill the cells from `results/throughput.csv` and `results/cdc_latency.csv`; the
-environment line is printed by `benches/etl/lib.sh:print_env_header`.
-
-```markdown
-**Environment:** <CPU> · <N> cores · <RAM> · <OS> · mq-bridge-app <ver> · engine <commit> · postgres:16-alpine (wal_level=logical)
-
-### Scenario 1 — bulk-insert throughput (copy, table→table, exact 1M rows)
-
-| Payload | Batch | Concurrency | rows/sec | Baseline ref     |
-| ------- | ----- | ----------- | -------- | ---------------- |
-| 256 B   | 1     | 1           |          | Airbyte records/s |
-| 256 B   | 128   | 1           |          | Airbyte records/s |
-| 256 B   | 128   | 4           |          | Airbyte records/s |
-| 4 KiB   | 1     | 1           |          | Airbyte records/s |
-| 4 KiB   | 128   | 1           |          | Airbyte records/s |
-| 4 KiB   | 128   | 4           |          | Airbyte records/s |
-
-### Scenario 3 — batched vs unbatched (same route, batch 1 vs 128)
-
-| Payload | Concurrency | batch=1 rows/s | batch=128 rows/s | speed-up |
-| ------- | ----------- | -------------- | ---------------- | -------- |
-| 256 B   | 1           |                |                  |          |
-| 4 KiB   | 1           |                |                  |          |
-
-### Scenario 2 — CDC processing latency (postgres_cdc → null, metrics proxy)
-
-_In-engine per-event processing latency (consumer side), NOT Debezium-style
-end-to-end commit→sink; excludes WAL/slot propagation._
-
-| Payload | p50 | p95 | p99 | Baseline ref |
-| ------- | --- | --- | --- | ------------ |
-| 256 B   |     |     |     | Debezium     |
-| 4 KiB   |     |     |     | Debezium     |
 ```

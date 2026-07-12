@@ -5,29 +5,41 @@
 ![macOS](https://img.shields.io/badge/macOS-supported-green?logo=apple)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-```text
-      ┌────── mq-bridge-app ──────┐
-──────┴───────────────────────────┴──────
-            crossing streams
+<p align="center">
+  <img src="crates/desktop/icons/icon.png" alt="mq-bridge-app" width="128" height="128">
+</p>
+<p style="margin-top:-30px" align="center"><em>crossing streams</em></p>
+
+`mq-bridge-app` is a **fast, single-command ETL and data-movement tool** built in Rust — and, on top of the same engine, a multi-protocol bridge and traffic workbench for messaging.
+
+At its core is a zero-config `copy` command that moves data between databases, queues, and files in a single line of bash — no YAML, no pipeline definition, no code:
+
+```bash
+mq-bridge-app copy \
+  --from 'postgres://user:pass@localhost/db?table=src&sslmode=disable' \
+  --to   'file://out.jsonl?format=raw' \
+  --drain
 ```
 
-`mq-bridge-app` is a **Postman-inspired** multi-protocol bridge and traffic workbench for messaging. Built with Rust and a modern Svelte UI, it allows you to connect, test, and translate between multiple messaging systems, brokers, and APIs from a single unified interface.
+The **scheme selects the endpoint** and **query parameters configure it**, so any source→sink pair (Postgres, MySQL, MariaDB, SQLite, NATS, Redis, MongoDB, files, …) is just one URL each. And it's quick: in our benchmarks a 1,000,000-row Postgres → JSONL job sustained **266,951 rows/s** at **~20 MiB peak RSS** — about **17x faster** and ~30x leaner than Meltano on the same machine (see [Performance](#performance)), which for a Postgres source is faster than any other ETL tool we've measured against.
 
-It provides a complete developer and operator workflow:
+## One config, three ways to run it
 
-- manage **publishers**, **consumers**, **routes**, and app config
-- run request/response traffic directly from the UI (similar to Postman for REST)
-- inspect message history and response payloads
-- maintain request presets and import definitions (Postman/OpenAPI/AsyncAPI/mq-bridge export)
-- run as CLI/server or desktop app (Tauri)
+No guesswork: **test connections and dial in a route in the Postman-inspired UI**, export the JSON/YAML, then run that exact config — unchanged — however you deploy:
+
+- **CLI / server** — a one-line `copy`, a drain-then-exit batch job, or a long-lived bridge between protocols
+- **Library** — embedded in your own code via native **Rust**, **Python** ([`pip install mq-bridge-py`](https://pypi.org/project/mq-bridge-py/)), or **Node.js** ([`npm install mq-bridge`](https://www.npmjs.com/package/mq-bridge)) [`mq-bridge`](https://github.com/marcomq/mq-bridge) bindings — one engine, one config format
+- **Desktop app** — the same UI as a Tauri bundle
+
+Design once in the UI, ship it as a CLI job or in-process library — no rewrite in between. The UI is also a full messaging workbench: manage publishers/consumers/routes, run request/response traffic (like Postman for REST), inspect message history, and import Postman/OpenAPI/AsyncAPI definitions.
 
 Supported integration types include **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **AWS SQS**, **MQTT**, **IBM MQ** (optional), **HTTP**, **gRPC**, **ZeroMQ**, **MongoDB**, **sqlx(MySQL, MariaDB, PostgreSQL)**, and filesystem endpoints.
 
 > **Note:** IBM MQ support is available as an optional feature. See [IBM MQ Setup Guide](dev/docs/IBM_MQ_SETUP.md) for build instructions.
 
-## How It Differs
+## How UI Differs
 
-`mq-bridge-app` overlaps with API clients and collections tools like Postman, Bruno, ApiArc, and similar apps, but its center of gravity is different: it is designed around message bridging, runtime operation, and long-lived route management rather than just request composition.
+`mq-bridge-app` UI overlaps with API clients and collections tools like Postman, Bruno, ApiArc, and similar apps, but its center of gravity is different: it is designed around message bridging, runtime operation, and long-lived route management rather than just request composition.
 
 The table below is intentionally broad. Exact feature sets vary by product and edition, but it captures the main difference in emphasis.
 
@@ -73,17 +85,19 @@ transport (`static` source → `memory` publisher, batch_size 1024, concurrency 
 sustained **1,202,926 rows/s** on commodity hardware.
 
 For a CSV → JSONL file conversion (1,000,000 mixed-type rows, ~116 MiB, `copy
---batch-size 1024 --concurrency 1`), mq-bridge-app sustained **833,333 rows/s**,
-about **43x faster** than Meltano (`tap-csv` → `target-jsonl`, same file, same
-machine) at **~19,500 rows/s**.
+--batch-size 1024 --concurrency 1`), mq-bridge-app sustained **833,333 rows/s**
+at **~20 MiB peak RSS**, about **43x faster** and ~22x leaner than Meltano
+(`tap-csv` → `target-jsonl`, same file, same machine) at **~19,500 rows/s** /
+444 MiB.
 
 For a Postgres → JSONL file ETL job (1,000,000 rows, 7 mixed-type columns, `copy
---batch-size 1024 --concurrency 1`), mq-bridge-app sustained **266,951 rows/s**,
-about **17.4x faster** than Meltano (`tap-postgres` → `target-jsonl`, same table,
-same machine) at **15,356 rows/s**.
+--batch-size 1024 --concurrency 1`), mq-bridge-app sustained **266,951 rows/s**
+at **~20 MiB peak RSS**, about **17.4x faster** and ~30x leaner than Meltano
+(`tap-postgres` → `target-jsonl`, same table, same machine) at **15,356 rows/s** /
+600 MiB.
 
-Full setup, methodology, and the Postgres bulk-copy / CDC-latency benchmark
-scenarios are in [`benches/etl/README.md`](benches/etl/README.md).
+Full setup and methodology for these scenarios (CSV→JSONL and Postgres→JSONL, 1M
+rows, throughput + peak RSS) are in [`benches/etl/README.md`](benches/etl/README.md).
 
 ## Features
 
@@ -151,6 +165,17 @@ npm run build:ui
 cargo run --release
 ```
 
+
+### Prebuilt CLI binary via `cargo binstall`
+
+To skip compilation, use [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) to download the prebuilt CLI from the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases) instead of building from source:
+
+```bash
+cargo binstall mq-bridge-app
+```
+
+Prebuilt binaries are available for `x86_64` Linux, Apple Silicon macOS, and `x86_64` Windows.
+
 ### Docker CLI
 
 The CLI version also has a docker image:
@@ -177,16 +202,6 @@ If you have Rust installed, you can install the application directly from source
 cargo install mq-bridge-app
 ./mq-bridge-app
 ```
-
-### Prebuilt binary via `cargo binstall`
-
-To skip compilation, use [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) to download the prebuilt CLI from the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases) instead of building from source:
-
-```bash
-cargo binstall mq-bridge-app
-```
-
-Prebuilt binaries are available for `x86_64` Linux, Apple Silicon macOS, and `x86_64` Windows.
 
 ### One-shot `copy` (no config file / no UI)
 
