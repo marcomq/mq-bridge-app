@@ -988,8 +988,7 @@ pub fn run() {
             // memory. Drive upkeep on a timer.
             let upkeep_handle = prometheus_handle.clone();
             tauri::async_runtime::spawn(async move {
-                let mut interval =
-                    tokio::time::interval(std::time::Duration::from_secs(5));
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
                 loop {
                     interval.tick().await;
                     upkeep_handle.run_upkeep();

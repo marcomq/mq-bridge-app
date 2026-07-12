@@ -23,26 +23,18 @@ mkdir -p "$RESULTS_DIR"
 CSV="$RESULTS_DIR/cdc_latency.csv"
 echo "payload_bytes,count,p50_s,p95_s,p99_s" > "$CSV"
 
-[[ -x "$BIN" ]] || { echo "binary not found at $BIN — build with --features bench --release" >&2; exit 1; }
+require_bin
 
 APP_PID=""
-cleanup() { [[ -n "$APP_PID" ]] && kill "$APP_PID" 2>/dev/null || true; }
-trap cleanup EXIT
+trap 'kill_pids "$APP_PID"' EXIT
 
-start_app() {
-  "$BIN" --config "$CONFIG" >"$RESULTS_DIR/cdc_app.log" 2>&1 &
-  APP_PID=$!
-  local tries=30
-  until curl -fs "http://${UI_ADDR}/health" >/dev/null 2>&1; do
-    ((tries--)) || { echo "app UI never came up (see $RESULTS_DIR/cdc_app.log)" >&2; return 1; }
-    sleep 1
-  done
-  # The app already loaded cdc_latency.yaml via --config, but consumers are NOT
-  # auto-started headless: POST /consumer-start is the zero-code "Start" action
-  # (same as clicking Start in the UI) that spawns the postgres_cdc -> null route.
-  # (POST /config only validates+saves; it does not start routes.)
-  curl -fs -X POST "http://${UI_ADDR}/consumer-start?consumer_id=cdc_lat" >/dev/null \
-    || { echo "POST /consumer-start failed" >&2; return 1; }
+boot_app() {
+  APP_PID="$(start_app "$CONFIG" "$RESULTS_DIR/cdc_app.log")"
+  wait_health "$UI_ADDR" "$RESULTS_DIR/cdc_app.log"
+  # cdc_latency.yaml is loaded via --config, but consumers do NOT auto-start
+  # headless — this spawns the postgres_cdc -> null route (same as clicking
+  # Start in the UI; POST /config only validates+saves, it never starts routes).
+  start_consumer "$UI_ADDR" cdc_lat
   sleep 3
 }
 
@@ -109,7 +101,7 @@ run_one() {
 
 wait_for_pg
 seed_cdc "$CDC_TABLE" "$CDC_PUB"
-start_app
+boot_app
 for bytes in $PAYLOADS; do
   echo "-- cdc latency ${bytes}B"
   run_one "$bytes"

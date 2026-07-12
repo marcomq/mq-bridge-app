@@ -340,6 +340,11 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 /// form wins if both are present); redis is excluded because a redis URL path is
 /// the database number, not the stream.
 ///
+/// MongoDB defaults to a non-destructive source here: when neither `consume` nor
+/// the deprecated `change_stream` is given, `consume` is set to `capture_all`
+/// (read existing documents, then watch) rather than the library's destructive
+/// queue-drain `consumer` default. Pass `?consume=consumer` to opt back in.
+///
 /// Escaped mode: pass the full connection string percent-encoded as `?url=...`
 /// to use it verbatim (e.g. `mongodb://_/?url=<encoded>&collection=orders`); its
 /// own `?a=b` options are then never re-interpreted as config, which is the
@@ -497,6 +502,19 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
                 config.insert(k, coerce_scalar(v, ty));
             }
         }
+    }
+
+    // Non-destructive default for MongoDB sources: the library defaults `consume`
+    // to the queue-drain `consumer` mode, which claims and *deletes* source
+    // documents. For the CLI/UI we default to `capture_all` (read existing docs,
+    // then watch) so pointing at an existing collection never mutates it. Only
+    // applied when the user gave neither `consume` nor the deprecated
+    // `change_stream`, so any explicit choice still wins.
+    if tag == "mongodb" && !config.contains_key("consume") && !config.contains_key("change_stream") {
+        config.insert(
+            "consume".into(),
+            serde_json::Value::String("capture_all".into()),
+        );
     }
 
     if tag == "file" {
@@ -800,6 +818,33 @@ mod uri_tests {
         );
         assert_eq!(cfg["collection"], "orders");
         assert_eq!(cfg["url"], "mongodb://host/?replicaSet=rs0");
+    }
+
+    // MongoDB sources are non-destructive by default in the CLI: `consume` is set
+    // to `capture_all` when the user gives neither `consume` nor `change_stream`,
+    // so pointing at an existing collection never claims/deletes its documents.
+    #[test]
+    fn mongodb_defaults_to_non_destructive_capture_all() {
+        let cfg = config("mongodb://host/?collection=orders&database=appdb", "mongodb");
+        assert_eq!(cfg["consume"], "capture_all");
+    }
+
+    // An explicit `consume` (or the deprecated `change_stream`) always wins over
+    // the non-destructive default.
+    #[test]
+    fn mongodb_explicit_consume_wins_over_default() {
+        let cfg = config(
+            "mongodb://host/?collection=orders&database=appdb&consume=consumer",
+            "mongodb",
+        );
+        assert_eq!(cfg["consume"], "consumer");
+
+        let cfg = config(
+            "mongodb://host/?collection=orders&database=appdb&change_stream=true",
+            "mongodb",
+        );
+        assert!(cfg["consume"].is_null());
+        assert_eq!(cfg["change_stream"], true);
     }
 
     // A redis URL path is the database number, not the stream, so it must remain on

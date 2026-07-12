@@ -1,59 +1,66 @@
 #!/usr/bin/env bash
-# Scenarios 1 & 3 — bulk-insert throughput and batched-vs-unbatched, run through
-# the app's zero-code `copy` ETL command (postgres table -> postgres table),
-# wall-clocked over an exact MSG_COUNT rows. rows/sec = MSG_COUNT / elapsed.
+# Postgres -> JSONL throughput, for a fair comparison against faucet-stream's
+# Scenario B (source-postgres -> sink-jsonl, see BENCHMARKS.md in that repo).
+# Uses the app's zero-code `copy` command, `file://…?format=raw` sink (raw
+# payload per line, newline-delimited — no CanonicalMessage envelope), so the
+# JSONL shape matches faucet's sink-jsonl output: one JSON row per line.
 #
-# Prereqs:  ./seed.sh up   (Docker Postgres)   and a lean build:
+# Prereqs:  ./seed.sh up   and a lean build:
 #           cargo build -p mq-bridge-app --no-default-features --features bench --release
 #
-# Matrix (override via env): PAYLOADS, BATCHES, CONCURRENCIES.
+# Matrix (override via env): PAYLOADS, BATCHES, CONCURRENCIES, REPEATS, MSG_COUNT.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/seed.sh"   # also sources lib.sh
 
-PAYLOADS="${PAYLOADS:-256 4096}"        # bytes per JSON row
+PAYLOADS="${PAYLOADS:-256 4096}"
 BATCHES="${BATCHES:-1 128}"
 CONCURRENCIES="${CONCURRENCIES:-1 4}"
-REPEATS="${REPEATS:-5}"                 # timed runs per cell (1 warmup + REPEATS, median/stddev reported)
+REPEATS="${REPEATS:-5}"          # timed runs per cell (1 warmup + REPEATS, median/stddev reported)
 
 RESULTS_DIR="${RESULTS_DIR:-$HERE/results}"
 mkdir -p "$RESULTS_DIR"
-CSV="$RESULTS_DIR/throughput.csv"
+CSV="$RESULTS_DIR/pg_to_jsonl.csv"
 echo "payload_bytes,batch,concurrency,rows,repeats,median_elapsed_s,stddev_elapsed_s,median_rows_per_s" > "$CSV"
 
 now() { python3 -c 'import time; print(time.time())'; }
-COPY_TIMEOUT="${COPY_TIMEOUT:-900}"   # hard cap per copy run (s), guards a stuck route
-copy_guarded() { run_guarded "$COPY_TIMEOUT" "$BIN" copy "$@"; }
+COPY_TIMEOUT="${COPY_TIMEOUT:-900}"
+OUT_FILE="${OUT_FILE:-/tmp/mqb_bench_out.jsonl}"
 
-require_bin
+copy_guarded() {
+  "$BIN" copy "$@" >/dev/null 2>&1 &
+  local pid=$!
+  { sleep "$COPY_TIMEOUT"; kill "$pid" 2>/dev/null; } 2>/dev/null &
+  local killer=$!
+  disown "$killer" 2>/dev/null || true
+  local rc=0; wait "$pid" 2>/dev/null || rc=$?
+  kill "$killer" 2>/dev/null || true
+  return "$rc"
+}
+
+[[ -x "$BIN" ]] || { echo "binary not found at $BIN — build with --features bench --release" >&2; exit 1; }
 wait_for_pg
 
 run_one() {
   local bytes="$1" batch="$2" conc="$3"
-  local src="src_${bytes}" dst="dst_${bytes}"
-  # Non-destructive incremental read paging on the monotonic `id` column (the
-  # sqlx cursor reader) — the ETL "read a source table" path, akin to an Airbyte
-  # incremental sync. (`delete_after_read` instead expects a queue-shaped table.)
+  local src="src_${bytes}"
   local from="${PG_URL}?table=${src}&cursor_column=id&sslmode=disable"
-  local to="${PG_URL}?table=${dst}&auto_create_table=true&sslmode=disable"
+  local to="file://${OUT_FILE}?format=raw"
 
-  # Warmup pre-roll (discarded, not timed): primes the connection pool + caches.
-  reset_dst "$dst" >/dev/null
+  # Warmup pre-roll (discarded, not timed).
   seed_source "$src" "$bytes" "$WARMUP_COUNT" >/dev/null
+  rm -f "$OUT_FILE"
   copy_guarded --from "$from" --to "$to" --drain --batch-size "$batch" --concurrency "$conc" || true
 
-  # REPEATS timed runs (a single sample is noise on a laptop, esp. on battery/
-  # thermal throttling) — report median + stddev, like faucet-stream's
-  # hyperfine-based methodology, instead of trusting one wall-clock sample.
   local -a elapsed_samples=()
   local i t0 t1 elapsed landed
   for ((i = 1; i <= REPEATS; i++)); do
-    reset_dst "$dst" >/dev/null
     seed_source "$src" "$bytes" "$MSG_COUNT" >/dev/null
+    rm -f "$OUT_FILE"
     t0="$(now)"
     copy_guarded --from "$from" --to "$to" --drain --batch-size "$batch" --concurrency "$conc" || true
     t1="$(now)"
-    landed="$(psql_q -c "SELECT count(*) FROM ${dst};")"
+    landed="$(wc -l < "$OUT_FILE" | tr -d ' ')"
     if [[ "$landed" != "$MSG_COUNT" ]]; then
       echo "  WARNING: run $i landed ${landed} != expected ${MSG_COUNT}" >&2
     fi
@@ -71,7 +78,7 @@ print(f'{s.median(xs):.3f} {s.pstdev(xs):.3f}' if len(xs) > 1 else f'{xs[0]:.3f}
   printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "$bytes" "$batch" "$conc" "$MSG_COUNT" "$REPEATS" "$median" "$stddev" "$rate" | tee -a "$CSV"
 }
 
-echo "# throughput matrix: payloads=[$PAYLOADS] batches=[$BATCHES] concurrency=[$CONCURRENCIES] rows=$MSG_COUNT"
+echo "# pg->jsonl matrix: payloads=[$PAYLOADS] batches=[$BATCHES] concurrency=[$CONCURRENCIES] rows=$MSG_COUNT"
 for bytes in $PAYLOADS; do
   for batch in $BATCHES; do
     for conc in $CONCURRENCIES; do
@@ -80,4 +87,5 @@ for bytes in $PAYLOADS; do
     done
   done
 done
+rm -f "$OUT_FILE"
 echo "done -> $CSV"

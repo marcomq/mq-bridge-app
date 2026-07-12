@@ -66,6 +66,25 @@ It originally served as the primary reference implementation and testbed for the
 
 The UI was unfortunately mostly vibe coded. It doesn't mirror the general mq-bridge or mq-bridge-app core/cli standards. Don't use the current UI / tauri code as reference implementation - I wouldn't recommend to use it in production yet without testing.
 
+# Performance
+
+In our own benchmarks, forwarding messages over a local Unix-domain-socket IPC
+transport (`static` source → `memory` publisher, batch_size 1024, concurrency 1)
+sustained **1,202,926 rows/s** on commodity hardware.
+
+For a CSV → JSONL file conversion (1,000,000 mixed-type rows, ~116 MiB, `copy
+--batch-size 1024 --concurrency 1`), mq-bridge-app sustained **833,333 rows/s**,
+about **43x faster** than Meltano (`tap-csv` → `target-jsonl`, same file, same
+machine) at **~19,500 rows/s**.
+
+For a Postgres → JSONL file ETL job (1,000,000 rows, 7 mixed-type columns, `copy
+--batch-size 1024 --concurrency 1`), mq-bridge-app sustained **266,951 rows/s**,
+about **17.4x faster** than Meltano (`tap-postgres` → `target-jsonl`, same table,
+same machine) at **15,356 rows/s**.
+
+Full setup, methodology, and the Postgres bulk-copy / CDC-latency benchmark
+scenarios are in [`benches/etl/README.md`](benches/etl/README.md).
+
 ## Features
 
 ### Connectivity
@@ -204,6 +223,12 @@ unchanged (e.g. `postgres://…/db?table=src&sslmode=disable`). No per-field fla
   path instead of a query param — `nats://localhost:4222/orders` is equivalent
   to `nats://localhost:4222?subject=orders` (matching the UI's short-display
   convention); the query form wins if both are given.
+- MongoDB sources are **non-destructive by default** here: `copy` (and the UI)
+  default `consume` to `capture_all` (read existing documents, then watch for
+  changes) so pointing at an existing collection never claims or deletes its
+  documents. Pass `?consume=consumer` to opt into the destructive queue-drain
+  mode. (Note: `capture_all`/`capture_new` use change streams, which require a
+  replica set.)
 - `--drain` — exit gracefully once the source is empty (drain-then-exit). Without
   it, `copy` runs as a continuous bridge until Ctrl-C.
 - `--concurrency <N>` / `--batch-size <N>` — route tuning passthrough.

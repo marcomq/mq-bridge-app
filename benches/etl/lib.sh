@@ -12,7 +12,7 @@ PG_URL="postgres://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}"
 export PG_URL
 
 # Workload knobs (overridable from the environment).
-export MSG_COUNT="${MSG_COUNT:-100000}"     # rows per run
+export MSG_COUNT="${MSG_COUNT:-1000000}"    # rows per run
 export WARMUP_COUNT="${WARMUP_COUNT:-5000}" # pre-roll rows, excluded from timing
 export METRICS_ADDR="${METRICS_ADDR:-127.0.0.1:9090}"
 
@@ -74,4 +74,59 @@ scrape_quantile() {
   curl -s "$url" | awk -v m="$metric" -v q="$q" '
     $0 ~ "^"m"{" && $0 ~ "quantile=\""q"\"" { print $NF; found=1 }
     END { if (!found) print "NaN" }'
+}
+
+# --- Shared app-process helpers (used by the run_*.sh scenario scripts) ---
+
+# Bail with a clear message if the lean bench binary hasn't been built.
+require_bin() {
+  [[ -x "$BIN" ]] || { echo "binary not found at $BIN — build with --features bench --release" >&2; exit 1; }
+}
+
+# Start the app in the background against a --config file; prints its PID.
+# Usage: pid="$(start_app config.yaml app.log)"
+start_app() {
+  local config="$1" log="$2"
+  "$BIN" --config "$config" >"$log" 2>&1 &
+  echo $!
+}
+
+# Poll a UI's /health endpoint until it answers, or fail after ~30s.
+wait_health() {
+  local addr="$1" log="${2:-}" tries=30
+  until curl -fs "http://${addr}/health" >/dev/null 2>&1; do
+    ((tries--)) || { echo "UI at ${addr} never came up${log:+ (see $log)}" >&2; return 1; }
+    sleep 1
+  done
+}
+
+# --config loads a route but does NOT start it — this is the zero-code
+# "Start" action (POST /consumer-start), the same thing clicking Start in
+# the UI does. (POST /config only validates+saves; it never starts routes.)
+start_consumer() {
+  local addr="$1" id="$2"
+  curl -fs -X POST "http://${addr}/consumer-start?consumer_id=${id}" >/dev/null \
+    || { echo "POST /consumer-start failed for ${id} on ${addr}" >&2; return 1; }
+}
+
+# Best-effort kill of one or more PIDs; ignores already-exited processes.
+# Usage: trap 'kill_pids "$PID1" "$PID2"' EXIT
+kill_pids() {
+  for pid in "$@"; do [[ -n "$pid" ]] && kill "$pid" 2>/dev/null; done
+  true
+}
+
+# Run a command with a watchdog timeout so a stuck/misconfigured route can't
+# hang a benchmark matrix. Returns non-zero if it had to be killed.
+# Usage: run_guarded 900 "$BIN" copy --from ... --to ...
+run_guarded() {
+  local timeout="$1"; shift
+  "$@" >/dev/null 2>&1 &
+  local pid=$!
+  { sleep "$timeout"; kill "$pid" 2>/dev/null; } 2>/dev/null &
+  local killer=$!
+  disown "$killer" 2>/dev/null || true
+  local rc=0; wait "$pid" 2>/dev/null || rc=$?
+  kill "$killer" 2>/dev/null || true
+  return "$rc"
 }
