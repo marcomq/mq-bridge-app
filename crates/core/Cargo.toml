@@ -16,8 +16,8 @@ name = "mq_bridge_app"
 path = "src/lib.rs"
 
 [dependencies]
-mq-bridge = { version = "0.3.3", features = ["schema"] }
-# mq-bridge = { git = "https://github.com/marcomq/mq-bridge", branch = "dev", features = ["schema"] }
+mq-bridge = { version = "0.3.4", features = ["schema"] }
+# mq-bridge = { path = "../../../mq-bridge", version = "0.3.4", features = ["schema"] } # keep for debugging / dev
 
 config = { version = "0.15.22", features = ["yaml"] }
 dotenvy = "0.15.7"
@@ -28,7 +28,7 @@ tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "signal",
 anyhow = "1.0.102"
 tracing = "0.1.44"
 rdkafka = { version = "0.38.0", features = ["tokio"], optional = true }
-metrics = { version = "0.24.3" }
+metrics = { version = "0.24.6" }
 metrics-exporter-prometheus = "0.18.1"
 schemars = "1.2.1"
 serde_json = "1.0.149"
@@ -53,6 +53,16 @@ integration-test = []
 ibm-mq = ["mq-bridge/ibm-mq"]
 arm64-cross-compile = ["rdkafka", "rdkafka/cmake-build"]
 full = ["mq-bridge/full"]
+# Lean feature set for the ETL/CDC benchmarks (benches/etl): Postgres bulk-insert
+# (sqlx) + logical-replication CDC + per-route metrics, with a TLS provider so the
+# binary links. Avoids the heavy `full` deps (rdkafka/librdkafka, grpc/protoc,
+# ibm-mq) that aren't needed to move Postgres data.
+bench = [
+    "mq-bridge/sqlx",
+    "mq-bridge/postgres-cdc",
+    "mq-bridge/middleware",
+    "mq-bridge/rustls-aws-lc",
+]
 middleware = ["mq-bridge/middleware"]
 mongodb = ["mq-bridge/mongodb"]
 http = ["mq-bridge/http"]

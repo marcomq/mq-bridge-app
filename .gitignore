@@ -34,6 +34,8 @@ snap.*
 *.log
 conf
 db
+benches/etl/results
+benches/etl/meltano_project
 
 /node_modules
 /ui/node_modules

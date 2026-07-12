@@ -12,7 +12,7 @@ import PasswordField from "./PasswordField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
 import { appShell } from "../app-shell";
-import { BASIC_ENDPOINT_FIELDS } from "../endpoint-metadata";
+import { BASIC_ENDPOINT_FIELDS, collectPublisherIdSuggestions } from "../endpoint-metadata";
 import {
   createTypeSelectArrayRenderer,
   domRenderer as baseDomRenderer,
@@ -128,10 +128,7 @@ forms.setConfig({
         return false;
       }
 
-      // These fields are handled by dedicated tabs or UI elements, so hide them from the main definition form.
-      // The customVisibility is for top-level properties of the consumer/publisher config, not nested endpoint properties.
-      // The `hidden: true` attributes in Svelte components are now redundant with this.
-      // The `custom_headers` field is now handled by the collapsible renderer.
+      // These top-level consumer fields are handled by dedicated tabs or UI elements, so hide them from the main definition form.
       if (formMode === "consumer" && ["id", "presets", "output",  "response", "message_capture"].includes(fieldName)) {
         return false;
       }
@@ -249,6 +246,18 @@ function formatDescription(node: SchemaNode, _elementId: string) {
     return "";
   }
   return description;
+}
+
+// Temporarily swap in the UI-formatted description while the underlying renderer runs,
+// then restore the original so the schema node is left untouched.
+function withFormattedDescription<T>(node: SchemaNode, elementId: string, render: () => T): T {
+  const originalDescription = node.description;
+  node.description = formatDescription(node, elementId);
+  try {
+    return render();
+  } finally {
+    node.description = originalDescription;
+  }
 }
 
 function parseElementPath(pathLike: string): Array<string | number> {
@@ -572,7 +581,9 @@ const basicAuthRenderer = {
   },
 };
 
-const customHeadersRenderer = {
+// Both custom headers and env vars are a sorted key/value map edited through HeadersEditor;
+// they differ only in labels, so share one renderer factory.
+const createKeyValueRenderer = (editorProps: (node: SchemaNode) => Record<string, unknown>) => ({
   render: (node: SchemaNode, _path: string, _elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     const store = context.store;
     const currentValue = store.getPath(dataPath) ?? node.defaultValue ?? {};
@@ -581,9 +592,9 @@ const customHeadersRenderer = {
       .map(([key, value]) => ({ key: String(key), value: String(value ?? "") }));
 
     return renderSvelteNode(HeadersEditor, {
-      title: String(node.title || "Custom Headers"),
       description: formatDescription(node, _elementId),
       rows,
+      ...editorProps(node),
       onChange: (nextRows: Array<{ key: string; value: string }>) => {
         const nextValue = Object.fromEntries(
           nextRows
@@ -594,46 +605,25 @@ const customHeadersRenderer = {
       },
     });
   },
-};
+});
 
-const envVarsRenderer = {
-  render: (node: SchemaNode, _path: string, _elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
-    const store = context.store;
-    const currentValue = store.getPath(dataPath) ?? node.defaultValue ?? {};
-    const rows = Object.entries(currentValue)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, value]) => ({ key: String(key), value: String(value ?? "") }));
+const customHeadersRenderer = createKeyValueRenderer((node) => ({
+  title: String(node.title || "Custom Headers"),
+}));
 
-    return renderSvelteNode(HeadersEditor, {
-      title: "Environment Variables",
-      sectionLabel: "",
-      description: formatDescription(node, _elementId),
-      keyPlaceholder: "Variable name",
-      valuePlaceholder: "Value",
-      addLabel: "Add Variable",
-      emptyLabel: "No environment variables defined.",
-      deleteLabel: "Delete",
-      rows,
-      onChange: (nextRows: Array<{ key: string; value: string }>) => {
-        const nextValue = Object.fromEntries(
-          nextRows
-            .filter((row) => row.key.trim().length > 0)
-            .map((row) => [row.key.trim(), row.value]),
-        );
-        store.setPath(dataPath, nextValue);
-      },
-    });
-  },
-};
+const envVarsRenderer = createKeyValueRenderer(() => ({
+  title: "Environment Variables",
+  sectionLabel: "",
+  keyPlaceholder: "Variable name",
+  valuePlaceholder: "Value",
+  addLabel: "Add Variable",
+  emptyLabel: "No environment variables defined.",
+  deleteLabel: "Delete",
+}));
 
 const routeObjectRenderer = {
-  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
-    const originalDescription = node.description;
-    node.description = formatDescription(node, elementId);
-    const result = renderObject(context, node, elementId, false, dataPath);
-    node.description = originalDescription;
-    return result;
-  },
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) =>
+    withFormattedDescription(node, elementId, () => renderObject(context, node, elementId, false, dataPath)),
 };
 
 const routesRenderer = {
@@ -750,47 +740,24 @@ const createScalarEndpointRenderer = (
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     const currentValue = getPathValue(context.data, dataPath);
     const suggestions = options.suggestions ? options.suggestions() : [];
-    const currentScalarValue =
-      typeof currentValue === "string"
-        ? currentValue
-        : (currentValue && typeof currentValue === "object" && !Array.isArray(currentValue) && typeof currentValue[type] === "string"
-            ? currentValue[type]
-            : (typeof node.defaultValue === "string" ? node.defaultValue : ""));
 
     return renderSvelteNode(ScalarEndpointInput, {
       title: node.title === "" ? "" : String(node.title || options.title),
       description: String(node.description || ""),
-      value: currentScalarValue,
+      value: deriveScalarEndpointValue(currentValue, type, node),
       placeholder: options.placeholder,
       suggestions,
       name: elementId,
-      onChange: (next: string) => {
-        const existing = getPathValue(context.data, dataPath);
-        const isEndpointObject = node.type === "object";
-
-        let updated;
-        if (isEndpointObject || (existing && typeof existing === "object" && !Array.isArray(existing) && type in existing)) {
-          updated = {
-            ...(existing && typeof existing === "object" ? existing : {}),
-            [type]: next,
-          };
-        } else {
-          updated = next;
-        }
-        commitPathValue(context, dataPath, updated);
-      },
+      onChange: (next: string) => commitScalarEndpointValue(context, dataPath, node, type, next),
     });
   },
 });
 
 const rootRenderer = {
-  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
-    const originalDescription = node.description;
-    node.description = formatDescription(node, elementId);
-    const result = createWrappedContainer(asNode(renderObject(context, node, elementId, false, dataPath)), "mqb-form-block");
-    node.description = originalDescription;
-    return result;
-  },
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) =>
+    withFormattedDescription(node, elementId, () =>
+      createWrappedContainer(asNode(renderObject(context, node, elementId, false, dataPath)), "mqb-form-block"),
+    ),
 };
 
 
@@ -889,6 +856,34 @@ const commitPathValue = (
   context.onChange(newData);
 };
 
+// A scalar endpoint (static/ref) may be stored either as a bare string or as an
+// object keyed by `key` (e.g. { ref: "..." }); derive the editable string from either shape.
+const deriveScalarEndpointValue = (currentValue: any, key: string, node: SchemaNode): string => {
+  if (typeof currentValue === "string") return currentValue;
+  if (currentValue && typeof currentValue === "object" && !Array.isArray(currentValue) && typeof currentValue[key] === "string") {
+    return currentValue[key];
+  }
+  return typeof node.defaultValue === "string" ? node.defaultValue : "";
+};
+
+// Write a scalar endpoint back, preserving the object shape when the existing value
+// (or schema) is an object and writing a bare string otherwise.
+const commitScalarEndpointValue = (
+  context: RendererContext,
+  dataPath: Array<string | number>,
+  node: SchemaNode,
+  key: string,
+  next: string,
+) => {
+  const existing = getPathValue(context.data, dataPath);
+  const keepObjectShape =
+    node.type === "object" || (existing && typeof existing === "object" && !Array.isArray(existing) && key in existing);
+  const updated = keepObjectShape
+    ? { ...(existing && typeof existing === "object" ? existing : {}), [key]: next }
+    : next;
+  commitPathValue(context, dataPath, updated);
+};
+
 const descriptionRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>) => {
     const textarea = document.createElement("textarea");
@@ -921,33 +916,13 @@ const endpointRenderer = {
     }
 
     const currentValue = getPathValue(context.data, dataPath);
-    const currentScalarValue =
-      typeof currentValue === "string"
-        ? currentValue
-        : (currentValue && typeof currentValue === "object" && !Array.isArray(currentValue) && typeof currentValue.ref === "string"
-            ? currentValue.ref
-            : (typeof node.defaultValue === "string" ? node.defaultValue : ""));
 
     return renderSvelteNode(Endpoint, {
       title: node.title === "" ? "" : String(node.title || "Ref Endpoint"),
       description: String(node.description || ""),
-      value: currentScalarValue,
+      value: deriveScalarEndpointValue(currentValue, "ref", node),
       name: elementId,
-      onChange: (next: string) => {
-        const existing = getPathValue(context.data, dataPath);
-        const isEndpointObject = node.type === "object";
-
-        let updated;
-        if (isEndpointObject || (existing && typeof existing === "object" && !Array.isArray(existing) && 'ref' in existing)) {
-          updated = {
-            ...(existing && typeof existing === "object" ? existing : {}),
-            ref: next,
-          };
-        } else {
-          updated = next;
-        }
-        commitPathValue(context, dataPath, updated);
-      },
+      onChange: (next: string) => commitScalarEndpointValue(context, dataPath, node, "ref", next),
     });
   },
 };
@@ -980,11 +955,9 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
         content.append(props, asNode(ap), asNode(oneOf));
         return domRenderer.renderHeadlessObject(elementId, content);
       }
-      const originalDescription = node.description;
-      node.description = formatDescription(node, elementId);
-      const result = renderObject(context, node, elementId, false, dataPath);
-      node.description = originalDescription;
-      return result;
+      return withFormattedDescription(node, elementId, () =>
+        renderObject(context, node, elementId, false, dataPath),
+      );
     },
   },
 };
@@ -1022,14 +995,7 @@ CUSTOM_RENDERERS.static = createScalarEndpointRenderer("static", {
 CUSTOM_RENDERERS.ref = createScalarEndpointRenderer("ref", {
   title: "Ref",
   placeholder: "publisher_id",
-  suggestions: () =>
-    Array.from(
-      new Set(
-        ((appShell.config<Record<string, any>>()?.publishers || []) as Array<{ id?: string; name?: string }>)
-          .map((publisher) => String(publisher?.id || publisher?.name || "").trim())
-          .filter(Boolean),
-      ),
-    ).sort((a, b) => a.localeCompare(b)),
+  suggestions: () => collectPublisherIdSuggestions(appShell.config<Record<string, any>>()?.publishers),
 });
 
 CUSTOM_RENDERERS.RefConfig = CUSTOM_RENDERERS.ref;
