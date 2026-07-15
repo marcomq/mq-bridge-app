@@ -494,6 +494,12 @@ function createDefaultPublisherEndpoint(endpointType: string): Record<string, un
     root.database = "app";
     root.collection = "messages";
   }
+  if (endpointType === "ibmmq") {
+    root.url = "localhost(1414)";
+    root.queue_manager = "QM1";
+    root.channel = "DEV.APP.SVRCONN";
+    root.queue = "DEV.QUEUE.1";
+  }
   if (endpointType === "static") {
     endpoint.static = "";
   }

@@ -41,6 +41,7 @@ const CONSUMER_ENDPOINT_DEFAULTS: Record<string, Record<string, unknown> | strin
   sqlx: { url: "postgres://user:pass@localhost/db", table: "events" },
   zeromq: { url: "tcp://127.0.0.1:5555", topic: "events" },
   redis_streams: { url: "redis://localhost:6379", stream: "events", group: "mq-bridge" },
+  ibmmq: { url: "localhost(1414)", queue_manager: "QM1", channel: "DEV.APP.SVRCONN", queue: "DEV.QUEUE.1" },
   file: { path: "/tmp/messages.jsonl" },
   static: "",
 };

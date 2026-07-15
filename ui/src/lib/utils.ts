@@ -143,6 +143,18 @@ function normalizePathValue(rawPath: string) {
   return value.startsWith("/") ? value : `/${value}`;
 }
 
+// Credentials may appear in an endpoint's basic fields (so they render directly in
+// the form) but must never leak into the read-only summary/upper bar.
+const SUMMARY_SECRET_FIELDS = new Set([
+  "username",
+  "password",
+  "access_key",
+  "secret_key",
+  "secret_access_key",
+  "key_repository_password",
+  "cert_password",
+]);
+
 export function getTechnicalDisplayLabel(
   endpoint: Record<string, unknown>,
   endpointType?: string,
@@ -153,7 +165,7 @@ export function getTechnicalDisplayLabel(
   const data = endpointData && typeof endpointData === "object" && !Array.isArray(endpointData)
     ? endpointData as Record<string, unknown>
     : endpoint;
-  const fields = BASIC_ENDPOINT_FIELDS[type] || [];
+  const fields = (BASIC_ENDPOINT_FIELDS[type] || []).filter((field) => !SUMMARY_SECRET_FIELDS.has(field));
 
   const values = fields.map((field) => {
     const rawValue = data[field];
