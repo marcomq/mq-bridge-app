@@ -33,6 +33,7 @@ export interface ConsumerConfig {
   reconnect_interval_ms?: number;
   empty_batch_delay_ms?: number;
   allow_fault_injection?: boolean;
+  exit_on_empty?: boolean;
 }
 
 export interface PublisherClient {
@@ -94,6 +95,7 @@ export interface FeatureAvailabilityResponse {
   aws: boolean;
   sled: boolean;
   redis_streams: boolean;
+  object_store: boolean;
 }
 
 export interface RouteConfig {
@@ -108,6 +110,7 @@ export interface RouteConfig {
   reconnect_interval_ms?: number;
   empty_batch_delay_ms?: number;
   allow_fault_injection?: boolean;
+  exit_on_empty?: boolean;
 }
 
 export interface Endpoint {
@@ -150,7 +153,12 @@ export interface WeakJoinMiddleware {
   group_by: string;
   expected_count: number;
   timeout_ms: number;
+  branch_by?: string | null;
+  required?: string[];
+  on_timeout?: WeakJoinTimeout;
 }
+
+export type WeakJoinTimeout = "fire" | "discard";
 
 export interface LimiterMiddleware {
   messages_per_second: number;
@@ -195,6 +203,7 @@ export interface KafkaConfig {
   consumer_options?: unknown[][] | null;
   shared?: boolean | null;
   partitions?: number | null;
+  partition_key?: string | null;
 }
 
 export interface TlsConfig {
@@ -217,6 +226,7 @@ export interface NatsConfig {
   request_reply?: boolean;
   request_timeout_ms?: number | null;
   delayed_ack?: boolean;
+  deduplicate?: boolean;
   no_jetstream?: boolean;
   subscriber_mode?: boolean;
   stream_max_messages?: number | null;
@@ -234,7 +244,19 @@ export interface FileConfig {
   format?: FileFormat;
 }
 
-export type FileFormat = "normal" | "json" | "text" | "raw";
+export type FileFormat = "normal" | "json" | "text" | "raw" | "csv";
+
+export interface ObjectStoreConfig {
+  url: string;
+  format?: FileFormat;
+  delimiter?: string | null;
+  checkpoint_store?: string | null;
+  cursor_id?: string | null;
+  polling_interval_ms?: number | null;
+  max_object_bytes?: number | null;
+  date_partition?: boolean;
+  extension?: string | null;
+}
 
 export type StaticConfig = string | Record<string, never>;
 
@@ -279,7 +301,9 @@ export interface MongoDbConfig {
   polling_interval_ms?: number | null;
   reply_polling_ms?: number | null;
   request_reply?: boolean;
+  consume?: MongoConsume | null;
   change_stream?: boolean;
+  checkpoint_store?: string | null;
   request_timeout_ms?: number | null;
   ttl_seconds?: number | null;
   capped_size_bytes?: number | null;
@@ -289,6 +313,8 @@ export interface MongoDbConfig {
   meta_collection?: string | null;
   shared?: boolean | null;
 }
+
+export type MongoConsume = "consumer" | "subscriber" | "capture_new" | "capture_all";
 
 export type MongoDbFormat = "normal" | "json" | "text" | "raw";
 
@@ -380,9 +406,12 @@ export interface ZeroMqConfig {
   topic?: string | null;
   bind?: boolean;
   internal_buffer_size?: number | null;
+  format?: ZeroMqFormat;
 }
 
 export type ZeroMqSocketType = "push" | "pull" | "pub" | "sub" | "req" | "rep";
+
+export type ZeroMqFormat = "json" | "raw" | "raw_framed";
 
 export interface RedisStreamsConfig {
   url: string;
@@ -424,8 +453,16 @@ export interface SqlxConfig {
   insert_query?: string | null;
   select_query?: string | null;
   delete_after_read?: boolean;
+  cursor_column?: string | null;
+  cursor_id?: string | null;
+  checkpoint_store?: string | null;
   auto_create_table?: boolean;
+  bulk_copy?: boolean;
   polling_interval_ms?: number | null;
+  max_polling_interval_ms?: number | null;
+  publication?: string | null;
+  slot_name?: string | null;
+  create_publication?: boolean;
   tls?: TlsConfig;
   max_connections?: number | null;
   min_connections?: number | null;
@@ -433,6 +470,40 @@ export interface SqlxConfig {
   idle_timeout_ms?: number | null;
   max_lifetime_ms?: number | null;
   shared?: boolean | null;
+}
+
+export interface ClickHouseConfig {
+  url: string;
+  username?: string | null;
+  password?: string | null;
+  database?: string | null;
+  table: string;
+  columns?: Record<string, string> | null;
+  async_insert?: boolean;
+  wait_for_async_insert?: boolean | null;
+  cursor_column?: string | null;
+  cursor_id?: string | null;
+  checkpoint_store?: string | null;
+  select_columns?: string | null;
+  polling_interval_ms?: number | null;
+  max_polling_interval_ms?: number | null;
+  request_timeout_ms?: number | null;
+  connect_timeout_ms?: number | null;
+  tls?: TlsConfig;
+}
+
+export interface PostgresCdcConfig {
+  url: string;
+  publication: string;
+  slot_name?: string;
+  create_slot?: boolean;
+  create_publication?: boolean;
+  publication_tables?: string[];
+  temporary_slot?: boolean;
+  cursor_id?: string | null;
+  checkpoint_store?: string | null;
+  status_interval_ms?: number;
+  tls?: TlsConfig;
 }
 
 export interface StreamBufferConfig {

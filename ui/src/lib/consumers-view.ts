@@ -434,7 +434,7 @@ function renderSelectedConsumer() {
     responseSupported: responseCapable,
     responseHeaders: responseRows,
     responsePayload: responseValue.payload || "",
-    liveStatusText: runtimeError || (!status.running ? "Consumer Stopped" : status.status?.healthy === false ? "Consumer Error" : "Connected"),
+    liveStatusText: runtimeError || (!status.running ? "Consumer Stopped" : status.status?.healthy === false ? (status.status?.error || "Consumer Error") : "Connected"),
     liveStatusVariant: runtimeError ? "danger" : !status.running ? "neutral" : status.status?.healthy === false ? "danger" : "success",
     toggleLabel: !status.running ? "Start" : "Stop",
     toggleVariant: !status.running ? "success" : "danger",

@@ -227,6 +227,17 @@ const ENDPOINT_KIND_METADATA = [
     consumer: true,
     requiresFeature: "redis_streams",
   },
+  {
+    kind: "object_store",
+    rootOrder: 24,
+    basicFields: ["url", "format"],
+    requestBar: {
+      fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "s3://bucket/prefix" }],
+    },
+    publisher: true,
+    consumer: true,
+    requiresFeature: "object_store",
+  },
 ] as const satisfies readonly EndpointKindMetadata[];
 
 export type EndpointKind = typeof ENDPOINT_KIND_METADATA[number]["kind"];

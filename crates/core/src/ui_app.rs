@@ -1254,10 +1254,26 @@ impl UiApp {
     ) -> Option<ConsumerStatusSnapshot> {
         let name = consumer.name.clone();
         let status = if running {
-            mq_bridge::traits::EndpointStatus {
-                healthy: true,
-                target: name.clone(),
-                ..Default::default()
+            // Prefer the live health of the running route so a consumer that
+            // connected then dropped (or is stuck reconnecting) shows unhealthy
+            // with the last error instead of a hardcoded green badge (issue #12).
+            let runtime_key = consumer_runtime_key(consumer);
+            if let Some(handle) = self.ui_handles.read().await.get(&runtime_key) {
+                // Take live healthy/error/pending/capacity from the handle, but keep the
+                // consumer's display name as `target` (the handle's target is the internal
+                // collector route id, which should not leak to the UI).
+                mq_bridge::traits::EndpointStatus {
+                    target: name.clone(),
+                    ..handle.status()
+                }
+            } else {
+                // Running as an internal collector route (e.g. after a restart)
+                // with no live handle to inspect; best effort is healthy.
+                mq_bridge::traits::EndpointStatus {
+                    healthy: true,
+                    target: name.clone(),
+                    ..Default::default()
+                }
             }
         } else if matches!(consumer.endpoint.endpoint_type, EndpointType::Http(_)) {
             mq_bridge::traits::EndpointStatus {
@@ -1690,6 +1706,7 @@ pub struct FeatureAvailabilityResponse {
     pub aws: bool,
     pub sled: bool,
     pub redis_streams: bool,
+    pub object_store: bool,
 }
 
 impl FeatureAvailabilityResponse {
@@ -1707,6 +1724,7 @@ impl FeatureAvailabilityResponse {
             aws: cfg!(feature = "aws") || cfg!(feature = "full"),
             sled: cfg!(feature = "sled") || cfg!(feature = "full"),
             redis_streams: cfg!(feature = "redis-streams") || cfg!(feature = "full"),
+            object_store: cfg!(feature = "object-store") || cfg!(feature = "full"),
         }
     }
 }
@@ -1959,5 +1977,70 @@ mod tests {
         assert!(storage_security_for_cli(&config).config_encrypted);
 
         clear_process_config_master_key();
+    }
+
+    fn memory_consumer(id: &str, name: &str, topic: &str) -> crate::config::ConsumerConfig {
+        crate::config::ConsumerConfig {
+            id: id.to_string(),
+            name: name.to_string(),
+            endpoint: Endpoint::new(EndpointType::Memory(MemoryConfig::new(topic, Some(8)))),
+            comment: String::new(),
+            response: None,
+            output: crate::config::ConsumerOutputConfig::None,
+            message_capture: crate::config::ConsumerMessageCaptureConfig::default(),
+            options: Default::default(),
+        }
+    }
+
+    fn test_app(config: AppConfig) -> UiApp {
+        UiApp::new(
+            config,
+            metrics_exporter_prometheus::PrometheusBuilder::new()
+                .build_recorder()
+                .handle(),
+            std::env::temp_dir()
+                .join(format!("mqb-status-{}.yml", uuid::Uuid::new_v4()))
+                .to_string_lossy()
+                .to_string(),
+        )
+    }
+
+    // A running consumer's status must reflect the live route health read from the
+    // stored handle (`RouteHandle::status()`), not a hardcoded `healthy: true`.
+    // The unhealthy/reconnecting transition itself is covered by mq-bridge's own
+    // route-status test; the app side is a direct passthrough of `handle.status()`.
+    #[tokio::test]
+    async fn running_consumer_status_reflects_live_route_health() {
+        let mut config = AppConfig::default();
+        config.consumers.push(memory_consumer(
+            "mem-status-test",
+            "MemConsumer",
+            "mem_status_test_topic",
+        ));
+        let app = test_app(config);
+
+        assert!(app.start_consumer("mem-status-test").await.unwrap());
+
+        let mut snapshot = None;
+        for _ in 0..100 {
+            let rs = app.runtime_status().await;
+            if let Some(s) = rs.consumers.get("mem-status-test") {
+                if s.running && s.status.healthy {
+                    snapshot = Some(s.clone());
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let snapshot = snapshot.expect("consumer should become running and healthy via live status");
+        assert!(snapshot.running);
+        assert!(snapshot.status.healthy);
+        // Live status target is the internal collector route id; the snapshot must keep
+        // the consumer's display name so it does not leak to the UI.
+        assert_eq!(snapshot.status.target, "MemConsumer");
+        assert!(snapshot.status.error.is_none());
+
+        app.stop_consumer("mem-status-test").await;
     }
 }
