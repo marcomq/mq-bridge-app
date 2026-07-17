@@ -16,8 +16,8 @@ name = "mq_bridge_app"
 path = "src/lib.rs"
 
 [dependencies]
-mq-bridge = { version = "0.3.4", features = ["schema"] }
-# mq-bridge = { path = "../../../mq-bridge", version = "0.3.4", features = ["schema"] } # keep for debugging / dev
+mq-bridge = { version = "0.3.5", features = ["schema"] }
+# mq-bridge = { path = "../../../mq-bridge", version = "0.3.5", features = ["schema"] } # keep for debugging / dev
 
 config = { version = "0.15.22", features = ["yaml"] }
 dotenvy = "0.15.7"
@@ -75,3 +75,4 @@ sled = ["mq-bridge/sled"]
 grpc = ["mq-bridge/grpc"]
 amqp = ["mq-bridge/amqp"]
 redis-streams = ["mq-bridge/redis-streams"]
+object-store = ["mq-bridge/object-store"]
