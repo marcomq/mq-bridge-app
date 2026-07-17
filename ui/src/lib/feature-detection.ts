@@ -35,6 +35,7 @@ export async function getAvailableFeatures(): Promise<FeatureAvailabilityRespons
       aws: true,
       sled: true,
       redis_streams: true,
+      object_store: true,
     };
   }
 }

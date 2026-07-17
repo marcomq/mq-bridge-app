@@ -46,7 +46,7 @@
         const request = input instanceof Request ? input : null;
         const url = new URL(request ? request.url : String(input), window.location.origin);
         const normalizedInit = {
-            method: request?.method || init.method || 'GET',
+            method: init.method !== undefined ? init.method : request?.method || 'GET',
             body: init.body ?? (request ? await request.clone().text().catch(() => null) : null),
         };
 

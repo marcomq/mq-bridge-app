@@ -874,10 +874,10 @@ fn sanitize_name_for_env(name: &str) -> String {
     name.trim()
         .chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_uppercase()
-            } else {
+            if ch.is_whitespace() {
                 '_'
+            } else {
+                ch.to_ascii_uppercase()
             }
         })
         .collect()
