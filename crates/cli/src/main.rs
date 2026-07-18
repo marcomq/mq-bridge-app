@@ -16,6 +16,9 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 use anyhow::Context;
+
+mod mcp;
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -50,6 +53,25 @@ enum Command {
     /// With `--drain` the job exits once the source is empty; otherwise it runs
     /// as a continuous bridge until Ctrl-C. No web UI is started.
     Copy(CopyArgs),
+
+    /// Run as an MCP (Model Context Protocol) server exposing the bridge as tools.
+    ///
+    /// A universal, protocol-agnostic message/data bridge driven from natural
+    /// language: publish messages to any endpoint and run routes between any two
+    /// endpoints, all supplied ad hoc as endpoint JSON. No web UI is started.
+    Mcp(McpArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct McpArgs {
+    /// Transport: `stdio` (default, for local clients like Claude Desktop/Code) or
+    /// `http` (streamable HTTP served over hyper).
+    #[arg(long, default_value = "stdio")]
+    transport: String,
+
+    /// Bind address for `--transport http` (defaults to 127.0.0.1:9092).
+    #[arg(long)]
+    bind: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -87,9 +109,17 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    if let Some(Command::Copy(copy_args)) = args.command {
-        init_copy_logging();
-        return run_copy(copy_args).await;
+    match args.command {
+        Some(Command::Copy(copy_args)) => {
+            init_copy_logging();
+            return run_copy(copy_args).await;
+        }
+        Some(Command::Mcp(mcp_args)) => {
+            // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
+            init_mcp_logging();
+            return mcp::run(mcp_args.transport, mcp_args.bind).await;
+        }
+        None => {}
     }
 
     if let Some(schema_path) = args.schema {
@@ -790,6 +820,18 @@ fn init_copy_logging() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
+        .try_init();
+}
+
+/// Logging for the `mcp` subcommand. Writes to **stderr** because the `stdio`
+/// transport uses stdout as the MCP (JSON-RPC) channel — logging there would
+/// corrupt the protocol stream.
+fn init_mcp_logging() {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
         .try_init();
 }
 

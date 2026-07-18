@@ -16,6 +16,8 @@ continuous copy command.
   ```bash
   cargo run -p mq-bridge-app --example gen_url_docs
   ```
+- **[MCP Server](./MCP.md)** — `mq-bridge-app mcp`: running the bridge as an
+  MCP server, its five tools, endpoint/message shapes, and examples.
 
 ## Folder structure
 
@@ -23,6 +25,7 @@ continuous copy command.
 dev/docs/
 ├── README.md              this file
 ├── quick-start.md          workflow-first examples
+├── MCP.md                  MCP server mode (`mq-bridge-app mcp`)
 ├── connectors/              hand-written, one page per connector
 │   ├── README.md
 │   ├── postgres.md
