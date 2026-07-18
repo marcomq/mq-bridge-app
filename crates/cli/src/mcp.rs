@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use mq_bridge_app::mq_bridge::{
     CanonicalMessage, Handled, Publisher, Sent, SentBatch,
-    models::{Endpoint, EndpointType, HttpConfig, Route},
+    models::{Endpoint, EndpointType, MemoryConfig, Route},
     route::RouteHandle,
 };
 use mq_bridge_app::route_metrics::{
@@ -709,18 +709,18 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Entry point for the `mcp` subcommand.
 ///
-/// `report_to_ui` is the opt-in for telling a local web UI what this server is
-/// doing; `ui_addr` is the UI's configured listen address, from which only the
-/// port is used. Without the flag nothing is ever sent.
+/// `report_to_ui` is the opt-in for telling a local UI what this server is
+/// doing; `ui_status_ipc_url` addresses that UI's status socket. Without the
+/// flag nothing is ever sent.
 pub async fn run(
     transport: String,
     bind: Option<String>,
     report_to_ui: bool,
-    ui_addr: Option<String>,
+    ui_status_ipc_url: Option<String>,
 ) -> anyhow::Result<()> {
     let server = BridgeMcp::new();
     if report_to_ui {
-        spawn_ui_reporter(server.clone(), ui_addr.as_deref());
+        spawn_ui_reporter(server.clone(), ui_status_ipc_url);
     }
 
     match transport.as_str() {
@@ -730,24 +730,18 @@ pub async fn run(
     }
 }
 
-/// The port from a `host:port` listen address.
-fn listen_port(addr: &str) -> Option<u16> {
-    addr.rsplit_once(':')
-        .and_then(|(_, port)| port.trim().parse().ok())
-}
-
-/// Starts periodic status reporting to the UI on **localhost only**.
+/// Starts periodic status reporting to a local UI over its status IPC socket.
 ///
-/// The host is hardcoded: there is deliberately no way to point this at a remote
-/// UI. If the UI address is unknown (no readable config), nothing is reported —
-/// guessing a port could POST this server's route names to an unrelated service.
-fn spawn_ui_reporter(server: BridgeMcp, ui_addr: Option<&str>) {
-    let Some(port) = ui_addr.and_then(listen_port) else {
+/// A local socket rather than a TCP port: it is the only channel that reaches
+/// the desktop app (which binds no HTTP listener), and its `0600` permissions
+/// confine reporting to this user's own UI — a remote UI cannot be targeted at
+/// all. If the socket address is unknown (no readable config), nothing is sent.
+fn spawn_ui_reporter(server: BridgeMcp, ui_status_ipc_url: Option<String>) {
+    let Some(url) = ui_status_ipc_url else {
         info!("--report-to-ui was set, but no UI address is configured; not reporting");
         return;
     };
 
-    let url = format!("http://127.0.0.1:{port}/mcp-status");
     info!("reporting MCP status to {url}");
 
     tokio::spawn(async move {
@@ -759,10 +753,10 @@ fn spawn_ui_reporter(server: BridgeMcp, ui_addr: Option<&str>) {
 
             // Built lazily and retried, so starting the MCP before the UI works.
             if publisher.is_none() {
-                let endpoint = Endpoint::new(EndpointType::Http(HttpConfig {
-                    url: url.clone(),
-                    ..Default::default()
-                }));
+                let endpoint = Endpoint::new(EndpointType::Memory(MemoryConfig::new_with_url(
+                    url.clone(),
+                    Some(1),
+                )));
                 match Publisher::new(endpoint).await {
                     Ok(p) => publisher = Some(p),
                     Err(e) => {

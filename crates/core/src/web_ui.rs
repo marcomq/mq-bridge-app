@@ -24,6 +24,7 @@ pub async fn start_web_server(
 ) -> Result<(), anyhow::Error> {
     let bind_addr = bind_addr.to_string();
     let app = UiApp::new(initial_config, metrics_handle, config_file_path);
+    app.spawn_mcp_status_listener();
 
     let input = Endpoint {
         endpoint_type: EndpointType::Http(HttpConfig {

@@ -7,8 +7,10 @@ use crate::route_metrics::{CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture,
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
-use mq_bridge::models::{Endpoint, EndpointType, Route, StaticConfig};
+use mq_bridge::endpoints::memory::MemoryConsumer;
+use mq_bridge::models::{Endpoint, EndpointType, MemoryConfig, Route, StaticConfig};
 use mq_bridge::route::RouteHandle;
+use mq_bridge::traits::{MessageConsumer, MessageDisposition};
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
 };
@@ -37,6 +39,67 @@ static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
 /// longer than the MCP's ~2s reporting interval, so a single dropped report does
 /// not make its routes flicker out of the UI.
 const MCP_STATUS_STALE_AFTER: Duration = Duration::from_secs(15);
+
+/// Socket file an MCP server pushes its status to, inside a per-config
+/// directory of its own.
+///
+/// A directory of its own because binding chmods the socket's parent to `0700`:
+/// pointed at a shared directory, that would lock down whatever else lives
+/// there.
+#[cfg(unix)]
+const MCP_STATUS_SOCKET_NAME: &str = "status.sock";
+
+/// Pause before retrying a failed receive, so a permanently broken transport
+/// cannot spin the listener task.
+const MCP_STATUS_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// The IPC address a local MCP server pushes its status to.
+///
+/// Keyed by the config file rather than configured, so an MCP and a UI find each
+/// other without either knowing a port — including in the desktop app, which
+/// serves its UI over Tauri IPC and binds no HTTP listener at all. Two UIs on
+/// different configs get different sockets instead of colliding.
+///
+/// The socket lives in the runtime directory under a *hash* of the config path,
+/// not beside the config itself: Unix socket paths are capped near 104 bytes
+/// (`SUN_LEN`), and a config a few directories deep silently blows that budget.
+#[cfg(unix)]
+pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let config_path = std::path::absolute(config_file_path)
+        .unwrap_or_else(|_| PathBuf::from(config_file_path));
+    let digest = Sha256::digest(config_path.as_os_str().as_encoded_bytes());
+    // Half a SHA-256 is far more than enough to separate a handful of configs,
+    // and keeps the whole path comfortably short.
+    let key = hex::encode(&digest[..8]);
+
+    // `XDG_RUNTIME_DIR` is the right home for this on Linux and is short;
+    // elsewhere (macOS) `/tmp` is, and both are per-user enough once the
+    // per-config directory below is `0700`.
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+
+    // An explicit absolute path, never a bare `ipc://name`: the latter resolves
+    // through `/run/mq-bridge` first, which an unprivileged app cannot bind to
+    // if it already exists.
+    format!(
+        "ipc://{}",
+        Path::new(&runtime_dir)
+            .join(format!("mq-bridge-{key}"))
+            .join(MCP_STATUS_SOCKET_NAME)
+            .display()
+    )
+}
+
+/// The IPC address a local MCP server pushes its status to.
+///
+/// Windows named pipes live in a flat namespace rather than the filesystem, so
+/// the pipe cannot be placed next to the config the way a Unix socket is. One
+/// pipe per machine matches the single-slot design (one UI, one local MCP).
+#[cfg(windows)]
+pub fn mcp_status_ipc_url(_config_file_path: &str) -> String {
+    "ipc://app-status".to_string()
+}
 
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
     match config.security_mode() {
@@ -206,8 +269,8 @@ pub struct McpStatusReport {
 /// Runtime status of one message source: a configured consumer, or a route or
 /// publisher reported by a separate MCP process.
 ///
-/// `Deserialize` is required because the MCP server sends these over HTTP to
-/// `/mcp-status`; the UI's own consumers only ever serialize.
+/// `Deserialize` is required because a separate MCP process sends these over
+/// the status IPC socket; the UI's own consumers only ever serialize.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct ConsumerStatusSnapshot {
     pub running: bool,
@@ -796,10 +859,6 @@ impl UiApp {
                     | "/publish"
                     | "/consumer-start"
                     | "/consumer-stop"
-                    // The MCP reporter sends no Origin/Referer, so it still
-                    // passes; this keeps a browser page from POSTing fabricated
-                    // MCP rows into the UI.
-                    | "/mcp-status"
             )
             && !is_same_origin_request(&msg)
         {
@@ -856,7 +915,6 @@ impl UiApp {
             ("POST", "/config") => self.handle_update_config_message(msg).await,
             ("POST", "/config-recovery/reset") => self.handle_reset_config_recovery().await,
             ("POST", "/publish") => self.handle_publish_message(msg).await,
-            ("POST", "/mcp-status") => self.handle_mcp_status_report(msg).await,
             ("GET", "/runtime-status") => self.ok_json(&self.runtime_status().await, true),
             ("GET", "/metrics") => Ok(Handled::Publish(
                 CanonicalMessage::from(self.render_metrics())
@@ -1234,21 +1292,72 @@ impl UiApp {
     /// Receiving is on by default — *sending* is what the MCP opts into. Nothing
     /// here touches the config: the report lands in an in-memory slot and expires
     /// on its own, so an MCP route can never become persisted configuration.
-    async fn handle_mcp_status_report(
-        &self,
-        msg: CanonicalMessage,
-    ) -> Result<Handled, HandlerError> {
-        let report: McpStatusReport = match serde_json::from_slice(&msg.payload) {
-            Ok(report) => report,
-            Err(e) => return self.err_response(400, format!("Invalid MCP status report: {e}")),
-        };
-
-        let (routes, publishers) = (report.routes.len(), report.publishers.len());
+    async fn record_mcp_status_report(&self, report: McpStatusReport) {
         *self.mcp_status.write().await = Some((Instant::now(), report));
-        self.ok_json(
-            &serde_json::json!({ "routes": routes, "publishers": publishers }),
-            true,
-        )
+    }
+
+    /// Records a report from its serialized form, dropping anything unparseable.
+    /// Garbage on the socket must never disturb what the UI already shows.
+    async fn record_mcp_status_payload(&self, payload: &[u8]) {
+        match serde_json::from_slice::<McpStatusReport>(payload) {
+            Ok(report) => self.record_mcp_status_report(report).await,
+            Err(e) => tracing::debug!("MCP status listener: invalid report: {e}"),
+        }
+    }
+
+    /// Starts receiving MCP status reports over the memory endpoint's IPC
+    /// transport (a Unix socket, or a named pipe on Windows).
+    ///
+    /// IPC rather than HTTP because the desktop app binds no HTTP listener —
+    /// it serves its UI through Tauri IPC — so there is no port for an MCP to
+    /// post to. The socket's `0600` permissions also replace the same-origin
+    /// check the old HTTP endpoint needed: only this user can write to it.
+    ///
+    /// Best-effort by design: a UI that cannot bind still works, it just never
+    /// shows MCP rows.
+    ///
+    /// Returns once the socket cannot be bound, and otherwise runs forever. Use
+    /// [`Self::spawn_mcp_status_listener`] from a Tokio context; the desktop app
+    /// spawns this on Tauri's runtime instead.
+    pub async fn run_mcp_status_listener(self) {
+        let url = mcp_status_ipc_url(self.config_file_path());
+        // Capacity is unused by the IPC transport (it frames straight onto the
+        // socket) but the config requires one.
+        let config = MemoryConfig::new_with_url(url.clone(), Some(1));
+        let mut consumer = match MemoryConsumer::new_async(&config).await {
+            Ok(consumer) => consumer,
+            Err(e) => {
+                tracing::warn!("Not listening for MCP status reports on {url}: {e}");
+                return;
+            }
+        };
+        tracing::info!("Listening for MCP status reports on {url}");
+
+        loop {
+            // Must block on `receive`: the IPC transport's `try_recv_batch` is a
+            // stub that always reports "nothing available", so a polling loop
+            // would silently never see a report.
+            let received = match consumer.receive().await {
+                Ok(received) => received,
+                Err(e) => {
+                    // The transport re-accepts by itself when the MCP
+                    // disconnects, so an error here is unexpected — pause rather
+                    // than spin on a broken socket.
+                    tracing::debug!("MCP status listener: receive failed: {e}");
+                    tokio::time::sleep(MCP_STATUS_RETRY_DELAY).await;
+                    continue;
+                }
+            };
+
+            self.record_mcp_status_payload(&received.message.payload)
+                .await;
+            let _ = (received.commit)(MessageDisposition::Ack).await;
+        }
+    }
+
+    /// [`Self::run_mcp_status_listener`] on the ambient Tokio runtime.
+    pub fn spawn_mcp_status_listener(&self) {
+        tokio::spawn(self.clone().run_mcp_status_listener());
     }
 
     async fn consumer_status_snapshot(
@@ -2012,18 +2121,15 @@ mod tests {
         }
     }
 
-    fn mcp_report(names: &[&str]) -> CanonicalMessage {
+    fn mcp_report(names: &[&str]) -> McpStatusReport {
         let routes: HashMap<String, ConsumerStatusSnapshot> = names
             .iter()
             .map(|n| (n.to_string(), mcp_snapshot(7)))
             .collect();
-        CanonicalMessage::from(
-            serde_json::to_string(&McpStatusReport {
-                routes,
-                publishers: HashMap::new(),
-            })
-            .unwrap(),
-        )
+        McpStatusReport {
+            routes,
+            publishers: HashMap::new(),
+        }
     }
 
     // An MCP report must surface in its own field, never merged into the
@@ -2032,9 +2138,7 @@ mod tests {
     async fn mcp_report_lands_in_its_own_field() {
         let app = test_app(AppConfig::default());
 
-        app.handle_mcp_status_report(mcp_report(&["route-a"]))
-            .await
-            .unwrap();
+        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
 
         let status = app.runtime_status().await;
         assert_eq!(status.mcp_routes.len(), 1);
@@ -2049,79 +2153,84 @@ mod tests {
     async fn a_new_mcp_report_replaces_the_previous_one() {
         let app = test_app(AppConfig::default());
 
-        app.handle_mcp_status_report(mcp_report(&["route-a", "route-b"]))
-            .await
-            .unwrap();
-        app.handle_mcp_status_report(mcp_report(&["route-a"]))
-            .await
-            .unwrap();
+        app.record_mcp_status_report(mcp_report(&["route-a", "route-b"]))
+            .await;
+        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
 
         let status = app.runtime_status().await;
         assert_eq!(status.mcp_routes.len(), 1);
         assert!(status.mcp_routes.contains_key("route-a"));
     }
 
-    fn mcp_status_post(origin: Option<&str>) -> CanonicalMessage {
-        let mut msg = mcp_report(&["route-a"]);
-        msg.metadata.insert("http_method".into(), "POST".into());
-        msg.metadata
-            .insert("http_path".into(), "/mcp-status".into());
-        msg.metadata.insert("Host".into(), "127.0.0.1:8080".into());
-        if let Some(origin) = origin {
-            msg.metadata.insert("Origin".into(), origin.to_string());
-        }
-        msg
+    // Unix socket paths are capped near 104 bytes, and binding silently degrades
+    // to "no MCP rows" when that is exceeded — so a deeply nested config must
+    // still produce a bindable path.
+    #[cfg(unix)]
+    #[test]
+    fn the_status_socket_path_stays_within_the_unix_socket_limit() {
+        let deep_config = format!("/Users/someone/{}/config.yml", "nested-directory/".repeat(20));
+
+        let url = mcp_status_ipc_url(&deep_config);
+
+        let path = url.strip_prefix("ipc://").expect("an absolute ipc path");
+        assert!(path.starts_with('/'), "must be an explicit path: {path}");
+        assert!(path.len() < 104, "{} bytes is too long: {path}", path.len());
     }
 
-    fn status_code(handled: Handled) -> String {
-        match handled {
-            Handled::Publish(m) => m
-                .metadata
-                .get("http_status_code")
-                .cloned()
-                .unwrap_or_default(),
-            other => panic!("expected a response, got {other:?}"),
-        }
-    }
-
-    // `/mcp-status` is a POST that mutates what the UI displays, so it must sit
-    // behind the same same-origin guard as every other mutating endpoint —
-    // otherwise any page in the user's browser can inject fake MCP rows.
+    // The reason for IPC over HTTP: a separate process must be able to push
+    // status to a UI that binds no HTTP listener at all (the desktop app). This
+    // goes over the real socket rather than calling the recording method.
+    #[cfg(unix)]
     #[tokio::test]
-    async fn a_cross_origin_mcp_report_is_rejected() {
+    async fn an_mcp_report_arrives_over_the_ipc_socket() {
+        use mq_bridge::endpoints::memory::MemoryPublisher;
+        use mq_bridge::traits::MessagePublisher;
+
         let app = test_app(AppConfig::default());
+        app.spawn_mcp_status_listener();
 
-        let handled = app
-            .handle_ui_message(mcp_status_post(Some("http://evil.example")), false)
+        let config = MemoryConfig::new_with_url(mcp_status_ipc_url(app.config_file_path()), Some(1));
+
+        // The listener binds in a spawned task, so the first connect can lose
+        // the race with it.
+        let mut publisher = None;
+        for _ in 0..50 {
+            match MemoryPublisher::new_async(&config).await {
+                Ok(p) => {
+                    publisher = Some(p);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+        let publisher = publisher.expect("listener should bind the status socket");
+
+        let payload = serde_json::to_string(&mcp_report(&["route-a"])).unwrap();
+        publisher
+            .send(CanonicalMessage::from(payload))
             .await
-            .unwrap();
+            .expect("report should be sent over the socket");
 
-        assert_eq!(status_code(handled), "403");
-        assert!(app.runtime_status().await.mcp_routes.is_empty());
-    }
+        let mut mcp_routes = HashMap::new();
+        for _ in 0..50 {
+            mcp_routes = app.runtime_status().await.mcp_routes;
+            if !mcp_routes.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
 
-    // The MCP reporter is not a browser and sends no Origin, so the guard above
-    // must not lock out the process it exists to serve.
-    #[tokio::test]
-    async fn an_mcp_report_without_an_origin_header_is_accepted() {
-        let app = test_app(AppConfig::default());
-
-        let handled = app
-            .handle_ui_message(mcp_status_post(None), false)
-            .await
-            .unwrap();
-
-        assert_eq!(status_code(handled), "200");
-        assert_eq!(app.runtime_status().await.mcp_routes.len(), 1);
+        assert_eq!(mcp_routes.len(), 1);
+        assert_eq!(mcp_routes["route-a"].message_sequence, 7);
+        // Still never merged into the config-derived consumers.
+        assert!(app.runtime_status().await.consumers.is_empty());
     }
 
     // A dead MCP must not leave phantom rows in the UI.
     #[tokio::test]
     async fn a_stale_mcp_report_is_ignored() {
         let app = test_app(AppConfig::default());
-        app.handle_mcp_status_report(mcp_report(&["route-a"]))
-            .await
-            .unwrap();
+        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
 
         // Backdate the report past the staleness window.
         {
@@ -2133,25 +2242,16 @@ mod tests {
         assert!(app.runtime_status().await.mcp_routes.is_empty());
     }
 
+    // Anything may write to the socket, so a malformed report must be dropped
+    // rather than clearing or corrupting the rows already on display.
     #[tokio::test]
-    async fn a_malformed_mcp_report_is_rejected() {
+    async fn a_malformed_mcp_report_is_ignored() {
         let app = test_app(AppConfig::default());
+        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
 
-        let handled = app
-            .handle_mcp_status_report(CanonicalMessage::from("not json"))
-            .await
-            .unwrap();
+        app.record_mcp_status_payload(b"not json").await;
 
-        match handled {
-            Handled::Publish(m) => {
-                assert_eq!(
-                    m.metadata.get("http_status_code").map(String::as_str),
-                    Some("400")
-                );
-            }
-            other => panic!("expected a 400 response, got {other:?}"),
-        }
-        assert!(app.runtime_status().await.mcp_routes.is_empty());
+        assert_eq!(app.runtime_status().await.mcp_routes.len(), 1);
     }
 
     // A running consumer's status must reflect the live route health read from the
