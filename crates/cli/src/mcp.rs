@@ -15,7 +15,7 @@ use std::time::Duration;
 use mq_bridge_app::mq_bridge::{
     CanonicalMessage, Handled, Publisher, Sent, SentBatch,
     models::{Endpoint, EndpointType, MemoryConfig, Route},
-    route::RouteHandle,
+    route::{RouteHandle, RouteOutcome},
 };
 use mq_bridge_app::route_metrics::{
     CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, format_capture_time,
@@ -171,24 +171,31 @@ fn err_json(value: serde_json::Value) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(pretty(&value))])
 }
 
-/// Whether a route has run to completion, or `None` when that cannot be
-/// determined.
+/// Whether a route's task has ended, or `None` when that cannot be determined.
 ///
-/// TODO(mq-bridge-0.3.6): the released mq-bridge 0.3.5 keeps `RouteHandle`'s
-/// join handle private and exposes no `is_finished()`, so completion is simply
-/// unknown here. Once 0.3.6 is published this becomes
-/// `Some(handle.is_finished())` and every caller below starts reporting real
-/// values again — this function is the only place that needs to change.
-fn route_finished(_handle: &RouteHandle) -> Option<bool> {
-    None
+/// `RouteHandle::outcome` is `Some` exactly when the task is done, so its
+/// presence is the completion signal; [`route_outcome`] reports *how* it ended.
+fn route_finished(handle: &RouteHandle) -> Option<bool> {
+    Some(handle.outcome().is_some())
+}
+
+/// How a route terminated (`completed` / `stopped` / `failed`), or `None` while
+/// it is still running.
+///
+/// `finished` alone cannot tell a drained `exit_on_empty` job from one that died
+/// on a permanent error — both stop the task — so the outcome is reported
+/// alongside it. On `failed`, the cause is in the entry's `status.error`.
+fn route_outcome(handle: &RouteHandle) -> Option<RouteOutcome> {
+    handle.outcome()
 }
 
 /// One entry describing a running route: its connection health plus the live
 /// message counters the web UI reports for its own consumers.
 ///
-/// `finished` is `null` when the underlying mq-bridge release cannot report
-/// completion (see [`route_finished`]); a route started with `exit_on_empty`
-/// may therefore have drained and exited without saying so here.
+/// `finished` says whether the route's task has ended; `outcome` says how
+/// (`completed` / `stopped` / `failed`, `null` while running). A route started
+/// with `exit_on_empty` reports `finished: true, outcome: "completed"` once it
+/// has drained.
 fn route_entry_json(
     name: &str,
     handle: &RouteHandle,
@@ -200,6 +207,7 @@ fn route_entry_json(
         "source": "mcp",
         "status": serde_json::to_value(handle.status()).unwrap_or_default(),
         "finished": route_finished(handle),
+        "outcome": route_outcome(handle),
         "messages": messages,
         "messages_per_second": (messages_per_second * 100.0).round() / 100.0,
     })
@@ -707,6 +715,12 @@ fn auto_route_name() -> String {
 /// How often the server reports its routes and publishers to a local UI.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How long one status report may block in `send` before it is abandoned.
+///
+/// Status is a periodic snapshot, so a report that cannot be delivered promptly
+/// is worth less than the next one; bounding the wait keeps the reporter alive.
+const REPORT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Entry point for the `mcp` subcommand.
 ///
 /// `report_to_ui` is the opt-in for telling a local UI what this server is
@@ -777,11 +791,36 @@ fn spawn_ui_reporter(server: BridgeMcp, ui_status_ipc_url: Option<String>) {
 
             // The UI being down must never disturb the MCP server, so a failed
             // report is dropped and the publisher rebuilt on the next tick.
-            if let Some(p) = &publisher
-                && let Err(e) = p.send(CanonicalMessage::from(payload)).await
-            {
-                tracing::debug!("MCP status reporting: send failed: {e}");
-                publisher = None;
+            //
+            // The timeout is what makes that true for a UI that is connected but
+            // not draining: the IPC socket buffer is small (8 KiB by default on
+            // macOS), so a report that outgrows it blocks in `send` until the
+            // consumer reads. Without a bound this task would park there forever
+            // and silently stop reporting — a stall is not an `Err`.
+            if let Some(p) = &publisher {
+                match tokio::time::timeout(
+                    REPORT_SEND_TIMEOUT,
+                    p.send(CanonicalMessage::from(payload)),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        tracing::debug!("MCP status reporting: send failed: {e}");
+                        publisher = None;
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            "MCP status reporting: send stalled for more than {}s; \
+                             dropping this report and reconnecting",
+                            REPORT_SEND_TIMEOUT.as_secs()
+                        );
+                        // Dropping the publisher closes the half-written socket,
+                        // so the next tick starts from a clean frame boundary
+                        // rather than resuming a partial one the UI can't decode.
+                        publisher = None;
+                    }
+                }
             }
         }
     });

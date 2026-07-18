@@ -179,19 +179,15 @@ partial send is not mistaken for success.
 Both of these originate in the upstream `mq-bridge` crate, not in the MCP layer.
 
 - **Finished routes are not reaped.** A route started with `exit_on_empty` stays
-  in `list_routes` after it has drained and exited, still reporting
-  `"healthy": true` and `"finished": null`. A completed job is therefore
-  indistinguishable from a running one; call `stop_route` to clear it. Reaping
-  needs a way to observe task completion — `RouteHandle` in the released
-  mq-bridge 0.3.5 exposes only `stop`, `join`, and `status`, and its inner
-  `JoinHandle` is private.
+  in `list_routes` after it has drained and exited; call `stop_route` to clear
+  it. It is no longer indistinguishable from a running one, though: since
+  mq-bridge 0.3.6 each entry carries `"finished"` plus an `"outcome"`. While the
+  route runs these are `false` / `null`; once its task ends, `"finished": true`
+  and `"outcome"` is `completed` (drained cleanly) or `failed` (permanent error
+  — the cause is in `status.error`).
 
-  mq-bridge 0.3.6 adds `RouteHandle::is_finished()`, which closes this. When
-  that release lands, bump the dependency in `crates/core/Cargo.toml` and make
-  `route_finished` in `crates/cli/src/mcp.rs` return
-  `Some(handle.is_finished())` — that one function is the only code that needs
-  to change, and `finished` starts reporting real values everywhere. Both spots
-  are marked `TODO(mq-bridge-0.3.6)`.
+  `stop_route` removes the entry from `list_routes` as it stops the route, so
+  the third outcome, `stopped`, is not observable through these tools.
 - **A drained Redis Streams source reports an error.** With `exit_on_empty`, a
   `redis_streams` input ends at `"healthy": false` with
   `Redis XREAD failed: timed out` even though every message was moved
