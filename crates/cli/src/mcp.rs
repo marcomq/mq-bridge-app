@@ -7,7 +7,7 @@
 //
 //  Tools: `publish`, `start_route`, `list_routes`, `route_status`, `stop_route`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -130,6 +130,11 @@ struct RouteStatusArgs {
 #[derive(Clone)]
 pub struct BridgeMcp {
     routes: Arc<Mutex<HashMap<String, RouteHandle>>>,
+    /// Names that are being started but have no handle yet. A name is reserved
+    /// here before the route runs, so two concurrent starts can never both bring
+    /// up a route that consumes the same source. Always locked *while holding
+    /// the `routes` lock*, so the two together are a single decision.
+    starting: Arc<Mutex<HashSet<String>>>,
     /// Publish targets used so far, so they can be reported to the UI's publisher
     /// bar. Holds names and connector types only.
     publishers: PublisherMap,
@@ -335,6 +340,7 @@ impl BridgeMcp {
         metrics.ensure_updater();
         Self {
             routes,
+            starting: Arc::new(Mutex::new(HashSet::new())),
             publishers: Arc::new(Mutex::new(HashMap::new())),
             metrics,
             tool_router: Self::tool_router(),
@@ -484,10 +490,16 @@ impl BridgeMcp {
         let exit_on_empty = args.route.options.exit_on_empty;
         let capture_last = args.capture_last.unwrap_or(0);
 
-        // Reject a duplicate name up front, but release the lock before the
-        // potentially slow `run()` so other route tools aren't blocked on startup.
-        if self.routes.lock().await.contains_key(&name) {
-            return Err(invalid(format!("a route named '{name}' already exists")));
+        // Claim the name before the potentially slow `run()`, then release the
+        // locks so other route tools aren't blocked on startup. Reserving up
+        // front means a concurrent start for the same name is rejected before it
+        // can bring up a second route against the same source.
+        {
+            let routes = self.routes.lock().await;
+            let mut starting = self.starting.lock().await;
+            if routes.contains_key(&name) || !starting.insert(name.clone()) {
+                return Err(invalid(format!("a route named '{name}' already exists")));
+            }
         }
 
         // Wrap the route in the same counting/capturing handler the web UI puts on
@@ -517,22 +529,19 @@ impl BridgeMcp {
             }
         });
 
-        let handle = route
-            .run(&name)
-            .await
-            .map_err(|e| internal(format!("failed to start route '{name}': {e}")))?;
+        let handle = match route.run(&name).await {
+            Ok(handle) => handle,
+            Err(e) => {
+                // Startup failed, so release the name for a later retry.
+                self.starting.lock().await.remove(&name);
+                return Err(internal(format!("failed to start route '{name}': {e}")));
+            }
+        };
 
+        // Replace the reservation with the running handle under both locks, so
+        // the name is never momentarily free while the route is live.
         let mut routes = self.routes.lock().await;
-        if routes.contains_key(&name) {
-            // Lost a race with a concurrent start for the same name; stop the
-            // route we just started so it doesn't leak, then report the conflict.
-            // The metric key is deliberately left alone: the winner shares it and
-            // is still counting into it, so forgetting it here would zero out a
-            // live route's reported messages and rate.
-            drop(routes);
-            handle.stop().await;
-            return Err(invalid(format!("a route named '{name}' already exists")));
-        }
+        self.starting.lock().await.remove(&name);
         routes.insert(name.clone(), handle);
 
         Ok(ok_json(serde_json::json!({

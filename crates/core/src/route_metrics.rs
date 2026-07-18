@@ -154,7 +154,11 @@ impl RouteMetrics {
     /// Drops the counter and samples for `key`, so a stopped route stops being
     /// reported.
     pub async fn forget(&self, key: &str) {
-        self.counters.write().await.remove(key);
+        // The counters lock is held across the samples removal so the sampler
+        // (which holds it for the whole read-counters/write-samples cycle) can
+        // never reinsert a sample for a key that has just been forgotten.
+        let mut counters = self.counters.write().await;
+        counters.remove(key);
         self.samples.write().await.remove(key);
     }
 
@@ -180,7 +184,10 @@ impl RouteMetrics {
                     interval.tick().await; // Wait for the next interval tick
                     let now = Instant::now();
 
-                    let counters = counters_arc.read().await.clone();
+                    // The counters guard is held until the samples have been
+                    // written: releasing it early would let `forget` run in
+                    // between and see its sample reinserted below.
+                    let counters = counters_arc.read().await;
                     let mut samples = samples_arc.write().await;
 
                     for (key, counter) in counters.iter() {
@@ -327,6 +334,40 @@ mod tests {
 
         assert_eq!(metrics.sequence("route-a").await, 0);
         assert!(metrics.sequences().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forget_is_not_undone_by_a_concurrent_sampler_pass() {
+        let metrics = RouteMetrics::new();
+        metrics.ensure_updater();
+
+        // Each round samples a live counter and then forgets it while the
+        // sampler keeps running, so a sampler pass that started before the
+        // `forget` must not write the key back into `samples`.
+        for round in 0..5 {
+            let key = format!("route-{round}");
+            metrics
+                .counter_for(&key)
+                .await
+                .fetch_add(7, Ordering::Relaxed);
+            tokio::time::sleep(THROUGHPUT_UPDATE_INTERVAL * 2).await;
+            assert!(
+                metrics.samples.read().await.contains_key(&key),
+                "sampler did not observe {key} before it was forgotten"
+            );
+
+            metrics.forget(&key).await;
+
+            assert!(
+                !metrics.samples.read().await.contains_key(&key),
+                "{key} was still sampled right after forget"
+            );
+            tokio::time::sleep(THROUGHPUT_UPDATE_INTERVAL * 2).await;
+            assert!(
+                !metrics.samples.read().await.contains_key(&key),
+                "{key} reappeared in samples after forget"
+            );
+        }
     }
 
     #[test]

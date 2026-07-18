@@ -980,18 +980,31 @@ impl UiApp {
         let mut grouped_messages: HashMap<String, VecDeque<serde_json::Value>> = HashMap::new();
 
         if let Some(target_consumer) = target_consumer {
-            let consumer_key = {
+            let (consumer_key, keep_last) = {
                 let config = self.config.read().await;
                 config
                     .consumers
                     .iter()
                     .find(|consumer| consumer_matches_lookup(consumer, target_consumer))
-                    .map(consumer_runtime_key)
-                    .unwrap_or_else(|| target_consumer.to_string())
+                    .map(|consumer| {
+                        (
+                            consumer_runtime_key(consumer),
+                            Some(consumer.message_capture.keep_last),
+                        )
+                    })
+                    .unwrap_or_else(|| (target_consumer.to_string(), None))
             };
             let topic = format!("ui_collector_{consumer_key}");
             {
-                for m in MessageCapture::open(&topic).drain() {
+                // Reading can precede the collector route that writes, and the
+                // underlying channel is created on first access — so open it
+                // with the consumer's configured capacity rather than letting
+                // the default one win and silently override `keep_last`.
+                let capture = match keep_last {
+                    Some(keep_last) => MessageCapture::with_capacity(&topic, keep_last),
+                    None => MessageCapture::open(&topic),
+                };
+                for m in capture.drain() {
                     let mut metadata = m.metadata.clone();
                     let source = metadata
                         .remove(CAPTURE_SOURCE_KEY)
@@ -1155,8 +1168,10 @@ impl UiApp {
             .collect();
 
         let throughputs = self.metrics.throughputs().await;
-        let active_consumer_keys: HashSet<String> =
-            config.consumers.iter().map(consumer_runtime_key).collect();
+        // Only consumers that are actually running: a configured-but-stopped
+        // consumer keeps its metrics entry (nothing forgets it on stop), so
+        // filtering by configuration alone would report it as a live route.
+        let active_consumer_keys: HashSet<String> = active_consumers.iter().cloned().collect();
         let route_throughput: HashMap<String, f64> = throughputs
             .iter()
             .filter(|(key, _)| active_consumer_keys.contains(*key))
@@ -1944,6 +1959,39 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
         )
+    }
+
+    // Reading `/messages` before the collector route exists must not create the
+    // capture buffer at some default size, or the writer that follows silently
+    // inherits it and `keep_last` stops meaning anything.
+    #[tokio::test]
+    async fn reading_messages_before_the_collector_starts_keeps_the_configured_capacity() {
+        let consumer_id = format!("cap-{}", uuid::Uuid::new_v4());
+        let mut consumer = memory_consumer(&consumer_id, "capacity probe", "capacity_probe_topic");
+        consumer.message_capture = crate::config::ConsumerMessageCaptureConfig {
+            enabled: true,
+            keep_last: 2,
+        };
+        let mut config = AppConfig::default();
+        config.consumers = vec![consumer];
+        let app = test_app(config);
+
+        // Reader first: no collector route has run yet.
+        assert!(app.get_messages(Some(&consumer_id)).await.is_empty());
+
+        // Writer second, as `start_ui_collector_routes` would open it.
+        let topic = format!("ui_collector_{consumer_id}");
+        let capture = MessageCapture::with_capacity(&topic, 2);
+        capture.push("src", CanonicalMessage::from("first"));
+        capture.push("src", CanonicalMessage::from("second"));
+        capture.push("src", CanonicalMessage::from("third"));
+
+        let payloads: Vec<String> = capture
+            .drain()
+            .iter()
+            .map(|m| m.get_payload_str().to_string())
+            .collect();
+        assert_eq!(payloads, vec!["second", "third"]);
     }
 
     fn mcp_snapshot(messages: u64) -> ConsumerStatusSnapshot {

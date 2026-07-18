@@ -874,13 +874,16 @@ fn is_sensitive_http_header(key: &str) -> bool {
 }
 
 fn sanitize_name_for_env(name: &str) -> String {
+    // Everything that is not ASCII alphanumeric becomes `_`, so a name like
+    // "kafka-to-nats" yields a portable `MQB__ROUTES__KAFKA_TO_NATS__…` key
+    // that a shell can actually set and that matches what the loader derives.
     name.trim()
         .chars()
         .map(|ch| {
-            if ch.is_whitespace() {
-                '_'
-            } else {
+            if ch.is_ascii_alphanumeric() {
                 ch.to_ascii_uppercase()
+            } else {
+                '_'
             }
         })
         .collect()
