@@ -182,7 +182,7 @@ The URLs use a generic `scheme://…?param=a&next=b` convention: the **scheme se
 
 ### MCP server
 
-`mq-bridge-app mcp` exposes the bridge as [MCP](https://modelcontextprotocol.io) tools, so an LLM agent can move data between any two supported endpoints from natural language. Nothing is preconfigured — every tool takes its endpoint(s) inline as JSON keyed by connector type, so the model picks both ends ad hoc. No web UI is started.
+`mq-bridge-app mcp` exposes the bridge as [MCP](https://modelcontextprotocol.io) tools, so an LLM agent can move data between any two supported endpoints from natural language. Nothing is preconfigured — `publish` and `start_route` take their endpoint(s) inline as JSON keyed by connector type, so the model picks both ends ad hoc; `list_routes`, `route_status`, and `stop_route` manage the routes already started, by name. No web UI is started.
 
 ```bash
 # stdio — for local clients (Claude Code, Claude Desktop)

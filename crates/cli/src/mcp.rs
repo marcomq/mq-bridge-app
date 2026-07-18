@@ -58,9 +58,11 @@ impl InputMessage {
         };
         if let Some(id) = self.message_id {
             // Reuse CanonicalMessage's own id parsing (handles string / int / OID).
-            if let Ok(parsed) = CanonicalMessage::from_json(serde_json::json!({ "message_id": id })) {
-                msg.message_id = parsed.message_id;
-            }
+            // A malformed id is reported rather than silently replaced by the
+            // generated UUID, so the caller's id is never quietly dropped.
+            let parsed = CanonicalMessage::from_json(serde_json::json!({ "message_id": id }))
+                .map_err(|e| McpError::invalid_params(format!("invalid message_id: {e}"), None))?;
+            msg.message_id = parsed.message_id;
         }
         for (k, v) in self.metadata {
             msg.metadata.insert(k, v);
@@ -372,8 +374,9 @@ impl ServerHandler for BridgeMcp {
         .with_instructions(
             "mq-bridge: a universal, protocol-agnostic message and data bridge. Move data between \
              any of the supported endpoints (postgres, kafka, nats, mqtt, mongodb, redis, ibm-mq, \
-             http, files, and more) ad hoc. Every tool takes the endpoint(s) inline as JSON keyed \
-             by type, e.g. {\"kafka\": {\"url\": \"...\", \"topic\": \"...\"}}. Use `publish` to \
+             http, files, and more) ad hoc. `publish` and `start_route` take the endpoint(s) \
+             inline as JSON keyed by type, e.g. {\"kafka\": {\"url\": \"...\", \"topic\": \
+             \"...\"}}. Use `publish` to \
              send messages to a target; `start_route` to move messages from a source (`input`) to \
              a sink (`output`), optionally setting `exit_on_empty` to drain-then-exit; and \
              `list_routes` / `route_status` / `stop_route` to manage running routes.",

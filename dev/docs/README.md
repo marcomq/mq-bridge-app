@@ -21,7 +21,7 @@ continuous copy command.
 
 ## Folder structure
 
-```
+```text
 dev/docs/
 ├── README.md              this file
 ├── quick-start.md          workflow-first examples

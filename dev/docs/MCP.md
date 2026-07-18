@@ -2,8 +2,10 @@
 
 `mq-bridge-app mcp` runs the bridge as an [MCP](https://modelcontextprotocol.io)
 server, so an LLM agent can move data between any two supported endpoints from
-natural language. Nothing is preconfigured: every tool takes its endpoint(s)
-inline as JSON keyed by connector type, so the model picks both ends ad hoc.
+natural language. Nothing is preconfigured: `publish` and `start_route` take
+their endpoint(s) inline as JSON keyed by connector type, so the model picks
+both ends ad hoc. `list_routes`, `route_status`, and `stop_route` manage the
+routes already started, by name.
 
 No web UI is started in this mode.
 
@@ -129,7 +131,7 @@ Invalid endpoints, duplicate route names, and unknown route names come back as
 JSON-RPC `-32602` (invalid params); a connection failure at publish time reports
 the underlying transport error:
 
-```
+```text
 invalid publisher endpoint: IO error: Connection refused (os error 61)
 ```
 
