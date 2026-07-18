@@ -25,9 +25,42 @@ mq-bridge-app mcp --transport http --bind 127.0.0.1:9092
 Logs go to **stderr**, because `stdio` transport owns stdout for the protocol
 itself.
 
-## Registering with Claude Code
+## Registering with a client
 
-Add to `.mcp.json` in your project root:
+`mcp install` writes the client config for you, registering the **absolute path
+of the binary you just ran** — so a `target/debug` build and an installed
+release binary each register themselves correctly.
+
+```bash
+# every client detected on this machine
+mq-bridge-app mcp install
+
+# a single client, project-scoped rather than global
+mq-bridge-app mcp install --client cursor --local
+
+# bake --report-to-ui into the registered command
+mq-bridge-app mcp install --report-to-ui
+```
+
+| Command | Purpose |
+| --- | --- |
+| `mcp install` | Register this binary. `--client`, `--local`, `--report-to-ui`, `--print-config`. |
+| `mcp uninstall` | Remove the registration. `--client`, `--local`. |
+| `mcp status` | Show where it is registered and whether the path is still current. |
+
+| Client | Global config | Project config (`--local`) |
+| --- | --- | --- |
+| `claude` (Claude Code) | `claude mcp add --scope user`, else `~/.claude.json` | `--scope project`, else `./.mcp.json` |
+| `claude-desktop` | `claude_desktop_config.json` | not supported |
+| `cursor` | `~/.cursor/mcp.json` | `./.cursor/mcp.json` |
+
+Where the client ships its own CLI (Claude Code) that CLI is driven, since it
+stays correct across config-schema changes; otherwise the entry is merged into
+the client's JSON, leaving every other registered server untouched. Installing
+twice is a no-op.
+
+With `--client` omitted, every client detected on the machine is configured.
+For anything not listed above, `mcp install --print-config` prints the snippet:
 
 ```json
 {
@@ -42,6 +75,8 @@ Add to `.mcp.json` in your project root:
 
 Use an absolute path to the binary if it is not on `PATH`. With
 `--transport http`, point your client at `http://127.0.0.1:9092/` instead.
+
+Restart the client fully after installing — reopening a tab is not enough.
 
 Under `stdio` the client spawns the server process, so a rebuilt binary is only
 picked up after the client restarts the server — an edit to `mcp.rs` alone will

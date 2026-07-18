@@ -194,6 +194,21 @@ mq-bridge-app mcp --transport http --bind 127.0.0.1:9092
 
 Five tools: `publish` (one message or a batch to any endpoint), `start_route` (move messages from an `input` to an `output`, with `batch_size` / `concurrency` / `exit_on_empty`), and `list_routes` / `route_status` / `stop_route` to manage what is running.
 
+`mcp install` registers the running binary with your MCP clients, so you don't have to write the config by hand:
+
+```bash
+# every client detected on this machine (Claude Code, Claude Desktop, Cursor)
+mq-bridge-app mcp install
+
+# one client, project-scoped instead of global
+mq-bridge-app mcp install --client cursor --local
+
+mq-bridge-app mcp status      # where it is registered, and whether it still points here
+mq-bridge-app mcp uninstall   # remove it again
+```
+
+For any client not written directly, `mcp install --print-config` prints the snippet to paste:
+
 ```json
 {
   "mcpServers": {

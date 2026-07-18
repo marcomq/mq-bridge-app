@@ -20,6 +20,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use anyhow::Context;
 
 mod mcp;
+mod mcp_install;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -83,8 +84,55 @@ struct McpArgs {
     /// process. Only names, connector types, health and message counts are sent —
     /// never endpoint URLs or credentials. The UI is reached over a local IPC
     /// socket next to the config file, so a remote UI cannot be targeted.
-    #[arg(long)]
+    ///
+    /// `install` bakes this flag into the registered command when set.
+    #[arg(long, global = true)]
     report_to_ui: bool,
+
+    /// Register/unregister this binary with local MCP clients instead of serving.
+    #[command(subcommand)]
+    action: Option<McpAction>,
+}
+
+#[derive(Subcommand, Debug)]
+enum McpAction {
+    /// Register this binary as a stdio MCP server with local MCP clients.
+    ///
+    /// Without `--client`, every client detected on this machine is configured.
+    /// The absolute path of the running binary is what gets registered.
+    Install {
+        /// Client to configure (all detected clients if omitted).
+        #[arg(long, value_enum)]
+        client: Option<mcp_install::Client>,
+
+        /// Register in the current project's config instead of the user's
+        /// global one. Not supported by Claude Desktop.
+        #[arg(long)]
+        local: bool,
+
+        /// Print the config snippet for a client we don't write directly,
+        /// instead of installing anything.
+        #[arg(long)]
+        print_config: bool,
+    },
+
+    /// Remove this server from local MCP clients.
+    Uninstall {
+        /// Client to clean up (all detected clients if omitted).
+        #[arg(long, value_enum)]
+        client: Option<mcp_install::Client>,
+
+        /// Remove the project-scoped registration instead of the global one.
+        #[arg(long)]
+        local: bool,
+    },
+
+    /// Show where this server is registered, and whether it still points here.
+    Status {
+        /// Inspect project-scoped configs instead of the global ones.
+        #[arg(long)]
+        local: bool,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -128,6 +176,27 @@ async fn main() -> anyhow::Result<()> {
             return run_copy(copy_args).await;
         }
         Some(Command::Mcp(mcp_args)) => {
+            // The install actions configure clients and exit; only the bare
+            // `mcp` command actually serves.
+            match mcp_args.action {
+                Some(McpAction::Install {
+                    client,
+                    local,
+                    print_config,
+                }) => {
+                    return if print_config {
+                        mcp_install::print_config(mcp_args.report_to_ui)
+                    } else {
+                        mcp_install::install(client, local, mcp_args.report_to_ui)
+                    };
+                }
+                Some(McpAction::Uninstall { client, local }) => {
+                    return mcp_install::uninstall(client, local);
+                }
+                Some(McpAction::Status { local }) => return mcp_install::status(local),
+                None => {}
+            }
+
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
             init_mcp_logging();
             // Resolving the config is how the MCP finds the UI: both processes
