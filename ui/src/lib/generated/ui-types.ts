@@ -59,6 +59,8 @@ export interface RuntimeStatusResponse {
   active_routes: string[];
   route_throughput: Record<string, number>;
   consumers: Record<string, ConsumerStatusSnapshot>;
+  mcp_routes?: Record<string, ConsumerStatusSnapshot>;
+  mcp_publishers?: Record<string, ConsumerStatusSnapshot>;
 }
 
 export interface ConsumerStatusResponse {
@@ -520,6 +522,11 @@ export interface SwitchConfig {
 
 export type ResponseConfig = Record<string, never>;
 
+export interface RequestForwardConfig {
+  to: Endpoint;
+  forward_to: Endpoint;
+}
+
 export interface ConsumerResponseConfig {
   headers?: Record<string, string>;
   payload?: string;
@@ -559,6 +566,6 @@ export interface EndpointStatusSnapshot {
   pending?: number | null;
   capacity?: number | null;
   error?: string | null;
-  details: unknown;
+  details?: unknown;
 }
 

@@ -72,6 +72,16 @@ struct McpArgs {
     /// Bind address for `--transport http` (defaults to 127.0.0.1:9092).
     #[arg(long)]
     bind: Option<String>,
+
+    /// Report running routes and publish targets to a local mq-bridge-app web UI,
+    /// so they show up alongside its configured consumers and publishers.
+    ///
+    /// Off by default: without this flag nothing about this server ever leaves the
+    /// process. Only names, connector types, health and message counts are sent —
+    /// never endpoint URLs or credentials. The UI is always reached on localhost,
+    /// at the port from the config's `ui_addr`; a remote UI cannot be targeted.
+    #[arg(long)]
+    report_to_ui: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -117,7 +127,38 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Mcp(mcp_args)) => {
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
             init_mcp_logging();
-            return mcp::run(mcp_args.transport, mcp_args.bind).await;
+            // Reading the UI config is how the MCP finds the UI, and is strictly
+            // best-effort: a missing, unreadable or invalid config just means no
+            // reporting, never a failure to start.
+            let ui_addr = if mcp_args.report_to_ui {
+                match load_config(
+                    args.config.clone(),
+                    args.init_config.clone(),
+                    args.init_config_str.clone(),
+                    args.config_str.clone(),
+                ) {
+                    Ok((config, _)) if !config.ui_addr.trim().is_empty() => Some(config.ui_addr),
+                    Ok(_) => {
+                        warn!("No `ui_addr` in configuration; MCP status will not be reported");
+                        None
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Could not read configuration ({e}); MCP status will not be reported"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            return mcp::run(
+                mcp_args.transport,
+                mcp_args.bind,
+                mcp_args.report_to_ui,
+                ui_addr,
+            )
+            .await;
         }
         None => {}
     }

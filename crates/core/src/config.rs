@@ -354,9 +354,12 @@ fn load_config_internal(
     use_env_overrides: bool,
 ) -> Result<(AppConfig, String), anyhow::Error> {
     if load_dotenv {
+        // Diagnostics go to stderr: `mq-bridge-app mcp --transport stdio` uses
+        // stdout as the MCP protocol channel, so anything printed there corrupts
+        // the stream.
         match dotenvy::dotenv() {
-            Ok(path) => println!("INFO: Loaded .env file from {:?}", path),
-            Err(e) => println!("DEBUG: No .env file loaded: {}", e),
+            Ok(path) => eprintln!("INFO: Loaded .env file from {:?}", path),
+            Err(e) => eprintln!("DEBUG: No .env file loaded: {}", e),
         }
     }
 

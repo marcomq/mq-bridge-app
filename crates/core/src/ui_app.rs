@@ -3,10 +3,11 @@ use crate::config::{
     ConsumerOutputConfig, ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, SecretStore,
 };
 use crate::encrypted_config::has_config_master_key;
+use crate::route_metrics::{CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics};
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
-use mq_bridge::models::{Endpoint, EndpointType, MemoryConfig, Route, StaticConfig};
+use mq_bridge::models::{Endpoint, EndpointType, Route, StaticConfig};
 use mq_bridge::route::RouteHandle;
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
@@ -15,7 +16,7 @@ use schemars::JsonSchema;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::RwLock as StdRwLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -31,6 +32,11 @@ fn generate_ephemeral_message_key() -> (String, String) {
 
 static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
     LazyLock::new(generate_ephemeral_message_key);
+
+/// How long an MCP status report stays valid without a fresh one. Comfortably
+/// longer than the MCP's ~2s reporting interval, so a single dropped report does
+/// not make its routes flicker out of the UI.
+const MCP_STATUS_STALE_AFTER: Duration = Duration::from_secs(15);
 
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
     match config.security_mode() {
@@ -156,21 +162,19 @@ pub struct UiApp {
     config_file_path: Arc<String>,
     secret_store: Arc<dyn SecretStore>,
     ui_handles: Arc<RwLock<HashMap<String, RouteHandle>>>,
-    throughput_samples: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
-    consumer_message_sequences: Arc<RwLock<HashMap<String, Arc<AtomicU64>>>>,
+    /// Per-consumer message counters and their smoothed throughput. Shared with
+    /// the MCP server via [`crate::route_metrics`] so both report the same rate.
+    metrics: RouteMetrics,
+    /// Latest status pushed by a local MCP server, with the time it arrived.
+    /// A single slot: one UI listens to one local MCP, and each report replaces
+    /// the last. Goes stale (see [`MCP_STATUS_STALE_AFTER`]) so a dead MCP does
+    /// not leave phantom rows in the UI.
+    mcp_status: Arc<RwLock<Option<(Instant, McpStatusReport)>>>,
     storage_security: Arc<StdRwLock<StorageSecurityInfoResponse>>,
     storage_security_resolver: Option<Arc<StorageSecurityResolver>>,
     storage_save_prepare: Option<Arc<StorageSavePrepare>>,
     config_recovery: Arc<StdRwLock<Option<ConfigRecoveryStatusResponse>>>,
     config_recovery_reset: Option<Arc<ConfigRecoveryReset>>,
-    throughput_updater_started: Arc<AtomicBool>,
-}
-
-#[derive(Clone, Copy)]
-struct RouteMetricSample {
-    total_messages: f64,
-    observed_at: Instant,
-    smoothed_throughput: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, JsonSchema)]
@@ -179,9 +183,32 @@ pub struct RuntimeStatusResponse {
     pub active_routes: Vec<String>,
     pub route_throughput: HashMap<String, f64>,
     pub consumers: HashMap<String, ConsumerStatusSnapshot>,
+    /// Routes running in a local MCP server process, which reported them to this
+    /// UI. Deliberately separate from `consumers`: these are ad-hoc, unpersisted,
+    /// and must never be presented (or saved) as configuration.
+    #[serde(default)]
+    pub mcp_routes: HashMap<String, ConsumerStatusSnapshot>,
+    /// Publish targets used by a local MCP server process. Separate from the
+    /// configured `publishers` for the same reason.
+    #[serde(default)]
+    pub mcp_publishers: HashMap<String, ConsumerStatusSnapshot>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+/// A status report pushed by a local MCP server process.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, JsonSchema)]
+pub struct McpStatusReport {
+    #[serde(default)]
+    pub routes: HashMap<String, ConsumerStatusSnapshot>,
+    #[serde(default)]
+    pub publishers: HashMap<String, ConsumerStatusSnapshot>,
+}
+
+/// Runtime status of one message source: a configured consumer, or a route or
+/// publisher reported by a separate MCP process.
+///
+/// `Deserialize` is required because the MCP server sends these over HTTP to
+/// `/mcp-status`; the UI's own consumers only ever serialize.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct ConsumerStatusSnapshot {
     pub running: bool,
     pub status: EndpointStatusSnapshot,
@@ -197,13 +224,17 @@ pub struct ConsumerStatusResponse {
     pub status: EndpointStatusSnapshot,
 }
 
-#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct EndpointStatusSnapshot {
     pub healthy: bool,
     pub target: String,
+    #[serde(default)]
     pub pending: Option<usize>,
+    #[serde(default)]
     pub capacity: Option<usize>,
+    #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
     pub details: serde_json::Value,
 }
 
@@ -385,39 +416,6 @@ fn is_same_origin_request(msg: &CanonicalMessage) -> bool {
 }
 
 /// Time constant for throughput smoothing (EMA) in seconds.
-/// A value of 2.0s means it will take approximately 9-10s to decay to ~1% of its value.
-const THROUGHPUT_TAU: f64 = 0.5;
-/// Frequency of throughput calculations.
-const THROUGHPUT_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
-
-fn next_route_metric_sample(
-    previous: Option<RouteMetricSample>,
-    total_messages: f64,
-    observed_at: Instant,
-) -> RouteMetricSample {
-    let smoothed_throughput = if let Some(previous_sample) = previous {
-        let elapsed = observed_at
-            .duration_since(previous_sample.observed_at)
-            .as_secs_f64();
-        if elapsed > 0.0 {
-            let current_rate = (total_messages - previous_sample.total_messages).max(0.0) / elapsed;
-
-            // Time-weighted alpha: alpha = 1 - exp(-delta_t / tau)
-            let alpha = 1.0 - (-elapsed / THROUGHPUT_TAU).exp();
-            alpha * current_rate + (1.0 - alpha) * previous_sample.smoothed_throughput
-        } else {
-            previous_sample.smoothed_throughput
-        }
-    } else {
-        0.0
-    };
-    RouteMetricSample {
-        total_messages,
-        observed_at,
-        smoothed_throughput, // First observation: we have no previous throughput to smooth, so start at 0.
-    }
-}
-
 fn consumer_runtime_key(consumer: &ConsumerConfig) -> String {
     let trimmed_id = consumer.id.trim();
     if trimmed_id.is_empty() {
@@ -560,7 +558,7 @@ enum ResolvedConsumerOutput {
 
 struct CollectorContext {
     source_key: String,
-    log_channel: mq_bridge::endpoints::memory::MemoryChannel,
+    capture: MessageCapture,
     counter: Arc<AtomicU64>,
     output: ResolvedConsumerOutput,
     capture_enabled: bool,
@@ -722,14 +720,13 @@ impl UiApp {
             config_file_path: Arc::new(config_file_path),
             secret_store,
             ui_handles: Arc::new(RwLock::new(HashMap::new())),
-            throughput_samples: Arc::new(RwLock::new(HashMap::new())),
-            consumer_message_sequences: Arc::new(RwLock::new(HashMap::new())),
+            metrics: RouteMetrics::new(),
+            mcp_status: Arc::new(RwLock::new(None)),
             storage_security: Arc::new(StdRwLock::new(storage_security)),
             storage_security_resolver: runtime_hooks.storage_security_resolver,
             storage_save_prepare: runtime_hooks.storage_save_prepare,
             config_recovery: Arc::new(StdRwLock::new(runtime_hooks.config_recovery)),
             config_recovery_reset: runtime_hooks.config_recovery_reset,
-            throughput_updater_started: Arc::new(AtomicBool::new(false)),
         };
 
         app.ensure_throughput_updater();
@@ -739,38 +736,7 @@ impl UiApp {
 
     /// Spawns a background task to periodically update throughput metrics for all active consumers if not already started.
     fn ensure_throughput_updater(&self) {
-        if self.throughput_updater_started.load(Ordering::Relaxed) {
-            return;
-        }
-
-        if let Ok(handle) = tokio::runtime::Handle::try_current()
-            && self
-                .throughput_updater_started
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-        {
-            let throughput_samples_arc = Arc::clone(&self.throughput_samples);
-            let consumer_message_sequences_arc = Arc::clone(&self.consumer_message_sequences);
-            handle.spawn(async move {
-                let mut interval = tokio::time::interval(THROUGHPUT_UPDATE_INTERVAL);
-
-                loop {
-                    interval.tick().await; // Wait for the next interval tick
-                    let now = Instant::now();
-
-                    let consumer_sequences = consumer_message_sequences_arc.read().await.clone();
-                    let mut samples = throughput_samples_arc.write().await;
-
-                    for (consumer_key, sequence) in consumer_sequences.iter() {
-                        let total_messages = sequence.load(Ordering::Relaxed) as f64;
-                        let previous_sample = samples.get(consumer_key).copied();
-                        let next_sample =
-                            next_route_metric_sample(previous_sample, total_messages, now);
-                        samples.insert(consumer_key.clone(), next_sample);
-                    }
-                }
-            });
-        }
+        self.metrics.ensure_updater();
     }
 
     pub async fn get_config(&self) -> AppConfig {
@@ -830,6 +796,10 @@ impl UiApp {
                     | "/publish"
                     | "/consumer-start"
                     | "/consumer-stop"
+                    // The MCP reporter sends no Origin/Referer, so it still
+                    // passes; this keeps a browser page from POSTing fabricated
+                    // MCP rows into the UI.
+                    | "/mcp-status"
             )
             && !is_same_origin_request(&msg)
         {
@@ -886,6 +856,7 @@ impl UiApp {
             ("POST", "/config") => self.handle_update_config_message(msg).await,
             ("POST", "/config-recovery/reset") => self.handle_reset_config_recovery().await,
             ("POST", "/publish") => self.handle_publish_message(msg).await,
+            ("POST", "/mcp-status") => self.handle_mcp_status_report(msg).await,
             ("GET", "/runtime-status") => self.ok_json(&self.runtime_status().await, true),
             ("GET", "/metrics") => Ok(Handled::Publish(
                 CanonicalMessage::from(self.render_metrics())
@@ -1019,15 +990,14 @@ impl UiApp {
                     .unwrap_or_else(|| target_consumer.to_string())
             };
             let topic = format!("ui_collector_{consumer_key}");
-            let channel = mq_bridge::get_or_create_channel(&MemoryConfig::new(&topic, None));
-            while let Ok(batch) = channel.receiver.try_recv() {
-                for m in batch {
+            {
+                for m in MessageCapture::open(&topic).drain() {
                     let mut metadata = m.metadata.clone();
                     let source = metadata
-                        .remove("ui_source")
+                        .remove(CAPTURE_SOURCE_KEY)
                         .unwrap_or_else(|| "unknown".into());
 
-                    if let Some(capture_time_ms) = metadata.remove("ui_capture_time") {
+                    if let Some(capture_time_ms) = metadata.remove(CAPTURE_TIME_KEY) {
                         let id = fast_uuid_v7::format_uuid(m.message_id).to_string();
                         let time = capture_time_ms
                             .parse::<i64>()
@@ -1184,13 +1154,13 @@ impl UiApp {
             .filter(|name| name != "web_ui" && !name.starts_with("ui_collector_route_"))
             .collect();
 
-        let samples_guard = self.throughput_samples.read().await;
+        let throughputs = self.metrics.throughputs().await;
         let active_consumer_keys: HashSet<String> =
             config.consumers.iter().map(consumer_runtime_key).collect();
-        let route_throughput: HashMap<String, f64> = samples_guard
+        let route_throughput: HashMap<String, f64> = throughputs
             .iter()
             .filter(|(key, _)| active_consumer_keys.contains(*key))
-            .map(|(key, sample)| (key.clone(), sample.smoothed_throughput))
+            .map(|(key, throughput)| (key.clone(), *throughput))
             .collect();
 
         active_consumers.sort();
@@ -1198,7 +1168,7 @@ impl UiApp {
         let mut active_routes = active_routes;
         active_routes.sort();
 
-        let consumer_sequences = self.consumer_message_sequences.read().await.clone();
+        let consumer_sequences = self.metrics.sequences().await;
         let mut consumers = HashMap::new();
         for consumer in &config.consumers {
             let consumer_key = consumer_runtime_key(consumer);
@@ -1207,14 +1177,8 @@ impl UiApp {
                 .consumer_status_snapshot_with_running(consumer, running)
                 .await
             {
-                let message_sequence = consumer_sequences
-                    .get(&consumer_key)
-                    .map(|a| a.load(Ordering::Relaxed))
-                    .unwrap_or(0);
-                let throughput = samples_guard
-                    .get(&consumer_key)
-                    .map(|s| s.smoothed_throughput)
-                    .unwrap_or(0.0);
+                let message_sequence = consumer_sequences.get(&consumer_key).copied().unwrap_or(0);
+                let throughput = throughputs.get(&consumer_key).copied().unwrap_or(0.0);
                 let status_snapshot = ConsumerStatusSnapshot {
                     throughput,
                     message_sequence,
@@ -1226,12 +1190,50 @@ impl UiApp {
             }
         }
 
+        let mcp = self.mcp_status_report().await;
+
         RuntimeStatusResponse {
             active_consumers,
             active_routes,
             route_throughput,
             consumers,
+            mcp_routes: mcp.routes,
+            mcp_publishers: mcp.publishers,
         }
+    }
+
+    /// The latest MCP report, or an empty one if none has arrived or the last is
+    /// stale. Staleness is evaluated on read, so no background task is needed.
+    async fn mcp_status_report(&self) -> McpStatusReport {
+        self.mcp_status
+            .read()
+            .await
+            .as_ref()
+            .filter(|(seen, _)| seen.elapsed() < MCP_STATUS_STALE_AFTER)
+            .map(|(_, report)| report.clone())
+            .unwrap_or_default()
+    }
+
+    /// Records a status report pushed by a local MCP server process.
+    ///
+    /// Receiving is on by default — *sending* is what the MCP opts into. Nothing
+    /// here touches the config: the report lands in an in-memory slot and expires
+    /// on its own, so an MCP route can never become persisted configuration.
+    async fn handle_mcp_status_report(
+        &self,
+        msg: CanonicalMessage,
+    ) -> Result<Handled, HandlerError> {
+        let report: McpStatusReport = match serde_json::from_slice(&msg.payload) {
+            Ok(report) => report,
+            Err(e) => return self.err_response(400, format!("Invalid MCP status report: {e}")),
+        };
+
+        let (routes, publishers) = (report.routes.len(), report.publishers.len());
+        *self.mcp_status.write().await = Some((Instant::now(), report));
+        self.ok_json(
+            &serde_json::json!({ "routes": routes, "publishers": publishers }),
+            true,
+        )
     }
 
     async fn consumer_status_snapshot(
@@ -1546,21 +1548,8 @@ impl UiApp {
             let consumer_key = consumer_runtime_key(consumer);
             let topic = format!("ui_collector_{consumer_key}");
             let capture_enabled = consumer.message_capture.enabled;
-            let original_capture_keep_last = consumer.message_capture.keep_last.max(1);
-            // Increase channel capacity by 10% to allow for some buffer before dropping messages
-            let channel_capacity = (original_capture_keep_last).max(1);
-
-            let log_channel = mq_bridge::get_or_create_channel(&MemoryConfig::new(
-                &topic,
-                Some(channel_capacity),
-            ));
-            let sequence_counter = {
-                let mut sequences = self.consumer_message_sequences.write().await;
-                sequences
-                    .entry(consumer_key.clone())
-                    .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-                    .clone()
-            };
+            let capture = MessageCapture::with_capacity(&topic, consumer.message_capture.keep_last);
+            let sequence_counter = self.metrics.counter_for(&consumer_key).await;
 
             let resolved_output =
                 resolve_consumer_output(consumer, publishers).map_err(anyhow::Error::msg)?;
@@ -1582,7 +1571,7 @@ impl UiApp {
 
             let context = Arc::new(CollectorContext {
                 source_key: consumer_key.clone(),
-                log_channel,
+                capture,
                 counter: sequence_counter,
                 output: resolved_output,
                 capture_enabled,
@@ -1597,30 +1586,22 @@ impl UiApp {
 
                         if ctx.capture_enabled {
                             let mut enriched = msg.clone();
-                            let meta = &mut enriched.metadata;
-                            meta.insert("ui_source".into(), ctx.source_key.clone());
-                            meta.insert(
-                                "ui_capture_time".into(),
-                                chrono::Utc::now().timestamp_millis().to_string(),
-                            );
 
+                            // The configured response, if any, is recorded alongside the
+                            // request so the UI can show both halves of a request/reply.
                             if let ResolvedConsumerOutput::Response { response: Some(r) } =
                                 &ctx.output
                             {
+                                let meta = &mut enriched.metadata;
                                 meta.insert("ui_response_payload".into(), r.payload.clone());
                                 if let Ok(headers) = serde_json::to_string(&r.headers) {
                                     meta.insert("ui_response_metadata".into(), headers);
                                 }
                             }
 
-                            // Use non-blocking send to avoid stalling the bridge when the UI capture buffer is full.
-                            // If it is full, we drop the oldest entry to maintain "last" semantics.
-                            let msgs_to_send = vec![enriched];
-                            if let Err(e) = ctx.log_channel.sender.try_send(msgs_to_send) {
-                                let msgs = e.into_inner();
-                                let _ = ctx.log_channel.receiver.try_recv();
-                                let _ = ctx.log_channel.sender.try_send(msgs);
-                            }
+                            // Tags the source/capture time and never blocks the bridge:
+                            // a full buffer drops its oldest entry to keep "last N".
+                            ctx.capture.push(&ctx.source_key, enriched);
                         }
 
                         match &ctx.output {
@@ -1737,6 +1718,7 @@ mod tests {
         clear_process_config_master_key, set_process_config_master_key_hex,
         test_config_master_key_lock,
     };
+    use mq_bridge::models::MemoryConfig;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -1781,47 +1763,6 @@ mod tests {
                 kid: None,
             },
         }
-    }
-
-    #[test]
-    fn next_route_metric_sample_starts_with_zero_throughput() {
-        let now = Instant::now();
-
-        let sample = next_route_metric_sample(None, 42.0, now);
-
-        assert_eq!(sample.total_messages, 42.0);
-        assert_eq!(sample.observed_at, now);
-        assert_eq!(sample.smoothed_throughput, 0.0);
-    }
-
-    #[test]
-    fn next_route_metric_sample_applies_ema_to_instantaneous_throughput() {
-        let start = Instant::now();
-        let previous = RouteMetricSample {
-            total_messages: 10.0,
-            observed_at: start,
-            smoothed_throughput: 4.0,
-        };
-
-        let next = next_route_metric_sample(Some(previous), 18.0, start + Duration::from_secs(2));
-
-        // Instantaneous throughput is (18 - 10) / 2 = 4.0, so the EMA stays at 4.0.
-        assert_eq!(next.smoothed_throughput, 4.0);
-    }
-
-    #[test]
-    fn next_route_metric_sample_clamps_negative_throughput_before_smoothing() {
-        let start = Instant::now();
-        let previous = RouteMetricSample {
-            total_messages: 10.0,
-            observed_at: start,
-            smoothed_throughput: 6.0,
-        };
-
-        let next = next_route_metric_sample(Some(previous), 8.0, start + Duration::from_secs(1));
-
-        let expected = 6.0 * (-1.0 / THROUGHPUT_TAU).exp();
-        assert!((next.smoothed_throughput - expected).abs() < 1e-9);
     }
 
     #[tokio::test]
@@ -2005,6 +1946,166 @@ mod tests {
         )
     }
 
+    fn mcp_snapshot(messages: u64) -> ConsumerStatusSnapshot {
+        ConsumerStatusSnapshot {
+            running: true,
+            status: EndpointStatusSnapshot {
+                healthy: true,
+                target: "probe".into(),
+                pending: None,
+                capacity: None,
+                error: None,
+                details: serde_json::Value::Null,
+            },
+            throughput: 12.5,
+            message_sequence: messages,
+            capture_enabled: false,
+            capture_keep_last: 0,
+        }
+    }
+
+    fn mcp_report(names: &[&str]) -> CanonicalMessage {
+        let routes: HashMap<String, ConsumerStatusSnapshot> = names
+            .iter()
+            .map(|n| (n.to_string(), mcp_snapshot(7)))
+            .collect();
+        CanonicalMessage::from(
+            serde_json::to_string(&McpStatusReport {
+                routes,
+                publishers: HashMap::new(),
+            })
+            .unwrap(),
+        )
+    }
+
+    // An MCP report must surface in its own field, never merged into the
+    // config-derived `consumers` map.
+    #[tokio::test]
+    async fn mcp_report_lands_in_its_own_field() {
+        let app = test_app(AppConfig::default());
+
+        app.handle_mcp_status_report(mcp_report(&["route-a"]))
+            .await
+            .unwrap();
+
+        let status = app.runtime_status().await;
+        assert_eq!(status.mcp_routes.len(), 1);
+        assert_eq!(status.mcp_routes["route-a"].message_sequence, 7);
+        assert!(status.consumers.is_empty());
+        assert!(status.active_consumers.is_empty());
+    }
+
+    // Each report replaces the last wholesale, so a route the MCP stopped
+    // reporting disappears immediately rather than lingering.
+    #[tokio::test]
+    async fn a_new_mcp_report_replaces_the_previous_one() {
+        let app = test_app(AppConfig::default());
+
+        app.handle_mcp_status_report(mcp_report(&["route-a", "route-b"]))
+            .await
+            .unwrap();
+        app.handle_mcp_status_report(mcp_report(&["route-a"]))
+            .await
+            .unwrap();
+
+        let status = app.runtime_status().await;
+        assert_eq!(status.mcp_routes.len(), 1);
+        assert!(status.mcp_routes.contains_key("route-a"));
+    }
+
+    fn mcp_status_post(origin: Option<&str>) -> CanonicalMessage {
+        let mut msg = mcp_report(&["route-a"]);
+        msg.metadata.insert("http_method".into(), "POST".into());
+        msg.metadata
+            .insert("http_path".into(), "/mcp-status".into());
+        msg.metadata.insert("Host".into(), "127.0.0.1:8080".into());
+        if let Some(origin) = origin {
+            msg.metadata.insert("Origin".into(), origin.to_string());
+        }
+        msg
+    }
+
+    fn status_code(handled: Handled) -> String {
+        match handled {
+            Handled::Publish(m) => m
+                .metadata
+                .get("http_status_code")
+                .cloned()
+                .unwrap_or_default(),
+            other => panic!("expected a response, got {other:?}"),
+        }
+    }
+
+    // `/mcp-status` is a POST that mutates what the UI displays, so it must sit
+    // behind the same same-origin guard as every other mutating endpoint —
+    // otherwise any page in the user's browser can inject fake MCP rows.
+    #[tokio::test]
+    async fn a_cross_origin_mcp_report_is_rejected() {
+        let app = test_app(AppConfig::default());
+
+        let handled = app
+            .handle_ui_message(mcp_status_post(Some("http://evil.example")), false)
+            .await
+            .unwrap();
+
+        assert_eq!(status_code(handled), "403");
+        assert!(app.runtime_status().await.mcp_routes.is_empty());
+    }
+
+    // The MCP reporter is not a browser and sends no Origin, so the guard above
+    // must not lock out the process it exists to serve.
+    #[tokio::test]
+    async fn an_mcp_report_without_an_origin_header_is_accepted() {
+        let app = test_app(AppConfig::default());
+
+        let handled = app
+            .handle_ui_message(mcp_status_post(None), false)
+            .await
+            .unwrap();
+
+        assert_eq!(status_code(handled), "200");
+        assert_eq!(app.runtime_status().await.mcp_routes.len(), 1);
+    }
+
+    // A dead MCP must not leave phantom rows in the UI.
+    #[tokio::test]
+    async fn a_stale_mcp_report_is_ignored() {
+        let app = test_app(AppConfig::default());
+        app.handle_mcp_status_report(mcp_report(&["route-a"]))
+            .await
+            .unwrap();
+
+        // Backdate the report past the staleness window.
+        {
+            let mut slot = app.mcp_status.write().await;
+            let entry = slot.as_mut().unwrap();
+            entry.0 = Instant::now() - MCP_STATUS_STALE_AFTER - Duration::from_secs(1);
+        }
+
+        assert!(app.runtime_status().await.mcp_routes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_malformed_mcp_report_is_rejected() {
+        let app = test_app(AppConfig::default());
+
+        let handled = app
+            .handle_mcp_status_report(CanonicalMessage::from("not json"))
+            .await
+            .unwrap();
+
+        match handled {
+            Handled::Publish(m) => {
+                assert_eq!(
+                    m.metadata.get("http_status_code").map(String::as_str),
+                    Some("400")
+                );
+            }
+            other => panic!("expected a 400 response, got {other:?}"),
+        }
+        assert!(app.runtime_status().await.mcp_routes.is_empty());
+    }
+
     // A running consumer's status must reflect the live route health read from the
     // stored handle (`RouteHandle::status()`), not a hardcoded `healthy: true`.
     // The unhealthy/reconnecting transition itself is covered by mq-bridge's own
@@ -2033,7 +2134,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        let snapshot = snapshot.expect("consumer should become running and healthy via live status");
+        let snapshot =
+            snapshot.expect("consumer should become running and healthy via live status");
         assert!(snapshot.running);
         assert!(snapshot.status.healthy);
         // Live status target is the internal collector route id; the snapshot must keep

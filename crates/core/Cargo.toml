@@ -16,8 +16,13 @@ name = "mq_bridge_app"
 path = "src/lib.rs"
 
 [dependencies]
+# TODO(mq-bridge-0.3.6): pinned to the released 0.3.5. The MCP server wants
+# `RouteHandle::is_finished()`, which only exists in the unreleased 0.3.6 — see
+# `route_finished` in crates/cli/src/mcp.rs, the single place to update. Prefer
+# `cargo --config patch` over editing this line when building against a local
+# mq-bridge checkout.
 mq-bridge = { version = "0.3.5", features = ["schema"] }
-# mq-bridge = { path = "../../../mq-bridge", version = "0.3.5", features = ["schema"] } # keep for debugging / dev
+# mq-bridge = { path = "../../../mq-bridge", version = "0.3.6", features = ["schema"] } # keep for debugging / dev
 
 config = { version = "0.15.22", features = ["yaml"] }
 dotenvy = "0.15.7"
@@ -25,7 +30,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 shellexpand = "3.1.2"
 serde_yaml_ng = "0.10.0"
 tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync"] }
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 tracing = "0.1.44"
 rdkafka = { version = "0.38.0", features = ["tokio"], optional = true }
 metrics = { version = "0.24.6" }

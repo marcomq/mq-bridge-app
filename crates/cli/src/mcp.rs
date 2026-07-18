@@ -10,12 +10,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use mq_bridge_app::mq_bridge::{
-    CanonicalMessage, Publisher, Sent, SentBatch,
-    models::{Endpoint, Route},
+    CanonicalMessage, Handled, Publisher, Sent, SentBatch,
+    models::{Endpoint, EndpointType, HttpConfig, Route},
     route::RouteHandle,
 };
+use mq_bridge_app::route_metrics::{
+    CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, format_capture_time,
+};
+use mq_bridge_app::ui_app::{ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport};
 use rmcp::schemars;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -83,6 +88,10 @@ struct PublishArgs {
     /// A batch of messages to send (alternative to `message`).
     #[serde(default)]
     messages: Option<Vec<InputMessage>>,
+    /// Optional label for this target, used to group sends in status reporting.
+    /// Defaults to the connector type.
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -97,6 +106,11 @@ struct StartRouteArgs {
     /// options such as `concurrency`, `batch_size`, and `exit_on_empty` (drain the
     /// source then exit). Use `{"null": null}` as the `output` to discard messages.
     route: Route,
+    /// Keep the last N messages that flow through this route, readable with
+    /// `route_messages`. Omit (or 0) to capture nothing, which is the default —
+    /// captured payloads are held in memory and returned to the model verbatim.
+    #[serde(default)]
+    capture_last: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -116,10 +130,26 @@ struct RouteStatusArgs {
 #[derive(Clone)]
 pub struct BridgeMcp {
     routes: Arc<Mutex<HashMap<String, RouteHandle>>>,
+    /// Publish targets used so far, so they can be reported to the UI's publisher
+    /// bar. Holds names and connector types only.
+    publishers: PublisherMap,
+    /// Message counters and smoothed throughput for the routes and publishers
+    /// above. This is the same machinery the web UI uses for its consumers, so
+    /// `messages_per_second` means the same thing on both surfaces.
+    metrics: RouteMetrics,
     // Required by the `#[tool_router]` / `#[tool_handler]` macro convention; the
     // generated handler builds the router, so the field itself isn't read directly.
     #[allow(dead_code)]
     tool_router: ToolRouter<BridgeMcp>,
+}
+
+/// Capture buffer topic for an MCP-started route.
+///
+/// Deliberately distinct from the UI's `ui_collector_` prefix: an MCP route is an
+/// ad-hoc, unpersisted thing and must never be confused with a configured
+/// consumer or publisher.
+fn capture_topic(route_name: &str) -> String {
+    format!("mcp_collector_{route_name}")
 }
 
 fn pretty(value: &serde_json::Value) -> String {
@@ -136,11 +166,55 @@ fn err_json(value: serde_json::Value) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(pretty(&value))])
 }
 
-/// One `{ name, status }` entry describing a running route.
-fn route_entry_json(name: &str, handle: &RouteHandle) -> serde_json::Value {
+/// Whether a route has run to completion, or `None` when that cannot be
+/// determined.
+///
+/// TODO(mq-bridge-0.3.6): the released mq-bridge 0.3.5 keeps `RouteHandle`'s
+/// join handle private and exposes no `is_finished()`, so completion is simply
+/// unknown here. Once 0.3.6 is published this becomes
+/// `Some(handle.is_finished())` and every caller below starts reporting real
+/// values again — this function is the only place that needs to change.
+fn route_finished(_handle: &RouteHandle) -> Option<bool> {
+    None
+}
+
+/// One entry describing a running route: its connection health plus the live
+/// message counters the web UI reports for its own consumers.
+///
+/// `finished` is `null` when the underlying mq-bridge release cannot report
+/// completion (see [`route_finished`]); a route started with `exit_on_empty`
+/// may therefore have drained and exited without saying so here.
+fn route_entry_json(
+    name: &str,
+    handle: &RouteHandle,
+    messages: u64,
+    messages_per_second: f64,
+) -> serde_json::Value {
     serde_json::json!({
         "name": name,
+        "source": "mcp",
         "status": serde_json::to_value(handle.status()).unwrap_or_default(),
+        "finished": route_finished(handle),
+        "messages": messages,
+        "messages_per_second": (messages_per_second * 100.0).round() / 100.0,
+    })
+}
+
+/// Renders one captured message in the same shape the web UI's `/messages`
+/// endpoint returns, so both surfaces describe a message identically.
+fn captured_message_json(m: CanonicalMessage) -> serde_json::Value {
+    let mut metadata = m.metadata.clone();
+    metadata.remove(CAPTURE_SOURCE_KEY);
+    let time = format_capture_time(metadata.remove(CAPTURE_TIME_KEY).as_deref());
+
+    // Structured payloads are returned as JSON; anything else as a string.
+    let payload: serde_json::Value = serde_json::from_slice(&m.payload)
+        .unwrap_or_else(|_| serde_json::Value::String(m.get_payload_str().to_string()));
+
+    serde_json::json!({
+        "time": time,
+        "metadata": metadata,
+        "payload": payload,
     })
 }
 
@@ -188,6 +262,64 @@ fn describe_sent_batch(sent: SentBatch, count: usize) -> (serde_json::Value, boo
 /// Shared map of routes started via this server, keyed by route name.
 type RouteMap = Arc<Mutex<HashMap<String, RouteHandle>>>;
 
+/// Publish targets used via this server, keyed by name, holding the connector
+/// type. Only the type is kept — never the endpoint config, which carries URLs
+/// and credentials.
+type PublisherMap = Arc<Mutex<HashMap<String, String>>>;
+
+/// The connector type of an endpoint, e.g. `"kafka"`, with no config attached.
+///
+/// `EndpointType` serializes as a single-key object keyed by connector name, so
+/// the key alone is the label. Anything unexpected degrades to `"unknown"`
+/// rather than risking a serialized config reaching the UI.
+fn endpoint_type_label(endpoint_type: &EndpointType) -> String {
+    match serde_json::to_value(endpoint_type) {
+        Ok(serde_json::Value::Object(map)) => map
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string()),
+        Ok(serde_json::Value::String(s)) => s,
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Builds the status snapshot reported to the UI for one route or publisher.
+///
+/// Deliberately constructs [`EndpointStatusSnapshot`] field by field instead of
+/// converting from `EndpointStatus`: `target` is replaced with the local name and
+/// `details` is dropped, because both are free-form and could otherwise carry a
+/// connection string to the UI. `error` is kept — it is what makes a failing
+/// route diagnosable — so it must stay a message, never a rendered config.
+///
+/// `capture_*` are always reported as off: the capture buffer lives in this
+/// process's memory and the UI cannot read it, so advertising it would promise
+/// messages the UI can never fetch.
+fn report_snapshot(
+    name: &str,
+    healthy: bool,
+    error: Option<String>,
+    running: bool,
+    messages: u64,
+    throughput: f64,
+) -> ConsumerStatusSnapshot {
+    ConsumerStatusSnapshot {
+        running,
+        status: EndpointStatusSnapshot {
+            healthy,
+            target: name.to_string(),
+            pending: None,
+            capacity: None,
+            error,
+            details: serde_json::Value::Null,
+        },
+        throughput,
+        message_sequence: messages,
+        capture_enabled: false,
+        capture_keep_last: 0,
+    }
+}
+
 #[tool_router]
 impl BridgeMcp {
     pub fn new() -> Self {
@@ -197,10 +329,62 @@ impl BridgeMcp {
     /// Builds a server that shares an existing route map. Used by the HTTP
     /// transport so every session sees (and can stop) the same routes.
     pub fn with_routes(routes: RouteMap) -> Self {
+        let metrics = RouteMetrics::new();
+        // Start sampling immediately so a route's rate is available as soon as it
+        // runs, rather than only after the first status call.
+        metrics.ensure_updater();
         Self {
             routes,
+            publishers: Arc::new(Mutex::new(HashMap::new())),
+            metrics,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Metric keys are shared between routes and publishers, so publishers are
+    /// namespaced to keep a publisher from colliding with a same-named route.
+    fn publisher_metric_key(name: &str) -> String {
+        format!("publisher:{name}")
+    }
+
+    /// The current status of every route and publisher, in the shape the UI
+    /// expects. Used by the reporting task.
+    pub async fn status_report(&self) -> McpStatusReport {
+        let mut routes = HashMap::new();
+        for (name, handle) in self.routes.lock().await.iter() {
+            let status = handle.status();
+            routes.insert(
+                name.clone(),
+                report_snapshot(
+                    name,
+                    status.healthy,
+                    status.error.clone(),
+                    // Unknown completion reads as "still running": a route we
+                    // still hold a handle for was never stopped from here.
+                    !route_finished(handle).unwrap_or(false),
+                    self.metrics.sequence(name).await,
+                    self.metrics.throughput(name).await,
+                ),
+            );
+        }
+
+        let mut publishers = HashMap::new();
+        for (name, endpoint_type) in self.publishers.lock().await.iter() {
+            let key = Self::publisher_metric_key(name);
+            publishers.insert(
+                name.clone(),
+                report_snapshot(
+                    endpoint_type,
+                    true,
+                    None,
+                    true,
+                    self.metrics.sequence(&key).await,
+                    self.metrics.throughput(&key).await,
+                ),
+            );
+        }
+
+        McpStatusReport { routes, publishers }
     }
 
     #[tool(
@@ -215,9 +399,29 @@ impl BridgeMcp {
         &self,
         Parameters(args): Parameters<PublishArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let endpoint_type = endpoint_type_label(&args.publisher.endpoint_type);
+        let target_name = args
+            .name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| endpoint_type.clone());
+
         let publisher = Publisher::new(args.publisher)
             .await
             .map_err(|e| invalid(format!("invalid publisher endpoint: {e}")))?;
+
+        // Register the target and count what goes through it, so the UI's
+        // publisher bar can show MCP publish activity the same way it shows
+        // consumer throughput.
+        self.publishers
+            .lock()
+            .await
+            .entry(target_name.clone())
+            .or_insert(endpoint_type);
+        let counter = self
+            .metrics
+            .counter_for(&Self::publisher_metric_key(&target_name))
+            .await;
 
         match (args.message, args.messages) {
             (None, None) => Err(invalid("provide either `message` or `messages`")),
@@ -228,6 +432,7 @@ impl BridgeMcp {
                     .send(canonical)
                     .await
                     .map_err(|e| internal(format!("publish failed: {e}")))?;
+                counter.fetch_add(1, Ordering::Relaxed);
                 Ok(ok_json(describe_sent(sent)))
             }
             (None, Some(messages)) => {
@@ -244,6 +449,12 @@ impl BridgeMcp {
                     .await
                     .map_err(|e| internal(format!("batch publish failed: {e}")))?;
                 let (summary, had_failures) = describe_sent_batch(sent, count);
+                // Count what actually left, not what was offered.
+                let delivered = summary
+                    .get("sent")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(count as u64);
+                counter.fetch_add(delivered, Ordering::Relaxed);
                 Ok(if had_failures {
                     err_json(summary)
                 } else {
@@ -271,6 +482,7 @@ impl BridgeMcp {
             .filter(|n| !n.is_empty())
             .unwrap_or_else(auto_route_name);
         let exit_on_empty = args.route.options.exit_on_empty;
+        let capture_last = args.capture_last.unwrap_or(0);
 
         // Reject a duplicate name up front, but release the lock before the
         // potentially slow `run()` so other route tools aren't blocked on startup.
@@ -278,8 +490,34 @@ impl BridgeMcp {
             return Err(invalid(format!("a route named '{name}' already exists")));
         }
 
-        let handle = args
-            .route
+        // Wrap the route in the same counting/capturing handler the web UI puts on
+        // its consumer routes, so `route_status` can report a live message rate.
+        // The handler forwards every message unchanged unless the sink is `null`.
+        let route = args.route;
+        let publishes = !matches!(route.output.endpoint_type, EndpointType::Null);
+        let counter = self.metrics.counter_for(&name).await;
+        let capture = (capture_last > 0)
+            .then(|| MessageCapture::with_capacity(&capture_topic(&name), capture_last));
+        let source_key = name.clone();
+
+        let route = route.with_handler(move |msg: CanonicalMessage| {
+            let counter = Arc::clone(&counter);
+            let capture = capture.clone();
+            let source_key = source_key.clone();
+            async move {
+                counter.fetch_add(1, Ordering::Relaxed);
+                if let Some(capture) = capture {
+                    capture.push(&source_key, msg.clone());
+                }
+                Ok(if publishes {
+                    Handled::Publish(msg)
+                } else {
+                    Handled::Ack
+                })
+            }
+        });
+
+        let handle = route
             .run(&name)
             .await
             .map_err(|e| internal(format!("failed to start route '{name}': {e}")))?;
@@ -288,6 +526,9 @@ impl BridgeMcp {
         if routes.contains_key(&name) {
             // Lost a race with a concurrent start for the same name; stop the
             // route we just started so it doesn't leak, then report the conflict.
+            // The metric key is deliberately left alone: the winner shares it and
+            // is still counting into it, so forgetting it here would zero out a
+            // live route's reported messages and rate.
             drop(routes);
             handle.stop().await;
             return Err(invalid(format!("a route named '{name}' already exists")));
@@ -297,46 +538,79 @@ impl BridgeMcp {
         Ok(ok_json(serde_json::json!({
             "route": name,
             "exit_on_empty": exit_on_empty,
+            "capture_last": capture_last,
         })))
     }
 
     #[tool(
-        description = "List the routes started by this server, with their live connection health.",
+        description = "List the routes started by this server, with their live connection health, \
+            total messages moved, and current message rate.",
         annotations(read_only_hint = true)
     )]
     async fn list_routes(&self) -> Result<CallToolResult, McpError> {
-        let routes = self.routes.lock().await;
-        let list: Vec<serde_json::Value> = routes
-            .iter()
-            .map(|(name, handle)| route_entry_json(name, handle))
-            .collect();
-        Ok(ok_json(serde_json::Value::Array(list)))
+        Ok(ok_json(serde_json::Value::Array(
+            self.all_routes_json().await,
+        )))
     }
 
     #[tool(
-        description = "Report the live health/status of one route (by `name`) or all routes.",
+        description = "Report the live status of one route (by `name`) or all routes: connection \
+            health, whether it has finished, the total number of messages it has moved, and its \
+            current rate in messages per second.",
         annotations(read_only_hint = true)
     )]
     async fn route_status(
         &self,
         Parameters(args): Parameters<RouteStatusArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let routes = self.routes.lock().await;
         match args.name {
-            Some(name) => match routes.get(&name) {
-                Some(handle) => Ok(ok_json(
-                    serde_json::to_value(handle.status()).unwrap_or_default(),
-                )),
-                None => Err(invalid(format!("no route named '{name}'"))),
-            },
-            None => {
-                let all: Vec<serde_json::Value> = routes
-                    .iter()
-                    .map(|(name, handle)| route_entry_json(name, handle))
-                    .collect();
-                Ok(ok_json(serde_json::Value::Array(all)))
+            Some(name) => {
+                let routes = self.routes.lock().await;
+                let Some(handle) = routes.get(&name) else {
+                    return Err(invalid(format!("no route named '{name}'")));
+                };
+                let entry = route_entry_json(
+                    &name,
+                    handle,
+                    self.metrics.sequence(&name).await,
+                    self.metrics.throughput(&name).await,
+                );
+                Ok(ok_json(entry))
             }
+            None => Ok(ok_json(serde_json::Value::Array(
+                self.all_routes_json().await,
+            ))),
         }
+    }
+
+    #[tool(
+        description = "Return the most recent messages captured on a route, newest last. Only \
+            routes started with `capture_last` capture anything. Reads are destructive: each \
+            message is returned once, so repeated calls yield only what arrived since the last \
+            call.",
+        // Not read-only: draining consumes the buffer, so a client must not
+        // auto-approve this the way it may auto-approve a true reader.
+        annotations(read_only_hint = false, destructive_hint = true)
+    )]
+    async fn route_messages(
+        &self,
+        Parameters(args): Parameters<RouteNameArg>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self.routes.lock().await.contains_key(&args.name) {
+            return Err(invalid(format!("no route named '{}'", args.name)));
+        }
+
+        let messages: Vec<serde_json::Value> = MessageCapture::open(&capture_topic(&args.name))
+            .drain()
+            .into_iter()
+            .map(captured_message_json)
+            .collect();
+
+        Ok(ok_json(serde_json::json!({
+            "route": args.name,
+            "count": messages.len(),
+            "messages": messages,
+        })))
     }
 
     #[tool(description = "Stop a running route by `name`.")]
@@ -348,10 +622,40 @@ impl BridgeMcp {
         match handle {
             Some(handle) => {
                 handle.stop().await;
-                Ok(ok_json(serde_json::json!({ "stopped": args.name })))
+                let messages = self.metrics.sequence(&args.name).await;
+                self.metrics.forget(&args.name).await;
+                // Capture buffers live in a process-global registry keyed by
+                // topic and outlive the route, so anything still buffered would
+                // otherwise resurface as the first `route_messages` result of the
+                // next route that reuses this name.
+                let dropped = MessageCapture::open(&capture_topic(&args.name))
+                    .drain()
+                    .len();
+                Ok(ok_json(serde_json::json!({
+                    "stopped": args.name,
+                    "messages": messages,
+                    "discarded_captured_messages": dropped,
+                })))
             }
             None => Err(invalid(format!("no route named '{}'", args.name))),
         }
+    }
+
+    /// Every known route with its health and live counters, sorted by name so
+    /// repeated calls are stable.
+    async fn all_routes_json(&self) -> Vec<serde_json::Value> {
+        let routes = self.routes.lock().await;
+        let mut entries: Vec<serde_json::Value> = Vec::with_capacity(routes.len());
+        for (name, handle) in routes.iter() {
+            entries.push(route_entry_json(
+                name,
+                handle,
+                self.metrics.sequence(name).await,
+                self.metrics.throughput(name).await,
+            ));
+        }
+        entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        entries
     }
 }
 
@@ -391,23 +695,103 @@ fn auto_route_name() -> String {
     format!("mcp-route-{}", ROUTE_SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
+/// How often the server reports its routes and publishers to a local UI.
+const REPORT_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Entry point for the `mcp` subcommand.
-pub async fn run(transport: String, bind: Option<String>) -> anyhow::Result<()> {
+///
+/// `report_to_ui` is the opt-in for telling a local web UI what this server is
+/// doing; `ui_addr` is the UI's configured listen address, from which only the
+/// port is used. Without the flag nothing is ever sent.
+pub async fn run(
+    transport: String,
+    bind: Option<String>,
+    report_to_ui: bool,
+    ui_addr: Option<String>,
+) -> anyhow::Result<()> {
+    let server = BridgeMcp::new();
+    if report_to_ui {
+        spawn_ui_reporter(server.clone(), ui_addr.as_deref());
+    }
+
     match transport.as_str() {
-        "stdio" => run_stdio().await,
-        "http" => run_http(bind.unwrap_or_else(|| "127.0.0.1:9092".to_string())).await,
+        "stdio" => run_stdio(server).await,
+        "http" => run_http(server, bind.unwrap_or_else(|| "127.0.0.1:9092".to_string())).await,
         other => anyhow::bail!("unknown --transport '{other}' (expected 'stdio' or 'http')"),
     }
 }
 
-async fn run_stdio() -> anyhow::Result<()> {
+/// The port from a `host:port` listen address.
+fn listen_port(addr: &str) -> Option<u16> {
+    addr.rsplit_once(':')
+        .and_then(|(_, port)| port.trim().parse().ok())
+}
+
+/// Starts periodic status reporting to the UI on **localhost only**.
+///
+/// The host is hardcoded: there is deliberately no way to point this at a remote
+/// UI. If the UI address is unknown (no readable config), nothing is reported —
+/// guessing a port could POST this server's route names to an unrelated service.
+fn spawn_ui_reporter(server: BridgeMcp, ui_addr: Option<&str>) {
+    let Some(port) = ui_addr.and_then(listen_port) else {
+        info!("--report-to-ui was set, but no UI address is configured; not reporting");
+        return;
+    };
+
+    let url = format!("http://127.0.0.1:{port}/mcp-status");
+    info!("reporting MCP status to {url}");
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(REPORT_INTERVAL);
+        let mut publisher: Option<Publisher> = None;
+
+        loop {
+            interval.tick().await;
+
+            // Built lazily and retried, so starting the MCP before the UI works.
+            if publisher.is_none() {
+                let endpoint = Endpoint::new(EndpointType::Http(HttpConfig {
+                    url: url.clone(),
+                    ..Default::default()
+                }));
+                match Publisher::new(endpoint).await {
+                    Ok(p) => publisher = Some(p),
+                    Err(e) => {
+                        tracing::debug!("MCP status reporting: publisher unavailable: {e}");
+                        continue;
+                    }
+                }
+            }
+
+            let report = server.status_report().await;
+            let payload = match serde_json::to_string(&report) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    tracing::debug!("MCP status reporting: serialize failed: {e}");
+                    continue;
+                }
+            };
+
+            // The UI being down must never disturb the MCP server, so a failed
+            // report is dropped and the publisher rebuilt on the next tick.
+            if let Some(p) = &publisher
+                && let Err(e) = p.send(CanonicalMessage::from(payload)).await
+            {
+                tracing::debug!("MCP status reporting: send failed: {e}");
+                publisher = None;
+            }
+        }
+    });
+}
+
+async fn run_stdio(server: BridgeMcp) -> anyhow::Result<()> {
     info!("MCP server starting on stdio");
-    let service = BridgeMcp::new().serve(rmcp::transport::stdio()).await?;
+    let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
 
-async fn run_http(bind: String) -> anyhow::Result<()> {
+async fn run_http(server: BridgeMcp, bind: String) -> anyhow::Result<()> {
     use hyper_util::{
         rt::{TokioExecutor, TokioIo},
         server::conn::auto::Builder,
@@ -417,11 +801,11 @@ async fn run_http(bind: String) -> anyhow::Result<()> {
         StreamableHttpService, session::local::LocalSessionManager,
     };
 
-    // One shared route map across all sessions, so routes started in any session
-    // are visible to (and stoppable from) every session.
-    let routes: RouteMap = Arc::new(Mutex::new(HashMap::new()));
+    // One shared server across all sessions, so routes, publishers and metrics
+    // started in any session are visible to (and stoppable from) every session,
+    // and the reporting task sees all of them.
     let service = TowerToHyperService::new(StreamableHttpService::new(
-        move || Ok(BridgeMcp::with_routes(routes.clone())),
+        move || Ok(server.clone()),
         LocalSessionManager::default().into(),
         Default::default(),
     ));
