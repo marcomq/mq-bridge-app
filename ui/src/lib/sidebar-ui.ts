@@ -11,8 +11,20 @@ export function registerDismissOnOutsideClick(
     }
   };
 
-  window.addEventListener("click", handler);
-  return () => window.removeEventListener("click", handler);
+  let attached = false;
+  // Defer attaching so the click that opened the menu finishes bubbling first,
+  // otherwise it would reach this handler and immediately dismiss the menu.
+  const timerId = setTimeout(() => {
+    window.addEventListener("click", handler);
+    attached = true;
+  }, 0);
+
+  return () => {
+    clearTimeout(timerId);
+    if (attached) {
+      window.removeEventListener("click", handler);
+    }
+  };
 }
 
 export function startSidebarResize(

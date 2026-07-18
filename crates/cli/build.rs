@@ -26,4 +26,11 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_path);
     }
+
+    // On macOS no rpath is embedded by default, so the app can't find the IBM MQ
+    // client dylib at runtime unless the user sets DYLD_LIBRARY_PATH manually.
+    // Embed the installation lib dir as an rpath so it loads out of the box.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_path);
+    }
 }

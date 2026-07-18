@@ -194,7 +194,7 @@ const ENDPOINT_KIND_METADATA = [
   {
     kind: "ibmmq",
     rootOrder: 15,
-    basicFields: ["connection_manager", "queue", "topic"],
+    basicFields: ["url", "queue_manager", "channel", "queue", "topic", "username", "password"],
     requestBar: {
       fields: [
         { inputId: "pub-extra-1", field: "queue", label: "QUEUE", placeholder: "DEV.QUEUE.1" },
@@ -212,7 +212,7 @@ const ENDPOINT_KIND_METADATA = [
   { kind: "response", rootOrder: 19, basicFields: [], publisher: false, consumer: false },
   { kind: "custom", rootOrder: 20, basicFields: [], publisher: false, consumer: false },
   { kind: "null", rootOrder: 21, basicFields: [], publisher: false, consumer: false },
-  { kind: "aws", rootOrder: 22, basicFields: ["region", "access_key_id", "secret_access_key"], publisher: true, consumer: true },
+  { kind: "aws", rootOrder: 22, basicFields: ["region", "queue_url", "topic_arn", "access_key", "secret_key"], publisher: true, consumer: true },
   {
     kind: "redis_streams",
     rootOrder: 23,
@@ -226,6 +226,17 @@ const ENDPOINT_KIND_METADATA = [
     publisher: true,
     consumer: true,
     requiresFeature: "redis_streams",
+  },
+  {
+    kind: "object_store",
+    rootOrder: 24,
+    basicFields: ["url", "format"],
+    requestBar: {
+      fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "s3://bucket/prefix" }],
+    },
+    publisher: true,
+    consumer: true,
+    requiresFeature: "object_store",
   },
 ] as const satisfies readonly EndpointKindMetadata[];
 
