@@ -523,7 +523,7 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
     use mq_bridge::models::{
         BufferMiddleware, CookieJarMiddleware, DeadLetterQueueMiddleware, DeduplicationMiddleware,
         DelayMiddleware, LimiterMiddleware, MetricsMiddleware, RandomPanicMiddleware,
-        RetryMiddleware, WeakJoinMiddleware,
+        RetryMiddleware, TransformMiddleware, WeakJoinMiddleware,
     };
     use std::collections::HashMap;
 
@@ -546,6 +546,7 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
         "limiter" => schema_fields(schemars::schema_for!(LimiterMiddleware)),
         "buffer" => schema_fields(schemars::schema_for!(BufferMiddleware)),
         "cookie_jar" => schema_fields(schemars::schema_for!(CookieJarMiddleware)),
+        "transform" => schema_fields(schemars::schema_for!(TransformMiddleware)),
         // The escape hatch for a handler-provided middleware: `name` selects it,
         // `config` carries its free-form JSON.
         "custom" => HashMap::from([
@@ -553,7 +554,7 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
             ("config".to_string(), FieldType::Object),
         ]),
         other => bail!(
-            "unsupported middleware '{other}'. Supported middlewares: deduplication, metrics, dlq, retry, random_panic, delay, weak_join, limiter, buffer, cookie_jar, custom"
+            "unsupported middleware '{other}'. Supported middlewares: deduplication, metrics, dlq, retry, random_panic, delay, weak_join, limiter, buffer, cookie_jar, transform, custom"
         ),
     };
 

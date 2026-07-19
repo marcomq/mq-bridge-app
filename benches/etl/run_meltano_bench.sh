@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/seed.sh"   # also sources lib.sh
 
 ROWS="${ROWS:-1000000}"
-REPEATS="${REPEATS:-5}"
+REPEATS="${REPEATS:-2}"
 MELTANO_PROJECT="$HERE/meltano_project/bench"
 MELTANO_BIN="$HERE/meltano_project/.venv/bin/meltano"
 
@@ -42,15 +42,12 @@ if [[ "$n_bench" != "$ROWS" ]]; then
 fi
 
 # --- mq-bridge-app copy ---
+# Delegates to lib.sh's run_guarded, which escalates SIGTERM -> SIGKILL and
+# signals the whole process group. The TERM-only version this replaced could not
+# kill a wedged route — mq-bridge-app traps SIGTERM for graceful shutdown — so the
+# watchdog fired, the process survived, and the script waited forever.
 copy_guarded() {
-  "$BIN" copy "$@" >/dev/null 2>&1 &
-  local pid=$!
-  { sleep "$COPY_TIMEOUT"; kill "$pid" 2>/dev/null; } 2>/dev/null &
-  local killer=$!
-  disown "$killer" 2>/dev/null || true
-  local rc=0; wait "$pid" 2>/dev/null || rc=$?
-  kill "$killer" 2>/dev/null || true
-  return "$rc"
+  run_guarded "$COPY_TIMEOUT" "$BIN" copy "$@"
 }
 
 from="${PG_URL}?table=bench&cursor_column=id&sslmode=disable"

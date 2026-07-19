@@ -14,7 +14,7 @@ source "$HERE/seed.sh"   # also sources lib.sh
 PAYLOADS="${PAYLOADS:-256 4096}"        # bytes per JSON row
 BATCHES="${BATCHES:-1 128}"
 CONCURRENCIES="${CONCURRENCIES:-1 4}"
-REPEATS="${REPEATS:-5}"                 # timed runs per cell (1 warmup + REPEATS, median/stddev reported)
+REPEATS="${REPEATS:-2}"                 # timed runs per cell (1 warmup + REPEATS, median/stddev reported)
 
 RESULTS_DIR="${RESULTS_DIR:-$HERE/results}"
 mkdir -p "$RESULTS_DIR"

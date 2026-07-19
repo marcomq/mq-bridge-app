@@ -15,7 +15,7 @@ source "$HERE/seed.sh"   # also sources lib.sh
 PAYLOADS="${PAYLOADS:-256 4096}"
 BATCHES="${BATCHES:-1 128}"
 CONCURRENCIES="${CONCURRENCIES:-1 4}"
-REPEATS="${REPEATS:-5}"          # timed runs per cell (1 warmup + REPEATS, median/stddev reported)
+REPEATS="${REPEATS:-2}"          # timed runs per cell (1 warmup + REPEATS, median/stddev reported)
 
 RESULTS_DIR="${RESULTS_DIR:-$HERE/results}"
 mkdir -p "$RESULTS_DIR"
@@ -26,15 +26,12 @@ now() { python3 -c 'import time; print(time.time())'; }
 COPY_TIMEOUT="${COPY_TIMEOUT:-900}"
 OUT_FILE="${OUT_FILE:-/tmp/mqb_bench_out.jsonl}"
 
+# Delegates to lib.sh's run_guarded, which escalates SIGTERM -> SIGKILL and
+# signals the whole process group. The TERM-only version this replaced could not
+# kill a wedged route — mq-bridge-app traps SIGTERM for graceful shutdown — so the
+# watchdog fired, the process survived, and the script waited forever.
 copy_guarded() {
-  "$BIN" copy "$@" >/dev/null 2>&1 &
-  local pid=$!
-  { sleep "$COPY_TIMEOUT"; kill "$pid" 2>/dev/null; } 2>/dev/null &
-  local killer=$!
-  disown "$killer" 2>/dev/null || true
-  local rc=0; wait "$pid" 2>/dev/null || rc=$?
-  kill "$killer" 2>/dev/null || true
-  return "$rc"
+  run_guarded "$COPY_TIMEOUT" "$BIN" copy "$@"
 }
 
 [[ -x "$BIN" ]] || { echo "binary not found at $BIN — build with --features bench --release" >&2; exit 1; }
