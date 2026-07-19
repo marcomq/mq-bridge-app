@@ -33,12 +33,29 @@ columns are measured on the same machine (this repo's Apple M1 host, on battery)
 
 ### A — CSV → JSONL (1,000,000 rows, ~116 MiB)
 
-| Metric            | mq-bridge-app       | Sling           | Meltano        |
-| ----------------- | ------------------- | --------------- | -------------- |
-| Throughput        | **834,724 rows/s**  | 119,217 rows/s  | ~19,500 rows/s |
-| Median wall-clock | 1.20 s              | 8.39 s          | ~51 s          |
-| Peak RSS          | 20.0 MiB            | not yet measured| 443.8 MiB      |
-| Rows out          | 1,000,000           | 1,000,000       | 1,000,000      |
+mq-bridge-app is measured **twice**, because the two configurations do different
+work and each has a baseline it legitimately belongs against:
+
+| Metric            | mq-bridge-app (typed) | mq-bridge-app (untyped) | Sling           | Meltano        |
+| ----------------- | --------------------- | ----------------------- | --------------- | -------------- |
+| Throughput        | **540,248 rows/s**    | **784,313 rows/s**      | 127,959 rows/s  | ~19,500 rows/s |
+| Median wall-clock | 1.85 s                | 1.28 s                  | 7.82 s          | ~51 s          |
+| Peak RSS          | not yet re-measured   | not yet re-measured     | not yet measured| 443.8 MiB      |
+| Rows out          | 1,000,000             | 1,000,000               | 1,000,000       | 1,000,000      |
+
+- **typed** runs a `transform` middleware that reproduces Sling's typing exactly,
+  and the harness fails the run unless all 1,000,000 output records match. **This
+  is the column to read against Sling** (~4.2x), and the only one that is
+  like-for-like.
+- **untyped** runs no middleware: every field stays the string the CSV reader
+  produced. This is the column to read against **Meltano** (~40x), whose `tap-csv`
+  likewise emits every field as a string — and it is the floor the transform's cost
+  is measured against.
+
+Quoting the untyped figure against Sling would overstate the margin (it would read
+~6.1x); quoting the typed figure against Meltano understates it. See
+[A note on the Sling comparison](#a-note-on-the-sling-comparison). Peak RSS needs
+re-measuring for both — the 20.0 MiB figure predates the transform.
 
 ### B — Postgres → JSONL (1,000,000 rows, 7-col)
 
@@ -53,11 +70,15 @@ columns are measured on the same machine (this repo's Apple M1 host, on battery)
 magnitude leaner than Meltano's Python pipeline (444–600 MiB). Throughput and RSS
 are single-machine, single-process batch numbers.
 
-> **Read the Sling column with the caveat attached.** mq-bridge-app moves data
-> without transforming it, while Sling additionally does schema inference and type
-> conversion — real per-row work that mq-bridge-app simply doesn't do. The ratio is
-> therefore not a like-for-like ETL comparison. See
-> [A note on the Sling comparison](#a-note-on-the-sling-comparison).
+> **The two Sling columns are not on equal footing — check which one you're
+> reading.** In **A (CSV)** the *typed* mq-bridge-app column does the same per-row
+> work as Sling: it runs a `transform` middleware reproducing Sling's typing, and
+> the outputs are asserted identical row-for-row, so that ratio is like-for-like.
+> (A's *untyped* column is not — it belongs against Meltano.) In **B (Postgres)**
+> the comparison is not equalised at all: there mq-bridge-app passes values through
+> untyped while Sling does schema inference and type conversion, which is real work
+> it does and mq-bridge-app doesn't. B has no typed column yet.
+> See [A note on the Sling comparison](#a-note-on-the-sling-comparison).
 
 ## Fixed parameters (printed next to every number)
 
@@ -239,13 +260,35 @@ input row (string-valued fields — the shape both mq-bridge's CSV reader and
 tap-csv emit):
 
 ```bash
-benches/etl/run_csv_to_jsonl.sh   # -> benches/etl/results/csv_to_jsonl.csv
+benches/etl/run_csv_to_jsonl.sh   # all tools -> benches/etl/results/csv_to_jsonl.csv
 ```
 
+Each tool is also a standalone script, so a single number can be re-measured
+without re-running the matrix. They append to the same results CSV, each replacing
+only its own row:
+
 ```bash
+benches/etl/run_csv_mqb.sh              # mq-bridge-app, typed (transform)
+benches/etl/run_csv_mqb.sh --untyped    # mq-bridge-app, untyped (no middleware)
+benches/etl/run_csv_sling.sh
+benches/etl/run_csv_meltano.sh
+benches/etl/run_csv_parity.sh           # asserts typed output == Sling's
+```
+
+The two mq-bridge-app configurations differ only in the middleware suffix on the
+output endpoint:
+
+```bash
+# untyped — every field stays the string the CSV reader produced
 mq-bridge-app copy \
   --from 'file:///…/benches/etl/data/bench.csv?format=csv' \
   --to   'file:///tmp/mqb_csv_out.jsonl?format=raw' \
+  --drain --batch-size 1024 --concurrency 1
+
+# typed — reproduces Sling's typing, and is what §5's Sling ratio compares
+mq-bridge-app copy \
+  --from 'file:///…/benches/etl/data/bench.csv?format=csv' \
+  --to   'file:///tmp/mqb_csv_out.jsonl?format=raw|transform?schema_file=…/schemas/bench.json' \
   --drain --batch-size 1024 --concurrency 1
 ```
 
@@ -259,56 +302,85 @@ Sling side: `sling run --src-stream file://…bench.csv --tgt-object file://…`
 
 | Tool | Config | rows/s | peak RSS |
 | --- | --- | --- | --- |
-| mq-bridge-app `copy` | batch_size 1024, concurrency 1 | **834,724** (2 runs: 1.197s / 1.199s) | 20.0 MiB |
-| Sling | defaults | 119,217 (2 runs: 8.275s / 8.501s) | not yet measured |
-| Meltano (`tap-csv` → `target-jsonl`) | default Singer config | ~19,500 (clean runs 49.7s / 53.1s; fuller 5-run median pending) | 443.8 MiB |
+| mq-bridge-app `copy` (typed) | batch_size 1024, concurrency 1, `transform` (schemas/bench.json) | **540,248** (2-run median 1.851s, ±0.015) | not yet re-measured |
+| mq-bridge-app `copy` (untyped) | batch_size 1024, concurrency 1, no middleware | **784,313** (2-run median 1.275s, ±0.012) | not yet re-measured |
+| Sling | defaults | 127,959 (2-run median 7.815s, ±0.077) | not yet measured |
+| Meltano (`tap-csv` → `target-jsonl`) | default Singer config | ~19,500 (clean runs 49.7s / 53.1s; fuller median pending) | 443.8 MiB |
 
-**mq-bridge-app is ~7.0x faster than Sling and ~43x faster than Meltano** (and ~22x
-leaner than Meltano in peak memory) in this scenario — but see
-[the note on Sling below](#a-note-on-the-sling-comparison), because that ratio is
-not comparing equal work.
+**Typed vs Sling: ~4.2x** — equal work, asserted identical outputs. **Untyped vs
+Meltano: ~40x** — both emit strings. Those are the two defensible ratios; see
+[the note below](#a-note-on-the-sling-comparison) for why they are not
+interchangeable.
 
-The mq-bridge-app and Sling figures above come from the same back-to-back session.
-The Meltano figure is from an earlier session on the same machine and dataset.
+The typed cost is explicit here rather than hidden in a single number: the
+transform adds **0.58 s per 1,000,000 rows (~0.58 µs/row, ~31% of the typed
+wall-clock)**. An earlier revision of the transform cost 2.10 s per 1M rows (2.1
+µs/row, 64%), which is why the previously published typed figure was 303,214.
+
+The mq-bridge-app and Sling figures above come from the same back-to-back session
+(2026-07-19, 2 repeats each after a discarded warmup, on battery). The untyped
+figure was measured three separate times in that session — 788,022 / 784,313 /
+768,639 rows/s — and the table reports the median; the ~2.5% spread is the honest
+run-to-run variance on this host. The Meltano figure is from an earlier session on
+the same machine and dataset.
 
 ### A note on the Sling comparison
 
-**These tools are not doing the same work, and the throughput ratio should not be
-read as "mq-bridge-app is Nx better at ETL."**
+Sling does schema inference and type conversion: given a CSV row it emits typed
+values and re-parses nested JSON into real objects. mq-bridge-app's readers do not
+infer types — they pass values through as strings. Comparing those two directly
+would time a string passthrough against a tool that parses and re-types every row,
+which is not a benchmark, so the two scenarios handle it differently.
 
-mq-bridge-app moves data. It does **not** transform it: values are passed through
-as they arrive, so a CSV column lands as a JSON string and a JSON column lands as
-the string it was stored as. Sling does schema inference and type conversion —
-given the same input row it emits typed values and re-parses nested JSON into real
-objects:
+**§5 (CSV → JSONL) — equal work, ratio is like-for-like.** The mq-bridge-app run
+carries a `transform` middleware ([`schemas/bench.json`](schemas/bench.json)) that
+reproduces Sling's output exactly: `coerce` widens the `id` string to an integer,
+and `contentMediaType: application/json` decodes the embedded `attributes` document
+into a nested object. Both tools then emit the same records:
 
 ```jsonc
-// sling, from CSV            → id is a number, attributes is a nested object
+// sling (defaults) and mq-bridge-app (+ transform) — identical records
 {"id":1,"amount":"6767.32","attributes":{"score":2.501,"tier":"free"}}
-// sling, from Postgres       → amount typed as a number too
-{"id":1,"amount":6767.32,"attributes":{"score":2.501,"tier":"free"}}
-// mq-bridge-app              → every field a string, attributes stays a JSON string
-{"id":"1","amount":"6767.32","attributes":"{\"score\":2.501,\"tier\":\"free\"}"}
 ```
 
-That inference is real per-row work Sling does and mq-bridge-app does not, and it
-is a genuine feature — one many pipelines need. So part of the gap above is
-mq-bridge-app being faster, and part is it doing less. Both tools were run at their
-**defaults**, which is what a user actually types; Sling can be told to force all
-columns to string, which would narrow the gap.
+This is asserted, not assumed: [`compare_jsonl.py`](compare_jsonl.py) diffs the two
+outputs record-by-record and **fails the run** on any mismatch, so the numbers in §5
+cannot be published unless all 1,000,000 rows match. Records are compared as parsed
+JSON — mq-bridge-app preserves the source column order inside `attributes` while
+Sling alphabetizes it, which is a serialization difference, not a data one.
 
-Transformation in mq-bridge-app is deliberately a separate concern — it may be
-added later, and if it is, these numbers should be re-measured with it enabled
-before being compared against a transforming tool.
+Making the work equal is not free, and the harness measures the cost directly by
+running mq-bridge-app both ways in the same session: **784,313 untyped → 540,248
+typed**, i.e. the transform costs ~0.58 µs/row (~31% of wall-clock). The margin
+against Sling is therefore ~4.2x, not the ~6.1x the untyped run would suggest.
+
+Both configurations stay published on purpose. The untyped number is not a
+discarded draft — it is the correct comparison against any tool that also does no
+transformation (Meltano's `tap-csv` emits every field as a string), and it is what
+makes the transform's cost auditable instead of baked invisibly into one figure.
+What it must *not* be used for is a comparison against a type-inferring tool.
+
+Historical note: this scenario previously published 303,214 rows/s typed, against
+an untyped 834,724 — a ~2.7x cost for the same schema. A later optimization of the
+transform middleware cut that to ~1.45x. Sling is a useful control across all of
+it, measuring 119,217 → 128,766 → 127,959 rows/s in three separate sessions on this
+machine, so the movement in the typed number is real engine work rather than a
+drifting baseline.
+
+**§6 (Postgres → JSONL) — not yet equalised.** That scenario still runs
+mq-bridge-app untyped against a type-inferring Sling, so part of its ~2.0x gap is
+mq-bridge-app doing less. Read it with that attached. Applying the same treatment
+there needs a Postgres-shaped schema (the driver already returns typed values for
+some columns, so it is not a copy of `bench.json`) and a re-run.
 
 **A note on this benchmark:**
 
 - **The CSV number does not scale with batch size or concurrency.** A `file://`
   source is a single sequential reader, so extra route workers can't parallelize
   the read; the bottleneck is per-row CSV→JSON conversion on the one reader, not
-  I/O or batching. After the CSV-path optimization this baseline sits at ~833k,
-  close to the raw byte-passthrough `file→file` reference (~880k, no CSV decode),
-  so the remaining CSV-decode overhead is now small.
+  I/O or batching. After the CSV-path optimization this untyped baseline sits at
+  ~784k, close to the raw byte-passthrough `file→file` reference (~880k, no CSV
+  decode), so the remaining CSV-decode overhead is now small.
 
 ## Reference baselines to line up against
 

@@ -306,10 +306,16 @@ transport (`static` source → `memory` publisher, batch_size 1024, concurrency 
 sustained **1,202,926 rows/s** on commodity hardware.
 
 For a CSV → JSONL file conversion (1,000,000 mixed-type rows, ~116 MiB, `copy
---batch-size 1024 --concurrency 1`), mq-bridge-app sustained **833,333 rows/s**
-at **~20 MiB peak RSS**, about **43x faster** and ~22x leaner than Meltano
-(`tap-csv` → `target-jsonl`, same file, same machine) at **~19,500 rows/s** /
-444 MiB.
+--batch-size 1024 --concurrency 1`), mq-bridge-app sustained **784,313 rows/s**
+passing fields through as strings — about **40x faster** than Meltano (`tap-csv` →
+`target-jsonl`, same file, same machine) at **~19,500 rows/s** / 444 MiB, which
+likewise emits every field as a string.
+
+Adding a `transform` middleware that types the output (coercing `id` to an integer
+and decoding an embedded JSON document into a real object) costs ~0.58 µs/row and
+still sustained **540,248 rows/s**. That typed run is the one benchmarked against
+Sling, a compiled Go EL tool that types by default: **~4.2x** faster, with all
+1,000,000 output records asserted identical.
 
 For a Postgres → JSONL file ETL job (1,000,000 rows, 7 mixed-type columns, `copy
 --batch-size 1024 --concurrency 1`), mq-bridge-app sustained **266,951 rows/s**
