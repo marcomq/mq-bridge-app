@@ -168,9 +168,25 @@ The URLs use a generic `scheme://…?param=a&next=b` convention: the **scheme se
 - For `nats`, the dominant target field can also be given as the URL path instead of a query param — `nats://localhost:4222/orders` is equivalent to `nats://localhost:4222?subject=orders` (matching the UI's short-display convention); the query form wins if both are given. (A `redis` path is the connection's database number and stays on the URL, so a redis stream target must be set with `?stream=…`.)
 - MongoDB sources are **non-destructive by default**: `copy` (and the UI) default `consume` to `capture_all` (read existing documents, then watch for changes) so pointing at an existing collection never claims or deletes its documents. Pass `?consume=consumer` to opt into the destructive queue-drain mode. (Note: `capture_all` / `capture_new` use change streams, which require a replica set.)
 
+**Middlewares.** Append `|`-separated middlewares to either URI to wrap that endpoint. They apply in the order written, and each takes its own config struct's fields as query params:
+
+```bash
+# Retry the source, meter the sink, and batch its sends
+mq-bridge-app copy \
+  --from 'postgres://user:pass@localhost/db?table=src|retry?max_attempts=5&initial_interval_ms=200' \
+  --to   'kafka://broker:9092?topic=orders|buffer?max_messages=500&max_delay_ms=50|metrics' \
+  --drain
+```
+
+- **Names**: `retry`, `metrics`, `dlq`, `deduplication`, `delay`, `limiter`, `buffer`, `weak_join`, `cookie_jar`, `random_panic`, `custom`. A `-` is accepted for `_` (`weak-join` == `weak_join`).
+- A middleware with no params needs no `?` at all — `|metrics`.
+- `dlq`'s `endpoint` is itself a URL-encoded endpoint URI, so failed messages can land anywhere: `|dlq?endpoint=file%3A%2F%2F%2Ftmp%2Ffailed.jsonl`.
+- Object/array fields take a JSON literal, e.g. `|weak-join?group_by=cid&expected_count=2&timeout_ms=1000&required=["a","b"]`.
+- A literal `|` inside the URI itself (e.g. in a password) must be written percent-encoded as `%7C`.
+
 **Flags**
 
-- `--from <uri>` / `--to <uri>` — source and destination endpoints.
+- `--from <uri>` / `--to <uri>` — source and destination endpoints, each optionally followed by `|`-separated middlewares.
 - `--drain` — exit gracefully once the source is empty (drain-then-exit). Without it, `copy` runs as a continuous bridge until Ctrl-C.
 - `--concurrency <N>` / `--batch-size <N>` — route tuning passthrough.
 

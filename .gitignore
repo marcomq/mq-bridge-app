@@ -36,6 +36,7 @@ conf
 db
 benches/etl/results
 benches/etl/meltano_project
+benches/etl/bin
 
 /node_modules
 /ui/node_modules

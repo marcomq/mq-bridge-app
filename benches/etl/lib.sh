@@ -24,6 +24,26 @@ export REPO_ROOT
 # Path to the built lean benchmark binary (see README: cargo build --features bench).
 export BIN="${BIN:-$REPO_ROOT/target/release/mq-bridge-app}"
 
+# Path to the Sling CLI — a compiled (Go) EL baseline alongside Meltano. Kept
+# repo-local so a run never depends on what's on $PATH. Install with:
+#   mkdir -p benches/etl/bin && curl -sL \
+#     "https://github.com/slingdata-io/sling-cli/releases/latest/download/sling_darwin_arm64.tar.gz" \
+#     | tar -xz -C benches/etl/bin sling
+export SLING_BIN="${SLING_BIN:-$HERE/bin/sling}"
+
+# Count JSONL rows at a path that may be a single file or a directory of parts
+# (Sling splits its output into part files unless file_max_rows is 0).
+landed_rows() {
+  local p="$1"
+  if [[ -d "$p" ]]; then
+    find "$p" -type f -exec cat {} + 2>/dev/null | wc -l | tr -d ' '
+  elif [[ -f "$p" ]]; then
+    wc -l < "$p" | tr -d ' '
+  else
+    echo 0
+  fi
+}
+
 # psql shorthand against the benchmark database. Uses a host `psql` if present,
 # otherwise runs psql inside the compose container (so no host client is needed).
 PG_CONTAINER="${PG_CONTAINER:-postgres-etl-bench-mq-bridge}"

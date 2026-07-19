@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Postgres -> JSONL throughput, for a fair comparison against faucet-stream's
-# Scenario B (source-postgres -> sink-jsonl, see BENCHMARKS.md in that repo).
-# Uses the app's zero-code `copy` command, `file://…?format=raw` sink (raw
-# payload per line, newline-delimited — no CanonicalMessage envelope), so the
-# JSONL shape matches faucet's sink-jsonl output: one JSON row per line.
+# Postgres -> JSONL throughput. Uses the app's zero-code `copy` command with a
+# `file://…?format=raw` sink (raw payload per line, newline-delimited — no
+# CanonicalMessage envelope), so the output is plain JSONL: one JSON row per
+# line, directly comparable with any other EL tool's JSONL output.
 #
 # Prereqs:  ./seed.sh up   and a lean build:
 #           cargo build -p mq-bridge-app --no-default-features --features bench --release

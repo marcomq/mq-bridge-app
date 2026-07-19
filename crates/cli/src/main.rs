@@ -140,10 +140,15 @@ struct CopyArgs {
     /// Source endpoint URI. The scheme selects the endpoint and query params set
     /// its config, e.g. `postgres://user:pass@host/db?table=src&sslmode=disable`,
     /// `nats://host:4222?subject=orders` or `file:///path/to/file?format=json`.
+    ///
+    /// Append `|`-separated middlewares to wrap the endpoint, applied in order:
+    /// `...?table=src|retry?max_attempts=5|metrics`. Middleware params are that
+    /// middleware's config fields. A literal `|` inside the URI must be written
+    /// as `%7C`.
     #[arg(long)]
     from: String,
 
-    /// Destination endpoint URI (same URI forms as `--from`), e.g.
+    /// Destination endpoint URI (same URI and middleware forms as `--from`), e.g.
     /// `postgres://user:pass@host/db?table=dst&insert_query=<url-encoded SQL>`.
     #[arg(long)]
     to: String,
@@ -489,7 +494,97 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 /// to use it verbatim (e.g. `mongodb://_/?url=<encoded>&collection=orders`); its
 /// own `?a=b` options are then never re-interpreted as config, which is the
 /// escape hatch for any driver option that collides with a config field name.
+/// Parses a `--from`/`--to` value into an endpoint, including any middlewares.
+///
+/// The value is the endpoint URI optionally followed by `|`-separated middleware
+/// specs, applied in the order written:
+/// `postgres://host/db?table=src|retry?max_attempts=5|metrics`.
+/// A literal `|` inside the URI itself (e.g. in a password) must be written
+/// percent-encoded as `%7C`.
 fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
+    let mut parts = uri.split('|');
+    let base = parts.next().unwrap_or(uri);
+    let mut endpoint = base_endpoint_from_uri(base)?;
+    for spec in parts {
+        endpoint.middlewares.push(
+            middleware_from_spec(spec)
+                .with_context(|| format!("invalid middleware '{spec}' in '{uri}'"))?,
+        );
+    }
+    Ok(endpoint)
+}
+
+/// Builds a middleware from a `name` / `name?param=value&...` spec. Params are
+/// the middleware config struct's own fields, coerced to the type the field
+/// expects; `dlq`'s `endpoint` is itself an endpoint URI, and object/array
+/// fields (e.g. `weak_join`'s `required`) take a JSON literal.
+fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middleware> {
+    use anyhow::bail;
+    use mq_bridge::models::{
+        BufferMiddleware, CookieJarMiddleware, DeadLetterQueueMiddleware, DeduplicationMiddleware,
+        DelayMiddleware, LimiterMiddleware, MetricsMiddleware, RandomPanicMiddleware,
+        RetryMiddleware, WeakJoinMiddleware,
+    };
+    use std::collections::HashMap;
+
+    let (name, query) = match spec.split_once('?') {
+        Some((name, query)) => (name.trim(), query),
+        None => (spec.trim(), ""),
+    };
+    // An underscore is awkward to type in a shell-quoted URI, so `-` is accepted
+    // as well (`weak-join` == `weak_join`).
+    let tag = name.replace('-', "_");
+
+    let fields: HashMap<String, FieldType> = match tag.as_str() {
+        "deduplication" => schema_fields(schemars::schema_for!(DeduplicationMiddleware)),
+        "metrics" => schema_fields(schemars::schema_for!(MetricsMiddleware)),
+        "dlq" => schema_fields(schemars::schema_for!(DeadLetterQueueMiddleware)),
+        "retry" => schema_fields(schemars::schema_for!(RetryMiddleware)),
+        "random_panic" => schema_fields(schemars::schema_for!(RandomPanicMiddleware)),
+        "delay" => schema_fields(schemars::schema_for!(DelayMiddleware)),
+        "weak_join" => schema_fields(schemars::schema_for!(WeakJoinMiddleware)),
+        "limiter" => schema_fields(schemars::schema_for!(LimiterMiddleware)),
+        "buffer" => schema_fields(schemars::schema_for!(BufferMiddleware)),
+        "cookie_jar" => schema_fields(schemars::schema_for!(CookieJarMiddleware)),
+        // The escape hatch for a handler-provided middleware: `name` selects it,
+        // `config` carries its free-form JSON.
+        "custom" => HashMap::from([
+            ("name".to_string(), FieldType::StringLike),
+            ("config".to_string(), FieldType::Object),
+        ]),
+        other => bail!(
+            "unsupported middleware '{other}'. Supported middlewares: deduplication, metrics, dlq, retry, random_panic, delay, weak_join, limiter, buffer, cookie_jar, custom"
+        ),
+    };
+
+    let mut config = serde_json::Map::new();
+    for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
+        let (k, v) = (k.into_owned(), v.into_owned());
+        let value = if tag == "dlq" && k == "endpoint" {
+            let endpoint =
+                endpoint_from_uri(&v).with_context(|| format!("invalid dlq endpoint '{v}'"))?;
+            serde_json::to_value(endpoint)?
+        } else {
+            match fields.get(&k).copied() {
+                // Object/array fields can't come from a scalar, so the value is
+                // read as a JSON literal. An unknown field (`None`) is passed
+                // through for serde to reject by name.
+                Some(FieldType::Object) | None => {
+                    serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v))
+                }
+                Some(ty) => coerce_scalar(v, ty),
+            }
+        };
+        config.insert(k, value);
+    }
+
+    let mut tagged = serde_json::Map::new();
+    tagged.insert(tag.clone(), serde_json::Value::Object(config));
+    serde_json::from_value(serde_json::Value::Object(tagged))
+        .with_context(|| format!("could not build a '{tag}' middleware from '{spec}'"))
+}
+
+fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     use anyhow::bail;
     use mq_bridge::models::{
         AmqpConfig, AwsConfig, ClickHouseConfig, Endpoint, EndpointType, FileConfig, GrpcConfig,
@@ -1145,6 +1240,57 @@ mod uri_tests {
         assert!(err.to_string().contains("escaped mode"), "got: {err}");
     }
 
+    // `|`-separated middlewares wrap the endpoint in the order written, and their
+    // params are coerced to the middleware config field's own type.
+    #[test]
+    fn middlewares_are_appended_in_order() {
+        let ep = endpoint_from_uri("kafka://broker:9092?topic=orders|retry?max_attempts=5|metrics")
+            .expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(v["kafka"]["topic"], "orders");
+        let mw = v["middlewares"].as_array().expect("middlewares array");
+        assert_eq!(mw.len(), 2);
+        assert_eq!(mw[0]["retry"]["max_attempts"], 5);
+        assert!(mw[1].get("metrics").is_some(), "got: {}", mw[1]);
+    }
+
+    // A middleware's own object-typed field takes a JSON literal, and `-` in the
+    // name is accepted for the snake_case tag.
+    #[test]
+    fn middleware_dash_alias_and_json_field() {
+        let ep = endpoint_from_uri(
+            "null:|weak-join?group_by=cid&expected_count=2&timeout_ms=1000&required=[\"a\",\"b\"]",
+        )
+        .expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        let wj = &v["middlewares"][0]["weak_join"];
+        assert_eq!(wj["group_by"], "cid");
+        assert_eq!(wj["required"], serde_json::json!(["a", "b"]));
+    }
+
+    // `dlq`'s `endpoint` param is itself an endpoint URI, parsed recursively.
+    #[test]
+    fn dlq_endpoint_param_is_a_nested_uri() {
+        let mut spec = String::from("kafka://broker:9092?topic=orders|dlq?");
+        let mut q = url::form_urlencoded::Serializer::new(String::new());
+        q.append_pair("endpoint", "file:///tmp/failed.jsonl");
+        spec.push_str(&q.finish());
+        let ep = endpoint_from_uri(&spec).expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(
+            v["middlewares"][0]["dlq"]["endpoint"]["file"]["path"],
+            "/tmp/failed.jsonl"
+        );
+    }
+
+    // An unknown middleware name is rejected with the supported list.
+    #[test]
+    fn unknown_middleware_is_rejected() {
+        let err = endpoint_from_uri("null:|bogus").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unsupported middleware 'bogus'"), "got: {msg}");
+    }
+
     // `kafka://` selects the Kafka endpoint; the scheme is stripped so `url`
     // (rdkafka's bootstrap.servers) is a bare host:port, and `topic` is scalar.
     #[test]
@@ -1260,3 +1406,4 @@ mod uri_tests {
         assert_eq!(cfg["url"], "tcp://127.0.0.1:5555");
     }
 }
+

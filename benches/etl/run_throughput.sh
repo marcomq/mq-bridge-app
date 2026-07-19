@@ -43,8 +43,8 @@ run_one() {
   copy_guarded --from "$from" --to "$to" --drain --batch-size "$batch" --concurrency "$conc" || true
 
   # REPEATS timed runs (a single sample is noise on a laptop, esp. on battery/
-  # thermal throttling) — report median + stddev, like faucet-stream's
-  # hyperfine-based methodology, instead of trusting one wall-clock sample.
+  # thermal throttling) — report median + stddev, the same statistic hyperfine
+  # reports, instead of trusting one wall-clock sample.
   local -a elapsed_samples=()
   local i t0 t1 elapsed landed
   for ((i = 1; i <= REPEATS; i++)); do

@@ -104,7 +104,11 @@ fn current_exe() -> Result<String> {
 
 /// Arguments the client should launch this binary with.
 fn server_args(report_to_ui: bool) -> Vec<String> {
-    let mut args = vec!["mcp".to_string(), "--transport".to_string(), "stdio".to_string()];
+    let mut args = vec![
+        "mcp".to_string(),
+        "--transport".to_string(),
+        "stdio".to_string(),
+    ];
     if report_to_ui {
         args.push("--report-to-ui".to_string());
     }
@@ -141,14 +145,24 @@ pub fn install(client: Option<Client>, local: bool, report_to_ui: bool) -> Resul
             && which("claude").is_some()
             && install_via_claude_cli(&exe, local, report_to_ui)?
         {
-            println!("{}: registered '{SERVER_NAME}' via the claude CLI", client.label());
+            println!(
+                "{}: registered '{SERVER_NAME}' via the claude CLI",
+                client.label()
+            );
             continue;
         }
         let Some(path) = client.config_path(local) else {
-            bail!("{} has no project-scoped config; drop --local", client.label());
+            bail!(
+                "{} has no project-scoped config; drop --local",
+                client.label()
+            );
         };
         merge_server(&path, server_entry(&exe, report_to_ui))?;
-        println!("{}: registered '{SERVER_NAME}' in {}", client.label(), path.display());
+        println!(
+            "{}: registered '{SERVER_NAME}' in {}",
+            client.label(),
+            path.display()
+        );
     }
     println!("Restart the client fully (not just a new tab) for it to pick the server up.");
     Ok(())
@@ -200,7 +214,10 @@ pub fn uninstall(client: Option<Client>, local: bool) -> Result<()> {
                 .output()
                 .context("failed to run the claude CLI")?;
             if out.status.success() {
-                println!("{}: removed '{SERVER_NAME}' via the claude CLI", client.label());
+                println!(
+                    "{}: removed '{SERVER_NAME}' via the claude CLI",
+                    client.label()
+                );
                 continue;
             }
         }
@@ -208,7 +225,11 @@ pub fn uninstall(client: Option<Client>, local: bool) -> Result<()> {
             continue;
         };
         match remove_server(&path)? {
-            true => println!("{}: removed '{SERVER_NAME}' from {}", client.label(), path.display()),
+            true => println!(
+                "{}: removed '{SERVER_NAME}' from {}",
+                client.label(),
+                path.display()
+            ),
             false => println!("{}: '{SERVER_NAME}' was not registered", client.label()),
         }
     }
@@ -229,7 +250,11 @@ pub fn status(local: bool) -> Result<()> {
         match registered {
             Some(entry) => {
                 let command = entry.get("command").and_then(Value::as_str).unwrap_or("?");
-                let stale = if command == exe { "" } else { "  (points at a different binary)" };
+                let stale = if command == exe {
+                    ""
+                } else {
+                    "  (points at a different binary)"
+                };
                 println!("{}: registered -> {command}{stale}", client.label());
             }
             None => println!("{}: not registered ({})", client.label(), path.display()),
@@ -271,8 +296,7 @@ fn write_config(path: &Path, config: &Value) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let text = serde_json::to_string_pretty(config)?;
-    std::fs::write(path, text + "\n")
-        .with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(path, text + "\n").with_context(|| format!("failed to write {}", path.display()))
 }
 
 /// Sets our entry under `mcpServers`, leaving every other key untouched.
@@ -330,7 +354,10 @@ mod tests {
         let config = read_config(&path).unwrap();
         assert_eq!(config["theme"], "dark");
         assert_eq!(config["mcpServers"]["other"]["command"], "x");
-        assert_eq!(config["mcpServers"][SERVER_NAME]["command"], "/bin/mq-bridge-app");
+        assert_eq!(
+            config["mcpServers"][SERVER_NAME]["command"],
+            "/bin/mq-bridge-app"
+        );
     }
 
     #[test]
@@ -346,7 +373,11 @@ mod tests {
     #[test]
     fn remove_only_touches_our_entry() {
         let path = temp_path("remove");
-        write_config(&path, &json!({ "mcpServers": { "other": { "command": "x" } } })).unwrap();
+        write_config(
+            &path,
+            &json!({ "mcpServers": { "other": { "command": "x" } } }),
+        )
+        .unwrap();
         merge_server(&path, server_entry("/bin/mq-bridge-app", false)).unwrap();
 
         assert!(remove_server(&path).unwrap());

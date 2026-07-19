@@ -16,13 +16,11 @@ name = "mq_bridge_app"
 path = "src/lib.rs"
 
 [dependencies]
-# TODO(mq-bridge-0.3.6): pinned to the released 0.3.5. The MCP server wants
-# `RouteHandle::is_finished()`, which only exists in the unreleased 0.3.6 — see
-# `route_finished` in crates/cli/src/mcp.rs, the single place to update. Prefer
-# `cargo --config patch` over editing this line when building against a local
-# mq-bridge checkout.
-mq-bridge = { version = "0.3.5", features = ["schema"] }
-# mq-bridge = { path = "../../../mq-bridge", version = "0.3.6", features = ["schema"] } # keep for debugging / dev
+# NOTE: this is a local path dep on the sibling ../mq-bridge checkout, so the
+# build only works with that checkout present. Switch to the crates.io line
+# below (or use `cargo --config patch`) before publishing.
+# mq-bridge = { version = "0.3.6", features = ["schema"] }
+mq-bridge = { path = "../../../mq-bridge", version = "0.3.6", features = ["schema"] } # keep for debugging / dev
 
 config = { version = "0.15.22", features = ["yaml"] }
 dotenvy = "0.15.7"
