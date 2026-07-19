@@ -40,7 +40,7 @@ work and each has a baseline it legitimately belongs against:
 | ----------------- | --------------------- | ----------------------- | --------------- | -------------- |
 | Throughput        | **540,248 rows/s**    | **784,313 rows/s**      | 127,959 rows/s  | ~19,500 rows/s |
 | Median wall-clock | 1.85 s                | 1.28 s                  | 7.82 s          | ~51 s          |
-| Peak RSS          | not yet re-measured   | not yet re-measured     | not yet measured| 443.8 MiB      |
+| Peak RSS          | 69.7 MiB              | 18.9 MiB                | 111.2 MiB       | 443.8 MiB      |
 | Rows out          | 1,000,000             | 1,000,000               | 1,000,000       | 1,000,000      |
 
 - **typed** runs a `transform` middleware that reproduces Sling's typing exactly,
@@ -54,8 +54,10 @@ work and each has a baseline it legitimately belongs against:
 
 Quoting the untyped figure against Sling would overstate the margin (it would read
 ~6.1x); quoting the typed figure against Meltano understates it. See
-[A note on the Sling comparison](#a-note-on-the-sling-comparison). Peak RSS needs
-re-measuring for both — the 20.0 MiB figure predates the transform.
+[A note on the Sling comparison](#a-note-on-the-sling-comparison). Peak RSS
+(measured with `/usr/bin/time -l`): untyped **18.9 MiB**, typed **69.7 MiB** — the
+transform's per-row JSON decode/buffer adds ~51 MiB, still well under Sling's
+111.2 MiB and Meltano's 443.8 MiB.
 
 ### B — Postgres → JSONL (1,000,000 rows, 7-col)
 
@@ -302,9 +304,9 @@ Sling side: `sling run --src-stream file://…bench.csv --tgt-object file://…`
 
 | Tool | Config | rows/s | peak RSS |
 | --- | --- | --- | --- |
-| mq-bridge-app `copy` (typed) | batch_size 1024, concurrency 1, `transform` (schemas/bench.json) | **540,248** (2-run median 1.851s, ±0.015) | not yet re-measured |
-| mq-bridge-app `copy` (untyped) | batch_size 1024, concurrency 1, no middleware | **784,313** (2-run median 1.275s, ±0.012) | not yet re-measured |
-| Sling | defaults | 127,959 (2-run median 7.815s, ±0.077) | not yet measured |
+| mq-bridge-app `copy` (typed) | batch_size 1024, concurrency 1, `transform` (schemas/bench.json) | **540,248** (2-run median 1.851s, ±0.015) | 69.7 MiB |
+| mq-bridge-app `copy` (untyped) | batch_size 1024, concurrency 1, no middleware | **784,313** (2-run median 1.275s, ±0.012) | 18.9 MiB |
+| Sling | defaults | 127,959 (2-run median 7.815s, ±0.077) | 111.2 MiB |
 | Meltano (`tap-csv` → `target-jsonl`) | default Singer config | ~19,500 (clean runs 49.7s / 53.1s; fuller median pending) | 443.8 MiB |
 
 **Typed vs Sling: ~4.2x** — equal work, asserted identical outputs. **Untyped vs
