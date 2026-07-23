@@ -20,7 +20,9 @@ use mq_bridge_app::mq_bridge::{
 use mq_bridge_app::route_metrics::{
     CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, format_capture_time,
 };
-use mq_bridge_app::ui_app::{ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport};
+use mq_bridge_app::ui_app::{
+    ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport, RouteOutcomeSnapshot,
+};
 use rmcp::schemars;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -313,6 +315,7 @@ fn report_snapshot(
     healthy: bool,
     error: Option<String>,
     running: bool,
+    outcome: Option<RouteOutcomeSnapshot>,
     messages: u64,
     throughput: f64,
 ) -> ConsumerStatusSnapshot {
@@ -330,6 +333,7 @@ fn report_snapshot(
         message_sequence: messages,
         capture_enabled: false,
         capture_keep_last: 0,
+        outcome,
     }
 }
 
@@ -376,6 +380,7 @@ impl BridgeMcp {
                     // Unknown completion reads as "still running": a route we
                     // still hold a handle for was never stopped from here.
                     !route_finished(handle).unwrap_or(false),
+                    route_outcome(handle).map(RouteOutcomeSnapshot::from),
                     self.metrics.sequence(name).await,
                     self.metrics.throughput(name).await,
                 ),
@@ -392,6 +397,8 @@ impl BridgeMcp {
                     true,
                     None,
                     true,
+                    // Publishers have no route task, so nothing ever ends.
+                    None,
                     self.metrics.sequence(&key).await,
                     self.metrics.throughput(&key).await,
                 ),

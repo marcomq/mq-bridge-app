@@ -66,6 +66,7 @@ export interface RuntimeStatusResponse {
 export interface ConsumerStatusResponse {
   running: boolean;
   status: EndpointStatusSnapshot;
+  outcome?: RouteOutcomeSnapshot | null;
 }
 
 export interface StorageSecurityInfoResponse {
@@ -180,6 +181,34 @@ export interface CookieJarMiddleware {
   inject_metadata?: Record<string, string>;
 }
 
+export interface TransformMiddleware {
+  mapping?: Record<string, MappingRule>;
+  schema?: unknown;
+  schema_file?: string | null;
+  coerce?: boolean;
+  apply_defaults?: boolean;
+  on_error?: TransformErrorPolicy;
+}
+
+export type MappingRule = string | DetailedMappingRule;
+
+export interface DetailedMappingRule {
+  path: string;
+  default?: unknown;
+  required?: boolean;
+}
+
+export type TransformErrorPolicy = "reject" | "pass_through";
+
+export interface EncryptionConfig {
+  cipher?: CipherKind;
+  key_id?: string;
+  key: string;
+  decrypt_keys?: Record<string, string>;
+}
+
+export type CipherKind = "xchacha20poly1305" | "aes256gcm";
+
 export interface AwsConfig {
   queue_url?: string | null;
   topic_arn?: string | null;
@@ -244,9 +273,13 @@ export interface FileConfig {
   path: string;
   delimiter?: string | null;
   format?: FileFormat;
+  compression?: Compression;
+  encryption?: EncryptionConfig | null;
 }
 
 export type FileFormat = "normal" | "json" | "text" | "raw" | "csv";
+
+export type Compression = "none" | "gzip" | "lz4" | "zstd";
 
 export interface ObjectStoreConfig {
   url: string;
@@ -258,6 +291,8 @@ export interface ObjectStoreConfig {
   max_object_bytes?: number | null;
   date_partition?: boolean;
   extension?: string | null;
+  compression?: Compression;
+  encryption?: EncryptionConfig | null;
 }
 
 export type StaticConfig = string | Record<string, never>;
@@ -356,7 +391,8 @@ export interface HttpConfig {
   batch_concurrency?: number | null;
   tcp_keepalive_ms?: number | null;
   pool_idle_timeout_ms?: number | null;
-  compression_enabled?: boolean;
+  compression?: Compression;
+  compression_enabled?: boolean | null;
   compression_threshold_bytes?: number | null;
   concurrency_limit?: number | null;
   basic_auth?: unknown[] | null;
@@ -492,6 +528,7 @@ export interface ClickHouseConfig {
   request_timeout_ms?: number | null;
   connect_timeout_ms?: number | null;
   tls?: TlsConfig;
+  compression?: Compression;
 }
 
 export interface PostgresCdcConfig {
@@ -558,6 +595,7 @@ export interface ConsumerStatusSnapshot {
   message_sequence: number;
   capture_enabled: boolean;
   capture_keep_last: number;
+  outcome?: RouteOutcomeSnapshot | null;
 }
 
 export interface EndpointStatusSnapshot {
@@ -568,4 +606,6 @@ export interface EndpointStatusSnapshot {
   error?: string | null;
   details?: unknown;
 }
+
+export type RouteOutcomeSnapshot = "completed" | "stopped" | "failed";
 

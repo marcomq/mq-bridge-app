@@ -274,9 +274,26 @@ function formatThroughput(consumer: ConsumerConfig): string {
 function getStatusClass(consumer: ConsumerConfig): string {
   if (consumerErrorByKey[getRuntimeKey(consumer)]) return "status-error";
   const status = getConsumerStatus(consumer);
+  // A route that ended by itself is not running; only a failure is an error,
+  // so a clean drain does not raise a red dot.
+  if (status.outcome === "failed") return "status-error";
   if (!status.running) return "status-off";
   if (status.status?.healthy === false) return "status-error";
   return "status-ok";
+}
+
+// Label for a route that has ended, or "" while it is still running.
+function finishedStatusText(status: ConsumerStatus): string {
+  switch (status.outcome) {
+    case "completed":
+      return "Completed";
+    case "failed":
+      return status.status?.error || "Consumer Failed";
+    case "stopped":
+      return "Consumer Stopped";
+    default:
+      return "";
+  }
 }
 
 function buildSidebarItems() {
@@ -434,8 +451,8 @@ function renderSelectedConsumer() {
     responseSupported: responseCapable,
     responseHeaders: responseRows,
     responsePayload: responseValue.payload || "",
-    liveStatusText: runtimeError || (!status.running ? "Consumer Stopped" : status.status?.healthy === false ? (status.status?.error || "Consumer Error") : "Connected"),
-    liveStatusVariant: runtimeError ? "danger" : !status.running ? "neutral" : status.status?.healthy === false ? "danger" : "success",
+    liveStatusText: runtimeError || finishedStatusText(status) || (!status.running ? "Consumer Stopped" : status.status?.healthy === false ? (status.status?.error || "Consumer Error") : "Connected"),
+    liveStatusVariant: runtimeError || status.outcome === "failed" ? "danger" : !status.running ? "neutral" : status.status?.healthy === false ? "danger" : "success",
     toggleLabel: !status.running ? "Start" : "Stop",
     toggleVariant: !status.running ? "success" : "danger",
     toggleBusy: false,
@@ -527,7 +544,10 @@ async function fetchNewMessagesForRunningConsumers() {
   for (const consumer of activeConfig.consumers) {
     const runtimeKey = getRuntimeKey(consumer);
     const runtime = runtimeConsumers[runtimeKey];
-    if (!runtime?.running) continue;
+    // A route that just finished is no longer running but may still hold the
+    // tail of its capture, so it gets one more poll: its sequence has stopped
+    // advancing, so the guard below settles it after that fetch.
+    if (!runtime?.running && !runtime?.outcome) continue;
     const capture = normalizeMessageCapture(consumer.message_capture);
     if (!capture.enabled) continue;
     const messageSequence = Number(runtime.message_sequence || 0);

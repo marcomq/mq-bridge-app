@@ -915,6 +915,63 @@ describe("initConsumers", () => {
     expect(get(consumersPanelState).messageCaptureKeepLast).toBe(1);
   });
 
+  // A route that drained and one that died both report `running: false`; only the
+  // outcome separates a finished batch job from a failure.
+  test.each([
+    ["completed", "Completed", "neutral", "status-off"],
+    ["failed", "connection refused", "danger", "status-error"],
+  ])("renders a %s route distinctly from a stopped one", async (outcome, text, variant, statusClass) => {
+    const config = {
+      consumers: [
+        {
+          name: "orders_http",
+          endpoint: { middlewares: [{ metrics: {} }], http: {} },
+          response: null,
+          message_capture: { enabled: false, keep_last: 10 },
+        },
+      ],
+      routes: {},
+      publishers: [],
+    };
+
+    await initConsumers(config as any, {
+      properties: {
+        consumers: {
+          items: {
+            properties: {
+              response: {},
+              message_capture: {},
+            },
+          },
+        },
+      },
+    } as any);
+
+    const runtimeKey = String((config.consumers[0] as any)?.id || "orders_http");
+    window._mqb_runtime_status = {
+      active_consumers: [],
+      active_routes: [],
+      route_throughput: {},
+      consumers: {
+        [runtimeKey]: {
+          running: false,
+          outcome,
+          status: { healthy: true, error: outcome === "failed" ? "connection refused" : null },
+          message_sequence: 3,
+          capture_enabled: false,
+          capture_keep_last: 0,
+        },
+      },
+    } as any;
+    window.renderConsumersRuntimeStatus?.();
+
+    expect(get(consumersPanelState).liveStatusText).toBe(text);
+    expect(get(consumersPanelState).liveStatusVariant).toBe(variant);
+    expect(get(consumersPanelState).items[0]?.statusClass).toBe(statusClass);
+    // Ended is not running: the button offers a restart either way.
+    expect(get(consumersPanelState).toggleLabel).toBe("Start");
+  });
+
   test("skips message fetches when capture is disabled", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

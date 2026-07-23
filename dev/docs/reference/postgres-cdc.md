@@ -4,14 +4,16 @@
 
 Schemes: `postgres-cdc://`, `pgcdc://`
 
-Query parameters recognised as config fields for this connector. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
+Query parameters recognised as config fields for this connector. The object-typed `tls` is set with a JSON literal, e.g. `?tls={...}`. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `checkpoint_store` | string | no | — | Checkpoint store spec (e.g. `file:///path`); defaults to the source database. |
+| `checkpoint_store` | string | no | — | Checkpoint store spec (e.g. `file:///path`, `s3://bucket/prefix`); defaults to the source database. |
+| `create_publication` | boolean | no | `false` | Create the `publication` if missing (default false; leave off if it pre-exists). Needs table ownership for `publication_tables`, or superuser when none are set (`FOR ALL TABLES`). |
 | `create_slot` | boolean | no | `true` | Create the replication slot if it does not exist. |
 | `cursor_id` | string | no | — | Checkpoint key for persisting the confirmed LSN across restarts (optional; the slot is authoritative). |
 | `publication` | string | yes | — | Publication name (must already exist; defines which tables are captured). |
+| `publication_tables` | array of string | no | [see below](#publication-tables) | Tables to include when managing the publication (`create_publication`); may be `schema.table`. Missing ones are added to an existing publication (never removed). Empty = `FOR ALL TABLES` (needs superuser). |
 | `slot_name` | string | no | `mq_bridge_slot` | Replication slot name; created if missing when `create_slot` is true. |
 | `status_interval_ms` | integer | no | `10000` | Standby-status-update interval in ms; must be shorter than the server's `wal_sender_timeout`. |
 | `temporary_slot` | boolean | no | `false` | Use a temporary slot (dropped on disconnect). Not restart-safe; default is a permanent slot. |
@@ -19,6 +21,12 @@ Query parameters recognised as config fields for this connector. Any other `?key
 | `url` | string | yes | — | Connection URL, e.g. `postgres://user:pass@host:5432/dbname`. |
 
 ## Struct-typed fields
+
+### `publication_tables`
+
+```json
+[]
+```
 
 ### `tls`
 

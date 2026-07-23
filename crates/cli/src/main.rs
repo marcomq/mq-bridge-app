@@ -671,7 +671,11 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
                             serde_json::Value::Bool(v == "true"),
                         );
                     }
-                    _ => {}
+                    // An in-process channel has no connection URL to carry driver
+                    // options, so anything else would just be discarded.
+                    other => anyhow::bail!(
+                        "unrecognised query param '{other}' in memory URI '{uri}': only 'capacity' and 'subscribe_mode' are supported"
+                    ),
                 }
             }
             let mut tagged = serde_json::Map::new();
@@ -741,27 +745,59 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
     };
 
     // Split query params: recognised scalar config fields become endpoint config,
-    // everything else is kept on the connection URL (driver params).
+    // everything else is kept on the connection URL (driver params) — but only
+    // where such a param can actually take effect, see `driver_options`.
     let mut config = serde_json::Map::new();
     let mut driver_params: Vec<(String, String)> = Vec::new();
     // Escaped mode: `?url=<percent-encoded connection string>` supplies the exact
     // connection URL verbatim, so its own `?a=b` options are never re-interpreted
     // as config fields. Use it when a driver option would otherwise collide.
     let mut escaped_url: Option<String> = None;
+    // Whether an unrecognised param can ride along on the connection URL as a
+    // driver option. True only for endpoints whose URL really is a query-bearing
+    // connection string. The rest either have no URL at all (`file` has a path,
+    // `aws` has ARNs) or a connection string that is not a URI — kafka's bare
+    // `host:port` list, ibmmq's `host(port)`, the mqtt/nats/zeromq/grpc endpoint
+    // addresses — where appending `?k=v` corrupts it rather than configuring
+    // anything. There, an unrecognised param is a user error, not an option.
+    let driver_options = matches!(
+        tag,
+        "sqlx"
+            | "postgres_cdc"
+            | "mongodb"
+            | "redis"
+            | "amqp"
+            | "http"
+            | "clickhouse"
+            | "websocket"
+    );
     for (k, v) in parsed.query_pairs() {
         let (k, v) = (k.into_owned(), v.into_owned());
-        if k == "path" {
+        // A file endpoint takes its path from the URI itself, so a `?path=` would
+        // be a second, conflicting source for the same field.
+        if k == "path" && tag == "file" {
             continue;
         }
-        if k == "url" {
+        if k == "url" && tag != "file" {
             escaped_url = Some(v);
             continue;
         }
         match fields.get(&k).copied() {
-            // Object/array config fields (e.g. `tls`) can't be populated from a
-            // scalar query param, and their names routinely collide with driver
-            // options (`?tls=true`), so leave such params on the connection URL.
-            Some(FieldType::Object) | None => driver_params.push((k, v)),
+            // An object/array field (e.g. `encryption`, `tls`, kafka's
+            // `producer_options`) can't be populated from a scalar, so its value is
+            // read as a JSON literal, as the middleware spec syntax already does.
+            // Where driver options exist the same name is also a plausible option
+            // (`?tls=true`), so only an actual `{`/`[` literal is taken as config.
+            Some(FieldType::Object) if !driver_options || is_json_literal(&v) => {
+                let value: serde_json::Value = serde_json::from_str(&v).with_context(|| {
+                    format!("query param '{k}' in URI '{uri}' expects a JSON literal, got '{v}'")
+                })?;
+                config.insert(k, value);
+            }
+            Some(FieldType::Object) | None if driver_options => driver_params.push((k, v)),
+            None => bail!(
+                "unrecognised query param '{k}' in URI '{uri}': a '{tag}' endpoint has no connection-URL driver options, so '{k}' would have no effect"
+            ),
             Some(ty) => {
                 config.insert(k, coerce_scalar(v, ty));
             }
@@ -993,6 +1029,15 @@ fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
         }
     }
     FieldType::StringLike
+}
+
+/// Whether a query-param value is written as a JSON object or array literal.
+/// Used to tell a nested-config value (`?tls={"ca_file":"/x"}`) from a driver
+/// option that happens to share the field's name (`?tls=true`) on endpoints
+/// whose connection URL carries both.
+fn is_json_literal(v: &str) -> bool {
+    let v = v.trim_start();
+    v.starts_with('{') || v.starts_with('[')
 }
 
 /// Coerces a query-param string into the JSON scalar its target field expects.
@@ -1239,6 +1284,174 @@ mod uri_tests {
             .append_pair("bogus", "x");
         let err = endpoint_from_uri(outer.as_str()).unwrap_err();
         assert!(err.to_string().contains("escaped mode"), "got: {err}");
+    }
+
+    // A file endpoint has no driver options, so an object-typed field such as
+    // `encryption` is read as a JSON literal instead of being dropped.
+    #[test]
+    fn file_object_field_is_read_as_json_literal() {
+        let mut uri = url::Url::parse("file:///tmp/out.jsonl").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("format", "raw")
+            .append_pair("compression", "gzip")
+            .append_pair("encryption", r#"{"key_id":"k1","key":"${env:MQB_KEY}"}"#);
+        let cfg = config(uri.as_str(), "file");
+        assert_eq!(cfg["path"], "/tmp/out.jsonl");
+        assert_eq!(cfg["format"], "raw");
+        assert_eq!(cfg["compression"], "gzip");
+        assert_eq!(cfg["encryption"]["key_id"], "k1");
+        assert_eq!(cfg["encryption"]["key"], "${env:MQB_KEY}");
+    }
+
+    // The consumer mode is a `#[serde(flatten)]`ed tagged enum, so `mode` and its
+    // variant fields are only recognised by walking the schema — they must not
+    // trip the unrecognised-param error.
+    #[test]
+    fn file_flattened_mode_fields_are_recognised() {
+        let cfg = config("file:///var/log/app.log?mode=subscribe&delete=true", "file");
+        assert_eq!(cfg["mode"], "subscribe");
+        assert_eq!(cfg["delete"], true);
+    }
+
+    // Rejecting unrecognised params on the endpoints that have no driver options
+    // only works if every documented param really is a config field. These are the
+    // example URIs from README.md, dev/docs/ and benches/etl/.
+    #[test]
+    fn documented_example_uris_parse() {
+        for uri in [
+            // Endpoints with no connection-URL driver options: newly strict.
+            "kafka://kafka.local:9092?topic=orders&group_id=mqb-orders-sync",
+            "kafka://kafka.local:9093?topic=orders&username=svc&password=secret",
+            "mqtt://broker.local:1883?topic=alerts&client_id=mqb-alerts-01&qos=2",
+            "mqtts://user:pass@broker.local:8883?topic=events",
+            "nats://localhost:4222?subject=orders",
+            "zeromq://127.0.0.1:5555?socket_type=push",
+            "grpc://localhost:50051?topic=orders",
+            "ibmmq://qmhost:1414?queue_manager=QM1&channel=DEV.APP.SVRCONN&queue=orders",
+            "aws://_/?queue_url=https://sqs.us-east-1.amazonaws.com/123/orders&region=us-east-1",
+            "memory://my-topic?capacity=1000",
+            "file:///data/customers.csv?format=csv",
+            "file:///var/log/app/events.log?mode=subscribe",
+            // Endpoints that do carry driver options: `sslmode`/`async_insert` are
+            // driver options, not config fields, and must still pass through.
+            "postgres://u:p@localhost:5432/db?table=bench&cursor_column=id&sslmode=disable",
+            "clickhouse://user:pass@ch.local:8123?table=events&database=analytics&async_insert=true",
+            "amqp://guest:guest@localhost:5672/%2f?exchange=events&queue=events",
+            "mongodb://localhost?database=app&collection=orders&consume=capture_new",
+            "postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot",
+            "https://api.example.com/ingest?method=POST&request_timeout_ms=5000",
+        ] {
+            if let Err(e) = endpoint_from_uri(uri) {
+                panic!("documented URI should parse: {uri}\n  {e:#}");
+            }
+        }
+    }
+
+    // On an endpoint whose URL does carry driver options, a JSON literal picks the
+    // nested config field while a scalar of the same name stays a driver option
+    // (see `mongodb_tls_option_stays_on_url` for the scalar half).
+    #[test]
+    fn mongodb_tls_json_literal_is_config() {
+        let mut uri = url::Url::parse("mongodb://host:27017/").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("database", "appdb")
+            .append_pair("tls", r#"{"required":true,"ca_file":"/etc/ca.pem"}"#);
+        let cfg = config(uri.as_str(), "mongodb");
+        assert_eq!(cfg["tls"]["required"], true);
+        assert_eq!(cfg["tls"]["ca_file"], "/etc/ca.pem");
+        assert_eq!(cfg["url"], "mongodb://host:27017/");
+    }
+
+    // Kafka's connection string is a bare `host:port` list, not a URI, so a param
+    // appended to it could never be read as a driver option — an object field is
+    // config, and an unrecognised name is an error.
+    #[test]
+    fn kafka_object_fields_are_config_not_url_junk() {
+        let mut uri = url::Url::parse("kafka://broker:9092").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("topic", "orders")
+            .append_pair("tls", r#"{"required":true}"#)
+            .append_pair("producer_options", r#"[["linger.ms","5"]]"#);
+        let cfg = config(uri.as_str(), "kafka");
+        assert_eq!(cfg["url"], "broker:9092");
+        assert_eq!(cfg["tls"]["required"], true);
+        assert_eq!(cfg["producer_options"][0][0], "linger.ms");
+    }
+
+    #[test]
+    fn kafka_rejects_unrecognised_param() {
+        let err = endpoint_from_uri("kafka://broker:9092?topic=t&bogus=x").unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised query param"),
+            "got: {err}"
+        );
+    }
+
+    // IBM MQ's `host(port)` connection string is likewise not a URI; `tls` is a
+    // nested struct that was previously unreachable from a URI.
+    #[test]
+    fn ibmmq_tls_is_config_and_url_stays_host_port() {
+        let mut uri = url::Url::parse("ibmmq://qmhost:1414").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("queue_manager", "QM1")
+            .append_pair("channel", "DEV.APP.SVRCONN")
+            .append_pair("queue", "orders")
+            .append_pair("tls", r#"{"required":true,"cipher_spec":"ANY_TLS12"}"#);
+        let cfg = config(uri.as_str(), "ibmmq");
+        assert_eq!(cfg["url"], "qmhost(1414)");
+        assert_eq!(cfg["tls"]["cipher_spec"], "ANY_TLS12");
+    }
+
+    // AwsConfig has no `url` field, so a leftover param had nothing to ride on and
+    // was dropped on the floor.
+    #[test]
+    fn aws_rejects_unrecognised_param() {
+        let err = endpoint_from_uri("aws://_/?region=us-east-1&bogus=x").unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised query param"),
+            "got: {err}"
+        );
+    }
+
+    // An in-process channel has no connection URL at all.
+    #[test]
+    fn memory_rejects_unrecognised_param() {
+        let err = endpoint_from_uri("memory://my-topic?bogus=x").unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised query param"),
+            "got: {err}"
+        );
+    }
+
+    // `path` is a real WebSocketConfig field; it used to be skipped for every
+    // scheme because a file endpoint derives its path from the URI.
+    #[test]
+    fn websocket_path_param_reaches_config() {
+        let cfg = config("ws://host:8080?path=/stream", "websocket");
+        assert_eq!(cfg["path"], "/stream");
+    }
+
+    // A param that is not a FileConfig field can never take effect, so it is
+    // rejected rather than silently ignored.
+    #[test]
+    fn file_rejects_unrecognised_param() {
+        let err = endpoint_from_uri("file:///tmp/out.jsonl?bogus=x").unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised query param"),
+            "got: {err}"
+        );
+    }
+
+    // An object-typed field given something that is not JSON at all is reported as
+    // such, rather than reaching serde as a bare string. (A value that *is* valid
+    // JSON but the wrong shape still gets serde's own type error.)
+    #[test]
+    fn file_object_field_rejects_non_json() {
+        let err = endpoint_from_uri("file:///tmp/out.jsonl?encryption=yes-please").unwrap_err();
+        assert!(
+            err.to_string().contains("expects a JSON literal"),
+            "got: {err}"
+        );
     }
 
     // `|`-separated middlewares wrap the endpoint in the order written, and their

@@ -9,7 +9,7 @@ use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
 use mq_bridge::endpoints::memory::MemoryConsumer;
 use mq_bridge::models::{Endpoint, EndpointType, MemoryConfig, Route, StaticConfig};
-use mq_bridge::route::RouteHandle;
+use mq_bridge::route::{RouteHandle, RouteOutcome};
 use mq_bridge::traits::{MessageConsumer, MessageDisposition};
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
@@ -279,12 +279,48 @@ pub struct ConsumerStatusSnapshot {
     pub message_sequence: u64,
     pub capture_enabled: bool,
     pub capture_keep_last: usize,
+    /// How the route ended, or `None` while it is still running.
+    ///
+    /// `running: false` alone cannot tell a drained `exit_on_empty` job from one
+    /// that was stopped by hand or died on a permanent error — all three leave a
+    /// grey badge. `#[serde(default)]` so reports from an older MCP process,
+    /// which never sends the field, still deserialize.
+    #[serde(default)]
+    pub outcome: Option<RouteOutcomeSnapshot>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct ConsumerStatusResponse {
     pub running: bool,
     pub status: EndpointStatusSnapshot,
+    /// See [`ConsumerStatusSnapshot::outcome`].
+    pub outcome: Option<RouteOutcomeSnapshot>,
+}
+
+/// How a route's task ended, mirroring [`mq_bridge::route::RouteOutcome`].
+///
+/// Mirrored rather than re-exported because this crosses both the status IPC
+/// socket and the UI type generator, so it needs `Deserialize` and `JsonSchema`;
+/// the core enum derives neither. The wire representation is identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteOutcomeSnapshot {
+    /// The source drained and the route exited on its own. The job succeeded.
+    Completed,
+    /// Terminated by an explicit stop or shutdown.
+    Stopped,
+    /// Terminated by a permanent error; the cause is in `status.error`.
+    Failed,
+}
+
+impl From<RouteOutcome> for RouteOutcomeSnapshot {
+    fn from(outcome: RouteOutcome) -> Self {
+        match outcome {
+            RouteOutcome::Completed => Self::Completed,
+            RouteOutcome::Stopped => Self::Stopped,
+            RouteOutcome::Failed => Self::Failed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
@@ -989,6 +1025,7 @@ impl UiApp {
             .map(|snapshot| ConsumerStatusResponse {
                 running: snapshot.running,
                 status: snapshot.status,
+                outcome: snapshot.outcome,
             })
     }
 
@@ -1206,8 +1243,18 @@ impl UiApp {
 
     pub async fn runtime_status(&self) -> RuntimeStatusResponse {
         let config = self.config.read().await;
-        let mut active_consumers: Vec<String> =
-            self.ui_handles.read().await.keys().cloned().collect();
+        // Finished routes keep their handle so the outcome stays queryable, so
+        // map membership is not liveness; a route with an outcome is done.
+        let (finished_consumers, mut active_consumers): (HashSet<String>, Vec<String>) = {
+            let handles = self.ui_handles.read().await;
+            let (finished, active): (Vec<_>, Vec<_>) = handles
+                .iter()
+                .partition(|(_, handle)| handle.outcome().is_some());
+            (
+                finished.into_iter().map(|(key, _)| key.clone()).collect(),
+                active.into_iter().map(|(key, _)| key.clone()).collect(),
+            )
+        };
 
         // Consumers may run as internal collector routes even when ui_handles does not currently
         // track them (for example after restarts). Surface those as active consumers too.
@@ -1218,6 +1265,10 @@ impl UiApp {
                     .strip_prefix("ui_collector_route_")
                     .and_then(decode_collector_route_key)
             })
+            // The route registry keeps a route registered after its task ends, so
+            // it would re-add a drained consumer here. Where we hold a handle, the
+            // handle decides.
+            .filter(|consumer_key| !finished_consumers.contains(consumer_key))
             .collect();
         active_consumers.extend(consumer_route_ids);
         let active_routes: Vec<String> = mq_bridge::list_routes()
@@ -1364,42 +1415,66 @@ impl UiApp {
         &self,
         consumer: &ConsumerConfig,
     ) -> Option<ConsumerStatusSnapshot> {
-        let running = self
-            .ui_handles
-            .read()
-            .await
-            .contains_key(&consumer_runtime_key(consumer));
-        self.consumer_status_snapshot_with_running(consumer, running)
+        // This path has no route registry to consult, so a tracked handle is the
+        // only liveness there is.
+        self.consumer_status_snapshot_with_running(consumer, false)
             .await
     }
 
+    /// `running_untracked` is the caller's liveness for a consumer this app holds
+    /// no [`RouteHandle`] for — one recovered from the route registry after a
+    /// restart. Where a handle exists it decides, because map membership is not
+    /// liveness: a route whose task ended on its own keeps its handle so the
+    /// outcome stays queryable.
     async fn consumer_status_snapshot_with_running(
         &self,
         consumer: &ConsumerConfig,
-        running: bool,
+        running_untracked: bool,
     ) -> Option<ConsumerStatusSnapshot> {
         let name = consumer.name.clone();
-        let status = if running {
-            // Prefer the live health of the running route so a consumer that
-            // connected then dropped (or is stuck reconnecting) shows unhealthy
-            // with the last error instead of a hardcoded green badge (issue #12).
+
+        let tracked = {
             let runtime_key = consumer_runtime_key(consumer);
-            if let Some(handle) = self.ui_handles.read().await.get(&runtime_key) {
-                // Take live healthy/error/pending/capacity from the handle, but keep the
-                // consumer's display name as `target` (the handle's target is the internal
-                // collector route id, which should not leak to the UI).
-                mq_bridge::traits::EndpointStatus {
-                    target: name.clone(),
-                    ..handle.status()
-                }
-            } else {
-                // Running as an internal collector route (e.g. after a restart)
-                // with no live handle to inspect; best effort is healthy.
-                mq_bridge::traits::EndpointStatus {
-                    healthy: true,
-                    target: name.clone(),
-                    ..Default::default()
-                }
+            self.ui_handles
+                .read()
+                .await
+                .get(&runtime_key)
+                .map(|handle| {
+                    (
+                        handle.status(),
+                        handle.outcome().map(RouteOutcomeSnapshot::from),
+                    )
+                })
+        };
+
+        let running = match &tracked {
+            Some((_, outcome)) => outcome.is_none(),
+            None => running_untracked,
+        };
+        let outcome = tracked.as_ref().and_then(|(_, outcome)| *outcome);
+
+        let status = if let Some((handle_status, _)) = tracked {
+            // Report from the handle whether the route is running or finished.
+            // Running: prefer its live health so a consumer that connected then
+            // dropped (or is stuck reconnecting) shows unhealthy with the last
+            // error instead of a hardcoded green badge (issue #12). Finished: the
+            // last health it recorded, and never the probe below — that would
+            // open a fresh connection to a source the route already drained.
+            //
+            // Take live healthy/error/pending/capacity from the handle, but keep the
+            // consumer's display name as `target` (the handle's target is the internal
+            // collector route id, which should not leak to the UI).
+            mq_bridge::traits::EndpointStatus {
+                target: name.clone(),
+                ..handle_status
+            }
+        } else if running {
+            // Running as an internal collector route (e.g. after a restart)
+            // with no live handle to inspect; best effort is healthy.
+            mq_bridge::traits::EndpointStatus {
+                healthy: true,
+                target: name.clone(),
+                ..Default::default()
             }
         } else if matches!(consumer.endpoint.endpoint_type, EndpointType::Http(_)) {
             mq_bridge::traits::EndpointStatus {
@@ -1439,6 +1514,7 @@ impl UiApp {
             message_sequence: 0,
             capture_enabled: consumer.message_capture.enabled,
             capture_keep_last: consumer.message_capture.keep_last,
+            outcome,
         })
     }
 
@@ -2118,6 +2194,7 @@ mod tests {
             message_sequence: messages,
             capture_enabled: false,
             capture_keep_last: 0,
+            outcome: None,
         }
     }
 
@@ -2292,5 +2369,68 @@ mod tests {
         assert!(snapshot.status.error.is_none());
 
         app.stop_consumer("mem-status-test").await;
+    }
+
+    // A consumer configured to drain and exit finishes on its own, with nothing
+    // removing its handle. Membership of `ui_handles` therefore reported it as
+    // running forever, with a green badge taken from its last connection health.
+    // The handle's own outcome is what says it is done, and how it ended.
+    #[tokio::test]
+    async fn a_drained_consumer_reports_not_running_with_a_completed_outcome() {
+        // A file source, as in the reported case: it has a real end, so the route
+        // drains and exits on its own with nobody calling `stop`.
+        let source = std::env::temp_dir().join(format!("mqb-drain-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&source, "first\nsecond\n").expect("write drain source");
+
+        let mut consumer = memory_consumer("file-drain-test", "FileDrain", "file_drain_test_topic");
+        consumer.endpoint = Endpoint::new(EndpointType::File(mq_bridge::models::FileConfig {
+            path: source.to_string_lossy().to_string(),
+            delimiter: None,
+            mode: None,
+            format: Default::default(),
+            compression: Default::default(),
+            encryption: None,
+        }));
+        consumer.options.exit_on_empty = true;
+        let mut config = AppConfig::default();
+        config.consumers.push(consumer);
+        let app = test_app(config);
+
+        assert!(app.start_consumer("file-drain-test").await.unwrap());
+
+        // Wait for the drain, then for the task to publish its outcome.
+        let mut response = None;
+        for _ in 0..100 {
+            let status = app
+                .consumer_status("file-drain-test")
+                .await
+                .expect("configured consumer has a status");
+            if !status.running {
+                response = Some(status);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let response = response.expect("drained consumer should stop reporting as running");
+        assert_eq!(response.outcome, Some(RouteOutcomeSnapshot::Completed));
+        // Reported from the retained handle, not from a fresh probe of a source
+        // the route already drained.
+        assert_eq!(response.status.target, "FileDrain");
+
+        // `/runtime-status` reads the same liveness, so the consumer must also
+        // drop out of `active_consumers`.
+        let runtime = app.runtime_status().await;
+        assert!(
+            !runtime
+                .active_consumers
+                .contains(&"file-drain-test".to_string())
+        );
+        let snapshot = runtime
+            .consumers
+            .get("file-drain-test")
+            .expect("drained consumer is still configured");
+        assert!(!snapshot.running);
+        assert_eq!(snapshot.outcome, Some(RouteOutcomeSnapshot::Completed));
     }
 }
