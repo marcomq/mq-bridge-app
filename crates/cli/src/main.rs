@@ -22,6 +22,15 @@ use anyhow::Context;
 mod mcp;
 mod mcp_install;
 
+/// App-level default batch size for headless routes (`copy`, MCP) when the caller
+/// does not specify one. The library's `RouteOptions::default()` stays at 1; this
+/// is the batteries-included value the app applies on top.
+pub(crate) const DEFAULT_BATCH_SIZE: usize = 1024;
+
+/// App-level default route concurrency for headless routes (`copy`, MCP) when the
+/// caller does not specify one. See [`DEFAULT_BATCH_SIZE`].
+pub(crate) const DEFAULT_CONCURRENCY: usize = 4;
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -158,11 +167,11 @@ struct CopyArgs {
     #[arg(long)]
     drain: bool,
 
-    /// Route concurrency (defaults to the engine default).
+    /// Route concurrency (defaults to 4).
     #[arg(long)]
     concurrency: Option<usize>,
 
-    /// Batch size (defaults to the engine default).
+    /// Batch size (defaults to 1024).
     #[arg(long)]
     batch_size: Option<usize>,
 }
@@ -427,12 +436,8 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     let output = endpoint_from_uri(&args.to).context("invalid --to endpoint")?;
 
     let mut options = RouteOptions::default();
-    if let Some(concurrency) = args.concurrency {
-        options.concurrency = concurrency;
-    }
-    if let Some(batch_size) = args.batch_size {
-        options.batch_size = batch_size;
-    }
+    options.concurrency = args.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
+    options.batch_size = args.batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
     options.exit_on_empty = args.drain;
 
     let route = Route::new(input, output).with_options(options);

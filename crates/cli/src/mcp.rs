@@ -104,10 +104,18 @@ struct StartRouteArgs {
     /// The route to run: an `input` (source) endpoint and an `output` (sink)
     /// endpoint — each keyed by connector type, e.g.
     /// `{"input": {"nats": {"url": "localhost:4222", "subject": "orders"}},
-    ///   "output": {"file": {"path": "/tmp/out.jsonl"}}}` — plus optional execution
-    /// options such as `concurrency`, `batch_size`, and `exit_on_empty` (drain the
-    /// source then exit). Use `{"null": null}` as the `output` to discard messages.
+    ///   "output": {"file": {"path": "/tmp/out.jsonl"}}}` — plus `exit_on_empty`
+    /// (drain the source then exit). Use `{"null": null}` as the `output` to discard
+    /// messages. Set `concurrency`/`batch_size` via the dedicated fields below, not
+    /// inside this object.
     route: Route,
+    /// Route concurrency. Omit for the app default (4). Higher values parallelize
+    /// sink writes; sources that read serially do not speed up.
+    #[serde(default)]
+    concurrency: Option<usize>,
+    /// Batch size. Omit for the app default (1024).
+    #[serde(default)]
+    batch_size: Option<usize>,
     /// Keep the last N messages that flow through this route, readable with
     /// `route_messages`. Omit (or 0) to capture nothing, which is the default —
     /// captured payloads are held in memory and returned to the model verbatim.
@@ -495,7 +503,7 @@ impl BridgeMcp {
     )]
     async fn start_route(
         &self,
-        Parameters(args): Parameters<StartRouteArgs>,
+        Parameters(mut args): Parameters<StartRouteArgs>,
     ) -> Result<CallToolResult, McpError> {
         let name = args
             .name
@@ -504,6 +512,14 @@ impl BridgeMcp {
             .unwrap_or_else(auto_route_name);
         let exit_on_empty = args.route.options.exit_on_empty;
         let capture_last = args.capture_last.unwrap_or(0);
+
+        // `route.options.{concurrency,batch_size}` arrive already filled to the
+        // library's serde defaults (1/1), so "omitted" is indistinguishable here.
+        // The dedicated `concurrency`/`batch_size` args are the single source of
+        // truth: apply them with the app defaults, overriding whatever the route
+        // JSON carried for these two fields.
+        args.route.options.concurrency = args.concurrency.unwrap_or(crate::DEFAULT_CONCURRENCY);
+        args.route.options.batch_size = args.batch_size.unwrap_or(crate::DEFAULT_BATCH_SIZE);
 
         // Claim the name before the potentially slow `run()`, then release the
         // locks so other route tools aren't blocked on startup. Reserving up
@@ -575,6 +591,23 @@ impl BridgeMcp {
         Ok(ok_json(serde_json::Value::Array(
             self.all_routes_json().await,
         )))
+    }
+
+    #[tool(
+        description = "Report this MCP server's build identity: crate `version`, `git_hash` (with a \
+            `-dirty` suffix if the working tree had uncommitted changes at build time), build \
+            `profile` (debug/release), and `build_time`. Use it to confirm which binary is actually \
+            running before trusting throughput numbers.",
+        annotations(read_only_hint = true)
+    )]
+    async fn server_info(&self) -> Result<CallToolResult, McpError> {
+        Ok(ok_json(serde_json::json!({
+            "name": "mq-bridge-app",
+            "version": env!("CARGO_PKG_VERSION"),
+            "git_hash": option_env!("MQB_GIT_HASH").unwrap_or("unknown"),
+            "profile": option_env!("MQB_BUILD_PROFILE").unwrap_or("unknown"),
+            "build_time": option_env!("MQB_BUILD_TIME").unwrap_or("unknown"),
+        })))
     }
 
     #[tool(

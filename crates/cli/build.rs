@@ -1,6 +1,9 @@
 use std::env;
+use std::process::Command;
 
 fn main() {
+    emit_build_metadata();
+
     if env::var("CARGO_FEATURE_IBM_MQ").is_err() {
         return;
     }
@@ -33,4 +36,35 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_path);
     }
+}
+
+/// Capture build identity (git commit, profile, timestamp) into compile-time
+/// env vars so the binary can report exactly which build is running. All
+/// best-effort: a source tarball without git still builds, reporting "unknown".
+fn emit_build_metadata() {
+    let git_output = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+
+    let hash = git_output(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let dirty = git_output(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
+    let git = if dirty { format!("{hash}-dirty") } else { hash };
+    println!("cargo:rustc-env=MQB_GIT_HASH={git}");
+
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo:rustc-env=MQB_BUILD_PROFILE={profile}");
+
+    let build_time = Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=MQB_BUILD_TIME={build_time}");
 }
