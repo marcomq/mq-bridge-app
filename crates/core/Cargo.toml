@@ -61,6 +61,10 @@ full = ["mq-bridge/full"]
 # (sqlx) + logical-replication CDC + per-route metrics, with a TLS provider so the
 # binary links. Avoids the heavy `full` deps (rdkafka/librdkafka, grpc/protoc,
 # ibm-mq) that aren't needed to move Postgres data.
+#
+# NOTE: `bench` intentionally does NOT include any message-broker transport. A
+# broker-throughput benchmark layers its transport on top, e.g. the NATS bench
+# (benches/etl/run_nats_throughput.sh) builds with `--features bench,nats`.
 bench = [
     "mq-bridge/sqlx",
     "mq-bridge/postgres-cdc",
