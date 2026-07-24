@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mq-bridge": {
+      "command": "./target/release/mq-bridge-app",
+      "args": ["mcp", "--transport", "stdio"]
+    }
+  }
+}
