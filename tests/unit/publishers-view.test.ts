@@ -261,6 +261,43 @@ describe("initPublishers", () => {
     );
   });
 
+  test("keeps middlewares added to a static publisher", async () => {
+    const config = { publishers: [], routes: {}, consumers: [] };
+    let formChange: ((updated: unknown) => void) | null = null;
+    window.VanillaSchemaForms.init = vi.fn().mockImplementation((_container, _schema, _data, onChange) => {
+      formChange = onChange;
+      return Promise.resolve();
+    });
+    window.saveConfigSection = vi.fn().mockImplementation(async (_section: string, publishers: any[]) => ({ publishers }));
+
+    initPublishers(config, { properties: { publishers: { items: {} } } });
+    await addPublisherAction("static");
+
+    formChange?.({
+      name: "static",
+      endpoint: { static: "hello world", middlewares: [{ metrics: {} }] },
+      comment: "",
+    });
+
+    expect((config.publishers[0] as any).endpoint.middlewares).toEqual([{ metrics: {} }]);
+
+    await saveCurrentPublisherAction(document.getElementById("pub-save"));
+
+    expect(window.saveConfigSection).toHaveBeenCalledWith(
+      "publishers",
+      [
+        expect.objectContaining({
+          endpoint: {
+            middlewares: [{ metrics: {} }],
+            static: "hello world",
+          },
+        }),
+      ],
+      false,
+      document.getElementById("pub-save"),
+    );
+  });
+
   test("creates new queue and topic publishers with request bar defaults", async () => {
     const config = { publishers: [], routes: {}, consumers: [] };
 

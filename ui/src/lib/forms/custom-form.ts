@@ -773,35 +773,27 @@ const middlewaresRenderer = {
     const typeSelect = element.querySelector(`.${rendererConfig.triggers.arrayTypeSelect}`) as HTMLSelectElement | null;
 
     if (toggleButton && typeSelect) {
-      toggleButton.classList.remove(rendererConfig.triggers.arrayTypeToggle);
-      toggleButton.onclick = (event) => {
-        event.preventDefault();
-        toggleButton.style.display = "none";
+      // The library reveals the type picker behind an "Add Middleware" button and opens it via
+      // select.showPicker(), which WebKit (Safari, Tauri) does not implement: the first click only
+      // swapped the button for the select, and a click elsewhere hid it again. Show the picker
+      // itself as the button instead, so a single native click opens it in every engine.
+      const addLabel = toggleButton.textContent || "Add Middleware";
+      toggleButton.remove();
+
+      const placeholder = typeSelect.querySelector("option[value='']");
+      if (placeholder) placeholder.textContent = addLabel;
+
+      addClassTokens(typeSelect, rendererConfig.classes.buttonPrimary);
+      const showPicker = () => {
         typeSelect.style.display = "inline-block";
-        typeSelect.focus();
-        typeSelect.getBoundingClientRect();
-
-        try {
-          typeSelect.showPicker?.();
-        } catch {
-          window.requestAnimationFrame(() => {
-            try {
-              typeSelect.showPicker?.();
-            } catch {
-              // ignore
-            }
-          });
-        }
       };
+      showPicker();
 
-      typeSelect.addEventListener("focusout", () => {
-        window.setTimeout(() => {
-          if (!typeSelect.value) {
-            typeSelect.style.display = "none";
-            toggleButton.style.display = "";
-          }
-        }, 0);
-      });
+      // The library hides the picker again after a type is chosen (and on focusout); keep it
+      // visible so further middlewares can be added without re-rendering the form.
+      new MutationObserver(() => {
+        if (typeSelect.style.display === "none") showPicker();
+      }).observe(typeSelect, { attributes: true, attributeFilter: ["style"] });
     }
 
     return element;

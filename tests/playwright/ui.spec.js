@@ -143,16 +143,28 @@ test.afterEach(async ({ page }) => {
   expect(page.__pageErrors || []).toEqual([]);
 });
 
-test("publisher advanced fields can be expanded and middleware picker opens", async ({ page }) => {
+test("publisher advanced fields can be expanded and middlewares can be added", async ({ page }) => {
   await openPublisherDefinition(page, 0);
 
   await clickAllVisibleShowMore(page.locator("#pub-config-form"));
 
-  const addMiddlewareButton = page.locator("#pub-config-form button", { hasText: "Add Middleware" });
-  await expect(addMiddlewareButton).toBeVisible();
-  await addMiddlewareButton.click();
+  // The picker is the "Add Middleware" control itself: no reveal click, because select.showPicker()
+  // that the reveal relied on does not exist in WebKit.
+  const picker = page.locator("#pub-config-form select.js-array-type-select").first();
+  await expect(picker).toBeVisible();
+  await expect(picker.locator("option").first()).toHaveText("Add Middleware");
 
-  await expect(page.locator("#pub-config-form select.js-array-type-select").first()).toBeVisible();
+  const items = page.locator("#pub-config-form [id='root.endpoint.middlewares-items'] > *");
+  const before = await items.count();
+
+  await picker.selectOption({ label: "Retry" });
+  await expect(items).toHaveCount(before + 1);
+  await expect(page.locator("#workspace-save-button")).toHaveAttribute("data-dirty", "true");
+
+  // The picker stays available so more middlewares can be added.
+  await expect(picker).toBeVisible();
+  await picker.selectOption({ label: "Delay" });
+  await expect(items).toHaveCount(before + 2);
 });
 
 test("consumer response editor is available in its own response tab", async ({ page }) => {

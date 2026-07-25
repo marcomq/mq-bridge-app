@@ -1,16 +1,5 @@
 import type { FeatureAvailabilityResponse } from './generated/ui-types';
 
-type EndpointKindMetadata = {
-  kind: string;
-  basicFields: readonly string[];
-  rootOrder: number;
-  requestBar?: RequestBarLayout;
-  publisher: boolean;
-  consumer: boolean;
-  responseCapable?: boolean;
-  requiresFeature?: string;
-};
-
 export type RequestBarFieldDescriptor = {
   inputId: "pub-extra-1" | "pub-extra-2" | "pub-url";
   field: string;
@@ -23,43 +12,65 @@ export type RequestBarLayout = {
   fields: readonly RequestBarFieldDescriptor[];
 };
 
-const ENDPOINT_KIND_METADATA = [
-  {
-    kind: "http",
-    rootOrder: 0,
+/**
+ * Presentation tweaks for a single endpoint kind. Everything here is optional:
+ * kinds are discovered from the backend JSON schema (see
+ * `registerEndpointKindsFromSchema`), and anything not listed below is
+ * registered with values derived from the schema itself. Only add an entry when
+ * the derived defaults are not good enough.
+ */
+type EndpointKindOverride = {
+  /** Position in the add menu. Kinds without an order are appended in schema order. */
+  order?: number;
+  basicFields?: readonly string[];
+  requestBar?: RequestBarLayout;
+  publisher?: boolean;
+  consumer?: boolean;
+  responseCapable?: boolean;
+  requiresFeature?: string;
+  /** Fallback for the schema's `format: "structural_endpoint"` marker. */
+  structural?: boolean;
+};
+
+type EndpointKindMetadata = {
+  kind: string;
+  structural: boolean;
+  order: number;
+  basicFields: readonly string[];
+  requestBar: RequestBarLayout;
+  publisher: boolean;
+  consumer: boolean;
+  responseCapable: boolean;
+  requiresFeature?: string;
+};
+
+const ENDPOINT_KIND_OVERRIDES = {
+  http: {
+    order: 0,
     basicFields: ["method", "url", "path"],
     requestBar: {
       showMethod: true,
       fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "https://example.com/api" }],
     },
-    publisher: true,
-    consumer: true,
     responseCapable: true,
   },
-  {
-    kind: "websocket",
-    rootOrder: 1,
+  websocket: {
+    order: 1,
     basicFields: ["url"],
     requestBar: {
       showMethod: true,
       fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "ws://localhost:8080" }],
     },
-    publisher: true,
-    consumer: true,
   },
-  {
-    kind: "grpc",
-    rootOrder: 2,
+  grpc: {
+    order: 2,
     basicFields: ["url", "topic"],
     requestBar: {
       fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "http://localhost:50051" }],
     },
-    publisher: true,
-    consumer: true,
   },
-  {
-    kind: "nats",
-    rootOrder: 3,
+  nats: {
+    order: 3,
     basicFields: ["url", "subject", "stream"],
     requestBar: {
       fields: [
@@ -67,24 +78,18 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "SERVERS", placeholder: "nats://localhost:4222" },
       ],
     },
-    publisher: true,
-    consumer: true,
     responseCapable: true,
   },
-  {
-    kind: "memory",
-    rootOrder: 4,
+  memory: {
+    order: 4,
     basicFields: ["topic"],
     requestBar: {
       fields: [{ inputId: "pub-url", field: "topic", label: "TOPIC", placeholder: "events" }],
     },
-    publisher: true,
-    consumer: true,
     responseCapable: true,
   },
-  {
-    kind: "amqp",
-    rootOrder: 5,
+  amqp: {
+    order: 5,
     basicFields: ["url", "queue", "subscribe_mode", "exchange"],
     requestBar: {
       fields: [
@@ -92,13 +97,10 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "URL", placeholder: "amqp://guest:guest@localhost:5672/%2f" },
       ],
     },
-    publisher: true,
-    consumer: true,
     responseCapable: true,
   },
-  {
-    kind: "kafka",
-    rootOrder: 6,
+  kafka: {
+    order: 6,
     basicFields: ["url", "topic", "group_id"],
     requestBar: {
       fields: [
@@ -106,13 +108,10 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "BROKERS", placeholder: "kafka:9092" },
       ],
     },
-    publisher: true,
-    consumer: true,
     responseCapable: true,
   },
-  {
-    kind: "mqtt",
-    rootOrder: 7,
+  mqtt: {
+    order: 7,
     basicFields: ["url", "topic"],
     requestBar: {
       fields: [
@@ -120,13 +119,10 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "BROKER", placeholder: "tcp://localhost:1883" },
       ],
     },
-    publisher: true,
-    consumer: true,
     responseCapable: true,
   },
-  {
-    kind: "mongodb",
-    rootOrder: 8,
+  mongodb: {
+    order: 8,
     basicFields: ["url", "database", "collection", "change_stream"],
     requestBar: {
       fields: [
@@ -135,13 +131,10 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "URL", placeholder: "mongodb://localhost:27017" },
       ],
     },
-    publisher: true,
-    consumer: true,
     responseCapable: true,
   },
-  {
-    kind: "sqlx",
-    rootOrder: 9,
+  sqlx: {
+    order: 9,
     basicFields: ["url", "table"],
     requestBar: {
       fields: [
@@ -149,12 +142,9 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "URL", placeholder: "postgres://user:pass@localhost/db" },
       ],
     },
-    publisher: true,
-    consumer: true,
   },
-  {
-    kind: "zeromq",
-    rootOrder: 10,
+  zeromq: {
+    order: 10,
     basicFields: ["url", "topic"],
     requestBar: {
       fields: [
@@ -162,25 +152,17 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "URL", placeholder: "tcp://127.0.0.1:5555" },
       ],
     },
-    publisher: true,
-    consumer: true,
     responseCapable: true,
   },
-  {
-    kind: "file",
-    rootOrder: 11,
+  file: {
+    order: 11,
     basicFields: ["path", "mode"],
     requestBar: {
       fields: [{ inputId: "pub-url", field: "path", label: "PATH", placeholder: "/tmp/messages.jsonl" }],
     },
-    publisher: true,
-    consumer: true,
   },
-  { kind: "static", rootOrder: 12, basicFields: ["static"], publisher: true, consumer: true },
-  { kind: "ref", rootOrder: 13, basicFields: ["ref"], publisher: false, consumer: false },
-  {
-    kind: "sled",
-    rootOrder: 14,
+  sled: {
+    order: 14,
     basicFields: ["path", "tree"],
     requestBar: {
       fields: [
@@ -188,12 +170,9 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "path", label: "PATH", placeholder: "./data/sled" },
       ],
     },
-    publisher: true,
-    consumer: true,
   },
-  {
-    kind: "ibmmq",
-    rootOrder: 15,
+  ibmmq: {
+    order: 15,
     basicFields: ["url", "queue_manager", "channel", "queue", "topic", "username", "password"],
     requestBar: {
       fields: [
@@ -202,20 +181,14 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "HOST", placeholder: "mq-host(1414)" },
       ],
     },
-    publisher: true,
-    consumer: true,
     requiresFeature: "ibm_mq",
   },
-  { kind: "switch", rootOrder: 16, basicFields: ["metadata_key", "default", "cases"], publisher: true, consumer: false },
-  { kind: "fanout", rootOrder: 17, basicFields: ["endpoints"], publisher: true, consumer: false },
-  { kind: "reader", rootOrder: 18, basicFields: [], publisher: false, consumer: false },
-  { kind: "response", rootOrder: 19, basicFields: [], publisher: false, consumer: false },
-  { kind: "custom", rootOrder: 20, basicFields: [], publisher: false, consumer: false },
-  { kind: "null", rootOrder: 21, basicFields: [], publisher: false, consumer: false },
-  { kind: "aws", rootOrder: 22, basicFields: ["region", "queue_url", "topic_arn", "access_key", "secret_key"], publisher: true, consumer: true },
-  {
-    kind: "redis_streams",
-    rootOrder: 23,
+  aws: {
+    order: 22,
+    basicFields: ["region", "queue_url", "topic_arn", "access_key", "secret_key"],
+  },
+  redis_streams: {
+    order: 23,
     basicFields: ["url", "stream", "group"],
     requestBar: {
       fields: [
@@ -223,54 +196,258 @@ const ENDPOINT_KIND_METADATA = [
         { inputId: "pub-url", field: "url", label: "URL", placeholder: "redis://localhost:6379" },
       ],
     },
-    publisher: true,
-    consumer: true,
     requiresFeature: "redis_streams",
   },
-  {
-    kind: "object_store",
-    rootOrder: 24,
+  object_store: {
+    order: 24,
     basicFields: ["url", "format"],
     requestBar: {
       fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "s3://bucket/prefix" }],
     },
-    publisher: true,
-    consumer: true,
     requiresFeature: "object_store",
   },
-] as const satisfies readonly EndpointKindMetadata[];
+  postgres_cdc: {
+    order: 25,
+    basicFields: ["url", "publication", "slot_name", "publication_tables"],
+    // Source only: mq-bridge has no postgres_cdc publisher.
+    publisher: false,
+  },
+  clickhouse: {
+    order: 26,
+    basicFields: ["url", "table", "database"],
+    requestBar: {
+      fields: [
+        { inputId: "pub-extra-1", field: "table", label: "TABLE", placeholder: "events" },
+        { inputId: "pub-url", field: "url", label: "URL", placeholder: "http://localhost:8123" },
+      ],
+    },
+  },
 
-export type EndpointKind = typeof ENDPOINT_KIND_METADATA[number]["kind"];
+  // Structural kinds. `structural` here is only the offline fallback for the
+  // schema's `format: "structural_endpoint"` marker.
+  static: { order: 12, basicFields: ["static"], structural: true, consumer: true },
+  ref: { order: 13, basicFields: ["ref"], structural: true, publisher: false, consumer: false },
+  switch: { order: 16, basicFields: ["metadata_key", "default", "cases"], structural: true, consumer: false },
+  fanout: { order: 17, basicFields: ["endpoints"], structural: true, consumer: false },
+  // Usable in both directions: publishers omit `correlation_id`, consumers require it.
+  stream_buffer: { order: 18, basicFields: ["topic", "correlation_id", "capacity"], structural: true, consumer: true },
+  request: { order: 19, basicFields: ["to", "forward_to"], structural: true, consumer: false },
+  reader: { order: 20, basicFields: [], structural: true, publisher: false, consumer: false },
+  response: { order: 21, basicFields: [], structural: true, publisher: false, consumer: false },
+  custom: { order: 27, basicFields: [], structural: true, publisher: false, consumer: false },
+  // `null` carries no structural marker in the schema, but it is one.
+  null: { order: 28, basicFields: [], structural: true, publisher: false, consumer: false },
+} as const satisfies Record<string, EndpointKindOverride>;
 
-export const KNOWN_ENDPOINT_ROOT_KEYS = [...ENDPOINT_KIND_METADATA]
-  .sort((left, right) => left.rootOrder - right.rootOrder)
-  .map((entry) => entry.kind);
+export type EndpointKind = keyof typeof ENDPOINT_KIND_OVERRIDES;
 
-export const BASIC_ENDPOINT_FIELDS = Object.fromEntries(
-  ENDPOINT_KIND_METADATA.map((entry) => [entry.kind, entry.basicFields]),
-) as Record<string, readonly string[]>;
+/** Kinds discovered from the schema are appended after the curated ones. */
+const DERIVED_ORDER_BASE = 1000;
+const MAX_DERIVED_BASIC_FIELDS = 4;
+const URL_LIKE_FIELDS = new Set(["url", "path", "uri", "address", "servers", "brokers"]);
+const EXTRA_INPUT_IDS = ["pub-extra-1", "pub-extra-2"] as const;
 
-export const PUBLISHER_TYPE_OPTIONS = ENDPOINT_KIND_METADATA
-  .filter((entry) => entry.publisher)
-  .sort((left, right) => left.rootOrder - right.rootOrder)
-  .map((entry) => entry.kind);
+const registry = new Map<string, EndpointKindMetadata>();
 
-export const CONSUMER_TYPE_OPTIONS = ENDPOINT_KIND_METADATA
-  .filter((entry) => entry.consumer)
-  .sort((left, right) => left.rootOrder - right.rootOrder)
-  .map((entry) => entry.kind);
+/**
+ * Derived collections. These keep a stable identity and are refilled in place
+ * whenever the registry changes, so importers never hold a stale reference.
+ */
+export const KNOWN_ENDPOINT_ROOT_KEYS: string[] = [];
+export const PUBLISHER_TYPE_OPTIONS: string[] = [];
+export const CONSUMER_TYPE_OPTIONS: string[] = [];
+export const STRUCTURAL_ENDPOINT_KINDS: Set<string> = new Set();
+export const RESPONSE_CAPABLE_CONSUMER_TYPES: Set<string> = new Set();
+export const BASIC_ENDPOINT_FIELDS: Record<string, readonly string[]> = {};
+export const REQUEST_BAR_LAYOUTS: Record<string, RequestBarLayout> = {};
 
-export const REQUEST_BAR_LAYOUTS = Object.fromEntries(
-  ENDPOINT_KIND_METADATA.filter((entry) => entry.publisher)
-    .map((entry) => [entry.kind, (entry as EndpointKindMetadata).requestBar || { fields: [] }]),
-) as Record<string, RequestBarLayout>;
+function resolveMetadata(
+  kind: string,
+  structural: boolean,
+  derived: { order: number; basicFields: readonly string[]; requestBar: RequestBarLayout },
+): EndpointKindMetadata {
+  const override = (ENDPOINT_KIND_OVERRIDES as Record<string, EndpointKindOverride>)[kind] || {};
+  return {
+    kind,
+    structural,
+    order: override.order ?? derived.order,
+    basicFields: override.basicFields ?? derived.basicFields,
+    requestBar: override.requestBar ?? derived.requestBar,
+    // Transports work in both directions unless stated otherwise; structural
+    // kinds have to opt in, since most of them are output-only helpers.
+    publisher: override.publisher ?? true,
+    consumer: override.consumer ?? !structural,
+    responseCapable: override.responseCapable ?? false,
+    requiresFeature: override.requiresFeature,
+  };
+}
 
+function byOrderThenKind(left: EndpointKindMetadata, right: EndpointKindMetadata): number {
+  return left.order - right.order || left.kind.localeCompare(right.kind);
+}
 
-export const RESPONSE_CAPABLE_CONSUMER_TYPES = new Set(
-  ENDPOINT_KIND_METADATA
-    .filter((entry) => (entry as EndpointKindMetadata).responseCapable)
-    .map((entry) => entry.kind),
-) as ReadonlySet<string>;
+function rebuildDerivedCollections(): void {
+  const entries = [...registry.values()].sort(byOrderThenKind);
+
+  KNOWN_ENDPOINT_ROOT_KEYS.length = 0;
+  PUBLISHER_TYPE_OPTIONS.length = 0;
+  CONSUMER_TYPE_OPTIONS.length = 0;
+  STRUCTURAL_ENDPOINT_KINDS.clear();
+  RESPONSE_CAPABLE_CONSUMER_TYPES.clear();
+  for (const key of Object.keys(BASIC_ENDPOINT_FIELDS)) delete BASIC_ENDPOINT_FIELDS[key];
+  for (const key of Object.keys(REQUEST_BAR_LAYOUTS)) delete REQUEST_BAR_LAYOUTS[key];
+
+  for (const entry of entries) {
+    KNOWN_ENDPOINT_ROOT_KEYS.push(entry.kind);
+    BASIC_ENDPOINT_FIELDS[entry.kind] = entry.basicFields;
+    if (entry.publisher) {
+      PUBLISHER_TYPE_OPTIONS.push(entry.kind);
+      REQUEST_BAR_LAYOUTS[entry.kind] = entry.requestBar;
+    }
+    if (entry.consumer) CONSUMER_TYPE_OPTIONS.push(entry.kind);
+    if (entry.structural) STRUCTURAL_ENDPOINT_KINDS.add(entry.kind);
+    if (entry.responseCapable) RESPONSE_CAPABLE_CONSUMER_TYPES.add(entry.kind);
+  }
+}
+
+function registerKind(
+  kind: string,
+  structural: boolean,
+  derived: { order: number; basicFields: readonly string[]; requestBar: RequestBarLayout },
+): void {
+  registry.set(kind, resolveMetadata(kind, structural, derived));
+}
+
+function seedFromOverrides(): void {
+  registry.clear();
+  let index = 0;
+  for (const [kind, override] of Object.entries(ENDPOINT_KIND_OVERRIDES as Record<string, EndpointKindOverride>)) {
+    registerKind(kind, override.structural === true, {
+      order: DERIVED_ORDER_BASE + index++,
+      basicFields: [],
+      requestBar: { fields: [] },
+    });
+  }
+  rebuildDerivedCollections();
+}
+
+seedFromOverrides();
+
+type SchemaNode = {
+  $defs?: Record<string, SchemaNode>;
+  $ref?: string;
+  type?: string;
+  format?: string;
+  properties?: Record<string, SchemaNode>;
+  required?: string[];
+  oneOf?: SchemaNode[];
+};
+
+function resolveRef(node: SchemaNode | undefined, defs: Record<string, SchemaNode>): SchemaNode | undefined {
+  if (!node?.$ref?.startsWith("#/$defs/")) return node;
+  return defs[node.$ref.slice("#/$defs/".length)];
+}
+
+function isScalarField(node: SchemaNode | undefined): boolean {
+  return !!node && (node.type === "string" || node.type === "number" || node.type === "integer" || node.type === "boolean");
+}
+
+/**
+ * Basic fields for a kind we have no override for: the config's required
+ * properties, which are the ones a user cannot leave out anyway.
+ */
+function deriveBasicFields(config: SchemaNode | undefined, kind: string): readonly string[] {
+  const required = config?.required;
+  if (!required?.length) return config?.properties ? [] : [kind];
+  return required.slice(0, MAX_DERIVED_BASIC_FIELDS);
+}
+
+/**
+ * Request bar for a kind we have no override for: its required scalar fields,
+ * with the url-ish one in the wide input and up to two others beside it.
+ */
+function deriveRequestBar(config: SchemaNode | undefined, basicFields: readonly string[]): RequestBarLayout {
+  const scalars = basicFields.filter((field) => isScalarField(config?.properties?.[field]));
+  const urlField = scalars.find((field) => URL_LIKE_FIELDS.has(field));
+  const fields: RequestBarFieldDescriptor[] = [];
+  scalars
+    .filter((field) => field !== urlField)
+    .slice(0, EXTRA_INPUT_IDS.length)
+    .forEach((field, index) => {
+      fields.push({ inputId: EXTRA_INPUT_IDS[index], field, label: formatEndpointTypeLabel(field) });
+    });
+  if (urlField) {
+    fields.push({ inputId: "pub-url", field: urlField, label: formatEndpointTypeLabel(urlField) });
+  }
+  return { fields };
+}
+
+/**
+ * Rebuild the registry from the backend's JSON schema. Every `Endpoint` variant
+ * becomes a kind, and variants tagged `format: "structural_endpoint"` are
+ * grouped separately in the add menus. New transports therefore show up without
+ * a UI change; `ENDPOINT_KIND_OVERRIDES` only refines how they are presented.
+ *
+ * Returns the registered kinds, or an empty list when the schema has no
+ * recognisable `Endpoint` definition (in which case the curated list stands).
+ */
+export function registerEndpointKindsFromSchema(schema: unknown): string[] {
+  const root = (schema || {}) as SchemaNode;
+  const defs = root.$defs || {};
+  const variants = defs.Endpoint?.oneOf;
+  if (!Array.isArray(variants) || variants.length === 0) return [];
+
+  const seeded = new Map(registry);
+  registry.clear();
+  variants.forEach((variant, index) => {
+    const kind = variant.required?.[0] || Object.keys(variant.properties || {})[0];
+    if (!kind) return;
+    const config = resolveRef(variant.properties?.[kind], defs);
+    const basicFields = deriveBasicFields(config, kind);
+    registerKind(kind, variant.format === "structural_endpoint" || seeded.get(kind)?.structural === true, {
+      order: DERIVED_ORDER_BASE + index,
+      basicFields,
+      requestBar: deriveRequestBar(config, basicFields),
+    });
+  });
+
+  if (registry.size === 0) {
+    registry.clear();
+    for (const [kind, entry] of seeded) registry.set(kind, entry);
+    return [];
+  }
+
+  rebuildDerivedCollections();
+  return [...KNOWN_ENDPOINT_ROOT_KEYS];
+}
+
+/** Restore the curated defaults. Used by tests. */
+export function resetEndpointKinds(): void {
+  seedFromOverrides();
+}
+
+export type EndpointTypeGroup = {
+  /** Empty for the primary group, which is rendered without a heading. */
+  label: string;
+  kinds: string[];
+};
+
+/**
+ * Add-menu contents for a role: transports first and unlabelled so they stay one
+ * click away, structural endpoints below under a heading.
+ */
+export function getEndpointTypeGroups(
+  role: "publisher" | "consumer",
+  features?: FeatureAvailabilityResponse,
+): EndpointTypeGroup[] {
+  const kinds = role === "publisher" ? PUBLISHER_TYPE_OPTIONS : CONSUMER_TYPE_OPTIONS;
+  const available = features ? filterEndpointsByFeatures(kinds, features) : [...kinds];
+  const groups: EndpointTypeGroup[] = [
+    { label: "", kinds: available.filter((kind) => !STRUCTURAL_ENDPOINT_KINDS.has(kind)) },
+    { label: "Routing", kinds: available.filter((kind) => STRUCTURAL_ENDPOINT_KINDS.has(kind)) },
+  ];
+  return groups.filter((group) => group.kinds.length > 0);
+}
 
 /**
  * Filter endpoint types based on available backend features.
@@ -282,14 +459,11 @@ export function filterEndpointsByFeatures(
   features: FeatureAvailabilityResponse
 ): string[] {
   return endpoints.filter((kind) => {
-    const metadata = ENDPOINT_KIND_METADATA.find((entry) => entry.kind === kind);
-    if (!metadata) return true;
-    
-    // If no feature requirement, always include
-    if (!('requiresFeature' in metadata)) return true;
-    
+    const requiresFeature = registry.get(kind)?.requiresFeature;
+    if (!requiresFeature) return true;
+
     // Check if the required feature is available
-    const featureKey = metadata.requiresFeature as keyof FeatureAvailabilityResponse;
+    const featureKey = requiresFeature as keyof FeatureAvailabilityResponse;
     return features[featureKey] === true;
   });
 }

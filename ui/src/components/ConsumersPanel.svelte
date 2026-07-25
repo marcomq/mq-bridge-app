@@ -12,7 +12,6 @@
     addConsumerResponseHeader,
     clearActiveConsumerHistory,
     cloneCurrentConsumerAction,
-    CONSUMER_TYPE_OPTIONS,
     copyCurrentConsumerAction,
     currentConsumerConfigVariants,
     deleteCurrentConsumerAction,
@@ -33,7 +32,7 @@
   } from "../lib/consumers-view";
   import { registerDismissOnOutsideClick, startSidebarResize as beginSidebarResize } from "../lib/sidebar-ui";
   import { handleActionKey, getTechnicalDisplayLabel } from "../lib/utils";
-  import { formatEndpointTypeLabel } from "../lib/endpoint-metadata";
+  import { formatEndpointTypeLabel, getEndpointTypeGroups } from "../lib/endpoint-metadata";
   import type { ConfigJsonVariant } from "../lib/import-export";
   import { appShell, getAppState } from "../lib/app-shell";
 
@@ -321,8 +320,13 @@
             >+</wa-button>
           {#if addMenuOpen}
             <div class="add-menu">
-              {#each CONSUMER_TYPE_OPTIONS as type (type)}
-                <button type="button" onclick={() => handleAdd(type)}>{formatEndpointTypeLabel(type)}</button>
+              {#each getEndpointTypeGroups("consumer") as group (group.label)}
+                {#if group.label}
+                  <div class="add-menu-label">{group.label}</div>
+                {/if}
+                {#each group.kinds as type (type)}
+                  <button type="button" onclick={() => handleAdd(type)}>{formatEndpointTypeLabel(type)}</button>
+                {/each}
               {/each}
             </div>
           {/if}
