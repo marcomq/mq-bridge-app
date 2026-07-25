@@ -210,6 +210,8 @@ mq-bridge-app mcp --transport http --bind 127.0.0.1:9092
 
 Five tools: `publish` (one message or a batch to any endpoint), `start_route` (move messages from an `input` to an `output`, with `batch_size` / `concurrency` / `exit_on_empty`), and `list_routes` / `route_status` / `stop_route` to manage what is running.
 
+Because the data moves inside the bridge and never through the model's context, an agent pays a **flat** token cost for a job of any size: a 1,000,000-row CSV → JSONL move is three tool calls and ~370 tokens, at 735,330 rows/s — the same rate the `copy` CLI achieves. See [Performance](#through-the-mcp-server).
+
 `mcp install` registers the running binary with your MCP clients, so you don't have to write the config by hand:
 
 ```bash
@@ -323,8 +325,24 @@ at **~20 MiB peak RSS**, about **17.4x faster** and ~30x leaner than Meltano
 (`tap-postgres` → `target-jsonl`, same table, same machine) at **15,356 rows/s** /
 600 MiB.
 
+### Through the MCP server
+
+Driving the same 1M-row CSV → JSONL job **through an MCP tool call** instead of the
+CLI sustained **735,330 rows/s** measured client-side — within a few percent of the
+`copy` CLI, which measures 766,000–788,000 rows/s across sessions on this host. The
+gap is route startup plus completion polling (~55 ms), a fixed cost rather than a
+per-row one; the server's own average over the identical job reports 768,555
+rows/s. A tool call itself round-trips in **0.065 ms (p50)** over stdio.
+
+The cost that matters for an agent, though, is tokens: moving the whole 116.3 MiB
+dataset takes **three tool calls and ~1,482 bytes (~370 tokens)** of JSON-RPC,
+because the rows never enter the model's context. That figure is *flat in the
+number of rows* — the same for 1M rows as for 1,000 — where passing the same data
+through a context window would cost roughly 30.5M tokens.
+
 Full setup and methodology for these scenarios (CSV→JSONL and Postgres→JSONL, 1M
-rows, throughput + peak RSS) are in [`benches/etl/README.md`](benches/etl/README.md).
+rows, throughput + peak RSS; the MCP measurements in §7) are in
+[`benches/etl/README.md`](benches/etl/README.md).
 
 ## Build from source
 

@@ -54,6 +54,29 @@ pub struct RouteMetricSample {
     pub total_messages: f64,
     pub observed_at: Instant,
     pub smoothed_throughput: f64,
+    /// When the count was last seen to grow. Unlike `observed_at` this stops
+    /// advancing once a route goes idle, which is what makes an average rate
+    /// meaningful after a drain has finished.
+    pub last_change_at: Instant,
+}
+
+/// A route's cumulative timing: how long it was moving messages, and the average
+/// rate over that span.
+///
+/// The smoothed [`RouteMetrics::throughput`] is instantaneous and decays to ~0
+/// within seconds of a drain completing, so it cannot describe a job that has
+/// already finished. This can: `elapsed` runs from the moment the route's counter
+/// was created (route start, connection setup included) to the last message
+/// observed, so it stays stable once the route stops moving data.
+///
+/// Resolution is [`THROUGHPUT_UPDATE_INTERVAL`], because `last_change_at` comes
+/// from the sampler rather than from the message path — a job that finishes
+/// inside one sampler tick is not measurable this way.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteTiming {
+    pub messages: u64,
+    pub elapsed: Duration,
+    pub average_throughput: f64,
 }
 
 /// Folds a new cumulative count into the previous sample, producing an updated
@@ -63,6 +86,12 @@ pub fn next_route_metric_sample(
     total_messages: f64,
     observed_at: Instant,
 ) -> RouteMetricSample {
+    let last_change_at = match previous {
+        Some(previous_sample) if total_messages <= previous_sample.total_messages => {
+            previous_sample.last_change_at
+        }
+        _ => observed_at,
+    };
     let smoothed_throughput = if let Some(previous_sample) = previous {
         let elapsed = observed_at
             .duration_since(previous_sample.observed_at)
@@ -83,6 +112,7 @@ pub fn next_route_metric_sample(
         total_messages,
         observed_at,
         smoothed_throughput, // First observation: we have no previous throughput to smooth, so start at 0.
+        last_change_at,
     }
 }
 
@@ -93,6 +123,8 @@ pub fn next_route_metric_sample(
 pub struct RouteMetrics {
     counters: Arc<RwLock<HashMap<String, Arc<AtomicU64>>>>,
     samples: Arc<RwLock<HashMap<String, RouteMetricSample>>>,
+    /// When each key's counter was created, i.e. when its route started.
+    starts: Arc<RwLock<HashMap<String, Instant>>>,
     updater_started: Arc<AtomicBool>,
 }
 
@@ -105,10 +137,16 @@ impl RouteMetrics {
     /// per message from the route's handler.
     pub async fn counter_for(&self, key: &str) -> Arc<AtomicU64> {
         let mut counters = self.counters.write().await;
-        counters
+        let counter = counters
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-            .clone()
+            .clone();
+        self.starts
+            .write()
+            .await
+            .entry(key.to_string())
+            .or_insert_with(Instant::now);
+        counter
     }
 
     /// Total messages counted for `key` since its counter was created.
@@ -129,6 +167,32 @@ impl RouteMetrics {
             .get(key)
             .map(|sample| sample.smoothed_throughput)
             .unwrap_or(0.0)
+    }
+
+    /// Cumulative timing for `key`: total messages, the span over which they
+    /// moved, and the average rate across it. Returns `None` until the sampler
+    /// has observed the key at least once.
+    ///
+    /// The average is over `elapsed`, which stops growing when the route goes
+    /// idle, so a finished job keeps reporting the rate it actually achieved.
+    pub async fn timing(&self, key: &str) -> Option<RouteTiming> {
+        let sample = *self.samples.read().await.get(key)?;
+        let started_at = *self.starts.read().await.get(key)?;
+        let messages = sample.total_messages.max(0.0);
+        // `last_change_at` is a sampler observation and `started_at` predates the
+        // first one, so the difference is never negative in practice; saturating
+        // keeps a clock oddity from panicking a status call.
+        let elapsed = sample.last_change_at.saturating_duration_since(started_at);
+        let seconds = elapsed.as_secs_f64();
+        Some(RouteTiming {
+            messages: messages as u64,
+            elapsed,
+            average_throughput: if seconds > 0.0 {
+                messages / seconds
+            } else {
+                0.0
+            },
+        })
     }
 
     /// Smoothed messages per second for every sampled key.
@@ -160,6 +224,7 @@ impl RouteMetrics {
         let mut counters = self.counters.write().await;
         counters.remove(key);
         self.samples.write().await.remove(key);
+        self.starts.write().await.remove(key);
     }
 
     /// Spawns the background sampler that converts counters into smoothed rates,
@@ -275,6 +340,7 @@ mod tests {
         assert_eq!(sample.total_messages, 42.0);
         assert_eq!(sample.observed_at, now);
         assert_eq!(sample.smoothed_throughput, 0.0);
+        assert_eq!(sample.last_change_at, now);
     }
 
     #[test]
@@ -284,12 +350,29 @@ mod tests {
             total_messages: 10.0,
             observed_at: start,
             smoothed_throughput: 4.0,
+            last_change_at: start,
         };
 
         let next = next_route_metric_sample(Some(previous), 18.0, start + Duration::from_secs(2));
 
         // Instantaneous throughput is (18 - 10) / 2 = 4.0, so the EMA stays at 4.0.
         assert_eq!(next.smoothed_throughput, 4.0);
+        assert_eq!(next.last_change_at, start + Duration::from_secs(2));
+    }
+
+    #[test]
+    fn last_change_at_stops_advancing_once_the_count_stops_growing() {
+        let start = Instant::now();
+        let moving = next_route_metric_sample(None, 100.0, start);
+
+        // Two idle observations: the count is unchanged, so the "last moved"
+        // instant must stay put even though we keep sampling.
+        let idle = next_route_metric_sample(Some(moving), 100.0, start + Duration::from_secs(1));
+        let still_idle =
+            next_route_metric_sample(Some(idle), 100.0, start + Duration::from_secs(2));
+
+        assert_eq!(idle.last_change_at, start);
+        assert_eq!(still_idle.last_change_at, start);
     }
 
     #[test]
@@ -299,6 +382,7 @@ mod tests {
             total_messages: 10.0,
             observed_at: start,
             smoothed_throughput: 6.0,
+            last_change_at: start,
         };
 
         // A counter that went backwards (route restarted) must not yield a
@@ -320,6 +404,35 @@ mod tests {
         assert_eq!(second.load(Ordering::Relaxed), 3);
         assert_eq!(metrics.sequence("route-a").await, 3);
         assert_eq!(metrics.sequence("route-b").await, 0);
+    }
+
+    #[tokio::test]
+    async fn timing_reports_a_stable_average_after_the_route_goes_idle() {
+        let metrics = RouteMetrics::new();
+        metrics.ensure_updater();
+        assert!(
+            metrics.timing("route-a").await.is_none(),
+            "timing must be absent before the sampler has seen the key"
+        );
+
+        let counter = metrics.counter_for("route-a").await;
+        counter.fetch_add(1_000, Ordering::Relaxed);
+        tokio::time::sleep(THROUGHPUT_UPDATE_INTERVAL * 3).await;
+
+        let moving = metrics.timing("route-a").await.expect("sampled");
+        assert_eq!(moving.messages, 1_000);
+        assert!(moving.average_throughput > 0.0);
+
+        // Idling must not dilute the average: the instantaneous rate decays to
+        // ~0 here, but the achieved rate is a fact about a finished job.
+        tokio::time::sleep(THROUGHPUT_UPDATE_INTERVAL * 5).await;
+        let idle = metrics.timing("route-a").await.expect("sampled");
+        assert_eq!(idle.elapsed, moving.elapsed);
+        assert_eq!(idle.average_throughput, moving.average_throughput);
+        assert!(
+            metrics.throughput("route-a").await < idle.average_throughput,
+            "the instantaneous rate should have decayed below the achieved average"
+        );
     }
 
     #[tokio::test]

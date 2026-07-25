@@ -18,7 +18,8 @@ use mq_bridge_app::mq_bridge::{
     route::{RouteHandle, RouteOutcome},
 };
 use mq_bridge_app::route_metrics::{
-    CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, format_capture_time,
+    CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, RouteTiming,
+    format_capture_time,
 };
 use mq_bridge_app::ui_app::{
     ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport, RouteOutcomeSnapshot,
@@ -206,11 +207,19 @@ fn route_outcome(handle: &RouteHandle) -> Option<RouteOutcome> {
 /// (`completed` / `stopped` / `failed`, `null` while running). A route started
 /// with `exit_on_empty` reports `finished: true, outcome: "completed"` once it
 /// has drained.
+///
+/// Two rates are reported, because they answer different questions.
+/// `messages_per_second` is instantaneous and decays to ~0 within seconds of a
+/// drain finishing, so it only describes a route that is running *now*.
+/// `average_messages_per_second` over `elapsed_s` is the rate the route actually
+/// achieved, and it stays put once the route goes idle — that is the one to quote
+/// for a completed job. Both are absent until the sampler has observed the route.
 fn route_entry_json(
     name: &str,
     handle: &RouteHandle,
     messages: u64,
     messages_per_second: f64,
+    timing: Option<RouteTiming>,
 ) -> serde_json::Value {
     serde_json::json!({
         "name": name,
@@ -219,8 +228,14 @@ fn route_entry_json(
         "finished": route_finished(handle),
         "outcome": route_outcome(handle),
         "messages": messages,
-        "messages_per_second": (messages_per_second * 100.0).round() / 100.0,
+        "messages_per_second": round2(messages_per_second),
+        "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
+        "average_messages_per_second": timing.map(|t| round2(t.average_throughput)),
     })
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 /// Renders one captured message in the same shape the web UI's `/messages`
@@ -584,7 +599,7 @@ impl BridgeMcp {
 
     #[tool(
         description = "List the routes started by this server, with their live connection health, \
-            total messages moved, and current message rate.",
+            total messages moved, current message rate, and achieved average rate.",
         annotations(read_only_hint = true)
     )]
     async fn list_routes(&self) -> Result<CallToolResult, McpError> {
@@ -612,8 +627,10 @@ impl BridgeMcp {
 
     #[tool(
         description = "Report the live status of one route (by `name`) or all routes: connection \
-            health, whether it has finished, the total number of messages it has moved, and its \
-            current rate in messages per second.",
+            health, whether it has finished, the total number of messages it has moved, its current \
+            rate (`messages_per_second`), and the rate it achieved overall \
+            (`average_messages_per_second` over `elapsed_s`). Quote the average for a finished job: \
+            the current rate decays to ~0 once a route stops moving data.",
         annotations(read_only_hint = true)
     )]
     async fn route_status(
@@ -631,6 +648,7 @@ impl BridgeMcp {
                     handle,
                     self.metrics.sequence(&name).await,
                     self.metrics.throughput(&name).await,
+                    self.metrics.timing(&name).await,
                 );
                 Ok(ok_json(entry))
             }
@@ -670,7 +688,10 @@ impl BridgeMcp {
         })))
     }
 
-    #[tool(description = "Stop a running route by `name`.")]
+    #[tool(
+        description = "Stop a running route by `name`. Returns the total messages it moved plus the \
+            rate it achieved (`average_messages_per_second` over `elapsed_s`)."
+    )]
     async fn stop_route(
         &self,
         Parameters(args): Parameters<RouteNameArg>,
@@ -680,6 +701,9 @@ impl BridgeMcp {
             Some(handle) => {
                 handle.stop().await;
                 let messages = self.metrics.sequence(&args.name).await;
+                // Read the timing before forgetting the route: this is the last
+                // chance to report what it achieved.
+                let timing = self.metrics.timing(&args.name).await;
                 self.metrics.forget(&args.name).await;
                 // Capture buffers live in a process-global registry keyed by
                 // topic and outlive the route, so anything still buffered would
@@ -691,6 +715,8 @@ impl BridgeMcp {
                 Ok(ok_json(serde_json::json!({
                     "stopped": args.name,
                     "messages": messages,
+                    "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
+                    "average_messages_per_second": timing.map(|t| round2(t.average_throughput)),
                     "discarded_captured_messages": dropped,
                 })))
             }
@@ -709,6 +735,7 @@ impl BridgeMcp {
                 handle,
                 self.metrics.sequence(name).await,
                 self.metrics.throughput(name).await,
+                self.metrics.timing(name).await,
             ));
         }
         entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));

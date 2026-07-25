@@ -1625,4 +1625,3 @@ mod uri_tests {
         assert_eq!(cfg["url"], "tcp://127.0.0.1:5555");
     }
 }
-

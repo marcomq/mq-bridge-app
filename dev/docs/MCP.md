@@ -130,6 +130,28 @@ Alongside `input` and `output`, a route accepts the usual execution options —
 `batch_size`, `concurrency`, and `exit_on_empty` (drain the source, then exit).
 Without `exit_on_empty` a route polls indefinitely until `stop_route`.
 
+### Route status
+
+`route_status` (and `list_routes`) report two rates, and they answer different
+questions:
+
+| Field | Meaning |
+| --- | --- |
+| `messages` | Total messages the route has moved. |
+| `messages_per_second` | **Instantaneous** rate, smoothed over ~0.5 s. Decays to ~0 within a second of a route going idle. |
+| `elapsed_s` | The span over which those messages moved: route start → last message seen. Stops growing once the route goes idle. |
+| `average_messages_per_second` | `messages / elapsed_s` — the rate the route **actually achieved**. |
+
+For a route that is running now, read `messages_per_second`. For one that has
+finished — anything started with `exit_on_empty` — read
+`average_messages_per_second`: the instantaneous rate of a completed job is ~0 by
+the time any status call observes it, which says nothing about how fast it was.
+`stop_route` returns the same two fields as its parting summary.
+
+`elapsed_s` and `average_messages_per_second` are `null` until the route has been
+sampled at least once (the sampler runs every 200 ms), so a job that finishes
+inside one tick reports no average.
+
 ## Examples
 
 Publish a batch to NATS JetStream:
@@ -207,3 +229,16 @@ docker compose -f nats.yml -f postgres.yml -f redis.yml up -d
 Verified end-to-end against these: batch publish to file/NATS/Redis Streams,
 `NATS → file` and `Redis Streams → Postgres` routes (including
 `auto_create_table`), the full route lifecycle, and the error paths above.
+
+## Performance
+
+A tool call round-trips in ~0.065 ms (p50) over stdio, and a route started through
+`start_route` moves data at the same rate the `copy` CLI does, within run-to-run
+variance — the interface costs one round-trip, not a per-row tax. A 1,000,000-row
+CSV → JSONL job runs at 735,330 rows/s and costs the agent three tool calls
+(~370 tokens), because the rows never pass through the model's context.
+
+Methodology and the client used to measure it (a real MCP client over stdio, not an
+in-process harness) are in [`benches/etl/README.md`](../../benches/etl/README.md),
+scenario 7. Call `server_info` before trusting any throughput number: it reports the
+build `profile`, and a debug binary invalidates the measurement.

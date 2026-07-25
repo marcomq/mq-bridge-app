@@ -51,7 +51,8 @@ fn emit_build_metadata() {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
 
-    let hash = git_output(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let hash =
+        git_output(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     let dirty = git_output(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
     let git = if dirty { format!("{hash}-dirty") } else { hash };
     println!("cargo:rustc-env=MQB_GIT_HASH={git}");

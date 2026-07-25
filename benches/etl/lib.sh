@@ -290,6 +290,9 @@ results_drop_tool() {
 bench_tool() {
   local label="$1" landed_path="$2" timeout="$3"; shift 3
   local samples=() i t0 t1 elapsed landed
+  # Output lines, which is $ROWS for a JSONL sink but not for every format — a CSV
+  # sink writes a header line too. Set EXPECT_LINES around the call for those.
+  local expect="${EXPECT_LINES:-$ROWS}"
 
   echo "-- ${label}: warmup"
   guarded_sample "$timeout" "${label} warmup" "$@" || return 1
@@ -299,8 +302,8 @@ bench_tool() {
     guarded_sample "$timeout" "${label} run $i" "$@" || return 1
     t1="$(now)"
     landed="$(landed_rows "$landed_path")"
-    [[ "$landed" == "$ROWS" ]] || {
-      echo "  FAILED: ${label} run $i landed ${landed} != expected ${ROWS}" >&2; return 1; }
+    [[ "$landed" == "$expect" ]] || {
+      echo "  FAILED: ${label} run $i landed ${landed} != expected ${expect}" >&2; return 1; }
     elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"
     echo "  ${label} run $i: ${elapsed}s"
     samples+=("$elapsed")

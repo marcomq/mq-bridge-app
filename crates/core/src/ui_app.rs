@@ -67,8 +67,8 @@ const MCP_STATUS_RETRY_DELAY: Duration = Duration::from_secs(1);
 pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
     use sha2::{Digest, Sha256};
 
-    let config_path = std::path::absolute(config_file_path)
-        .unwrap_or_else(|_| PathBuf::from(config_file_path));
+    let config_path =
+        std::path::absolute(config_file_path).unwrap_or_else(|_| PathBuf::from(config_file_path));
     let digest = Sha256::digest(config_path.as_os_str().as_encoded_bytes());
     // Half a SHA-256 is far more than enough to separate a handful of configs,
     // and keeps the whole path comfortably short.
@@ -2245,7 +2245,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_status_socket_path_stays_within_the_unix_socket_limit() {
-        let deep_config = format!("/Users/someone/{}/config.yml", "nested-directory/".repeat(20));
+        let deep_config = format!(
+            "/Users/someone/{}/config.yml",
+            "nested-directory/".repeat(20)
+        );
 
         let url = mcp_status_ipc_url(&deep_config);
 
@@ -2266,7 +2269,8 @@ mod tests {
         let app = test_app(AppConfig::default());
         app.spawn_mcp_status_listener();
 
-        let config = MemoryConfig::new_with_url(mcp_status_ipc_url(app.config_file_path()), Some(1));
+        let config =
+            MemoryConfig::new_with_url(mcp_status_ipc_url(app.config_file_path()), Some(1));
 
         // The listener binds in a spawned task, so the first connect can lose
         // the race with it.
