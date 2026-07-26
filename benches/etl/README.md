@@ -10,10 +10,10 @@ Debezium / OpenMessaging / Airbyte baselines.
 
 **The two headline scenarios (§5 Postgres → JSONL and §6 CSV → JSONL)** are
 full-dataset ETL jobs on a 1,000,000-row seed-42 dataset, reporting throughput
-**and** peak RSS against a Meltano (`tap-*` → `target-jsonl`) baseline (see
+**and** peak RSS against a Sling and a Meltano (`tap-*` → `target-jsonl`) baseline (see
 [Results](#results--the-two-headline-etl-scenarios-1m-rows)). The remaining
-scenarios (1 & 3 table→table copy, 2 CDC latency, 4 local IPC) are additional
-coverage.
+scenarios (1 & 3 table→table copy, 2 CDC latency, 4 local IPC, 7 the MCP server,
+8 Postgres' own tools) are additional coverage.
 
 ## Why this path is credible
 
@@ -26,32 +26,61 @@ the UI. No scenario uses a Criterion micro-harness or hand-written Rust.
 ## Results — the two headline ETL scenarios (1M rows)
 
 The two most common ETL jobs — **CSV → JSONL** and **Postgres → JSONL** — run on
-the same seeded (seed 42) 7-column mixed-type dataset of 1,000,000 rows, against a
-Meltano (`tap-*` → `target-jsonl`) baseline, reporting throughput **and** peak RSS
-(detailed writeups in §5 and §6 below). Both columns are measured on the same
-machine (this repo's Apple M1 host, on battery).
+the same seeded (seed 42) 7-column mixed-type dataset of 1,000,000 rows, against two
+baselines — Sling (a compiled Go EL tool) and Meltano (`tap-*` → `target-jsonl`) —
+reporting throughput **and** peak RSS (detailed writeups in §5 and §6 below). All
+columns are measured on the same machine (this repo's Apple M1 host).
 
 ### A — CSV → JSONL (1,000,000 rows, ~116 MiB)
 
-| Metric            | mq-bridge-app       | Meltano        |
-| ----------------- | ------------------- | -------------- |
-| Throughput        | **833,333 rows/s**  | ~19,500 rows/s |
-| Median wall-clock | 1.20 s              | ~51 s          |
-| Peak RSS          | 20.0 MiB            | 443.8 MiB      |
-| Rows out          | 1,000,000           | 1,000,000      |
+mq-bridge-app is measured **twice**, because the two configurations do different
+work and each has a baseline it legitimately belongs against:
+
+| Metric            | mq-bridge-app (typed) | mq-bridge-app (untyped) | Sling           | Meltano        |
+| ----------------- | --------------------- | ----------------------- | --------------- | -------------- |
+| Throughput        | **540,248 rows/s**    | **784,313 rows/s**      | 127,959 rows/s  | ~19,500 rows/s |
+| Median wall-clock | 1.85 s                | 1.28 s                  | 7.82 s          | ~51 s          |
+| Peak RSS          | 69.7 MiB              | 18.9 MiB                | 111.2 MiB       | 443.8 MiB      |
+| Rows out          | 1,000,000             | 1,000,000               | 1,000,000       | 1,000,000      |
+
+- **typed** runs a `transform` middleware that reproduces Sling's typing exactly,
+  and the harness fails the run unless all 1,000,000 output records match. **This
+  is the column to read against Sling** (~4.2x), and the only one that is
+  like-for-like.
+- **untyped** runs no middleware: every field stays the string the CSV reader
+  produced. This is the column to read against **Meltano** (~40x), whose `tap-csv`
+  likewise emits every field as a string — and it is the floor the transform's cost
+  is measured against.
+
+Quoting the untyped figure against Sling would overstate the margin (it would read
+~6.1x); quoting the typed figure against Meltano understates it. See
+[A note on the Sling comparison](#a-note-on-the-sling-comparison). Peak RSS
+(measured with `/usr/bin/time -l`): untyped **18.9 MiB**, typed **69.7 MiB** — the
+transform's per-row JSON decode/buffer adds ~51 MiB, still well under Sling's
+111.2 MiB and Meltano's 443.8 MiB.
 
 ### B — Postgres → JSONL (1,000,000 rows, 7-col)
 
-| Metric            | mq-bridge-app       | Meltano        |
-| ----------------- | ------------------- | -------------- |
-| Throughput        | **266,951 rows/s**  | 15,356 rows/s  |
-| Median wall-clock | 3.75 s              | 65.1 s         |
-| Peak RSS          | 19.9 MiB            | 599.7 MiB      |
-| Rows out          | 1,000,000           | 1,000,000      |
+| Metric            | mq-bridge-app       | Sling           | Meltano        |
+| ----------------- | ------------------- | --------------- | -------------- |
+| Throughput        | **266,951 rows/s**  | 122,774 rows/s  | 15,356 rows/s  |
+| Median wall-clock | 3.75 s              | 8.15 s          | 65.1 s         |
+| Peak RSS          | 19.9 MiB            | not yet measured| 599.7 MiB      |
+| Rows out          | 1,000,000           | 1,000,000       | 1,000,000      |
 
 `mq-bridge-app` moves the same 1M rows at **~20 MiB peak RSS** — an order of
 magnitude leaner than Meltano's Python pipeline (444–600 MiB). Throughput and RSS
 are single-machine, single-process batch numbers.
+
+> **The two Sling columns are not on equal footing — check which one you're
+> reading.** In **A (CSV)** the *typed* mq-bridge-app column does the same per-row
+> work as Sling: it runs a `transform` middleware reproducing Sling's typing, and
+> the outputs are asserted identical row-for-row, so that ratio is like-for-like.
+> (A's *untyped* column is not — it belongs against Meltano.) In **B (Postgres)**
+> the comparison is not equalised at all: there mq-bridge-app passes values through
+> untyped while Sling does schema inference and type conversion, which is real work
+> it does and mq-bridge-app doesn't. B has no typed column yet.
+> See [A note on the Sling comparison](#a-note-on-the-sling-comparison).
 
 ## Fixed parameters (printed next to every number)
 
@@ -76,6 +105,13 @@ cargo build -p mq-bridge-app --no-default-features --features bench --release
 
 # 2. Postgres 16 with logical replication (mirrors the library's CDC compose).
 benches/etl/seed.sh up
+
+# 3. Optional — the Sling CLI baseline for §5/§6 (compiled Go EL tool).
+#    Kept repo-local so a run never depends on what's on PATH; both runners
+#    skip the Sling block if it's absent.
+mkdir -p benches/etl/bin && curl -sL \
+  "https://github.com/slingdata-io/sling-cli/releases/latest/download/sling_darwin_arm64.tar.gz" \
+  | tar -xz -C benches/etl/bin sling
 ```
 
 Requires Docker, `curl`, `python3` (sub-second timing), and `uv` (used by
@@ -195,15 +231,26 @@ Meltano side: `benches/etl/meltano_project/bench` (`meltano.yml` configures
 `tap-postgres` selecting only `public-bench.*`, and `target-jsonl`), run via
 `meltano run tap-postgres target-jsonl`, wall-clocked the same way.
 
+Sling side: `sling run --src-conn … --src-stream public.bench --tgt-object file://…`
+with `{"format":"jsonlines","file_max_rows":0}`, defaults otherwise.
+
 | Tool | Config | rows/s | peak RSS |
 | --- | --- | --- | --- |
 | mq-bridge-app `copy` | batch_size 1024, concurrency 1 | **266,951** | 19.9 MiB |
+| Sling | defaults | 122,774 | not yet measured |
 | Meltano (`tap-postgres` → `target-jsonl`) | default Singer config | 15,356 | 599.7 MiB |
 
-**mq-bridge-app is ~17.4x faster** (and ~30x leaner in peak memory) in this scenario. No `metrics` middleware
+**mq-bridge-app is ~2.2x faster than Sling and ~17.4x faster than Meltano** (and ~30x
+leaner than Meltano in peak memory) in this scenario — but see
+[the note on Sling below](#a-note-on-the-sling-comparison), because that ratio is
+not comparing equal work. No `metrics` middleware
 involved here either — the `copy` CLI command never attaches a handler (see
 scenario 4's CommandPublisher bug/fix note), so there's no metrics path to
 accidentally measure in the first place.
+
+The mq-bridge-app and Sling figures above come from the same back-to-back session
+(2 timed runs each: 3.994s ±0.025 and 8.145s ±0.155). The Meltano figure is from
+an earlier session on the same machine and dataset, not the same run.
 
 ### 6 — CSV → JSONL vs. Meltano
 
@@ -215,13 +262,35 @@ input row (string-valued fields — the shape both mq-bridge's CSV reader and
 tap-csv emit):
 
 ```bash
-benches/etl/run_csv_to_jsonl.sh   # -> benches/etl/results/csv_to_jsonl.csv
+benches/etl/run_csv_to_jsonl.sh   # all tools -> benches/etl/results/csv_to_jsonl.csv
 ```
 
+Each tool is also a standalone script, so a single number can be re-measured
+without re-running the matrix. They append to the same results CSV, each replacing
+only its own row:
+
 ```bash
+benches/etl/run_csv_mqb.sh              # mq-bridge-app, typed (transform)
+benches/etl/run_csv_mqb.sh --untyped    # mq-bridge-app, untyped (no middleware)
+benches/etl/run_csv_sling.sh
+benches/etl/run_csv_meltano.sh
+benches/etl/run_csv_parity.sh           # asserts typed output == Sling's
+```
+
+The two mq-bridge-app configurations differ only in the middleware suffix on the
+output endpoint:
+
+```bash
+# untyped — every field stays the string the CSV reader produced
 mq-bridge-app copy \
   --from 'file:///…/benches/etl/data/bench.csv?format=csv' \
   --to   'file:///tmp/mqb_csv_out.jsonl?format=raw' \
+  --drain --batch-size 1024 --concurrency 1
+
+# typed — reproduces Sling's typing, and is what §5's Sling ratio compares
+mq-bridge-app copy \
+  --from 'file:///…/benches/etl/data/bench.csv?format=csv' \
+  --to   'file:///tmp/mqb_csv_out.jsonl?format=raw|transform?schema_file=…/schemas/bench.json' \
   --drain --batch-size 1024 --concurrency 1
 ```
 
@@ -230,21 +299,291 @@ Meltano side: same `meltano_project/bench` project with a `tap-csv` extractor
 `meltano run tap-csv target-jsonl`. Install the plugin once with
 `(cd meltano_project/bench && ../.venv/bin/meltano install extractor tap-csv)`.
 
+Sling side: `sling run --src-stream file://…bench.csv --tgt-object file://…` with
+`{"format":"jsonlines","file_max_rows":0}`, defaults otherwise.
+
 | Tool | Config | rows/s | peak RSS |
 | --- | --- | --- | --- |
-| mq-bridge-app `copy` | batch_size 1024, concurrency 1 | **833,333** (median of 2 clean runs: 1.210s / 1.190s) | 20.0 MiB |
-| Meltano (`tap-csv` → `target-jsonl`) | default Singer config | ~19,500 (clean runs 49.7s / 53.1s; fuller 5-run median pending) | 443.8 MiB |
+| mq-bridge-app `copy` (typed) | batch_size 1024, concurrency 1, `transform` (schemas/bench.json) | **540,248** (2-run median 1.851s, ±0.015) | 69.7 MiB |
+| mq-bridge-app `copy` (untyped) | batch_size 1024, concurrency 1, no middleware | **784,313** (2-run median 1.275s, ±0.012) | 18.9 MiB |
+| Sling | defaults | 127,959 (2-run median 7.815s, ±0.077) | 111.2 MiB |
+| Meltano (`tap-csv` → `target-jsonl`) | default Singer config | ~19,500 (clean runs 49.7s / 53.1s; fuller median pending) | 443.8 MiB |
 
-**mq-bridge-app is ~43x faster** (and ~22x leaner in peak memory) in this scenario.
+**Typed vs Sling: ~4.2x** — equal work, asserted identical outputs. **Untyped vs
+Meltano: ~40x** — both emit strings. Those are the two defensible ratios; see
+[the note below](#a-note-on-the-sling-comparison) for why they are not
+interchangeable.
+
+The typed cost is explicit here rather than hidden in a single number: the
+transform adds **0.58 s per 1,000,000 rows (~0.58 µs/row, ~31% of the typed
+wall-clock)**. An earlier revision of the transform cost 2.10 s per 1M rows (2.1
+µs/row, 64%), which is why the previously published typed figure was 303,214.
+
+The mq-bridge-app and Sling figures above come from the same back-to-back session
+(2026-07-19, 2 repeats each after a discarded warmup). The untyped
+figure was measured three separate times in that session — 788,022 / 784,313 /
+768,639 rows/s — and the table reports the median; the ~2.5% spread is the honest
+run-to-run variance on this host. The Meltano figure is from an earlier session on
+the same machine and dataset.
+
+### A note on the Sling comparison
+
+Sling does schema inference and type conversion: given a CSV row it emits typed
+values and re-parses nested JSON into real objects. mq-bridge-app's readers do not
+infer types — they pass values through as strings. Comparing those two directly
+would time a string passthrough against a tool that parses and re-types every row,
+which is not a benchmark, so the two scenarios handle it differently.
+
+**§5 (CSV → JSONL) — equal work, ratio is like-for-like.** The mq-bridge-app run
+carries a `transform` middleware ([`schemas/bench.json`](schemas/bench.json)) that
+reproduces Sling's output exactly: `coerce` widens the `id` string to an integer,
+and `contentMediaType: application/json` decodes the embedded `attributes` document
+into a nested object. Both tools then emit the same records:
+
+```jsonc
+// sling (defaults) and mq-bridge-app (+ transform) — identical records
+{"id":1,"amount":"6767.32","attributes":{"score":2.501,"tier":"free"}}
+```
+
+This is asserted, not assumed: [`compare_jsonl.py`](compare_jsonl.py) diffs the two
+outputs record-by-record and **fails the run** on any mismatch, so the numbers in §5
+cannot be published unless all 1,000,000 rows match. Records are compared as parsed
+JSON — mq-bridge-app preserves the source column order inside `attributes` while
+Sling alphabetizes it, which is a serialization difference, not a data one.
+
+Making the work equal is not free, and the harness measures the cost directly by
+running mq-bridge-app both ways in the same session: **784,313 untyped → 540,248
+typed**, i.e. the transform costs ~0.58 µs/row (~31% of wall-clock). The margin
+against Sling is therefore ~4.2x, not the ~6.1x the untyped run would suggest.
+
+Both configurations stay published on purpose. The untyped number is not a
+discarded draft — it is the correct comparison against any tool that also does no
+transformation (Meltano's `tap-csv` emits every field as a string), and it is what
+makes the transform's cost auditable instead of baked invisibly into one figure.
+What it must *not* be used for is a comparison against a type-inferring tool.
+
+Historical note: this scenario previously published 303,214 rows/s typed, against
+an untyped 834,724 — a ~2.7x cost for the same schema. A later optimization of the
+transform middleware cut that to ~1.45x. Sling is a useful control across all of
+it, measuring 119,217 → 128,766 → 127,959 rows/s in three separate sessions on this
+machine, so the movement in the typed number is real engine work rather than a
+drifting baseline.
+
+**§6 (Postgres → JSONL) — not yet equalised.** That scenario still runs
+mq-bridge-app untyped against a type-inferring Sling, so part of its ~2.2x gap is
+mq-bridge-app doing less. Read it with that attached. Applying the same treatment
+there needs a Postgres-shaped schema (the driver already returns typed values for
+some columns, so it is not a copy of `bench.json`) and a re-run.
 
 **A note on this benchmark:**
 
 - **The CSV number does not scale with batch size or concurrency.** A `file://`
   source is a single sequential reader, so extra route workers can't parallelize
   the read; the bottleneck is per-row CSV→JSON conversion on the one reader, not
-  I/O or batching. After the CSV-path optimization this baseline sits at ~833k,
-  close to the raw byte-passthrough `file→file` reference (~880k, no CSV decode),
-  so the remaining CSV-decode overhead is now small.
+  I/O or batching. After the CSV-path optimization this untyped baseline sits at
+  ~784k, close to the raw byte-passthrough `file→file` reference (~880k, no CSV
+  decode), so the remaining CSV-decode overhead is now small.
+
+### 7 — MCP server: tool-call latency, route throughput, agent token cost
+
+Every scenario above drives the engine from a CLI or a YAML config. This one
+drives it the way an **LLM agent** does: through the MCP server, over its real
+stdio transport. [`mcp_bench.py`](mcp_bench.py) is a genuine MCP client — it spawns
+`mq-bridge-app mcp --transport stdio` and speaks JSON-RPC to it exactly as Claude
+Code would, so the numbers include the framing, serialization and process-boundary
+cost an agent actually pays. Nothing reaches into the process.
+
+The job is the **same CSV → JSONL work as §6, on the same 1M-row dataset**, on
+purpose: the question is not how fast the MCP server is in isolation, but whether
+routing a job through a tool call costs anything per row versus the `copy` CLI. A
+different workload would answer nothing.
+
+```bash
+benches/etl/run_mcp_bench.sh          # -> results/mcp_bench.json (+ a row in results/csv_to_jsonl.csv)
+REPEATS=3 LATENCY_CALLS=1000 benches/etl/run_mcp_bench.sh
+```
+
+| Measurement | Result |
+| --- | --- |
+| Tool-call round-trip latency (1,000 calls) | **p50 0.065 ms** · p95 0.097 ms · p99 0.184 ms |
+| 1M-row CSV → JSONL via `start_route` (client wall-clock, 3 runs) | **735,330 rows/s** (1.360 s ±0.009) |
+| Same job, server's own `average_messages_per_second` | 768,555 rows/s |
+| `copy` CLI baseline, same dataset (§6 untyped) | 766,283 rows/s (session range 766,283–788,022) |
+| Agent tool traffic to move the whole dataset | **1,482 bytes** (~370 tokens, 3 calls) |
+| The same 116.3 MiB through a model's context | ~30.5M tokens |
+
+- **The MCP interface costs one round-trip, not a per-row tax.** Client wall-clock
+  is ~4% under the `copy` CLI's nearest row and inside its ~2.5% run-to-run spread
+  on this host. What separates them is a fixed ~55 ms — route startup plus up to
+  one 50 ms completion poll — not a rate difference: the server's own average over
+  the identical job (768,555 rows/s) lands on the CLI's 766,283 rows/s. Scale the
+  dataset and the gap stays 55 ms.
+- **Agent token cost is flat in the number of rows moved** — the one row here with
+  no CLI counterpart. An agent moves the dataset with three tool calls
+  (`start_route`, one `route_status`, `stop_route`) totalling 1,482 bytes of
+  JSON-RPC. The rows never enter the model's context, so the same ~1.5 KB moves 1M
+  rows or 1,000 — only the digits of the counters differ. Passing the 116.3 MiB
+  through a context window instead would cost ~30.5M tokens (~4 bytes/token, an
+  estimate), which no context window holds at any price.
+
+<details>
+<summary><b>Methodology notes</b> — so nothing here is quotable out of context</summary>
+
+- The throughput number is **client-side wall-clock** from the `start_route` call
+  to observing `finished: true`, including route startup and completion-detection
+  lag. It is the pessimistic figure of the two, which is why it is the one quoted.
+- The server-side figure is `average_messages_per_second` (total messages over the
+  span in which they moved), **not** the instantaneous `messages_per_second`, which
+  decays to ~0 within a second of a drain finishing and cannot describe a completed
+  job. That distinction is why the average was added to `route_status`; without it
+  a sub-second-to-few-second job is unmeasurable through the tools.
+- The completion poll is 50 ms. At 200 ms the poll lag dominated the wall-clock; at
+  20 ms the polls measurably perturbed the run they were measuring.
+- The **latency** row is `route_status` with nothing running — a map lookup over an
+  empty map, so what is measured is the interface, not work.
+- The **token** row counts only the three calls an agent makes. The harness itself
+  polls ~26 times (~15 KB); publishing *that* as the agent's cost would be an
+  artifact of the measurement, not a property of the server.
+- `mcp_bench.py` calls `server_info` first and **aborts on a debug build**. An
+  earlier MCP measurement session was silently invalidated by a stale debug binary;
+  the check exists so that cannot recur.
+- No `metrics` middleware anywhere on the path. The per-route counters
+  `route_status` reports are the same ones the web UI uses and are not the metrics
+  crate.
+
+</details>
+
+### 8 — Postgres → file vs. the tools that ship with Postgres
+
+The Meltano and Sling comparisons line mq-bridge-app up against other ETL tools.
+This one lines it up against what a Postgres user **already has installed**, which
+is the more common reference point. The peer is **`psql \copy … TO … (FORMAT csv,
+HEADER true)`**: both sides read the same `bench` table and write the same CSV, so
+the ratio is meaningful.
+
+```bash
+benches/etl/seed.sh up && benches/etl/seed.sh bench 1000000
+# A HOST psql/pg_dump is required here (see below). macOS:
+brew install libpq && export PATH="$(brew --prefix libpq)/bin:$PATH"
+benches/etl/run_pg_vendor.sh          # -> results/pg_vendor.csv
+```
+
+#### 8a — vs. `psql \copy`
+
+1M rows, batch 1024 / concurrency 4 (the product's own defaults), median of 5:
+
+| Tool | rows/s | median | on disk |
+| --- | ---: | ---: | ---: |
+| `psql \copy` → csv | 573,723 | 1.743 s | 129 MB |
+| mq-bridge-app → csv | 315,955 | 3.165 s | 129 MB |
+
+- **`psql \copy` is ~2x faster, and that is the expected result.** It is a byte
+  pump: the server serializes CSV in C inside the backend and psql copies bytes
+  from the socket to a file, never parsing a row, in one query. mq-bridge-app
+  issues one keyset query per batch, decodes every value into a typed message, and
+  re-serializes it — a full decode/encode round trip per row. Raising
+  `--batch-size` to 32768 (far fewer queries) closes it to ~1.4x at **421,762
+  rows/s**.
+- **What that cost buys** is that the same command targets any other sink — a
+  broker, a second database, object storage, compressed or encrypted — where
+  `\copy` writes one local CSV and stops. For a comparison against tools doing the
+  *same* typed-pipeline work, see scenarios 5 and 6.
+
+#### 8b — Output formats
+
+The same read, written seven ways (batch 1024 / concurrency 4, fastest of 2, all
+seven measured in one session). The read column is the reverse trip: that file
+back in through mq-bridge-app, same parameters, written to a `raw` sink.
+
+| Format | write rows/s | on disk | read rows/s |
+| --- | ---: | ---: | ---: |
+| `format=csv` | 318,258 | 128,982,268 | 802,584 |
+| `format=normal` | 321,188 | 763,468,511 | 310,948 |
+| `format=json` | 300,411 | 286,982,210 | 572,472 |
+| `format=text` | 332,578 | 334,985,602 | 938,778 |
+| `format=raw` | 328,573 | 208,982,210 | 2,603,082 |
+| `format=normal&compression=lz4` | 308,482 | 94,776,986 | 301,205 |
+| `format=normal&compression=zstd` | 306,983 | 55,368,674 | 289,418 |
+
+- **Writes are source-bound; reads are not.** Every write cell lands within ~11% of
+  the others because the Postgres cursor (~300k rows/s, one keyset query per batch)
+  is the limit, not the sink — the sink alone does 2.1-4.3M rows/s with no source in
+  front of it. The read column is where the format actually shows up, spanning 8x.
+- **`normal` is the interchange format** — the whole message envelope as JSON. It is
+  bulky *and slow to read back* because the payload serializes as a decimal byte
+  array (`[123,34,105,…]`): ~200 numeric tokens to parse per record, 763 B on disk
+  for a ~180 B row. `json` (payload as a JSON value) and `text` (payload as a
+  string) carry the same envelope, including `message_id`, at 1.8x and 3.0x the
+  read speed. `raw` writes the payload alone — fastest and smallest, but no
+  envelope, so no `message_id`. All four read back; verified at 1M records each.
+- **CSV cannot be compressed** — the endpoint rejects the combination — so the
+  compressed cells use `normal`, which is the right pairing anyway.
+- **zstd over lz4.** They are the same speed within noise on write (0.5% apart) and
+  on read (301,205 vs 289,418), so the 1.7x better ratio decides it. zstd's output
+  is also *2.3x smaller than the CSV* while carrying strictly more.
+- **Compression costs ~4% on write** — zstd lands at 306,983 against uncompressed
+  `normal`'s 321,188 in the same session, i.e. inside the run-to-run spread of the
+  source-bound cells. It is a clear win once the *sink* is the constraint (with a
+  fast source, a compressed sink does 4.0M rows/s against 2.1M uncompressed at
+  concurrency 4), and it costs ~7% on read, where decompression lands on the file
+  source's single reader thread.
+- **Superseded measurement.** Earlier revisions of this table showed compression
+  costing ~35% (lz4 205,888 / zstd 193,461) and not scaling with concurrency at all
+  (192,591 / 192,141 / 192,261 at 1, 4 and 8 workers). That was a defect, not a
+  property of compression: the member write path ran its whole encode+compress
+  before its first await, so the task held the thread that had woken it and stalled
+  the route's producer — ~1.9 ms of dead time per batch, invisible as CPU. Fixed by
+  opening the file before the build. The read column moved too (`normal` 203,380 →
+  310,948): decoding the byte-array payload built a `serde_json::Value`, cloned the
+  array and walked it a third time, and now runs as a single pass.
+
+#### 8c — Round trip
+
+The compressed file is restored through mq-bridge-app and compared byte-for-byte
+against the *same* file decoded by the external `zstd` CLI: 1,000,000 records,
+**identical including `message_id`**, ~3.5 s.
+
+- **Compare against that same file, not a re-read.** Comparing the restore against
+  a separately written `normal` file would be wrong, and is a mistake worth naming:
+  that file is a different read of Postgres, and Postgres rows carry no
+  `message_id`, so the sink mints a fresh one per ingestion. Two independent reads
+  disagree on `message_id` by construction, which looks exactly like "the sink
+  regenerates ids on write" — a bug that is not there.
+- **Row counts come from the external `zstd`/`lz4` CLIs**, not from mq-bridge:
+  verifying a writer with its own reader would hide a bug in both, and this doubles
+  as a check that the concatenated members decode as one stream.
+- **Restore takes ~5.0 s at concurrency 1 and at 4 alike.** The file source does
+  not parallelize — one reader thread owns decode, delimiter splitting and message
+  construction — which is also why the read column above is flat in
+  `--concurrency`.
+
+<details>
+<summary><b>Methodology notes</b> — the host-client guard, <code>pg_dump</code>, and how parity is checked</summary>
+
+- **This scenario refuses to run without a host `psql` and `pg_dump`**, and says
+  why — unlike every other scenario. `lib.sh` otherwise falls back to the client
+  inside the compose container, which would invalidate the comparison twice over:
+  `\copy` writes client-side, so the CSV would land on container overlayfs instead
+  of host disk, and the client would reach the server over a container-local socket
+  rather than the TCP connection mq-bridge-app uses. Different disk, different
+  network path — a faster number that is not a comparison. The guard exists because
+  that failure is silent.
+- **`pg_dump` is timed but deliberately not published here.** A dump is a *restore
+  format* — a COPY-block SQL script, not interchange data — and it skips the
+  `ORDER BY` this comparison needs, skips CSV quoting, and writes less. It is a
+  useful sanity bound in the harness (exceeding it would mean the measurement is
+  wrong), but printed next to a throughput table it reads as a head-to-head that
+  was lost, which is not what it is. `mongodump` is the same category;
+  `mongoexport --type=json` would be the fair Mongo peer and is not wired up yet.
+- **Parity is checked by value, not by bytes.** The two outputs are not
+  byte-identical and should not be: a `double precision` holding a whole number
+  renders as `7535.0` from the sink (it serializes an f64) and as `7535` from
+  Postgres — 10,091 of 1,000,000 rows. The runner compares numeric fields as
+  numbers and everything else exactly, and reports `1000000 rows equal`. Casting
+  the baseline with `to_char`, or reseeding to avoid whole-valued floats, would
+  make a byte comparison pass by shaping the data to fit the claim.
+
+</details>
 
 ## Reference baselines to line up against
 

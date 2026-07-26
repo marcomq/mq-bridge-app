@@ -4,11 +4,12 @@
 
 Schemes: `zeromq://`, `zmq://`
 
-Query parameters recognised as config fields for this connector. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
+Query parameters recognised as config fields for this connector. Unrecognised parameters are not forwarded as driver options, so any other `?key=value` pair is rejected rather than silently ignored.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `bind` | boolean | no | `false` | If true, bind to the address. If false, connect. |
+| `format` | `json` \| `raw` \| `raw_framed` | no | `json` | Wire format: `json` wraps the CanonicalMessage; `raw` sends payload bytes per frame; `raw_framed` adds a JSON metadata frame. Default `json`. |
 | `internal_buffer_size` | integer | no | `null` | Internal buffer size for the channel. Defaults to 128. |
 | `socket_type` | `push` \| `pull` \| `pub` \| `sub` \| `req` \| `rep` | no | `null` | The socket type (PUSH, PULL, PUB, SUB, REQ, REP). |
 | `topic` | string | no | — | (Consumer only) The ZeroMQ topic (for SUB sockets). |

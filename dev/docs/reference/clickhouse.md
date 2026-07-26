@@ -4,13 +4,14 @@
 
 Schemes: `clickhouse://`, `clickhouses://`
 
-Query parameters recognised as config fields for this connector. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
+Query parameters recognised as config fields for this connector. The object-typed `columns` is set with a JSON literal, e.g. `?columns={...}`. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `async_insert` | boolean | no | `false` | (Publisher only) If true, set the ClickHouse `async_insert=1` server setting so inserts are buffered server-side. Defaults to false. |
-| `checkpoint_store` | string | no | — | (Consumer only) Where to persist the resume cursor. Because ClickHouse is unsuited to per-row cursor upserts, a durable checkpoint requires an **external** store URL: - `file:///var/lib/mqb/cursors.json` → local JSON file - `postgres://user@host/db/table` / `mysql://host/db/table` → external SQL table (table optional) - `mongodb://host/db/collection` → external MongoDB collection (collection optional)  May embed connection credentials, so it is treated as a secret. |
+| `checkpoint_store` | string | no | — | (Consumer only) Where to persist the resume cursor. Because ClickHouse is unsuited to per-row cursor upserts, a durable checkpoint requires an **external** store URL: - `file:///var/lib/mqb/cursors.json` → local JSON file - `postgres://user@host/db/table` / `mysql://host/db/table` → external SQL table (table optional) - `mongodb://host/db/collection` → external MongoDB collection (collection optional) - `s3://bucket/prefix` (also `gs://`, `az://`, `abfs://`) → cloud object store; creds via env  May embed connection credentials, so it is treated as a secret. |
 | `columns` | object | no | — | (Publisher only) Optional per-column mapping. Each entry maps a target column name to a value token: `${payload:<field>}` takes the top-level JSON field `<field>` of the payload (JSON type preserved), `${metadata:<key>}` takes `message.metadata["<key>"]` (as a string), and any other value is inserted literally. When omitted, the whole payload JSON object is inserted as one row. |
+| `compression` | `none` \| `gzip` \| `lz4` \| `zstd` | no | `gzip` | HTTP body compression for inserts and cursor reads (`none`, `gzip`, `lz4`, `zstd`). Applied as `Content-Encoding` on the request body and negotiated on the response via `Accept-Encoding`. `lz4`/`zstd` are faster than `gzip`; all are understood natively by ClickHouse. Defaults to `gzip`. |
 | `connect_timeout_ms` | integer | no | — | Connection (TCP + TLS handshake) timeout in milliseconds. Defaults to 10000ms. |
 | `cursor_column` | string | no | — | (Consumer only) Read an existing table **non-destructively** and resumably, paging by this monotonic column (`SELECT … WHERE {cursor_column} > {last} ORDER BY {cursor_column} ASC LIMIT n`) and persisting the last read value under `cursor_id`. |
 | `cursor_id` | string | no | — | (Consumer only) Cursor id used to key the persisted resume position. Without it, progress is not persisted and every restart re-copies from the beginning. |

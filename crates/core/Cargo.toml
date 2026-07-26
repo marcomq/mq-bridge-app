@@ -16,12 +16,10 @@ name = "mq_bridge_app"
 path = "src/lib.rs"
 
 [dependencies]
-# TODO(mq-bridge-0.3.6): pinned to the released 0.3.5. The MCP server wants
-# `RouteHandle::is_finished()`, which only exists in the unreleased 0.3.6 — see
-# `route_finished` in crates/cli/src/mcp.rs, the single place to update. Prefer
-# `cargo --config patch` over editing this line when building against a local
-# mq-bridge checkout.
-mq-bridge = { version = "0.3.5", features = ["schema"] }
+# NOTE: this is a local path dep on the sibling ../mq-bridge checkout, so the
+# build only works with that checkout present. Switch to the crates.io line
+# below (or use `cargo --config patch`) before publishing.
+mq-bridge = { version = "0.3.6", features = ["schema"] }
 # mq-bridge = { path = "../../../mq-bridge", version = "0.3.6", features = ["schema"] } # keep for debugging / dev
 
 config = { version = "0.15.22", features = ["yaml"] }
@@ -41,6 +39,7 @@ base64 = "0.22.1"
 aes-gcm = { version = "0.10.3", features = ["zeroize"] }
 zeroize = "1.8"
 hex = "0.4"
+sha2 = "0.10"
 futures = "0.3.32"
 uuid = { version = "1.23", features = ["v4", "v7"] }
 rustls = "0.23.38"
@@ -62,6 +61,10 @@ full = ["mq-bridge/full"]
 # (sqlx) + logical-replication CDC + per-route metrics, with a TLS provider so the
 # binary links. Avoids the heavy `full` deps (rdkafka/librdkafka, grpc/protoc,
 # ibm-mq) that aren't needed to move Postgres data.
+#
+# NOTE: `bench` intentionally does NOT include any message-broker transport. A
+# broker-throughput benchmark layers its transport on top, e.g. the NATS bench
+# (benches/etl/run_nats_throughput.sh) builds with `--features bench,nats`.
 bench = [
     "mq-bridge/sqlx",
     "mq-bridge/postgres-cdc",
@@ -69,6 +72,11 @@ bench = [
     "mq-bridge/rustls-aws-lc",
 ]
 middleware = ["mq-bridge/middleware"]
+compression = ["mq-bridge/compression"]
+encryption = ["mq-bridge/encryption"]
+sqlx = ["mq-bridge/sqlx"]
+postgres-cdc = ["mq-bridge/postgres-cdc"]
+rustls-aws-lc = ["mq-bridge/rustls-aws-lc"]
 mongodb = ["mq-bridge/mongodb"]
 http = ["mq-bridge/http"]
 kafka = ["mq-bridge/kafka"]

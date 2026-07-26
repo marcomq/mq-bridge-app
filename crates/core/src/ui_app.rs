@@ -7,8 +7,10 @@ use crate::route_metrics::{CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture,
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
-use mq_bridge::models::{Endpoint, EndpointType, Route, StaticConfig};
-use mq_bridge::route::RouteHandle;
+use mq_bridge::endpoints::memory::MemoryConsumer;
+use mq_bridge::models::{Endpoint, EndpointType, MemoryConfig, Route, StaticConfig};
+use mq_bridge::route::{RouteHandle, RouteOutcome};
+use mq_bridge::traits::{MessageConsumer, MessageDisposition};
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
 };
@@ -37,6 +39,94 @@ static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
 /// longer than the MCP's ~2s reporting interval, so a single dropped report does
 /// not make its routes flicker out of the UI.
 const MCP_STATUS_STALE_AFTER: Duration = Duration::from_secs(15);
+
+/// Socket file an MCP server pushes its status to, inside a per-config
+/// directory of its own.
+///
+/// A directory of its own because binding chmods the socket's parent to `0700`:
+/// pointed at a shared directory, that would lock down whatever else lives
+/// there.
+#[cfg(unix)]
+const MCP_STATUS_SOCKET_NAME: &str = "status.sock";
+
+/// Pause before retrying a failed receive, so a permanently broken transport
+/// cannot spin the listener task.
+const MCP_STATUS_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Give up the status listener after this many consecutive receive failures, so
+/// a permanently broken transport neither spins nor warns forever.
+const MCP_STATUS_MAX_ERRORS: u32 = 10;
+
+/// The IPC address a local MCP server pushes its status to.
+///
+/// Keyed by the config file rather than configured, so an MCP and a UI find each
+/// other without either knowing a port — including in the desktop app, which
+/// serves its UI over Tauri IPC and binds no HTTP listener at all. Two UIs on
+/// different configs get different sockets instead of colliding.
+///
+/// The socket lives in the runtime directory under a *hash* of the config path,
+/// not beside the config itself: Unix socket paths are capped near 104 bytes
+/// (`SUN_LEN`), and a config a few directories deep silently blows that budget.
+#[cfg(unix)]
+pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
+    // `XDG_RUNTIME_DIR` is the right home for this on Linux and is short. Fall
+    // back to `TMPDIR` (macOS gives each user a private `/var/folders/.../T`)
+    // before the world-writable `/tmp`, so the socket lands in a per-user
+    // directory even without XDG; the per-config directory below is `0700` on
+    // top of that.
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .or_else(|_| std::env::var("TMPDIR"))
+        .unwrap_or_else(|_| "/tmp".to_string());
+    mcp_status_ipc_url_in(config_file_path, &runtime_dir)
+}
+
+/// Builds the IPC URL under an explicit `runtime_dir`, so tests can pin the base
+/// directory without mutating the process-wide environment. Production callers go
+/// through [`mcp_status_ipc_url`], which resolves the runtime dir from the env.
+#[cfg(unix)]
+fn mcp_status_ipc_url_in(config_file_path: &str, runtime_dir: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let config_path =
+        std::path::absolute(config_file_path).unwrap_or_else(|_| PathBuf::from(config_file_path));
+    let digest = Sha256::digest(config_path.as_os_str().as_encoded_bytes());
+    // Half a SHA-256 is far more than enough to separate a handful of configs,
+    // and keeps the whole path comfortably short.
+    let key = hex::encode(&digest[..8]);
+
+    // An explicit absolute path, never a bare `ipc://name`: the latter resolves
+    // through `/run/mq-bridge` first, which an unprivileged app cannot bind to
+    // if it already exists.
+    format!(
+        "ipc://{}",
+        Path::new(runtime_dir)
+            .join(format!("mq-bridge-{key}"))
+            .join(MCP_STATUS_SOCKET_NAME)
+            .display()
+    )
+}
+
+/// The IPC address a local MCP server pushes its status to.
+///
+/// Windows named pipes live in a flat namespace rather than the filesystem, so
+/// the pipe cannot be placed next to the config the way a Unix socket is.
+/// Keyed by a hash of the config path (matching the Unix socket), so two UIs on
+/// different configs get different pipes instead of a machine-global collision.
+///
+/// (Deterministic on purpose: the UI and the separate MCP process each derive
+/// this name independently and must agree, so it has to be a pure function of
+/// the config path — a random per-session component can't be shared between
+/// them and would break the rendezvous.)
+#[cfg(windows)]
+pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let config_path =
+        std::path::absolute(config_file_path).unwrap_or_else(|_| PathBuf::from(config_file_path));
+    let digest = Sha256::digest(config_path.as_os_str().as_encoded_bytes());
+    let key = hex::encode(&digest[..8]);
+    format!("ipc://mq-bridge-status-{key}")
+}
 
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
     match config.security_mode() {
@@ -206,8 +296,8 @@ pub struct McpStatusReport {
 /// Runtime status of one message source: a configured consumer, or a route or
 /// publisher reported by a separate MCP process.
 ///
-/// `Deserialize` is required because the MCP server sends these over HTTP to
-/// `/mcp-status`; the UI's own consumers only ever serialize.
+/// `Deserialize` is required because a separate MCP process sends these over
+/// the status IPC socket; the UI's own consumers only ever serialize.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct ConsumerStatusSnapshot {
     pub running: bool,
@@ -216,12 +306,48 @@ pub struct ConsumerStatusSnapshot {
     pub message_sequence: u64,
     pub capture_enabled: bool,
     pub capture_keep_last: usize,
+    /// How the route ended, or `None` while it is still running.
+    ///
+    /// `running: false` alone cannot tell a drained `exit_on_empty` job from one
+    /// that was stopped by hand or died on a permanent error — all three leave a
+    /// grey badge. `#[serde(default)]` so reports from an older MCP process,
+    /// which never sends the field, still deserialize.
+    #[serde(default)]
+    pub outcome: Option<RouteOutcomeSnapshot>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct ConsumerStatusResponse {
     pub running: bool,
     pub status: EndpointStatusSnapshot,
+    /// See [`ConsumerStatusSnapshot::outcome`].
+    pub outcome: Option<RouteOutcomeSnapshot>,
+}
+
+/// How a route's task ended, mirroring [`mq_bridge::route::RouteOutcome`].
+///
+/// Mirrored rather than re-exported because this crosses both the status IPC
+/// socket and the UI type generator, so it needs `Deserialize` and `JsonSchema`;
+/// the core enum derives neither. The wire representation is identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteOutcomeSnapshot {
+    /// The source drained and the route exited on its own. The job succeeded.
+    Completed,
+    /// Terminated by an explicit stop or shutdown.
+    Stopped,
+    /// Terminated by a permanent error; the cause is in `status.error`.
+    Failed,
+}
+
+impl From<RouteOutcome> for RouteOutcomeSnapshot {
+    fn from(outcome: RouteOutcome) -> Self {
+        match outcome {
+            RouteOutcome::Completed => Self::Completed,
+            RouteOutcome::Stopped => Self::Stopped,
+            RouteOutcome::Failed => Self::Failed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
@@ -796,10 +922,6 @@ impl UiApp {
                     | "/publish"
                     | "/consumer-start"
                     | "/consumer-stop"
-                    // The MCP reporter sends no Origin/Referer, so it still
-                    // passes; this keeps a browser page from POSTing fabricated
-                    // MCP rows into the UI.
-                    | "/mcp-status"
             )
             && !is_same_origin_request(&msg)
         {
@@ -856,7 +978,6 @@ impl UiApp {
             ("POST", "/config") => self.handle_update_config_message(msg).await,
             ("POST", "/config-recovery/reset") => self.handle_reset_config_recovery().await,
             ("POST", "/publish") => self.handle_publish_message(msg).await,
-            ("POST", "/mcp-status") => self.handle_mcp_status_report(msg).await,
             ("GET", "/runtime-status") => self.ok_json(&self.runtime_status().await, true),
             ("GET", "/metrics") => Ok(Handled::Publish(
                 CanonicalMessage::from(self.render_metrics())
@@ -931,6 +1052,7 @@ impl UiApp {
             .map(|snapshot| ConsumerStatusResponse {
                 running: snapshot.running,
                 status: snapshot.status,
+                outcome: snapshot.outcome,
             })
     }
 
@@ -1148,8 +1270,18 @@ impl UiApp {
 
     pub async fn runtime_status(&self) -> RuntimeStatusResponse {
         let config = self.config.read().await;
-        let mut active_consumers: Vec<String> =
-            self.ui_handles.read().await.keys().cloned().collect();
+        // Finished routes keep their handle so the outcome stays queryable, so
+        // map membership is not liveness; a route with an outcome is done.
+        let (finished_consumers, mut active_consumers): (HashSet<String>, Vec<String>) = {
+            let handles = self.ui_handles.read().await;
+            let (finished, active): (Vec<_>, Vec<_>) = handles
+                .iter()
+                .partition(|(_, handle)| handle.outcome().is_some());
+            (
+                finished.into_iter().map(|(key, _)| key.clone()).collect(),
+                active.into_iter().map(|(key, _)| key.clone()).collect(),
+            )
+        };
 
         // Consumers may run as internal collector routes even when ui_handles does not currently
         // track them (for example after restarts). Surface those as active consumers too.
@@ -1160,6 +1292,10 @@ impl UiApp {
                     .strip_prefix("ui_collector_route_")
                     .and_then(decode_collector_route_key)
             })
+            // The route registry keeps a route registered after its task ends, so
+            // it would re-add a drained consumer here. Where we hold a handle, the
+            // handle decides.
+            .filter(|consumer_key| !finished_consumers.contains(consumer_key))
             .collect();
         active_consumers.extend(consumer_route_ids);
         let active_routes: Vec<String> = mq_bridge::list_routes()
@@ -1234,63 +1370,158 @@ impl UiApp {
     /// Receiving is on by default — *sending* is what the MCP opts into. Nothing
     /// here touches the config: the report lands in an in-memory slot and expires
     /// on its own, so an MCP route can never become persisted configuration.
-    async fn handle_mcp_status_report(
-        &self,
-        msg: CanonicalMessage,
-    ) -> Result<Handled, HandlerError> {
-        let report: McpStatusReport = match serde_json::from_slice(&msg.payload) {
-            Ok(report) => report,
-            Err(e) => return self.err_response(400, format!("Invalid MCP status report: {e}")),
-        };
-
-        let (routes, publishers) = (report.routes.len(), report.publishers.len());
+    async fn record_mcp_status_report(&self, report: McpStatusReport) {
         *self.mcp_status.write().await = Some((Instant::now(), report));
-        self.ok_json(
-            &serde_json::json!({ "routes": routes, "publishers": publishers }),
-            true,
-        )
+    }
+
+    /// Records a report from its serialized form, dropping anything unparseable.
+    /// Garbage on the socket must never disturb what the UI already shows.
+    async fn record_mcp_status_payload(&self, payload: &[u8]) {
+        match serde_json::from_slice::<McpStatusReport>(payload) {
+            Ok(report) => self.record_mcp_status_report(report).await,
+            Err(e) => tracing::debug!("MCP status listener: invalid report: {e}"),
+        }
+    }
+
+    /// Starts receiving MCP status reports over the memory endpoint's IPC
+    /// transport (a Unix socket, or a named pipe on Windows).
+    ///
+    /// IPC rather than HTTP because the desktop app binds no HTTP listener —
+    /// it serves its UI through Tauri IPC — so there is no port for an MCP to
+    /// post to. The socket's `0600` permissions also replace the same-origin
+    /// check the old HTTP endpoint needed: only this user can write to it.
+    ///
+    /// Best-effort by design: a UI that cannot bind still works, it just never
+    /// shows MCP rows.
+    ///
+    /// Returns once the socket cannot be bound, and otherwise runs forever. Use
+    /// [`Self::spawn_mcp_status_listener`] from a Tokio context; the desktop app
+    /// spawns this on Tauri's runtime instead.
+    pub async fn run_mcp_status_listener(self) {
+        let url = mcp_status_ipc_url(self.config_file_path());
+        // Capacity is unused by the IPC transport (it frames straight onto the
+        // socket) but the config requires one.
+        let config = MemoryConfig::new_with_url(url.clone(), Some(1));
+        let mut consumer = match MemoryConsumer::new_async(&config).await {
+            Ok(consumer) => consumer,
+            Err(e) => {
+                tracing::warn!("Not listening for MCP status reports on {url}: {e}");
+                return;
+            }
+        };
+        tracing::info!("Listening for MCP status reports on {url}");
+
+        let mut consecutive_errors: u32 = 0;
+        loop {
+            // Must block on `receive`: the IPC transport's `try_recv_batch` is a
+            // stub that always reports "nothing available", so a polling loop
+            // would silently never see a report.
+            let received = match consumer.receive().await {
+                Ok(received) => {
+                    consecutive_errors = 0;
+                    received
+                }
+                Err(e) => {
+                    // The transport re-accepts by itself when the MCP
+                    // disconnects, so an error here is unexpected. Surface the
+                    // first one at warn! (a persistent failure must be visible at
+                    // default log levels), keep the rest at debug! so a broken
+                    // socket doesn't spam, back off as they pile up, and give up
+                    // rather than spin forever.
+                    consecutive_errors += 1;
+                    if consecutive_errors == 1 {
+                        tracing::warn!("MCP status listener: receive failed: {e}");
+                    } else {
+                        tracing::debug!(
+                            "MCP status listener: receive failed ({consecutive_errors}): {e}"
+                        );
+                    }
+                    if consecutive_errors >= MCP_STATUS_MAX_ERRORS {
+                        tracing::warn!(
+                            "MCP status listener: giving up after {consecutive_errors} consecutive receive failures on {url}"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(MCP_STATUS_RETRY_DELAY * consecutive_errors.min(5)).await;
+                    continue;
+                }
+            };
+
+            self.record_mcp_status_payload(&received.message.payload)
+                .await;
+            let _ = (received.commit)(MessageDisposition::Ack).await;
+        }
+    }
+
+    /// [`Self::run_mcp_status_listener`] on the ambient Tokio runtime.
+    pub fn spawn_mcp_status_listener(&self) {
+        tokio::spawn(self.clone().run_mcp_status_listener());
     }
 
     async fn consumer_status_snapshot(
         &self,
         consumer: &ConsumerConfig,
     ) -> Option<ConsumerStatusSnapshot> {
-        let running = self
-            .ui_handles
-            .read()
-            .await
-            .contains_key(&consumer_runtime_key(consumer));
-        self.consumer_status_snapshot_with_running(consumer, running)
+        // This path has no route registry to consult, so a tracked handle is the
+        // only liveness there is.
+        self.consumer_status_snapshot_with_running(consumer, false)
             .await
     }
 
+    /// `running_untracked` is the caller's liveness for a consumer this app holds
+    /// no [`RouteHandle`] for — one recovered from the route registry after a
+    /// restart. Where a handle exists it decides, because map membership is not
+    /// liveness: a route whose task ended on its own keeps its handle so the
+    /// outcome stays queryable.
     async fn consumer_status_snapshot_with_running(
         &self,
         consumer: &ConsumerConfig,
-        running: bool,
+        running_untracked: bool,
     ) -> Option<ConsumerStatusSnapshot> {
         let name = consumer.name.clone();
-        let status = if running {
-            // Prefer the live health of the running route so a consumer that
-            // connected then dropped (or is stuck reconnecting) shows unhealthy
-            // with the last error instead of a hardcoded green badge (issue #12).
+
+        let tracked = {
             let runtime_key = consumer_runtime_key(consumer);
-            if let Some(handle) = self.ui_handles.read().await.get(&runtime_key) {
-                // Take live healthy/error/pending/capacity from the handle, but keep the
-                // consumer's display name as `target` (the handle's target is the internal
-                // collector route id, which should not leak to the UI).
-                mq_bridge::traits::EndpointStatus {
-                    target: name.clone(),
-                    ..handle.status()
-                }
-            } else {
-                // Running as an internal collector route (e.g. after a restart)
-                // with no live handle to inspect; best effort is healthy.
-                mq_bridge::traits::EndpointStatus {
-                    healthy: true,
-                    target: name.clone(),
-                    ..Default::default()
-                }
+            self.ui_handles
+                .read()
+                .await
+                .get(&runtime_key)
+                .map(|handle| {
+                    (
+                        handle.status(),
+                        handle.outcome().map(RouteOutcomeSnapshot::from),
+                    )
+                })
+        };
+
+        let running = match &tracked {
+            Some((_, outcome)) => outcome.is_none(),
+            None => running_untracked,
+        };
+        let outcome = tracked.as_ref().and_then(|(_, outcome)| *outcome);
+
+        let status = if let Some((handle_status, _)) = tracked {
+            // Report from the handle whether the route is running or finished.
+            // Running: prefer its live health so a consumer that connected then
+            // dropped (or is stuck reconnecting) shows unhealthy with the last
+            // error instead of a hardcoded green badge (issue #12). Finished: the
+            // last health it recorded, and never the probe below — that would
+            // open a fresh connection to a source the route already drained.
+            //
+            // Take live healthy/error/pending/capacity from the handle, but keep the
+            // consumer's display name as `target` (the handle's target is the internal
+            // collector route id, which should not leak to the UI).
+            mq_bridge::traits::EndpointStatus {
+                target: name.clone(),
+                ..handle_status
+            }
+        } else if running {
+            // Running as an internal collector route (e.g. after a restart)
+            // with no live handle to inspect; best effort is healthy.
+            mq_bridge::traits::EndpointStatus {
+                healthy: true,
+                target: name.clone(),
+                ..Default::default()
             }
         } else if matches!(consumer.endpoint.endpoint_type, EndpointType::Http(_)) {
             mq_bridge::traits::EndpointStatus {
@@ -1330,6 +1561,7 @@ impl UiApp {
             message_sequence: 0,
             capture_enabled: consumer.message_capture.enabled,
             capture_keep_last: consumer.message_capture.keep_last,
+            outcome,
         })
     }
 
@@ -2009,21 +2241,19 @@ mod tests {
             message_sequence: messages,
             capture_enabled: false,
             capture_keep_last: 0,
+            outcome: None,
         }
     }
 
-    fn mcp_report(names: &[&str]) -> CanonicalMessage {
+    fn mcp_report(names: &[&str]) -> McpStatusReport {
         let routes: HashMap<String, ConsumerStatusSnapshot> = names
             .iter()
             .map(|n| (n.to_string(), mcp_snapshot(7)))
             .collect();
-        CanonicalMessage::from(
-            serde_json::to_string(&McpStatusReport {
-                routes,
-                publishers: HashMap::new(),
-            })
-            .unwrap(),
-        )
+        McpStatusReport {
+            routes,
+            publishers: HashMap::new(),
+        }
     }
 
     // An MCP report must surface in its own field, never merged into the
@@ -2032,9 +2262,7 @@ mod tests {
     async fn mcp_report_lands_in_its_own_field() {
         let app = test_app(AppConfig::default());
 
-        app.handle_mcp_status_report(mcp_report(&["route-a"]))
-            .await
-            .unwrap();
+        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
 
         let status = app.runtime_status().await;
         assert_eq!(status.mcp_routes.len(), 1);
@@ -2049,79 +2277,91 @@ mod tests {
     async fn a_new_mcp_report_replaces_the_previous_one() {
         let app = test_app(AppConfig::default());
 
-        app.handle_mcp_status_report(mcp_report(&["route-a", "route-b"]))
-            .await
-            .unwrap();
-        app.handle_mcp_status_report(mcp_report(&["route-a"]))
-            .await
-            .unwrap();
+        app.record_mcp_status_report(mcp_report(&["route-a", "route-b"]))
+            .await;
+        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
 
         let status = app.runtime_status().await;
         assert_eq!(status.mcp_routes.len(), 1);
         assert!(status.mcp_routes.contains_key("route-a"));
     }
 
-    fn mcp_status_post(origin: Option<&str>) -> CanonicalMessage {
-        let mut msg = mcp_report(&["route-a"]);
-        msg.metadata.insert("http_method".into(), "POST".into());
-        msg.metadata
-            .insert("http_path".into(), "/mcp-status".into());
-        msg.metadata.insert("Host".into(), "127.0.0.1:8080".into());
-        if let Some(origin) = origin {
-            msg.metadata.insert("Origin".into(), origin.to_string());
-        }
-        msg
+    // Unix socket paths are capped near 104 bytes, and binding silently degrades
+    // to "no MCP rows" when that is exceeded — so a deeply nested config must
+    // still produce a bindable path.
+    #[cfg(unix)]
+    #[test]
+    fn the_status_socket_path_stays_within_the_unix_socket_limit() {
+        // Pin the runtime dir via the explicit-base helper so the assertion
+        // exercises the hashing, not the test runner's ambient
+        // XDG_RUNTIME_DIR/TMPDIR — and without mutating the process-wide
+        // environment. `/tmp` is short and always exists.
+        let deep_config = format!(
+            "/Users/someone/{}/config.yml",
+            "nested-directory/".repeat(20)
+        );
+        let url = mcp_status_ipc_url_in(&deep_config, "/tmp");
+
+        let path = url.strip_prefix("ipc://").expect("an absolute ipc path");
+        assert!(path.starts_with('/'), "must be an explicit path: {path}");
+        assert!(path.len() < 104, "{} bytes is too long: {path}", path.len());
     }
 
-    fn status_code(handled: Handled) -> String {
-        match handled {
-            Handled::Publish(m) => m
-                .metadata
-                .get("http_status_code")
-                .cloned()
-                .unwrap_or_default(),
-            other => panic!("expected a response, got {other:?}"),
-        }
-    }
-
-    // `/mcp-status` is a POST that mutates what the UI displays, so it must sit
-    // behind the same same-origin guard as every other mutating endpoint —
-    // otherwise any page in the user's browser can inject fake MCP rows.
+    // The reason for IPC over HTTP: a separate process must be able to push
+    // status to a UI that binds no HTTP listener at all (the desktop app). This
+    // goes over the real socket rather than calling the recording method.
+    #[cfg(unix)]
     #[tokio::test]
-    async fn a_cross_origin_mcp_report_is_rejected() {
+    async fn an_mcp_report_arrives_over_the_ipc_socket() {
+        use mq_bridge::endpoints::memory::MemoryPublisher;
+        use mq_bridge::traits::MessagePublisher;
+
         let app = test_app(AppConfig::default());
+        app.spawn_mcp_status_listener();
 
-        let handled = app
-            .handle_ui_message(mcp_status_post(Some("http://evil.example")), false)
+        let config =
+            MemoryConfig::new_with_url(mcp_status_ipc_url(app.config_file_path()), Some(1));
+
+        // The listener binds in a spawned task, so the first connect can lose
+        // the race with it.
+        let mut publisher = None;
+        for _ in 0..50 {
+            match MemoryPublisher::new_async(&config).await {
+                Ok(p) => {
+                    publisher = Some(p);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+        let publisher = publisher.expect("listener should bind the status socket");
+
+        let payload = serde_json::to_string(&mcp_report(&["route-a"])).unwrap();
+        publisher
+            .send(CanonicalMessage::from(payload))
             .await
-            .unwrap();
+            .expect("report should be sent over the socket");
 
-        assert_eq!(status_code(handled), "403");
-        assert!(app.runtime_status().await.mcp_routes.is_empty());
-    }
+        let mut mcp_routes = HashMap::new();
+        for _ in 0..50 {
+            mcp_routes = app.runtime_status().await.mcp_routes;
+            if !mcp_routes.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
 
-    // The MCP reporter is not a browser and sends no Origin, so the guard above
-    // must not lock out the process it exists to serve.
-    #[tokio::test]
-    async fn an_mcp_report_without_an_origin_header_is_accepted() {
-        let app = test_app(AppConfig::default());
-
-        let handled = app
-            .handle_ui_message(mcp_status_post(None), false)
-            .await
-            .unwrap();
-
-        assert_eq!(status_code(handled), "200");
-        assert_eq!(app.runtime_status().await.mcp_routes.len(), 1);
+        assert_eq!(mcp_routes.len(), 1);
+        assert_eq!(mcp_routes["route-a"].message_sequence, 7);
+        // Still never merged into the config-derived consumers.
+        assert!(app.runtime_status().await.consumers.is_empty());
     }
 
     // A dead MCP must not leave phantom rows in the UI.
     #[tokio::test]
     async fn a_stale_mcp_report_is_ignored() {
         let app = test_app(AppConfig::default());
-        app.handle_mcp_status_report(mcp_report(&["route-a"]))
-            .await
-            .unwrap();
+        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
 
         // Backdate the report past the staleness window.
         {
@@ -2133,25 +2373,16 @@ mod tests {
         assert!(app.runtime_status().await.mcp_routes.is_empty());
     }
 
+    // Anything may write to the socket, so a malformed report must be dropped
+    // rather than clearing or corrupting the rows already on display.
     #[tokio::test]
-    async fn a_malformed_mcp_report_is_rejected() {
+    async fn a_malformed_mcp_report_is_ignored() {
         let app = test_app(AppConfig::default());
+        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
 
-        let handled = app
-            .handle_mcp_status_report(CanonicalMessage::from("not json"))
-            .await
-            .unwrap();
+        app.record_mcp_status_payload(b"not json").await;
 
-        match handled {
-            Handled::Publish(m) => {
-                assert_eq!(
-                    m.metadata.get("http_status_code").map(String::as_str),
-                    Some("400")
-                );
-            }
-            other => panic!("expected a 400 response, got {other:?}"),
-        }
-        assert!(app.runtime_status().await.mcp_routes.is_empty());
+        assert_eq!(app.runtime_status().await.mcp_routes.len(), 1);
     }
 
     // A running consumer's status must reflect the live route health read from the
@@ -2192,5 +2423,68 @@ mod tests {
         assert!(snapshot.status.error.is_none());
 
         app.stop_consumer("mem-status-test").await;
+    }
+
+    // A consumer configured to drain and exit finishes on its own, with nothing
+    // removing its handle. Membership of `ui_handles` therefore reported it as
+    // running forever, with a green badge taken from its last connection health.
+    // The handle's own outcome is what says it is done, and how it ended.
+    #[tokio::test]
+    async fn a_drained_consumer_reports_not_running_with_a_completed_outcome() {
+        // A file source, as in the reported case: it has a real end, so the route
+        // drains and exits on its own with nobody calling `stop`.
+        let source = std::env::temp_dir().join(format!("mqb-drain-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&source, "first\nsecond\n").expect("write drain source");
+
+        let mut consumer = memory_consumer("file-drain-test", "FileDrain", "file_drain_test_topic");
+        consumer.endpoint = Endpoint::new(EndpointType::File(mq_bridge::models::FileConfig {
+            path: source.to_string_lossy().to_string(),
+            delimiter: None,
+            mode: None,
+            format: Default::default(),
+            compression: Default::default(),
+            encryption: None,
+        }));
+        consumer.options.exit_on_empty = true;
+        let mut config = AppConfig::default();
+        config.consumers.push(consumer);
+        let app = test_app(config);
+
+        assert!(app.start_consumer("file-drain-test").await.unwrap());
+
+        // Wait for the drain, then for the task to publish its outcome.
+        let mut response = None;
+        for _ in 0..100 {
+            let status = app
+                .consumer_status("file-drain-test")
+                .await
+                .expect("configured consumer has a status");
+            if !status.running {
+                response = Some(status);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let response = response.expect("drained consumer should stop reporting as running");
+        assert_eq!(response.outcome, Some(RouteOutcomeSnapshot::Completed));
+        // Reported from the retained handle, not from a fresh probe of a source
+        // the route already drained.
+        assert_eq!(response.status.target, "FileDrain");
+
+        // `/runtime-status` reads the same liveness, so the consumer must also
+        // drop out of `active_consumers`.
+        let runtime = app.runtime_status().await;
+        assert!(
+            !runtime
+                .active_consumers
+                .contains(&"file-drain-test".to_string())
+        );
+        let snapshot = runtime
+            .consumers
+            .get("file-drain-test")
+            .expect("drained consumer is still configured");
+        assert!(!snapshot.running);
+        assert_eq!(snapshot.outcome, Some(RouteOutcomeSnapshot::Completed));
     }
 }

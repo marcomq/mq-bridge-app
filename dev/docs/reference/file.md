@@ -4,12 +4,14 @@
 
 Schemes: `file://`
 
-Query parameters recognised as config fields for this connector. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
+Query parameters recognised as config fields for this connector. The object-typed `encryption` is set with a JSON literal, e.g. `?encryption={...}`. Unrecognised parameters are not forwarded as driver options, so any other `?key=value` pair is rejected rather than silently ignored.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
+| `compression` | `none` \| `gzip` \| `lz4` \| `zstd` | no | `none` | Per-batch compression (`none`, `gzip`, `lz4`, `zstd`). Requires the `compression` feature; consume mode only. |
 | `delete` | boolean | no | `false` | If true, processed lines are physically removed from the file once they are successfully acknowledged. |
 | `delimiter` | string | no | — | Optional delimiter for messages. Defaults to newline ("\n"). Can be a string or a hex sequence (e.g. "0x00"). Currently only single-byte delimiters are supported. |
+| `encryption` | object | no | `null` | At-rest AEAD encryption applied after compression. Requires the `encryption` feature; consume mode only. |
 | `format` | `normal` \| `json` \| `text` \| `raw` \| `csv` | no | `normal` | The format for writing messages to the file (Publisher) or interpreting them (Consumer). Defaults to `normal`. |
 | `group_id` | string | no | — | The consumer group ID that is used for offset tracking. Should be unique. |
 | `mode` | `consume` \| `subscribe` \| `group_subscribe` | no | — |  |

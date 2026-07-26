@@ -1201,7 +1201,9 @@ function normalizePublisherEndpoint(endpoint: unknown) {
   const normalized = normalizeEndpoint(endpoint);
   const endpointType = getEndpointType(normalized);
   if (endpointType === "static" || endpointType === "ref") {
-    normalized.middlewares = [];
+    // Structural endpoints get no default middleware, but keep the ones the user configured:
+    // clearing them here made every edit normalize straight back to the saved value, so the
+    // publisher never became dirty and the middleware was gone again after a reload.
     return normalized;
   }
   if (!Array.isArray(normalized.middlewares) || normalized.middlewares.length === 0) {

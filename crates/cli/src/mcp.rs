@@ -14,13 +14,16 @@ use std::time::Duration;
 
 use mq_bridge_app::mq_bridge::{
     CanonicalMessage, Handled, Publisher, Sent, SentBatch,
-    models::{Endpoint, EndpointType, HttpConfig, Route},
-    route::RouteHandle,
+    models::{Endpoint, EndpointType, MemoryConfig, Route},
+    route::{RouteHandle, RouteOutcome},
 };
 use mq_bridge_app::route_metrics::{
-    CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, format_capture_time,
+    CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, RouteTiming,
+    format_capture_time,
 };
-use mq_bridge_app::ui_app::{ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport};
+use mq_bridge_app::ui_app::{
+    ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport, RouteOutcomeSnapshot,
+};
 use rmcp::schemars;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -102,10 +105,23 @@ struct StartRouteArgs {
     /// The route to run: an `input` (source) endpoint and an `output` (sink)
     /// endpoint — each keyed by connector type, e.g.
     /// `{"input": {"nats": {"url": "localhost:4222", "subject": "orders"}},
-    ///   "output": {"file": {"path": "/tmp/out.jsonl"}}}` — plus optional execution
-    /// options such as `concurrency`, `batch_size`, and `exit_on_empty` (drain the
-    /// source then exit). Use `{"null": null}` as the `output` to discard messages.
+    ///   "output": {"file": {"path": "/tmp/out.jsonl"}}}` — plus `exit_on_empty`
+    /// (drain the source then exit). Use `{"null": null}` as the `output` to discard
+    /// messages. Set `concurrency`/`batch_size` via the dedicated fields below, not
+    /// inside this object.
+    ///
+    /// A `file`/`object_store` source must repeat the `compression`/`encryption`
+    /// its data was written with — neither is auto-detected, and a mismatch ends
+    /// the route as `completed` having moved few or no messages rather than
+    /// failing, so check the moved-message count.
     route: Route,
+    /// Route concurrency. Omit for the app default (4). Higher values parallelize
+    /// sink writes; sources that read serially do not speed up.
+    #[serde(default)]
+    concurrency: Option<usize>,
+    /// Batch size. Omit for the app default (1024).
+    #[serde(default)]
+    batch_size: Option<usize>,
     /// Keep the last N messages that flow through this route, readable with
     /// `route_messages`. Omit (or 0) to capture nothing, which is the default —
     /// captured payloads are held in memory and returned to the model verbatim.
@@ -171,38 +187,60 @@ fn err_json(value: serde_json::Value) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(pretty(&value))])
 }
 
-/// Whether a route has run to completion, or `None` when that cannot be
-/// determined.
+/// Whether a route's task has ended, or `None` when that cannot be determined.
 ///
-/// TODO(mq-bridge-0.3.6): the released mq-bridge 0.3.5 keeps `RouteHandle`'s
-/// join handle private and exposes no `is_finished()`, so completion is simply
-/// unknown here. Once 0.3.6 is published this becomes
-/// `Some(handle.is_finished())` and every caller below starts reporting real
-/// values again — this function is the only place that needs to change.
-fn route_finished(_handle: &RouteHandle) -> Option<bool> {
-    None
+/// `RouteHandle::outcome` is `Some` exactly when the task is done, so its
+/// presence is the completion signal; [`route_outcome`] reports *how* it ended.
+fn route_finished(handle: &RouteHandle) -> Option<bool> {
+    Some(handle.outcome().is_some())
+}
+
+/// How a route terminated (`completed` / `stopped` / `failed`), or `None` while
+/// it is still running.
+///
+/// `finished` alone cannot tell a drained `exit_on_empty` job from one that died
+/// on a permanent error — both stop the task — so the outcome is reported
+/// alongside it. On `failed`, the cause is in the entry's `status.error`.
+fn route_outcome(handle: &RouteHandle) -> Option<RouteOutcome> {
+    handle.outcome()
 }
 
 /// One entry describing a running route: its connection health plus the live
 /// message counters the web UI reports for its own consumers.
 ///
-/// `finished` is `null` when the underlying mq-bridge release cannot report
-/// completion (see [`route_finished`]); a route started with `exit_on_empty`
-/// may therefore have drained and exited without saying so here.
+/// `finished` says whether the route's task has ended; `outcome` says how
+/// (`completed` / `stopped` / `failed`, `null` while running). A route started
+/// with `exit_on_empty` reports `finished: true, outcome: "completed"` once it
+/// has drained.
+///
+/// Two rates are reported, because they answer different questions.
+/// `messages_per_second` is instantaneous and decays to ~0 within seconds of a
+/// drain finishing, so it only describes a route that is running *now*.
+/// `average_messages_per_second` over `elapsed_s` is the rate the route actually
+/// achieved, and it stays put once the route goes idle — that is the one to quote
+/// for a completed job. Both are absent until the sampler has observed the route.
 fn route_entry_json(
     name: &str,
     handle: &RouteHandle,
     messages: u64,
     messages_per_second: f64,
+    timing: Option<RouteTiming>,
 ) -> serde_json::Value {
     serde_json::json!({
         "name": name,
         "source": "mcp",
         "status": serde_json::to_value(handle.status()).unwrap_or_default(),
         "finished": route_finished(handle),
+        "outcome": route_outcome(handle),
         "messages": messages,
-        "messages_per_second": (messages_per_second * 100.0).round() / 100.0,
+        "messages_per_second": round2(messages_per_second),
+        "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
+        "average_messages_per_second": timing.map(|t| round2(t.average_throughput)),
     })
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 /// Renders one captured message in the same shape the web UI's `/messages`
@@ -305,6 +343,7 @@ fn report_snapshot(
     healthy: bool,
     error: Option<String>,
     running: bool,
+    outcome: Option<RouteOutcomeSnapshot>,
     messages: u64,
     throughput: f64,
 ) -> ConsumerStatusSnapshot {
@@ -322,6 +361,7 @@ fn report_snapshot(
         message_sequence: messages,
         capture_enabled: false,
         capture_keep_last: 0,
+        outcome,
     }
 }
 
@@ -368,6 +408,7 @@ impl BridgeMcp {
                     // Unknown completion reads as "still running": a route we
                     // still hold a handle for was never stopped from here.
                     !route_finished(handle).unwrap_or(false),
+                    route_outcome(handle).map(RouteOutcomeSnapshot::from),
                     self.metrics.sequence(name).await,
                     self.metrics.throughput(name).await,
                 ),
@@ -384,6 +425,8 @@ impl BridgeMcp {
                     true,
                     None,
                     true,
+                    // Publishers have no route task, so nothing ever ends.
+                    None,
                     self.metrics.sequence(&key).await,
                     self.metrics.throughput(&key).await,
                 ),
@@ -480,7 +523,7 @@ impl BridgeMcp {
     )]
     async fn start_route(
         &self,
-        Parameters(args): Parameters<StartRouteArgs>,
+        Parameters(mut args): Parameters<StartRouteArgs>,
     ) -> Result<CallToolResult, McpError> {
         let name = args
             .name
@@ -489,6 +532,14 @@ impl BridgeMcp {
             .unwrap_or_else(auto_route_name);
         let exit_on_empty = args.route.options.exit_on_empty;
         let capture_last = args.capture_last.unwrap_or(0);
+
+        // `route.options.{concurrency,batch_size}` arrive already filled to the
+        // library's serde defaults (1/1), so "omitted" is indistinguishable here.
+        // The dedicated `concurrency`/`batch_size` args are the single source of
+        // truth: apply them with the app defaults, overriding whatever the route
+        // JSON carried for these two fields.
+        args.route.options.concurrency = args.concurrency.unwrap_or(crate::DEFAULT_CONCURRENCY);
+        args.route.options.batch_size = args.batch_size.unwrap_or(crate::DEFAULT_BATCH_SIZE);
 
         // Claim the name before the potentially slow `run()`, then release the
         // locks so other route tools aren't blocked on startup. Reserving up
@@ -553,7 +604,7 @@ impl BridgeMcp {
 
     #[tool(
         description = "List the routes started by this server, with their live connection health, \
-            total messages moved, and current message rate.",
+            total messages moved, current message rate, and achieved average rate.",
         annotations(read_only_hint = true)
     )]
     async fn list_routes(&self) -> Result<CallToolResult, McpError> {
@@ -563,9 +614,28 @@ impl BridgeMcp {
     }
 
     #[tool(
+        description = "Report this MCP server's build identity: crate `version`, `git_hash` (with a \
+            `-dirty` suffix if the working tree had uncommitted changes at build time), build \
+            `profile` (debug/release), and `build_time`. Use it to confirm which binary is actually \
+            running before trusting throughput numbers.",
+        annotations(read_only_hint = true)
+    )]
+    async fn server_info(&self) -> Result<CallToolResult, McpError> {
+        Ok(ok_json(serde_json::json!({
+            "name": "mq-bridge-app",
+            "version": env!("CARGO_PKG_VERSION"),
+            "git_hash": option_env!("MQB_GIT_HASH").unwrap_or("unknown"),
+            "profile": option_env!("MQB_BUILD_PROFILE").unwrap_or("unknown"),
+            "build_time": option_env!("MQB_BUILD_TIME").unwrap_or("unknown"),
+        })))
+    }
+
+    #[tool(
         description = "Report the live status of one route (by `name`) or all routes: connection \
-            health, whether it has finished, the total number of messages it has moved, and its \
-            current rate in messages per second.",
+            health, whether it has finished, the total number of messages it has moved, its current \
+            rate (`messages_per_second`), and the rate it achieved overall \
+            (`average_messages_per_second` over `elapsed_s`). Quote the average for a finished job: \
+            the current rate decays to ~0 once a route stops moving data.",
         annotations(read_only_hint = true)
     )]
     async fn route_status(
@@ -583,6 +653,7 @@ impl BridgeMcp {
                     handle,
                     self.metrics.sequence(&name).await,
                     self.metrics.throughput(&name).await,
+                    self.metrics.timing(&name).await,
                 );
                 Ok(ok_json(entry))
             }
@@ -622,7 +693,10 @@ impl BridgeMcp {
         })))
     }
 
-    #[tool(description = "Stop a running route by `name`.")]
+    #[tool(
+        description = "Stop a running route by `name`. Returns the total messages it moved plus the \
+            rate it achieved (`average_messages_per_second` over `elapsed_s`)."
+    )]
     async fn stop_route(
         &self,
         Parameters(args): Parameters<RouteNameArg>,
@@ -632,6 +706,9 @@ impl BridgeMcp {
             Some(handle) => {
                 handle.stop().await;
                 let messages = self.metrics.sequence(&args.name).await;
+                // Read the timing before forgetting the route: this is the last
+                // chance to report what it achieved.
+                let timing = self.metrics.timing(&args.name).await;
                 self.metrics.forget(&args.name).await;
                 // Capture buffers live in a process-global registry keyed by
                 // topic and outlive the route, so anything still buffered would
@@ -643,6 +720,8 @@ impl BridgeMcp {
                 Ok(ok_json(serde_json::json!({
                     "stopped": args.name,
                     "messages": messages,
+                    "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
+                    "average_messages_per_second": timing.map(|t| round2(t.average_throughput)),
                     "discarded_captured_messages": dropped,
                 })))
             }
@@ -661,6 +740,7 @@ impl BridgeMcp {
                 handle,
                 self.metrics.sequence(name).await,
                 self.metrics.throughput(name).await,
+                self.metrics.timing(name).await,
             ));
         }
         entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
@@ -707,20 +787,26 @@ fn auto_route_name() -> String {
 /// How often the server reports its routes and publishers to a local UI.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How long one status report may block in `send` before it is abandoned.
+///
+/// Status is a periodic snapshot, so a report that cannot be delivered promptly
+/// is worth less than the next one; bounding the wait keeps the reporter alive.
+const REPORT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Entry point for the `mcp` subcommand.
 ///
-/// `report_to_ui` is the opt-in for telling a local web UI what this server is
-/// doing; `ui_addr` is the UI's configured listen address, from which only the
-/// port is used. Without the flag nothing is ever sent.
+/// `report_to_ui` is the opt-in for telling a local UI what this server is
+/// doing; `ui_status_ipc_url` addresses that UI's status socket. Without the
+/// flag nothing is ever sent.
 pub async fn run(
     transport: String,
     bind: Option<String>,
     report_to_ui: bool,
-    ui_addr: Option<String>,
+    ui_status_ipc_url: Option<String>,
 ) -> anyhow::Result<()> {
     let server = BridgeMcp::new();
     if report_to_ui {
-        spawn_ui_reporter(server.clone(), ui_addr.as_deref());
+        spawn_ui_reporter(server.clone(), ui_status_ipc_url);
     }
 
     match transport.as_str() {
@@ -730,24 +816,18 @@ pub async fn run(
     }
 }
 
-/// The port from a `host:port` listen address.
-fn listen_port(addr: &str) -> Option<u16> {
-    addr.rsplit_once(':')
-        .and_then(|(_, port)| port.trim().parse().ok())
-}
-
-/// Starts periodic status reporting to the UI on **localhost only**.
+/// Starts periodic status reporting to a local UI over its status IPC socket.
 ///
-/// The host is hardcoded: there is deliberately no way to point this at a remote
-/// UI. If the UI address is unknown (no readable config), nothing is reported —
-/// guessing a port could POST this server's route names to an unrelated service.
-fn spawn_ui_reporter(server: BridgeMcp, ui_addr: Option<&str>) {
-    let Some(port) = ui_addr.and_then(listen_port) else {
+/// A local socket rather than a TCP port: it is the only channel that reaches
+/// the desktop app (which binds no HTTP listener), and its `0600` permissions
+/// confine reporting to this user's own UI — a remote UI cannot be targeted at
+/// all. If the socket address is unknown (no readable config), nothing is sent.
+fn spawn_ui_reporter(server: BridgeMcp, ui_status_ipc_url: Option<String>) {
+    let Some(url) = ui_status_ipc_url else {
         info!("--report-to-ui was set, but no UI address is configured; not reporting");
         return;
     };
 
-    let url = format!("http://127.0.0.1:{port}/mcp-status");
     info!("reporting MCP status to {url}");
 
     tokio::spawn(async move {
@@ -759,10 +839,10 @@ fn spawn_ui_reporter(server: BridgeMcp, ui_addr: Option<&str>) {
 
             // Built lazily and retried, so starting the MCP before the UI works.
             if publisher.is_none() {
-                let endpoint = Endpoint::new(EndpointType::Http(HttpConfig {
-                    url: url.clone(),
-                    ..Default::default()
-                }));
+                let endpoint = Endpoint::new(EndpointType::Memory(MemoryConfig::new_with_url(
+                    url.clone(),
+                    Some(1),
+                )));
                 match Publisher::new(endpoint).await {
                     Ok(p) => publisher = Some(p),
                     Err(e) => {
@@ -783,11 +863,36 @@ fn spawn_ui_reporter(server: BridgeMcp, ui_addr: Option<&str>) {
 
             // The UI being down must never disturb the MCP server, so a failed
             // report is dropped and the publisher rebuilt on the next tick.
-            if let Some(p) = &publisher
-                && let Err(e) = p.send(CanonicalMessage::from(payload)).await
-            {
-                tracing::debug!("MCP status reporting: send failed: {e}");
-                publisher = None;
+            //
+            // The timeout is what makes that true for a UI that is connected but
+            // not draining: the IPC socket buffer is small (8 KiB by default on
+            // macOS), so a report that outgrows it blocks in `send` until the
+            // consumer reads. Without a bound this task would park there forever
+            // and silently stop reporting — a stall is not an `Err`.
+            if let Some(p) = &publisher {
+                match tokio::time::timeout(
+                    REPORT_SEND_TIMEOUT,
+                    p.send(CanonicalMessage::from(payload)),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        tracing::debug!("MCP status reporting: send failed: {e}");
+                        publisher = None;
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            "MCP status reporting: send stalled for more than {}s; \
+                             dropping this report and reconnecting",
+                            REPORT_SEND_TIMEOUT.as_secs()
+                        );
+                        // Dropping the publisher closes the half-written socket,
+                        // so the next tick starts from a clean frame boundary
+                        // rather than resuming a partial one the UI can't decode.
+                        publisher = None;
+                    }
+                }
             }
         }
     });

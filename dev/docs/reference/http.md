@@ -4,13 +4,14 @@
 
 Schemes: `http://`, `https://`
 
-Query parameters recognised as config fields for this connector. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
+Query parameters recognised as config fields for this connector. The object-typed `custom_headers` is set with a JSON literal, e.g. `?custom_headers={...}`. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `basic_auth` | array of any | no | — | HTTP Basic Authentication credentials (username, password). For consumers: validates incoming requests. For publishers: adds Authorization header. |
 | `batch_concurrency` | integer | no | — | (Publisher only) The number of concurrent HTTP requests to send in a batch. Defaults to 20. |
-| `compression_enabled` | boolean | no | `false` | Enable gzip compression for request/response bodies exceeding the threshold. Defaults to false. |
+| `compression` | `none` \| `gzip` \| `lz4` \| `zstd` | no | `none` | (Publisher only) Codec for the request body (`none`, `gzip`, `lz4`, `zstd`); overrides `compression_enabled`. `lz4` is non-standard (mq-bridge peers only). Ignored on a consumer — enable response compression with `compression_enabled`. Defaults to `none`. |
+| `compression_enabled` | boolean | no | — | Turns compression on. Publisher: compress the request body with gzip (unless `compression` sets another codec). Consumer: compress responses, negotiating the best codec the client's `Accept-Encoding` accepts. Defaults to off. |
 | `compression_threshold_bytes` | integer | no | `null` | Minimum message size in bytes to compress. Messages smaller than this are sent uncompressed. Defaults to 1024 bytes. |
 | `concurrency_limit` | integer | no | — | (Consumer only) Maximum number of concurrent requests to handle. Defaults to 100. |
 | `custom_headers` | object | no | — | Custom headers as key-value pairs (e.g., {"X-API-Key": "token123"}). Added to outgoing HTTP headers for both consumers and publishers. |

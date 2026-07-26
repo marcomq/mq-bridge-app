@@ -773,35 +773,34 @@ const middlewaresRenderer = {
     const typeSelect = element.querySelector(`.${rendererConfig.triggers.arrayTypeSelect}`) as HTMLSelectElement | null;
 
     if (toggleButton && typeSelect) {
-      toggleButton.classList.remove(rendererConfig.triggers.arrayTypeToggle);
-      toggleButton.onclick = (event) => {
-        event.preventDefault();
-        toggleButton.style.display = "none";
-        typeSelect.style.display = "inline-block";
-        typeSelect.focus();
-        typeSelect.getBoundingClientRect();
+      // The library reveals the type picker behind an "Add Middleware" button and opens it via
+      // select.showPicker(), which WebKit (Safari, Tauri) does not implement: the first click only
+      // swapped the button for the select, and a click elsewhere hid it again. Show the picker
+      // itself as the button instead, so a single native click opens it in every engine.
+      const addLabel = toggleButton.textContent || "Add Middleware";
+      toggleButton.remove();
 
-        try {
-          typeSelect.showPicker?.();
-        } catch {
-          window.requestAnimationFrame(() => {
-            try {
-              typeSelect.showPicker?.();
-            } catch {
-              // ignore
-            }
-          });
+      const placeholder = typeSelect.querySelector("option[value='']");
+      if (placeholder) placeholder.textContent = addLabel;
+
+      addClassTokens(typeSelect, rendererConfig.classes.buttonPrimary);
+      // Only forces the select's display style — named for what it does, and
+      // guarded so it doesn't write (and re-trigger the observer) redundantly.
+      const forceSelectVisible = () => {
+        if (typeSelect.style.display !== "inline-block") {
+          typeSelect.style.display = "inline-block";
         }
       };
+      forceSelectVisible();
 
-      typeSelect.addEventListener("focusout", () => {
-        window.setTimeout(() => {
-          if (!typeSelect.value) {
-            typeSelect.style.display = "none";
-            toggleButton.style.display = "";
-          }
-        }, 0);
-      });
+      // The library hides the picker again after a type is chosen (and on focusout); keep it
+      // visible so further middlewares can be added without re-rendering the form. The observer
+      // targets a node inside the freshly rendered subtree and forms a cycle with it, so both are
+      // collected together when the next render drops that subtree (RendererContext is a plain bag
+      // with no teardown hook to disconnect through explicitly).
+      new MutationObserver(() => {
+        if (typeSelect.style.display === "none") forceSelectVisible();
+      }).observe(typeSelect, { attributes: true, attributeFilter: ["style"] });
     }
 
     return element;

@@ -38,6 +38,7 @@ import { EMPTY_STORAGE_SECURITY, normalizeStorageSecurityInfo } from "./lib/stor
 import { getStoredJson } from "./lib/encrypted-json-storage";
 import { browserWindow } from "./lib/browser";
 import { getAvailableFeatures } from "./lib/feature-detection";
+import { registerEndpointKindsFromSchema } from "./lib/endpoint-metadata";
 
 type ConfigRecoveryStatus = {
   mode?: string;
@@ -396,6 +397,7 @@ export async function bootstrapApp() {
   delete config.routes;
   appShell.setConfig(config);
   appShell.setSchema(schema);
+  registerEndpointKindsFromSchema(schema);
   const state = getAppState();
   state.storage_security = storageSecurity;
   state.features = features;

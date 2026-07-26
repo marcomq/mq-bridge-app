@@ -5,7 +5,9 @@
 
 use mq_bridge_app::{
     config::{AppConfig, load_config},
-    mq_bridge, web_ui,
+    mq_bridge,
+    ui_app::mcp_status_ipc_url,
+    web_ui,
 };
 
 use clap::{Parser, Subcommand};
@@ -18,6 +20,16 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use anyhow::Context;
 
 mod mcp;
+mod mcp_install;
+
+/// App-level default batch size for headless routes (`copy`, MCP) when the caller
+/// does not specify one. The library's `RouteOptions::default()` stays at 1; this
+/// is the batteries-included value the app applies on top.
+pub(crate) const DEFAULT_BATCH_SIZE: usize = 1024;
+
+/// App-level default route concurrency for headless routes (`copy`, MCP) when the
+/// caller does not specify one. See [`DEFAULT_BATCH_SIZE`].
+pub(crate) const DEFAULT_CONCURRENCY: usize = 4;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -73,15 +85,63 @@ struct McpArgs {
     #[arg(long)]
     bind: Option<String>,
 
-    /// Report running routes and publish targets to a local mq-bridge-app web UI,
-    /// so they show up alongside its configured consumers and publishers.
+    /// Report running routes and publish targets to a local mq-bridge-app UI
+    /// (web or desktop), so they show up alongside its configured consumers and
+    /// publishers.
     ///
     /// Off by default: without this flag nothing about this server ever leaves the
     /// process. Only names, connector types, health and message counts are sent —
-    /// never endpoint URLs or credentials. The UI is always reached on localhost,
-    /// at the port from the config's `ui_addr`; a remote UI cannot be targeted.
-    #[arg(long)]
+    /// never endpoint URLs or credentials. The UI is reached over a local IPC
+    /// socket next to the config file, so a remote UI cannot be targeted.
+    ///
+    /// `install` bakes this flag into the registered command when set.
+    #[arg(long, global = true)]
     report_to_ui: bool,
+
+    /// Register/unregister this binary with local MCP clients instead of serving.
+    #[command(subcommand)]
+    action: Option<McpAction>,
+}
+
+#[derive(Subcommand, Debug)]
+enum McpAction {
+    /// Register this binary as a stdio MCP server with local MCP clients.
+    ///
+    /// Without `--client`, every client detected on this machine is configured.
+    /// The absolute path of the running binary is what gets registered.
+    Install {
+        /// Client to configure (all detected clients if omitted).
+        #[arg(long, value_enum)]
+        client: Option<mcp_install::Client>,
+
+        /// Register in the current project's config instead of the user's
+        /// global one. Not supported by Claude Desktop.
+        #[arg(long)]
+        local: bool,
+
+        /// Print the config snippet for a client we don't write directly,
+        /// instead of installing anything.
+        #[arg(long)]
+        print_config: bool,
+    },
+
+    /// Remove this server from local MCP clients.
+    Uninstall {
+        /// Client to clean up (all detected clients if omitted).
+        #[arg(long, value_enum)]
+        client: Option<mcp_install::Client>,
+
+        /// Remove the project-scoped registration instead of the global one.
+        #[arg(long)]
+        local: bool,
+    },
+
+    /// Show where this server is registered, and whether it still points here.
+    Status {
+        /// Inspect project-scoped configs instead of the global ones.
+        #[arg(long)]
+        local: bool,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -89,10 +149,15 @@ struct CopyArgs {
     /// Source endpoint URI. The scheme selects the endpoint and query params set
     /// its config, e.g. `postgres://user:pass@host/db?table=src&sslmode=disable`,
     /// `nats://host:4222?subject=orders` or `file:///path/to/file?format=json`.
+    ///
+    /// Append `|`-separated middlewares to wrap the endpoint, applied in order:
+    /// `...?table=src|retry?max_attempts=5|metrics`. Middleware params are that
+    /// middleware's config fields. A literal `|` inside the URI must be written
+    /// as `%7C`.
     #[arg(long)]
     from: String,
 
-    /// Destination endpoint URI (same URI forms as `--from`), e.g.
+    /// Destination endpoint URI (same URI and middleware forms as `--from`), e.g.
     /// `postgres://user:pass@host/db?table=dst&insert_query=<url-encoded SQL>`.
     #[arg(long)]
     to: String,
@@ -102,11 +167,11 @@ struct CopyArgs {
     #[arg(long)]
     drain: bool,
 
-    /// Route concurrency (defaults to the engine default).
+    /// Route concurrency (defaults to 4).
     #[arg(long)]
     concurrency: Option<usize>,
 
-    /// Batch size (defaults to the engine default).
+    /// Batch size (defaults to 1024).
     #[arg(long)]
     batch_size: Option<usize>,
 }
@@ -125,23 +190,41 @@ async fn main() -> anyhow::Result<()> {
             return run_copy(copy_args).await;
         }
         Some(Command::Mcp(mcp_args)) => {
+            // The install actions configure clients and exit; only the bare
+            // `mcp` command actually serves.
+            match mcp_args.action {
+                Some(McpAction::Install {
+                    client,
+                    local,
+                    print_config,
+                }) => {
+                    return if print_config {
+                        mcp_install::print_config(mcp_args.report_to_ui)
+                    } else {
+                        mcp_install::install(client, local, mcp_args.report_to_ui)
+                    };
+                }
+                Some(McpAction::Uninstall { client, local }) => {
+                    return mcp_install::uninstall(client, local);
+                }
+                Some(McpAction::Status { local }) => return mcp_install::status(local),
+                None => {}
+            }
+
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
             init_mcp_logging();
-            // Reading the UI config is how the MCP finds the UI, and is strictly
-            // best-effort: a missing, unreadable or invalid config just means no
-            // reporting, never a failure to start.
-            let ui_addr = if mcp_args.report_to_ui {
+            // Resolving the config is how the MCP finds the UI: both processes
+            // derive the same status socket from the config file they were
+            // pointed at. Strictly best-effort — a missing, unreadable or
+            // invalid config just means no reporting, never a failure to start.
+            let ui_status_ipc_url = if mcp_args.report_to_ui {
                 match load_config(
                     args.config.clone(),
                     args.init_config.clone(),
                     args.init_config_str.clone(),
                     args.config_str.clone(),
                 ) {
-                    Ok((config, _)) if !config.ui_addr.trim().is_empty() => Some(config.ui_addr),
-                    Ok(_) => {
-                        warn!("No `ui_addr` in configuration; MCP status will not be reported");
-                        None
-                    }
+                    Ok((_, config_file_path)) => Some(mcp_status_ipc_url(&config_file_path)),
                     Err(e) => {
                         warn!(
                             "Could not read configuration ({e}); MCP status will not be reported"
@@ -156,7 +239,7 @@ async fn main() -> anyhow::Result<()> {
                 mcp_args.transport,
                 mcp_args.bind,
                 mcp_args.report_to_ui,
-                ui_addr,
+                ui_status_ipc_url,
             )
             .await;
         }
@@ -352,14 +435,12 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     let input = endpoint_from_uri(&args.from).context("invalid --from endpoint")?;
     let output = endpoint_from_uri(&args.to).context("invalid --to endpoint")?;
 
-    let mut options = RouteOptions::default();
-    if let Some(concurrency) = args.concurrency {
-        options.concurrency = concurrency;
-    }
-    if let Some(batch_size) = args.batch_size {
-        options.batch_size = batch_size;
-    }
-    options.exit_on_empty = args.drain;
+    let options = RouteOptions {
+        concurrency: args.concurrency.unwrap_or(DEFAULT_CONCURRENCY),
+        batch_size: args.batch_size.unwrap_or(DEFAULT_BATCH_SIZE),
+        exit_on_empty: args.drain,
+        ..Default::default()
+    };
 
     let route = Route::new(input, output).with_options(options);
     let handle = route
@@ -420,7 +501,104 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 /// to use it verbatim (e.g. `mongodb://_/?url=<encoded>&collection=orders`); its
 /// own `?a=b` options are then never re-interpreted as config, which is the
 /// escape hatch for any driver option that collides with a config field name.
+/// Parses a `--from`/`--to` value into an endpoint, including any middlewares.
+///
+/// The value is the endpoint URI optionally followed by `|`-separated middleware
+/// specs, applied in the order written:
+/// `postgres://host/db?table=src|retry?max_attempts=5|metrics`.
+/// A literal `|` inside the URI itself (e.g. in a password) must be written
+/// percent-encoded as `%7C`.
 fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
+    let mut parts = uri.split('|');
+    let base = parts.next().unwrap_or(uri);
+    let mut endpoint = base_endpoint_from_uri(base)?;
+    for spec in parts {
+        endpoint.middlewares.push(
+            middleware_from_spec(spec)
+                .with_context(|| format!("invalid middleware '{spec}' in '{uri}'"))?,
+        );
+    }
+    Ok(endpoint)
+}
+
+/// Builds a middleware from a `name` / `name?param=value&...` spec. Params are
+/// the middleware config struct's own fields, coerced to the type the field
+/// expects; `dlq`'s `endpoint` is itself an endpoint URI, and object/array
+/// fields (e.g. `weak_join`'s `required`) take a JSON literal.
+fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middleware> {
+    use anyhow::bail;
+    use mq_bridge::models::{
+        BufferMiddleware, CookieJarMiddleware, DeadLetterQueueMiddleware, DeduplicationMiddleware,
+        DelayMiddleware, LimiterMiddleware, MetricsMiddleware, RandomPanicMiddleware,
+        RetryMiddleware, TransformMiddleware, WeakJoinMiddleware,
+    };
+    use std::collections::HashMap;
+
+    let (name, query) = match spec.split_once('?') {
+        Some((name, query)) => (name.trim(), query),
+        None => (spec.trim(), ""),
+    };
+    // An underscore is awkward to type in a shell-quoted URI, so `-` is accepted
+    // as well (`weak-join` == `weak_join`).
+    let tag = name.replace('-', "_");
+
+    let fields: HashMap<String, FieldType> = match tag.as_str() {
+        "deduplication" => schema_fields(schemars::schema_for!(DeduplicationMiddleware)),
+        "metrics" => schema_fields(schemars::schema_for!(MetricsMiddleware)),
+        "dlq" => schema_fields(schemars::schema_for!(DeadLetterQueueMiddleware)),
+        "retry" => schema_fields(schemars::schema_for!(RetryMiddleware)),
+        "random_panic" => schema_fields(schemars::schema_for!(RandomPanicMiddleware)),
+        "delay" => schema_fields(schemars::schema_for!(DelayMiddleware)),
+        "weak_join" => schema_fields(schemars::schema_for!(WeakJoinMiddleware)),
+        "limiter" => schema_fields(schemars::schema_for!(LimiterMiddleware)),
+        "buffer" => schema_fields(schemars::schema_for!(BufferMiddleware)),
+        "cookie_jar" => schema_fields(schemars::schema_for!(CookieJarMiddleware)),
+        "transform" => schema_fields(schemars::schema_for!(TransformMiddleware)),
+        // The escape hatch for a handler-provided middleware: `name` selects it,
+        // `config` carries its free-form JSON.
+        "custom" => HashMap::from([
+            ("name".to_string(), FieldType::StringLike),
+            ("config".to_string(), FieldType::Object),
+        ]),
+        other => bail!(
+            "unsupported middleware '{other}'. Supported middlewares: deduplication, metrics, dlq, retry, random_panic, delay, weak_join, limiter, buffer, cookie_jar, transform, custom"
+        ),
+    };
+
+    let mut config = serde_json::Map::new();
+    for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
+        let (k, v) = (k.into_owned(), v.into_owned());
+        let value = if tag == "dlq" && k == "endpoint" {
+            let endpoint =
+                endpoint_from_uri(&v).with_context(|| format!("invalid dlq endpoint '{v}'"))?;
+            serde_json::to_value(endpoint)?
+        } else {
+            match fields.get(&k).copied() {
+                // A known object/array field must be a JSON literal; a value that
+                // doesn't parse is a user error worth naming, the same way
+                // `base_endpoint_from_uri` handles its object fields, rather than
+                // a silent fallback to a string that serde rejects later.
+                Some(FieldType::Object) => serde_json::from_str(&v).with_context(|| {
+                    format!(
+                        "query param '{k}' in middleware spec '{spec}' expects a JSON literal, got '{v}'"
+                    )
+                })?,
+                // An unknown field (`None`) is passed through for serde to reject
+                // by name.
+                None => serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v)),
+                Some(ty) => coerce_scalar(v, ty),
+            }
+        };
+        config.insert(k, value);
+    }
+
+    let mut tagged = serde_json::Map::new();
+    tagged.insert(tag.clone(), serde_json::Value::Object(config));
+    serde_json::from_value(serde_json::Value::Object(tagged))
+        .with_context(|| format!("could not build a '{tag}' middleware from '{spec}'"))
+}
+
+fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     use anyhow::bail;
     use mq_bridge::models::{
         AmqpConfig, AwsConfig, ClickHouseConfig, Endpoint, EndpointType, FileConfig, GrpcConfig,
@@ -506,7 +684,11 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
                             serde_json::Value::Bool(v == "true"),
                         );
                     }
-                    _ => {}
+                    // An in-process channel has no connection URL to carry driver
+                    // options, so anything else would just be discarded.
+                    other => anyhow::bail!(
+                        "unrecognised query param '{other}' in memory URI '{uri}': only 'capacity' and 'subscribe_mode' are supported"
+                    ),
                 }
             }
             let mut tagged = serde_json::Map::new();
@@ -576,27 +758,59 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     };
 
     // Split query params: recognised scalar config fields become endpoint config,
-    // everything else is kept on the connection URL (driver params).
+    // everything else is kept on the connection URL (driver params) — but only
+    // where such a param can actually take effect, see `driver_options`.
     let mut config = serde_json::Map::new();
     let mut driver_params: Vec<(String, String)> = Vec::new();
     // Escaped mode: `?url=<percent-encoded connection string>` supplies the exact
     // connection URL verbatim, so its own `?a=b` options are never re-interpreted
     // as config fields. Use it when a driver option would otherwise collide.
     let mut escaped_url: Option<String> = None;
+    // Whether an unrecognised param can ride along on the connection URL as a
+    // driver option. True only for endpoints whose URL really is a query-bearing
+    // connection string. The rest either have no URL at all (`file` has a path,
+    // `aws` has ARNs) or a connection string that is not a URI — kafka's bare
+    // `host:port` list, ibmmq's `host(port)`, the mqtt/nats/zeromq/grpc endpoint
+    // addresses — where appending `?k=v` corrupts it rather than configuring
+    // anything. There, an unrecognised param is a user error, not an option.
+    let driver_options = matches!(
+        tag,
+        "sqlx"
+            | "postgres_cdc"
+            | "mongodb"
+            | "redis"
+            | "amqp"
+            | "http"
+            | "clickhouse"
+            | "websocket"
+    );
     for (k, v) in parsed.query_pairs() {
         let (k, v) = (k.into_owned(), v.into_owned());
-        if k == "path" {
+        // A file endpoint takes its path from the URI itself, so a `?path=` would
+        // be a second, conflicting source for the same field.
+        if k == "path" && tag == "file" {
             continue;
         }
-        if k == "url" {
+        if k == "url" && tag != "file" {
             escaped_url = Some(v);
             continue;
         }
         match fields.get(&k).copied() {
-            // Object/array config fields (e.g. `tls`) can't be populated from a
-            // scalar query param, and their names routinely collide with driver
-            // options (`?tls=true`), so leave such params on the connection URL.
-            Some(FieldType::Object) | None => driver_params.push((k, v)),
+            // An object/array field (e.g. `encryption`, `tls`, kafka's
+            // `producer_options`) can't be populated from a scalar, so its value is
+            // read as a JSON literal, as the middleware spec syntax already does.
+            // Where driver options exist the same name is also a plausible option
+            // (`?tls=true`), so only an actual `{`/`[` literal is taken as config.
+            Some(FieldType::Object) if !driver_options || is_json_literal(&v) => {
+                let value: serde_json::Value = serde_json::from_str(&v).with_context(|| {
+                    format!("query param '{k}' in URI '{uri}' expects a JSON literal, got '{v}'")
+                })?;
+                config.insert(k, value);
+            }
+            Some(FieldType::Object) | None if driver_options => driver_params.push((k, v)),
+            None => bail!(
+                "unrecognised query param '{k}' in URI '{uri}': a '{tag}' endpoint has no connection-URL driver options, so '{k}' would have no effect"
+            ),
             Some(ty) => {
                 config.insert(k, coerce_scalar(v, ty));
             }
@@ -756,10 +970,10 @@ fn collect_props(
     let Some(obj) = node.as_object() else { return };
 
     if let Some(reference) = obj.get("$ref").and_then(|r| r.as_str()) {
-        if visited.insert(reference.to_string()) {
-            if let Some(target) = resolve_ref(root, reference) {
-                collect_props(root, target, out, visited);
-            }
+        if visited.insert(reference.to_string())
+            && let Some(target) = resolve_ref(root, reference)
+        {
+            collect_props(root, target, out, visited);
         }
         return;
     }
@@ -794,10 +1008,10 @@ fn resolve_ref<'a>(root: &'a serde_json::Value, reference: &str) -> Option<&'a s
 /// with a null member), and a `$ref` to a scalar def; anything else is treated
 /// as string-like (enums deserialize from a string, so no coercion is needed).
 fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
-    if let Some(reference) = sub.get("$ref").and_then(|r| r.as_str()) {
-        if let Some(target) = resolve_ref(root, reference) {
-            return field_type(root, target);
-        }
+    if let Some(reference) = sub.get("$ref").and_then(|r| r.as_str())
+        && let Some(target) = resolve_ref(root, reference)
+    {
+        return field_type(root, target);
     }
     let has = |t: &str| match sub.get("type") {
         Some(serde_json::Value::String(s)) => s == t,
@@ -828,6 +1042,15 @@ fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
         }
     }
     FieldType::StringLike
+}
+
+/// Whether a query-param value is written as a JSON object or array literal.
+/// Used to tell a nested-config value (`?tls={"ca_file":"/x"}`) from a driver
+/// option that happens to share the field's name (`?tls=true`) on endpoints
+/// whose connection URL carries both.
+fn is_json_literal(v: &str) -> bool {
+    let v = v.trim_start();
+    v.starts_with('{') || v.starts_with('[')
 }
 
 /// Coerces a query-param string into the JSON scalar its target field expects.
@@ -1074,6 +1297,225 @@ mod uri_tests {
             .append_pair("bogus", "x");
         let err = endpoint_from_uri(outer.as_str()).unwrap_err();
         assert!(err.to_string().contains("escaped mode"), "got: {err}");
+    }
+
+    // A file endpoint has no driver options, so an object-typed field such as
+    // `encryption` is read as a JSON literal instead of being dropped.
+    #[test]
+    fn file_object_field_is_read_as_json_literal() {
+        let mut uri = url::Url::parse("file:///tmp/out.jsonl").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("format", "raw")
+            .append_pair("compression", "gzip")
+            .append_pair("encryption", r#"{"key_id":"k1","key":"${env:MQB_KEY}"}"#);
+        let cfg = config(uri.as_str(), "file");
+        assert_eq!(cfg["path"], "/tmp/out.jsonl");
+        assert_eq!(cfg["format"], "raw");
+        assert_eq!(cfg["compression"], "gzip");
+        assert_eq!(cfg["encryption"]["key_id"], "k1");
+        assert_eq!(cfg["encryption"]["key"], "${env:MQB_KEY}");
+    }
+
+    // The consumer mode is a `#[serde(flatten)]`ed tagged enum, so `mode` and its
+    // variant fields are only recognised by walking the schema — they must not
+    // trip the unrecognised-param error.
+    #[test]
+    fn file_flattened_mode_fields_are_recognised() {
+        let cfg = config("file:///var/log/app.log?mode=subscribe&delete=true", "file");
+        assert_eq!(cfg["mode"], "subscribe");
+        assert_eq!(cfg["delete"], true);
+    }
+
+    // Rejecting unrecognised params on the endpoints that have no driver options
+    // only works if every documented param really is a config field. These are the
+    // example URIs from README.md, dev/docs/ and benches/etl/.
+    #[test]
+    fn documented_example_uris_parse() {
+        for uri in [
+            // Endpoints with no connection-URL driver options: newly strict.
+            "kafka://kafka.local:9092?topic=orders&group_id=mqb-orders-sync",
+            "kafka://kafka.local:9093?topic=orders&username=svc&password=secret",
+            "mqtt://broker.local:1883?topic=alerts&client_id=mqb-alerts-01&qos=2",
+            "mqtts://user:pass@broker.local:8883?topic=events",
+            "nats://localhost:4222?subject=orders",
+            "zeromq://127.0.0.1:5555?socket_type=push",
+            "grpc://localhost:50051?topic=orders",
+            "ibmmq://qmhost:1414?queue_manager=QM1&channel=DEV.APP.SVRCONN&queue=orders",
+            "aws://_/?queue_url=https://sqs.us-east-1.amazonaws.com/123/orders&region=us-east-1",
+            "memory://my-topic?capacity=1000",
+            "file:///data/customers.csv?format=csv",
+            "file:///var/log/app/events.log?mode=subscribe",
+            // Endpoints that do carry driver options: `sslmode`/`async_insert` are
+            // driver options, not config fields, and must still pass through.
+            "postgres://u:p@localhost:5432/db?table=bench&cursor_column=id&sslmode=disable",
+            "clickhouse://user:pass@ch.local:8123?table=events&database=analytics&async_insert=true",
+            "amqp://guest:guest@localhost:5672/%2f?exchange=events&queue=events",
+            "mongodb://localhost?database=app&collection=orders&consume=capture_new",
+            "postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot",
+            "https://api.example.com/ingest?method=POST&request_timeout_ms=5000",
+        ] {
+            if let Err(e) = endpoint_from_uri(uri) {
+                panic!("documented URI should parse: {uri}\n  {e:#}");
+            }
+        }
+    }
+
+    // On an endpoint whose URL does carry driver options, a JSON literal picks the
+    // nested config field while a scalar of the same name stays a driver option
+    // (see `mongodb_tls_option_stays_on_url` for the scalar half).
+    #[test]
+    fn mongodb_tls_json_literal_is_config() {
+        let mut uri = url::Url::parse("mongodb://host:27017/").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("database", "appdb")
+            .append_pair("tls", r#"{"required":true,"ca_file":"/etc/ca.pem"}"#);
+        let cfg = config(uri.as_str(), "mongodb");
+        assert_eq!(cfg["tls"]["required"], true);
+        assert_eq!(cfg["tls"]["ca_file"], "/etc/ca.pem");
+        assert_eq!(cfg["url"], "mongodb://host:27017/");
+    }
+
+    // Kafka's connection string is a bare `host:port` list, not a URI, so a param
+    // appended to it could never be read as a driver option — an object field is
+    // config, and an unrecognised name is an error.
+    #[test]
+    fn kafka_object_fields_are_config_not_url_junk() {
+        let mut uri = url::Url::parse("kafka://broker:9092").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("topic", "orders")
+            .append_pair("tls", r#"{"required":true}"#)
+            .append_pair("producer_options", r#"[["linger.ms","5"]]"#);
+        let cfg = config(uri.as_str(), "kafka");
+        assert_eq!(cfg["url"], "broker:9092");
+        assert_eq!(cfg["tls"]["required"], true);
+        assert_eq!(cfg["producer_options"][0][0], "linger.ms");
+    }
+
+    #[test]
+    fn kafka_rejects_unrecognised_param() {
+        let err = endpoint_from_uri("kafka://broker:9092?topic=t&bogus=x").unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised query param"),
+            "got: {err}"
+        );
+    }
+
+    // IBM MQ's `host(port)` connection string is likewise not a URI; `tls` is a
+    // nested struct that was previously unreachable from a URI.
+    #[test]
+    fn ibmmq_tls_is_config_and_url_stays_host_port() {
+        let mut uri = url::Url::parse("ibmmq://qmhost:1414").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("queue_manager", "QM1")
+            .append_pair("channel", "DEV.APP.SVRCONN")
+            .append_pair("queue", "orders")
+            .append_pair("tls", r#"{"required":true,"cipher_spec":"ANY_TLS12"}"#);
+        let cfg = config(uri.as_str(), "ibmmq");
+        assert_eq!(cfg["url"], "qmhost(1414)");
+        assert_eq!(cfg["tls"]["cipher_spec"], "ANY_TLS12");
+    }
+
+    // AwsConfig has no `url` field, so a leftover param had nothing to ride on and
+    // was dropped on the floor.
+    #[test]
+    fn aws_rejects_unrecognised_param() {
+        let err = endpoint_from_uri("aws://_/?region=us-east-1&bogus=x").unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised query param"),
+            "got: {err}"
+        );
+    }
+
+    // An in-process channel has no connection URL at all.
+    #[test]
+    fn memory_rejects_unrecognised_param() {
+        let err = endpoint_from_uri("memory://my-topic?bogus=x").unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised query param"),
+            "got: {err}"
+        );
+    }
+
+    // `path` is a real WebSocketConfig field; it used to be skipped for every
+    // scheme because a file endpoint derives its path from the URI.
+    #[test]
+    fn websocket_path_param_reaches_config() {
+        let cfg = config("ws://host:8080?path=/stream", "websocket");
+        assert_eq!(cfg["path"], "/stream");
+    }
+
+    // A param that is not a FileConfig field can never take effect, so it is
+    // rejected rather than silently ignored.
+    #[test]
+    fn file_rejects_unrecognised_param() {
+        let err = endpoint_from_uri("file:///tmp/out.jsonl?bogus=x").unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised query param"),
+            "got: {err}"
+        );
+    }
+
+    // An object-typed field given something that is not JSON at all is reported as
+    // such, rather than reaching serde as a bare string. (A value that *is* valid
+    // JSON but the wrong shape still gets serde's own type error.)
+    #[test]
+    fn file_object_field_rejects_non_json() {
+        let err = endpoint_from_uri("file:///tmp/out.jsonl?encryption=yes-please").unwrap_err();
+        assert!(
+            err.to_string().contains("expects a JSON literal"),
+            "got: {err}"
+        );
+    }
+
+    // `|`-separated middlewares wrap the endpoint in the order written, and their
+    // params are coerced to the middleware config field's own type.
+    #[test]
+    fn middlewares_are_appended_in_order() {
+        let ep = endpoint_from_uri("kafka://broker:9092?topic=orders|retry?max_attempts=5|metrics")
+            .expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(v["kafka"]["topic"], "orders");
+        let mw = v["middlewares"].as_array().expect("middlewares array");
+        assert_eq!(mw.len(), 2);
+        assert_eq!(mw[0]["retry"]["max_attempts"], 5);
+        assert!(mw[1].get("metrics").is_some(), "got: {}", mw[1]);
+    }
+
+    // A middleware's own object-typed field takes a JSON literal, and `-` in the
+    // name is accepted for the snake_case tag.
+    #[test]
+    fn middleware_dash_alias_and_json_field() {
+        let ep = endpoint_from_uri(
+            "null:|weak-join?group_by=cid&expected_count=2&timeout_ms=1000&required=[\"a\",\"b\"]",
+        )
+        .expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        let wj = &v["middlewares"][0]["weak_join"];
+        assert_eq!(wj["group_by"], "cid");
+        assert_eq!(wj["required"], serde_json::json!(["a", "b"]));
+    }
+
+    // `dlq`'s `endpoint` param is itself an endpoint URI, parsed recursively.
+    #[test]
+    fn dlq_endpoint_param_is_a_nested_uri() {
+        let mut spec = String::from("kafka://broker:9092?topic=orders|dlq?");
+        let mut q = url::form_urlencoded::Serializer::new(String::new());
+        q.append_pair("endpoint", "file:///tmp/failed.jsonl");
+        spec.push_str(&q.finish());
+        let ep = endpoint_from_uri(&spec).expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(
+            v["middlewares"][0]["dlq"]["endpoint"]["file"]["path"],
+            "/tmp/failed.jsonl"
+        );
+    }
+
+    // An unknown middleware name is rejected with the supported list.
+    #[test]
+    fn unknown_middleware_is_rejected() {
+        let err = endpoint_from_uri("null:|bogus").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unsupported middleware 'bogus'"), "got: {msg}");
     }
 
     // `kafka://` selects the Kafka endpoint; the scheme is stripped so `url`

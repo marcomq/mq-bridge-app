@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Postgres -> JSONL throughput, for a fair comparison against faucet-stream's
-# Scenario B (source-postgres -> sink-jsonl, see BENCHMARKS.md in that repo).
-# Uses the app's zero-code `copy` command, `file://…?format=raw` sink (raw
-# payload per line, newline-delimited — no CanonicalMessage envelope), so the
-# JSONL shape matches faucet's sink-jsonl output: one JSON row per line.
+# Postgres -> JSONL throughput. Uses the app's zero-code `copy` command with a
+# `file://…?format=raw` sink (raw payload per line, newline-delimited — no
+# CanonicalMessage envelope), so the output is plain JSONL: one JSON row per
+# line, directly comparable with any other EL tool's JSONL output.
 #
 # Prereqs:  ./seed.sh up   and a lean build:
 #           cargo build -p mq-bridge-app --no-default-features --features bench --release
@@ -16,7 +15,7 @@ source "$HERE/seed.sh"   # also sources lib.sh
 PAYLOADS="${PAYLOADS:-256 4096}"
 BATCHES="${BATCHES:-1 128}"
 CONCURRENCIES="${CONCURRENCIES:-1 4}"
-REPEATS="${REPEATS:-5}"          # timed runs per cell (1 warmup + REPEATS, median/stddev reported)
+REPEATS="${REPEATS:-2}"          # timed runs per cell (1 warmup + REPEATS, median/stddev reported)
 
 RESULTS_DIR="${RESULTS_DIR:-$HERE/results}"
 mkdir -p "$RESULTS_DIR"
@@ -27,15 +26,12 @@ now() { python3 -c 'import time; print(time.time())'; }
 COPY_TIMEOUT="${COPY_TIMEOUT:-900}"
 OUT_FILE="${OUT_FILE:-/tmp/mqb_bench_out.jsonl}"
 
+# Delegates to lib.sh's run_guarded, which escalates SIGTERM -> SIGKILL and
+# signals the whole process group. The TERM-only version this replaced could not
+# kill a wedged route — mq-bridge-app traps SIGTERM for graceful shutdown — so the
+# watchdog fired, the process survived, and the script waited forever.
 copy_guarded() {
-  "$BIN" copy "$@" >/dev/null 2>&1 &
-  local pid=$!
-  { sleep "$COPY_TIMEOUT"; kill "$pid" 2>/dev/null; } 2>/dev/null &
-  local killer=$!
-  disown "$killer" 2>/dev/null || true
-  local rc=0; wait "$pid" 2>/dev/null || rc=$?
-  kill "$killer" 2>/dev/null || true
-  return "$rc"
+  run_guarded "$COPY_TIMEOUT" "$BIN" copy "$@"
 }
 
 [[ -x "$BIN" ]] || { echo "binary not found at $BIN — build with --features bench --release" >&2; exit 1; }

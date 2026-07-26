@@ -9,8 +9,7 @@
   import "@awesome.me/webawesome/dist/components/details/details.js";
   import PayloadDisplay from "./PayloadDisplay.svelte"; // Use new PayloadDisplay component
   import { onMount } from "svelte";
-  import { PUBLISHER_TYPE_OPTIONS } from "../lib/publishers-view";
-  import { formatEndpointTypeLabel } from "../lib/endpoint-metadata";
+  import { formatEndpointTypeLabel, getEndpointTypeGroups } from "../lib/endpoint-metadata";
   import type { ConfigJsonVariant } from "../lib/import-export";
   import {
     addPublisherAction,
@@ -354,8 +353,13 @@
             >+</wa-button>
           {#if addMenuOpen}
             <div class="add-menu">
-              {#each PUBLISHER_TYPE_OPTIONS as type (type)}
-                <button type="button" onclick={() => handleAdd(type)}>{formatEndpointTypeLabel(type)}</button>
+              {#each getEndpointTypeGroups("publisher") as group (group.label)}
+                {#if group.label}
+                  <div class="add-menu-label">{group.label}</div>
+                {/if}
+                {#each group.kinds as type (type)}
+                  <button type="button" onclick={() => handleAdd(type)}>{formatEndpointTypeLabel(type)}</button>
+                {/each}
               {/each}
             </div>
           {/if}

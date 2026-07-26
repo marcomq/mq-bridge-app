@@ -1027,20 +1027,23 @@ pub fn run() {
                 )
             });
 
-            app.manage(DesktopState {
-                app: UiApp::new_with_secret_store_and_runtime_hooks(
-                    config,
-                    prometheus_handle,
-                    config_file_path,
-                    secret_store,
-                    storage_security,
-                    UiAppRuntimeHooks::default()
-                        .with_storage_security_resolver(storage_security_resolver)
-                        .with_storage_save_prepare(storage_save_prepare)
-                        .with_config_recovery(config_recovery)
-                        .with_config_recovery_reset(Some(config_recovery_reset)),
-                ),
-            });
+            let ui_app = UiApp::new_with_secret_store_and_runtime_hooks(
+                config,
+                prometheus_handle,
+                config_file_path,
+                secret_store,
+                storage_security,
+                UiAppRuntimeHooks::default()
+                    .with_storage_security_resolver(storage_security_resolver)
+                    .with_storage_save_prepare(storage_save_prepare)
+                    .with_config_recovery(config_recovery)
+                    .with_config_recovery_reset(Some(config_recovery_reset)),
+            );
+            // The UI is served over Tauri IPC, so this socket is the only way a
+            // local MCP server can report its routes to the desktop app.
+            tauri::async_runtime::spawn(ui_app.clone().run_mcp_status_listener());
+
+            app.manage(DesktopState { app: ui_app });
 
             Ok(())
         })

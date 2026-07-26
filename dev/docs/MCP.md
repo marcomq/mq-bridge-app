@@ -25,9 +25,42 @@ mq-bridge-app mcp --transport http --bind 127.0.0.1:9092
 Logs go to **stderr**, because `stdio` transport owns stdout for the protocol
 itself.
 
-## Registering with Claude Code
+## Registering with a client
 
-Add to `.mcp.json` in your project root:
+`mcp install` writes the client config for you, registering the **absolute path
+of the binary you just ran** — so a `target/debug` build and an installed
+release binary each register themselves correctly.
+
+```bash
+# every client detected on this machine
+mq-bridge-app mcp install
+
+# a single client, project-scoped rather than global
+mq-bridge-app mcp install --client cursor --local
+
+# bake --report-to-ui into the registered command
+mq-bridge-app mcp install --report-to-ui
+```
+
+| Command | Purpose |
+| --- | --- |
+| `mcp install` | Register this binary. `--client`, `--local`, `--report-to-ui`, `--print-config`. |
+| `mcp uninstall` | Remove the registration. `--client`, `--local`. |
+| `mcp status` | Show where it is registered and whether the path is still current. |
+
+| Client | Global config | Project config (`--local`) |
+| --- | --- | --- |
+| `claude` (Claude Code) | `claude mcp add --scope user`, else `~/.claude.json` | `--scope project`, else `./.mcp.json` |
+| `claude-desktop` | `claude_desktop_config.json` | not supported |
+| `cursor` | `~/.cursor/mcp.json` | `./.cursor/mcp.json` |
+
+Where the client ships its own CLI (Claude Code) that CLI is driven, since it
+stays correct across config-schema changes; otherwise the entry is merged into
+the client's JSON, leaving every other registered server untouched. Installing
+twice is a no-op.
+
+With `--client` omitted, every client detected on the machine is configured.
+For anything not listed above, `mcp install --print-config` prints the snippet:
 
 ```json
 {
@@ -43,6 +76,8 @@ Add to `.mcp.json` in your project root:
 Use an absolute path to the binary if it is not on `PATH`. With
 `--transport http`, point your client at `http://127.0.0.1:9092/` instead.
 
+Restart the client fully after installing — reopening a tab is not enough.
+
 Under `stdio` the client spawns the server process, so a rebuilt binary is only
 picked up after the client restarts the server — an edit to `mcp.rs` alone will
 not change the behaviour of an already-running session.
@@ -53,6 +88,7 @@ not change the behaviour of an already-running session.
 | --- | --- |
 | `publish` | Send one message (`message`) or a batch (`messages`) to any endpoint. Independent of routes. |
 | `start_route` | Run a route moving messages from `input` to `output`. Returns the route name. |
+| `server_info` | Engine version, build profile and build time. Call it before relying on the throughput figures below (a debug build reports slower rates). |
 | `list_routes` | List routes started by this server, with live connection health. |
 | `route_status` | Health of one route (by `name`) or all of them. |
 | `stop_route` | Stop a running route by `name`. |
@@ -94,6 +130,28 @@ are reserved for provenance and are stripped on input.
 Alongside `input` and `output`, a route accepts the usual execution options —
 `batch_size`, `concurrency`, and `exit_on_empty` (drain the source, then exit).
 Without `exit_on_empty` a route polls indefinitely until `stop_route`.
+
+### Route status
+
+`route_status` (and `list_routes`) report two rates, and they answer different
+questions:
+
+| Field | Meaning |
+| --- | --- |
+| `messages` | Total messages the route has moved. |
+| `messages_per_second` | **Instantaneous** rate, smoothed over ~0.5 s. Decays to ~0 within a second of a route going idle. |
+| `elapsed_s` | The span over which those messages moved: route start → last message seen. Stops growing once the route goes idle. |
+| `average_messages_per_second` | `messages / elapsed_s` — the rate the route **actually achieved**. |
+
+For a route that is running now, read `messages_per_second`. For one that has
+finished — anything started with `exit_on_empty` — read
+`average_messages_per_second`: the instantaneous rate of a completed job is ~0 by
+the time any status call observes it, which says nothing about how fast it was.
+`stop_route` returns the same two fields as its parting summary.
+
+`elapsed_s` and `average_messages_per_second` are `null` until the route has been
+sampled at least once (the sampler runs every 200 ms), so a job that finishes
+inside one tick reports no average.
 
 ## Examples
 
@@ -144,19 +202,15 @@ partial send is not mistaken for success.
 Both of these originate in the upstream `mq-bridge` crate, not in the MCP layer.
 
 - **Finished routes are not reaped.** A route started with `exit_on_empty` stays
-  in `list_routes` after it has drained and exited, still reporting
-  `"healthy": true` and `"finished": null`. A completed job is therefore
-  indistinguishable from a running one; call `stop_route` to clear it. Reaping
-  needs a way to observe task completion — `RouteHandle` in the released
-  mq-bridge 0.3.5 exposes only `stop`, `join`, and `status`, and its inner
-  `JoinHandle` is private.
+  in `list_routes` after it has drained and exited; call `stop_route` to clear
+  it. It is no longer indistinguishable from a running one, though: since
+  mq-bridge 0.3.6 each entry carries `"finished"` plus an `"outcome"`. While the
+  route runs these are `false` / `null`; once its task ends, `"finished": true`
+  and `"outcome"` is `completed` (drained cleanly) or `failed` (permanent error
+  — the cause is in `status.error`).
 
-  mq-bridge 0.3.6 adds `RouteHandle::is_finished()`, which closes this. When
-  that release lands, bump the dependency in `crates/core/Cargo.toml` and make
-  `route_finished` in `crates/cli/src/mcp.rs` return
-  `Some(handle.is_finished())` — that one function is the only code that needs
-  to change, and `finished` starts reporting real values everywhere. Both spots
-  are marked `TODO(mq-bridge-0.3.6)`.
+  `stop_route` removes the entry from `list_routes` as it stops the route, so
+  the third outcome, `stopped`, is not observable through these tools.
 - **A drained Redis Streams source reports an error.** With `exit_on_empty`, a
   `redis_streams` input ends at `"healthy": false` with
   `Redis XREAD failed: timed out` even though every message was moved
@@ -176,3 +230,16 @@ docker compose -f nats.yml -f postgres.yml -f redis.yml up -d
 Verified end-to-end against these: batch publish to file/NATS/Redis Streams,
 `NATS → file` and `Redis Streams → Postgres` routes (including
 `auto_create_table`), the full route lifecycle, and the error paths above.
+
+## Performance
+
+A tool call round-trips in ~0.065 ms (p50) over stdio, and a route started through
+`start_route` moves data at the same rate the `copy` CLI does, within run-to-run
+variance — the interface costs one round-trip, not a per-row tax. A 1,000,000-row
+CSV → JSONL job runs at 735,330 rows/s and costs the agent three tool calls
+(~370 tokens), because the rows never pass through the model's context.
+
+Methodology and the client used to measure it (a real MCP client over stdio, not an
+in-process harness) are in [`benches/etl/README.md`](../../benches/etl/README.md),
+scenario 7. Call `server_info` before trusting any throughput number: it reports the
+build `profile`, and a debug binary invalidates the measurement.

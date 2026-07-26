@@ -430,3 +430,48 @@ jobs:
           cargo publish -p mq-bridge-app
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  update-homebrew-tap:
+    name: Update Homebrew tap
+    # Needs the jobs that publish the CLI tarballs and the Tauri .dmg, because
+    # render.sh streams those assets to compute their sha256.
+    needs: [metadata, build-release, build-tauri-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # The tap is cloned and pushed over SSH (GIT_SSH_COMMAND + deploy key),
+          # so the checkout token has no reason to persist in .git/config.
+          persist-credentials: false
+
+      - name: Render formula + cask from release assets
+        env:
+          VERSION: ${{ needs.metadata.outputs.release_tag }}
+          REPO: ${{ github.repository }}
+        run: packaging/homebrew/render.sh "$VERSION" "$REPO" out
+
+      - name: Push to tap
+        # Auth via an SSH deploy key on marcomq/homebrew-tap (write-enabled).
+        # HOMEBREW_TAP_DEPLOY_KEY holds the PRIVATE key; the matching public key
+        # is registered as a deploy key on the tap. Deploy keys don't expire, so
+        # there's no yearly token rotation to break this job.
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          VERSION: ${{ needs.metadata.outputs.release_tag }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone git@github.com:marcomq/homebrew-tap.git tap
+          mkdir -p tap/Formula tap/Casks
+          cp out/Formula/mq-bridge-app.rb tap/Formula/mq-bridge-app.rb
+          cp out/Casks/mq-bridge.rb       tap/Casks/mq-bridge.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/mq-bridge-app.rb Casks/mq-bridge.rb
+          git commit -m "mq-bridge ${VERSION}" || exit 0
+          git push

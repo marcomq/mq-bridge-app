@@ -4,7 +4,7 @@
 
 Schemes: `grpc://`, `grpcs://`
 
-Query parameters recognised as config fields for this connector. Any other `?key=value` pair is passed through unchanged as a driver option on the connection URL.
+Query parameters recognised as config fields for this connector. The object-typed `tls` is set with a JSON literal, e.g. `?tls={...}`. Unrecognised parameters are not forwarded as driver options, so any other `?key=value` pair is rejected rather than silently ignored.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|

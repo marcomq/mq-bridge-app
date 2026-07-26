@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/seed.sh"   # also sources lib.sh
 
 ROWS="${ROWS:-1000000}"
-REPEATS="${REPEATS:-5}"
+REPEATS="${REPEATS:-2}"
 MELTANO_PROJECT="$HERE/meltano_project/bench"
 MELTANO_BIN="$HERE/meltano_project/.venv/bin/meltano"
 
@@ -33,7 +33,6 @@ print(f'{s.median(xs):.3f} {s.pstdev(xs):.3f}' if len(xs) > 1 else f'{xs[0]:.3f}
 }
 
 [[ -x "$BIN" ]] || { echo "binary not found at $BIN — build with --features bench --release" >&2; exit 1; }
-[[ -x "$MELTANO_BIN" ]] || { echo "meltano venv not found at $MELTANO_BIN" >&2; exit 1; }
 wait_for_pg
 
 n_bench="$(psql_q -c "SELECT count(*) FROM bench;" 2>/dev/null || echo 0)"
@@ -43,15 +42,12 @@ if [[ "$n_bench" != "$ROWS" ]]; then
 fi
 
 # --- mq-bridge-app copy ---
+# Delegates to lib.sh's run_guarded, which escalates SIGTERM -> SIGKILL and
+# signals the whole process group. The TERM-only version this replaced could not
+# kill a wedged route — mq-bridge-app traps SIGTERM for graceful shutdown — so the
+# watchdog fired, the process survived, and the script waited forever.
 copy_guarded() {
-  "$BIN" copy "$@" >/dev/null 2>&1 &
-  local pid=$!
-  { sleep "$COPY_TIMEOUT"; kill "$pid" 2>/dev/null; } 2>/dev/null &
-  local killer=$!
-  disown "$killer" 2>/dev/null || true
-  local rc=0; wait "$pid" 2>/dev/null || rc=$?
-  kill "$killer" 2>/dev/null || true
-  return "$rc"
+  run_guarded "$COPY_TIMEOUT" "$BIN" copy "$@"
 }
 
 from="${PG_URL}?table=bench&cursor_column=id&sslmode=disable"
@@ -79,27 +75,77 @@ printf 'mq-bridge-app,%s,%s,%s,%s,%s\n' "$ROWS" "$REPEATS" "$mqb_median" "$mqb_s
 rm -f "$OUT_FILE"
 
 # --- Meltano (tap-postgres -> target-jsonl) ---
-run_meltano_once() {
-  rm -rf "$MELTANO_PROJECT/output"
-  (cd "$MELTANO_PROJECT" && "$MELTANO_BIN" run tap-postgres target-jsonl) >/dev/null 2>&1
-}
+# Skipped rather than fatal (same as the Sling block below): the venv is
+# gitignored, so a fresh checkout can still run the other tools.
+if [[ ! -x "$MELTANO_BIN" ]]; then
+  echo "-- meltano: venv not found at $MELTANO_BIN, skipping" >&2
+else
+  run_meltano_once() {
+    rm -rf "$MELTANO_PROJECT/output"
+    # Under run_guarded, same as the Sling block: meltano's tap|target pipeline
+    # gets the whole-process-group SIGTERM->SIGKILL escalation, so a stalled run
+    # is killed instead of hanging the matrix. The subshell keeps its cwd.
+    ( cd "$MELTANO_PROJECT" && run_guarded "${MELTANO_TIMEOUT:-$COPY_TIMEOUT}" \
+      "$MELTANO_BIN" run tap-postgres target-jsonl )
+  }
 
-echo "-- meltano: warmup"
-run_meltano_once || true
+  echo "-- meltano: warmup"
+  run_meltano_once || true
 
-meltano_samples=()
-for ((i = 1; i <= REPEATS; i++)); do
-  t0="$(now)"
-  run_meltano_once
-  t1="$(now)"
-  landed="$( f="$MELTANO_PROJECT/output/public-bench.jsonl"; [[ -f "$f" ]] && wc -l < "$f" | tr -d ' ' || echo 0 )"
-  [[ "$landed" == "$ROWS" ]] || echo "  WARNING: meltano run $i landed ${landed} != expected ${ROWS}" >&2
-  elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"
-  echo "  meltano run $i: ${elapsed}s"
-  meltano_samples+=("$elapsed")
-done
-read -r meltano_median meltano_stddev <<<"$(median_stddev "${meltano_samples[*]/%/,}")"
-meltano_rate="$(python3 -c "print(int($ROWS/$meltano_median))")"
-printf 'meltano,%s,%s,%s,%s,%s\n' "$ROWS" "$REPEATS" "$meltano_median" "$meltano_stddev" "$meltano_rate" | tee -a "$CSV"
+  meltano_samples=()
+  for ((i = 1; i <= REPEATS; i++)); do
+    t0="$(now)"
+    run_meltano_once
+    t1="$(now)"
+    landed="$(landed_rows "$MELTANO_PROJECT/output/public-bench.jsonl")"
+    [[ "$landed" == "$ROWS" ]] || { echo "  FAILED: meltano run $i landed ${landed} != expected ${ROWS} — not a publishable measurement" >&2; exit 1; }
+    elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"
+    echo "  meltano run $i: ${elapsed}s"
+    meltano_samples+=("$elapsed")
+  done
+  read -r meltano_median meltano_stddev <<<"$(median_stddev "${meltano_samples[*]/%/,}")"
+  meltano_rate="$(python3 -c "print(int($ROWS/$meltano_median))")"
+  printf 'meltano,%s,%s,%s,%s,%s\n' "$ROWS" "$REPEATS" "$meltano_median" "$meltano_stddev" "$meltano_rate" | tee -a "$CSV"
+fi
+
+# --- Sling (postgres -> file JSONL) ---
+# Sling auto-detects env vars whose value is a connection URL, so BENCH_PG below
+# becomes the named connection --src-conn refers to. That keeps the run
+# self-contained — no `sling conns set`, which would write to ~/.sling/env.yaml.
+SLING_OUT="${SLING_OUT:-/tmp/sling_pg_out.jsonl}"
+if [[ ! -x "$SLING_BIN" ]]; then
+  echo "-- sling: not found at $SLING_BIN, skipping (see lib.sh for the install command)" >&2
+else
+  export BENCH_PG="${PG_URL}?sslmode=disable"
+  run_sling_once() {
+    rm -rf "$SLING_OUT"
+    # Watchdog, same as the mq-bridge block: output is discarded, so an
+    # unguarded stall would hang the whole matrix with nothing on screen.
+    run_guarded "${SLING_TIMEOUT:-$COPY_TIMEOUT}" "$SLING_BIN" run \
+      --src-conn BENCH_PG \
+      --src-stream public.bench \
+      --tgt-object "file://${SLING_OUT}" \
+      --tgt-options '{"format":"jsonlines","file_max_rows":0}'
+  }
+
+  echo "-- sling: warmup"
+  run_sling_once || true
+
+  sling_samples=()
+  for ((i = 1; i <= REPEATS; i++)); do
+    t0="$(now)"
+    run_sling_once
+    t1="$(now)"
+    landed="$(landed_rows "$SLING_OUT")"
+    [[ "$landed" == "$ROWS" ]] || { echo "  FAILED: sling run $i landed ${landed} != expected ${ROWS} — not a publishable measurement" >&2; exit 1; }
+    elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"
+    echo "  sling run $i: ${elapsed}s"
+    sling_samples+=("$elapsed")
+  done
+  read -r sling_median sling_stddev <<<"$(median_stddev "${sling_samples[*]/%/,}")"
+  sling_rate="$(python3 -c "print(int($ROWS/$sling_median))")"
+  printf 'sling,%s,%s,%s,%s,%s\n' "$ROWS" "$REPEATS" "$sling_median" "$sling_stddev" "$sling_rate" | tee -a "$CSV"
+  rm -rf "$SLING_OUT"
+fi
 
 echo "done -> $CSV"

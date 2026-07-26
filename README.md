@@ -168,9 +168,25 @@ The URLs use a generic `scheme://…?param=a&next=b` convention: the **scheme se
 - For `nats`, the dominant target field can also be given as the URL path instead of a query param — `nats://localhost:4222/orders` is equivalent to `nats://localhost:4222?subject=orders` (matching the UI's short-display convention); the query form wins if both are given. (A `redis` path is the connection's database number and stays on the URL, so a redis stream target must be set with `?stream=…`.)
 - MongoDB sources are **non-destructive by default**: `copy` (and the UI) default `consume` to `capture_all` (read existing documents, then watch for changes) so pointing at an existing collection never claims or deletes its documents. Pass `?consume=consumer` to opt into the destructive queue-drain mode. (Note: `capture_all` / `capture_new` use change streams, which require a replica set.)
 
+**Middlewares.** Append `|`-separated middlewares to either URI to wrap that endpoint. They apply in the order written, and each takes its own config struct's fields as query params:
+
+```bash
+# Retry the source, meter the sink, and batch its sends
+mq-bridge-app copy \
+  --from 'postgres://user:pass@localhost/db?table=src|retry?max_attempts=5&initial_interval_ms=200' \
+  --to   'kafka://broker:9092?topic=orders|buffer?max_messages=500&max_delay_ms=50|metrics' \
+  --drain
+```
+
+- **Names**: `retry`, `metrics`, `dlq`, `deduplication`, `delay`, `limiter`, `buffer`, `weak_join`, `cookie_jar`, `random_panic`, `custom`. A `-` is accepted for `_` (`weak-join` == `weak_join`).
+- A middleware with no params needs no `?` at all — `|metrics`.
+- `dlq`'s `endpoint` is itself a URL-encoded endpoint URI, so failed messages can land anywhere: `|dlq?endpoint=file%3A%2F%2F%2Ftmp%2Ffailed.jsonl`.
+- Object/array fields take a JSON literal, e.g. `|weak-join?group_by=cid&expected_count=2&timeout_ms=1000&required=["a","b"]`.
+- A literal `|` inside the URI itself (e.g. in a password) must be written percent-encoded as `%7C`.
+
 **Flags**
 
-- `--from <uri>` / `--to <uri>` — source and destination endpoints.
+- `--from <uri>` / `--to <uri>` — source and destination endpoints, each optionally followed by `|`-separated middlewares.
 - `--drain` — exit gracefully once the source is empty (drain-then-exit). Without it, `copy` runs as a continuous bridge until Ctrl-C.
 - `--concurrency <N>` / `--batch-size <N>` — route tuning passthrough.
 
@@ -192,7 +208,24 @@ mq-bridge-app mcp
 mq-bridge-app mcp --transport http --bind 127.0.0.1:9092
 ```
 
-Five tools: `publish` (one message or a batch to any endpoint), `start_route` (move messages from an `input` to an `output`, with `batch_size` / `concurrency` / `exit_on_empty`), and `list_routes` / `route_status` / `stop_route` to manage what is running.
+Six tools: `publish` (one message or a batch to any endpoint), `start_route` (move messages from an `input` to an `output`, with `batch_size` / `concurrency` / `exit_on_empty`), `server_info` (engine version, build profile and time — call it before trusting throughput figures), and `list_routes` / `route_status` / `stop_route` to manage what is running.
+
+Because the data moves inside the bridge and never through the model's context, an agent pays a **flat** token cost for a job of any size: a 1,000,000-row CSV → JSONL move is three tool calls and ~370 tokens, at 735,330 rows/s — the same rate the `copy` CLI achieves. See [Performance](#through-the-mcp-server).
+
+`mcp install` registers the running binary with your MCP clients, so you don't have to write the config by hand:
+
+```bash
+# every client detected on this machine (Claude Code, Claude Desktop, Cursor)
+mq-bridge-app mcp install
+
+# one client, project-scoped instead of global
+mq-bridge-app mcp install --client cursor --local
+
+mq-bridge-app mcp status      # where it is registered, and whether it still points here
+mq-bridge-app mcp uninstall   # remove it again
+```
+
+For any client not written directly, `mcp install --print-config` prints the snippet to paste:
 
 ```json
 {
@@ -275,10 +308,16 @@ transport (`static` source → `memory` publisher, batch_size 1024, concurrency 
 sustained **1,202,926 rows/s** on commodity hardware.
 
 For a CSV → JSONL file conversion (1,000,000 mixed-type rows, ~116 MiB, `copy
---batch-size 1024 --concurrency 1`), mq-bridge-app sustained **833,333 rows/s**
-at **~20 MiB peak RSS**, about **43x faster** and ~22x leaner than Meltano
-(`tap-csv` → `target-jsonl`, same file, same machine) at **~19,500 rows/s** /
-444 MiB.
+--batch-size 1024 --concurrency 1`), mq-bridge-app sustained **784,313 rows/s**
+passing fields through as strings — about **40x faster** than Meltano (`tap-csv` →
+`target-jsonl`, same file, same machine) at **~19,500 rows/s** / 444 MiB, which
+likewise emits every field as a string.
+
+Adding a `transform` middleware that types the output (coercing `id` to an integer
+and decoding an embedded JSON document into a real object) costs ~0.58 µs/row and
+still sustained **540,248 rows/s**. That typed run is the one benchmarked against
+Sling, a compiled Go EL tool that types by default: **~4.2x** faster, with all
+1,000,000 output records asserted identical.
 
 For a Postgres → JSONL file ETL job (1,000,000 rows, 7 mixed-type columns, `copy
 --batch-size 1024 --concurrency 1`), mq-bridge-app sustained **266,951 rows/s**
@@ -286,8 +325,24 @@ at **~20 MiB peak RSS**, about **17.4x faster** and ~30x leaner than Meltano
 (`tap-postgres` → `target-jsonl`, same table, same machine) at **15,356 rows/s** /
 600 MiB.
 
+### Through the MCP server
+
+Driving the same 1M-row CSV → JSONL job **through an MCP tool call** instead of the
+CLI sustained **735,330 rows/s** measured client-side — within a few percent of the
+`copy` CLI, which measures 766,000–788,000 rows/s across sessions on this host. The
+gap is route startup plus completion polling (~55 ms), a fixed cost rather than a
+per-row one; the server's own average over the identical job reports 768,555
+rows/s. A tool call itself round-trips in **0.065 ms (p50)** over stdio.
+
+The cost that matters for an agent, though, is tokens: moving the whole 116.3 MiB
+dataset takes **three tool calls and ~1,482 bytes (~370 tokens)** of JSON-RPC,
+because the rows never enter the model's context. That figure is *flat in the
+number of rows* — the same for 1M rows as for 1,000 — where passing the same data
+through a context window would cost roughly 30.5M tokens.
+
 Full setup and methodology for these scenarios (CSV→JSONL and Postgres→JSONL, 1M
-rows, throughput + peak RSS) are in [`benches/etl/README.md`](benches/etl/README.md).
+rows, throughput + peak RSS; the MCP measurements in §7) are in
+[`benches/etl/README.md`](benches/etl/README.md).
 
 ## Build from source
 
