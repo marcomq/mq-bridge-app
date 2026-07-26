@@ -53,6 +53,10 @@ const MCP_STATUS_SOCKET_NAME: &str = "status.sock";
 /// cannot spin the listener task.
 const MCP_STATUS_RETRY_DELAY: Duration = Duration::from_secs(1);
 
+/// Give up the status listener after this many consecutive receive failures, so
+/// a permanently broken transport neither spins nor warns forever.
+const MCP_STATUS_MAX_ERRORS: u32 = 10;
+
 /// The IPC address a local MCP server pushes its status to.
 ///
 /// Keyed by the config file rather than configured, so an MCP and a UI find each
@@ -74,10 +78,14 @@ pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
     // and keeps the whole path comfortably short.
     let key = hex::encode(&digest[..8]);
 
-    // `XDG_RUNTIME_DIR` is the right home for this on Linux and is short;
-    // elsewhere (macOS) `/tmp` is, and both are per-user enough once the
-    // per-config directory below is `0700`.
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    // `XDG_RUNTIME_DIR` is the right home for this on Linux and is short. Fall
+    // back to `TMPDIR` (macOS gives each user a private `/var/folders/.../T`)
+    // before the world-writable `/tmp`, so the socket lands in a per-user
+    // directory even without XDG; the per-config directory below is `0700` on
+    // top of that.
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .or_else(|_| std::env::var("TMPDIR"))
+        .unwrap_or_else(|_| "/tmp".to_string());
 
     // An explicit absolute path, never a bare `ipc://name`: the latter resolves
     // through `/run/mq-bridge` first, which an unprivileged app cannot bind to
@@ -94,11 +102,23 @@ pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
 /// The IPC address a local MCP server pushes its status to.
 ///
 /// Windows named pipes live in a flat namespace rather than the filesystem, so
-/// the pipe cannot be placed next to the config the way a Unix socket is. One
-/// pipe per machine matches the single-slot design (one UI, one local MCP).
+/// the pipe cannot be placed next to the config the way a Unix socket is.
+/// Keyed by a hash of the config path (matching the Unix socket), so two UIs on
+/// different configs get different pipes instead of a machine-global collision.
+///
+/// (Deterministic on purpose: the UI and the separate MCP process each derive
+/// this name independently and must agree, so it has to be a pure function of
+/// the config path — a random per-session component can't be shared between
+/// them and would break the rendezvous.)
 #[cfg(windows)]
-pub fn mcp_status_ipc_url(_config_file_path: &str) -> String {
-    "ipc://app-status".to_string()
+pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let config_path =
+        std::path::absolute(config_file_path).unwrap_or_else(|_| PathBuf::from(config_file_path));
+    let digest = Sha256::digest(config_path.as_os_str().as_encoded_bytes());
+    let key = hex::encode(&digest[..8]);
+    format!("ipc://mq-bridge-status-{key}")
 }
 
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
@@ -1384,18 +1404,38 @@ impl UiApp {
         };
         tracing::info!("Listening for MCP status reports on {url}");
 
+        let mut consecutive_errors: u32 = 0;
         loop {
             // Must block on `receive`: the IPC transport's `try_recv_batch` is a
             // stub that always reports "nothing available", so a polling loop
             // would silently never see a report.
             let received = match consumer.receive().await {
-                Ok(received) => received,
+                Ok(received) => {
+                    consecutive_errors = 0;
+                    received
+                }
                 Err(e) => {
                     // The transport re-accepts by itself when the MCP
-                    // disconnects, so an error here is unexpected — pause rather
-                    // than spin on a broken socket.
-                    tracing::debug!("MCP status listener: receive failed: {e}");
-                    tokio::time::sleep(MCP_STATUS_RETRY_DELAY).await;
+                    // disconnects, so an error here is unexpected. Surface the
+                    // first one at warn! (a persistent failure must be visible at
+                    // default log levels), keep the rest at debug! so a broken
+                    // socket doesn't spam, back off as they pile up, and give up
+                    // rather than spin forever.
+                    consecutive_errors += 1;
+                    if consecutive_errors == 1 {
+                        tracing::warn!("MCP status listener: receive failed: {e}");
+                    } else {
+                        tracing::debug!(
+                            "MCP status listener: receive failed ({consecutive_errors}): {e}"
+                        );
+                    }
+                    if consecutive_errors >= MCP_STATUS_MAX_ERRORS {
+                        tracing::warn!(
+                            "MCP status listener: giving up after {consecutive_errors} consecutive receive failures on {url}"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(MCP_STATUS_RETRY_DELAY * consecutive_errors.min(5)).await;
                     continue;
                 }
             };
@@ -2245,12 +2285,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_status_socket_path_stays_within_the_unix_socket_limit() {
+        // Pin the runtime dir so the assertion exercises the hashing, not the
+        // test runner's ambient XDG_RUNTIME_DIR/TMPDIR (the latter now a
+        // fallback). XDG_RUNTIME_DIR wins over TMPDIR, so setting it fully
+        // controls the base path. `/tmp` is short and always exists, so a
+        // concurrent test that reads the var mid-window can still bind.
+        let prev = std::env::var_os("XDG_RUNTIME_DIR");
+        // SAFETY: single-threaded within this test; restored before returning.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/tmp") };
+
         let deep_config = format!(
             "/Users/someone/{}/config.yml",
             "nested-directory/".repeat(20)
         );
-
         let url = mcp_status_ipc_url(&deep_config);
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_RUNTIME_DIR", v) },
+            None => unsafe { std::env::remove_var("XDG_RUNTIME_DIR") },
+        }
 
         let path = url.strip_prefix("ipc://").expect("an absolute ipc path");
         assert!(path.starts_with('/'), "must be an explicit path: {path}");

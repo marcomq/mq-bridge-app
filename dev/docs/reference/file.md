@@ -4,7 +4,7 @@
 
 Schemes: `file://`
 
-Query parameters recognised as config fields for this connector. The object-typed `encryption` is set with a JSON literal, e.g. `?encryption={...}`. This connector has no connection URL to carry driver options, so any other `?key=value` pair is rejected rather than silently ignored.
+Query parameters recognised as config fields for this connector. The object-typed `encryption` is set with a JSON literal, e.g. `?encryption={...}`. Unrecognised parameters are not forwarded as driver options, so any other `?key=value` pair is rejected rather than silently ignored.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|

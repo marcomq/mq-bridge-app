@@ -239,7 +239,9 @@ const ENDPOINT_KIND_OVERRIDES = {
   null: { order: 28, basicFields: [], structural: true, publisher: false, consumer: false },
 } as const satisfies Record<string, EndpointKindOverride>;
 
-export type EndpointKind = keyof typeof ENDPOINT_KIND_OVERRIDES;
+/** The curated kinds only — schema-derived kinds are appended at runtime and
+ * are not part of this union, so this is not the exhaustive set. */
+export type CuratedEndpointKind = keyof typeof ENDPOINT_KIND_OVERRIDES;
 
 /** Kinds discovered from the schema are appended after the curated ones. */
 const DERIVED_ORDER_BASE = 1000;

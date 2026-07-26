@@ -4,7 +4,7 @@
 
 Schemes: `aws://`, `aws-sqs://`
 
-Query parameters recognised as config fields for this connector. This connector has no connection URL to carry driver options, so any other `?key=value` pair is rejected rather than silently ignored.
+Query parameters recognised as config fields for this connector. Unrecognised parameters are not forwarded as driver options, so any other `?key=value` pair is rejected rather than silently ignored.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|

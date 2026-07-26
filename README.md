@@ -208,7 +208,7 @@ mq-bridge-app mcp
 mq-bridge-app mcp --transport http --bind 127.0.0.1:9092
 ```
 
-Five tools: `publish` (one message or a batch to any endpoint), `start_route` (move messages from an `input` to an `output`, with `batch_size` / `concurrency` / `exit_on_empty`), and `list_routes` / `route_status` / `stop_route` to manage what is running.
+Six tools: `publish` (one message or a batch to any endpoint), `start_route` (move messages from an `input` to an `output`, with `batch_size` / `concurrency` / `exit_on_empty`), `server_info` (engine version, build profile and time — call it before trusting throughput figures), and `list_routes` / `route_status` / `stop_route` to manage what is running.
 
 Because the data moves inside the bridge and never through the model's context, an agent pays a **flat** token cost for a job of any size: a 1,000,000-row CSV → JSONL move is three tool calls and ~370 tokens, at 735,330 rows/s — the same rate the `copy` CLI achieves. See [Performance](#through-the-mcp-server).
 

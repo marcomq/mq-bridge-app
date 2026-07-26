@@ -272,6 +272,10 @@ command -v zstd >/dev/null 2>&1 || {
   echo "no zstd on PATH — needed to verify the compressed cell (brew install zstd)" >&2
   exit 1
 }
+command -v lz4 >/dev/null 2>&1 || {
+  echo "no lz4 on PATH — needed to verify the lz4 cell (brew install lz4)" >&2
+  exit 1
+}
 EXPECT_LINES="$ROWS"
 bench_tool "mq-bridge-app-normal" "$OUT_NORMAL" "$PG_TIMEOUT" normal_once || exit 1
 bench_tool "mq-bridge-app-json" "$OUT_JSON" "$PG_TIMEOUT" json_once || exit 1
@@ -306,9 +310,11 @@ printf '   %-28s %s bytes (%.1fx smaller than normal)\n' "normal+lz4" \
 echo "-- restore: zstd file -> normal, via mq-bridge-app"
 rm -f "$OUT_RESTORE"
 restore_t0="$(now)"
-"$BIN" copy --from "file://${OUT_ZSTD}?format=normal&compression=zstd" \
+# Under the watchdog like every other cell: a wedged restore must be killed, not
+# left to hang the run (run_guarded already routes stdio to /dev/null).
+run_guarded "$PG_TIMEOUT" "$BIN" copy --from "file://${OUT_ZSTD}?format=normal&compression=zstd" \
   --to "file://${OUT_RESTORE}?format=normal" \
-  --drain --batch-size "$BATCH" --concurrency "$CONC" >/dev/null 2>&1 || {
+  --drain --batch-size "$BATCH" --concurrency "$CONC" || {
   echo "   restore FAILED" >&2; exit 1; }
 restore_t1="$(now)"
 restored="$(landed_rows "$OUT_RESTORE")"
@@ -339,27 +345,15 @@ python3 -c "print(f'   restore of {$ROWS} rows took {$restore_t1-$restore_t0:.3f
 
 # The dump writes a SQL script, so its line count is not a row count; count the
 # COPY-block data lines instead (every one starts with the integer id column).
-EXPECT_LINES=""
-echo "-- pg_dump (reference floor, restore format — not a head-to-head)"
-dump_rows_ok() {
-  local n
-  n="$(grep -cE '^[0-9]+\t' "$OUT_DUMP" || true)"
-  [[ "$n" == "$ROWS" ]] || { echo "   dump held ${n} data rows, expected ${ROWS}" >&2; return 1; }
-  echo "   dump holds ${n} data rows ($(wc -c < "$OUT_DUMP" | tr -d ' ') bytes)"
+# Runs through the shared bench_tool flow like every other cell — same warmup +
+# repeats, watchdog, row-count validation (landed == $ROWS) and results row.
+dump_rows() {
+  local p="$1"
+  [[ -f "$p" ]] || { echo 0; return; }
+  grep -cE '^[0-9]+\t' "$p" || true
 }
-dump_samples=()
-guarded_sample "$PG_TIMEOUT" "pg_dump warmup" dump_once || exit 1
-for ((i = 1; i <= REPEATS; i++)); do
-  t0="$(now)"
-  guarded_sample "$PG_TIMEOUT" "pg_dump run $i" dump_once || exit 1
-  t1="$(now)"
-  dump_rows_ok || exit 1
-  dump_samples+=("$(python3 -c "print(f'{$t1-$t0:.6f}')")")
-done
-read -r dump_median dump_stddev <<<"$(median_stddev "${dump_samples[*]/%/,}")"
-results_drop_tool "$RESULTS_CSV" "pg_dump"
-printf '%s,%s,%s,%s,%s,%s\n' "pg_dump" "$ROWS" "$REPEATS" "$dump_median" "$dump_stddev" \
-  "$(python3 -c "print(int($ROWS/$dump_median))")" | tee -a "$RESULTS_CSV"
+echo "-- pg_dump (reference floor, restore format — not a head-to-head)"
+LANDED_FN=dump_rows bench_tool "pg_dump" "$OUT_DUMP" "$PG_TIMEOUT" dump_once || exit 1
 
 rm -f "$OUT_MQB" "$OUT_PSQL" "$OUT_DUMP" "$OUT_NORMAL" "$OUT_ZSTD" "$OUT_LZ4" \
   "$OUT_JSON" "$OUT_TEXT" "$OUT_RAW" \

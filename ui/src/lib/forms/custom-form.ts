@@ -784,15 +784,22 @@ const middlewaresRenderer = {
       if (placeholder) placeholder.textContent = addLabel;
 
       addClassTokens(typeSelect, rendererConfig.classes.buttonPrimary);
-      const showPicker = () => {
-        typeSelect.style.display = "inline-block";
+      // Only forces the select's display style — named for what it does, and
+      // guarded so it doesn't write (and re-trigger the observer) redundantly.
+      const forceSelectVisible = () => {
+        if (typeSelect.style.display !== "inline-block") {
+          typeSelect.style.display = "inline-block";
+        }
       };
-      showPicker();
+      forceSelectVisible();
 
       // The library hides the picker again after a type is chosen (and on focusout); keep it
-      // visible so further middlewares can be added without re-rendering the form.
+      // visible so further middlewares can be added without re-rendering the form. The observer
+      // targets a node inside the freshly rendered subtree and forms a cycle with it, so both are
+      // collected together when the next render drops that subtree (RendererContext is a plain bag
+      // with no teardown hook to disconnect through explicitly).
       new MutationObserver(() => {
-        if (typeSelect.style.display === "none") showPicker();
+        if (typeSelect.style.display === "none") forceSelectVisible();
       }).observe(typeSelect, { attributes: true, attributeFilter: ["style"] });
     }
 

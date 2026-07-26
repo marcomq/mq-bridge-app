@@ -240,7 +240,7 @@ with `{"format":"jsonlines","file_max_rows":0}`, defaults otherwise.
 | Sling | defaults | 122,774 | not yet measured |
 | Meltano (`tap-postgres` → `target-jsonl`) | default Singer config | 15,356 | 599.7 MiB |
 
-**mq-bridge-app is ~2.0x faster than Sling and ~17.4x faster than Meltano** (and ~30x
+**mq-bridge-app is ~2.2x faster than Sling and ~17.4x faster than Meltano** (and ~30x
 leaner than Meltano in peak memory) in this scenario — but see
 [the note on Sling below](#a-note-on-the-sling-comparison), because that ratio is
 not comparing equal work. No `metrics` middleware
@@ -370,7 +370,7 @@ machine, so the movement in the typed number is real engine work rather than a
 drifting baseline.
 
 **§6 (Postgres → JSONL) — not yet equalised.** That scenario still runs
-mq-bridge-app untyped against a type-inferring Sling, so part of its ~2.0x gap is
+mq-bridge-app untyped against a type-inferring Sling, so part of its ~2.2x gap is
 mq-bridge-app doing less. Read it with that attached. Applying the same treatment
 there needs a Postgres-shaped schema (the driver already returns typed values for
 some columns, so it is not a copy of `bench.json`) and a re-run.
@@ -482,7 +482,7 @@ benches/etl/run_pg_vendor.sh          # -> results/pg_vendor.csv
   from the socket to a file, never parsing a row, in one query. mq-bridge-app
   issues one keyset query per batch, decodes every value into a typed message, and
   re-serializes it — a full decode/encode round trip per row. Raising
-  `--batch-size` to 32768 (far fewer queries) closes it to ~1.5x at **421,762
+  `--batch-size` to 32768 (far fewer queries) closes it to ~1.4x at **421,762
   rows/s**.
 - **What that cost buys** is that the same command targets any other sink — a
   broker, a second database, object storage, compressed or encrypted — where

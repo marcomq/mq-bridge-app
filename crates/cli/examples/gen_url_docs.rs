@@ -244,7 +244,7 @@ fn render_connector(c: &Connector) -> String {
          option on the connection URL."
             .to_string()
     } else {
-        " This connector has no connection URL to carry driver options, so any \
+        " Unrecognised parameters are not forwarded as driver options, so any \
          other `?key=value` pair is rejected rather than silently ignored."
             .to_string()
     };
@@ -288,7 +288,9 @@ fn render_connector(c: &Connector) -> String {
             // its own field-by-field sub-table below instead of a JSON dump.
             (_, Some(nested_schema)) => {
                 appendix.push_str(&render_nested(&f.name, &root, nested_schema));
-                format!("[see below](#{})", f.name.replace('_', "-"))
+                // GitHub keeps underscores in heading anchors, so the link must
+                // match the raw field name — `#publication_tables`, not `-`.
+                format!("[see below](#{})", f.name)
             }
             // Fields without a resolvable struct schema (e.g. a `Vec<(String,
             // String)>` options list) still get their default pretty-printed
@@ -299,7 +301,7 @@ fn render_connector(c: &Connector) -> String {
                     f.name,
                     serde_json::to_string_pretty(v).unwrap_or_default()
                 ));
-                format!("[see below](#{})", f.name.replace('_', "-"))
+                format!("[see below](#{})", f.name)
             }
             (Some(v), None) => describe_value(v),
             (None, None) => "—".to_string(),

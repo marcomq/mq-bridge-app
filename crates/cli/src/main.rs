@@ -572,12 +572,18 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
             serde_json::to_value(endpoint)?
         } else {
             match fields.get(&k).copied() {
-                // Object/array fields can't come from a scalar, so the value is
-                // read as a JSON literal. An unknown field (`None`) is passed
-                // through for serde to reject by name.
-                Some(FieldType::Object) | None => {
-                    serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v))
-                }
+                // A known object/array field must be a JSON literal; a value that
+                // doesn't parse is a user error worth naming, the same way
+                // `base_endpoint_from_uri` handles its object fields, rather than
+                // a silent fallback to a string that serde rejects later.
+                Some(FieldType::Object) => serde_json::from_str(&v).with_context(|| {
+                    format!(
+                        "query param '{k}' in middleware spec '{spec}' expects a JSON literal, got '{v}'"
+                    )
+                })?,
+                // An unknown field (`None`) is passed through for serde to reject
+                // by name.
+                None => serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v)),
                 Some(ty) => coerce_scalar(v, ty),
             }
         };

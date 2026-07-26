@@ -88,6 +88,7 @@ not change the behaviour of an already-running session.
 | --- | --- |
 | `publish` | Send one message (`message`) or a batch (`messages`) to any endpoint. Independent of routes. |
 | `start_route` | Run a route moving messages from `input` to `output`. Returns the route name. |
+| `server_info` | Engine version, build profile and build time. Call it before relying on the throughput figures below (a debug build reports slower rates). |
 | `list_routes` | List routes started by this server, with live connection health. |
 | `route_status` | Health of one route (by `name`) or all of them. |
 | `stop_route` | Stop a running route by `name`. |

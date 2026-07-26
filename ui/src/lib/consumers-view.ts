@@ -53,6 +53,9 @@ let messagesByConsumer: Record<string, ConsumerMessage[]> = {};
 let nextResponseHeaderId = 1;
 let pollTimer: number | null = null;
 let lastMessageSequenceByConsumer: Record<string, number> = {};
+// For a finished (terminal) consumer: the `outcome:sequence` we last captured,
+// so it is polled exactly once per terminal state instead of every cycle.
+let finalPollByConsumer: Record<string, string> = {};
 let consumerErrorByKey: Record<string, string> = {};
 const DETAIL_METADATA_ORDER = ["content-length", "host", "http_method", "http_path", "http_query", "http_version", "content-type"];
 
@@ -551,8 +554,16 @@ async function fetchNewMessagesForRunningConsumers() {
     const capture = normalizeMessageCapture(consumer.message_capture);
     if (!capture.enabled) continue;
     const messageSequence = Number(runtime.message_sequence || 0);
+    // A terminal route (finished, not running) is polled once per
+    // `outcome:sequence`. Its sequence has stopped advancing, so without this a
+    // zero-message capture — where `lastSeen` and stored rows both stay 0 — would
+    // re-fetch /messages every cycle forever, never settling via the guard below.
+    // A new outcome or a higher sequence makes the key differ and polls again.
+    const terminal = !runtime.running && runtime.outcome;
+    const terminalKey = `${runtime.outcome}:${messageSequence}`;
+    if (terminal && finalPollByConsumer[runtimeKey] === terminalKey) continue;
     const lastSeen = Number(lastMessageSequenceByConsumer[runtimeKey] || 0);
-    if (messageSequence <= lastSeen && consumerMessagesFor(consumer).length > 0) continue;
+    if (!terminal && messageSequence <= lastSeen && consumerMessagesFor(consumer).length > 0) continue;
     const response = await fetch(`/messages?consumer_id=${encodeURIComponent(runtimeKey)}`);
     if (!response.ok) continue;
     const payload = await response.json();
@@ -563,6 +574,8 @@ async function fetchNewMessagesForRunningConsumers() {
     const merged = rawRows.map((row: unknown) => normalizeConsumerMessage(row)).concat(existing);
     messagesByConsumer[getStorageKey(consumer)] = merged.slice(0, capture.keep_last);
     lastMessageSequenceByConsumer[runtimeKey] = messageSequence;
+    // Record the terminal capture only after it lands, so a failed fetch retries.
+    if (terminal) finalPollByConsumer[runtimeKey] = terminalKey;
     persistMessages();
   }
 }
@@ -958,6 +971,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   formDrafts = new Map();
   nextResponseHeaderId = 1;
   lastMessageSequenceByConsumer = {};
+  finalPollByConsumer = {};
   activeConfig.consumers = (activeConfig.consumers || []).map(normalizeConsumerConfig);
   activeConfig.publishers = Array.isArray(activeConfig.publishers) ? activeConfig.publishers : [];
   const initialConsumersSnapshot = deepClone(activeConfig.consumers);

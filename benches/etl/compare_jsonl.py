@@ -17,6 +17,7 @@ by emitting everything as a string.
 import argparse
 import json
 import sys
+from itertools import zip_longest
 from pathlib import Path
 
 
@@ -43,7 +44,21 @@ def main():
     mismatches = 0
     count = 0
 
-    for count, (a, b) in enumerate(zip(left, right), start=1):
+    # zip_longest, not zip: plain zip discards the one row it pulls from the
+    # longer side when the shorter side ends, so a difference of exactly one row
+    # would pass silently. The sentinel marks which side ran out and preserves
+    # that first unmatched row in the extra count.
+    missing = object()
+    for count, (a, b) in enumerate(zip_longest(left, right, fillvalue=missing), start=1):
+        if a is missing or b is missing:
+            extra_left = (0 if a is missing else 1) + sum(1 for _ in left)
+            extra_right = (0 if b is missing else 1) + sum(1 for _ in right)
+            print(
+                f"  row-count mismatch: {args.left} has {extra_left} extra, "
+                f"{args.right} has {extra_right} extra (after {count - 1} compared)",
+                file=sys.stderr,
+            )
+            return 1
         if a != b:
             mismatches += 1
             if mismatches <= args.max_report:
@@ -51,18 +66,6 @@ def main():
                 for key in sorted(set(a) | set(b)):
                     if a.get(key) != b.get(key):
                         print(f"    {key}: {a.get(key)!r} != {b.get(key)!r}", file=sys.stderr)
-
-    # zip() stops at the shorter input, so an unequal row count would otherwise
-    # pass silently.
-    extra_left = sum(1 for _ in left)
-    extra_right = sum(1 for _ in right)
-    if extra_left or extra_right:
-        print(
-            f"  row-count mismatch: {args.left} has {extra_left} extra, "
-            f"{args.right} has {extra_right} extra (after {count} compared)",
-            file=sys.stderr,
-        )
-        return 1
 
     if mismatches:
         print(f"  {mismatches}/{count} rows differ", file=sys.stderr)

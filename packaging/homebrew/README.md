@@ -14,7 +14,7 @@ The tap repo is the **only** home for the formula and cask. This repo holds no
 from the release assets) and the release CI job pushes them to the tap. Nothing
 to keep in sync, nothing to drift.
 
-```
+```text
 marcomq/homebrew-tap          ← the tap (installs read from here)
 ├── Formula/mq-bridge-app.rb  ← CLI / MCP server
 └── Casks/mq-bridge.rb        ← desktop UI
@@ -119,10 +119,15 @@ Until the key is set, the job runs but its push step fails.
 
       - name: Push to tap
         env:
-          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           VERSION: ${{ needs.metadata.outputs.release_tag }}
         run: |
-          git clone "https://x-access-token:${TOKEN}@github.com/marcomq/homebrew-tap" tap
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone git@github.com:marcomq/homebrew-tap.git tap
           mkdir -p tap/Formula tap/Casks
           cp out/Formula/mq-bridge-app.rb tap/Formula/mq-bridge-app.rb
           cp out/Casks/mq-bridge.rb       tap/Casks/mq-bridge.rb

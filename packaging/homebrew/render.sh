@@ -19,6 +19,10 @@ VERSION="${1:?usage: render.sh <version> [repo] [outdir]}"
 REPO="${2:-marcomq/mq-bridge-app}"
 OUTDIR="${3:-out}"
 BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+# The download URL path segment is the release TAG (VERSION), but the Tauri
+# bundle filenames carry the cargo version with no leading 'v'. Keep them
+# separate so a v-prefixed tag (e.g. v0.2.9) still resolves the uploaded .dmg.
+CARGO_VERSION="${VERSION#v}"
 
 # Portable sha256 of a released asset, streamed (no temp file needed).
 sha() {
@@ -30,7 +34,7 @@ sha() {
 echo "resolving checksums for ${REPO} ${VERSION} ..." >&2
 MAC_ARM="$(sha "mq-bridge-cli-aarch64-apple-darwin.tar.gz")"
 LINUX_X64="$(sha "mq-bridge-cli-x86_64-unknown-linux-gnu.tar.gz")"
-DMG="$(sha "mq-bridge_${VERSION}_aarch64.dmg")"
+DMG="$(sha "mq-bridge_${CARGO_VERSION}_aarch64.dmg")"
 
 mkdir -p "${OUTDIR}/Formula" "${OUTDIR}/Casks"
 
@@ -76,7 +80,7 @@ cask "mq-bridge" do
   version "${VERSION}"
   sha256 "${DMG}"
 
-  url "${BASE}/mq-bridge_#{version}_aarch64.dmg"
+  url "${BASE}/mq-bridge_${CARGO_VERSION}_aarch64.dmg"
   name "mq-bridge"
   desc "Desktop UI for mq-bridge — universal message and data bridge"
   homepage "https://github.com/${REPO}"

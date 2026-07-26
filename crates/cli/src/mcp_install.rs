@@ -84,12 +84,31 @@ fn claude_desktop_config_path() -> Option<PathBuf> {
     Some(dir.join("claude_desktop_config.json"))
 }
 
-/// First match for `name` on PATH.
+/// First match for `name` on PATH. On Windows the same lookup also tries the
+/// `PATHEXT` extensions (`.cmd`, `.exe`, …), since an executable there is
+/// `name.cmd`/`name.exe` on disk rather than a bare `name` — without this,
+/// `which("claude")` never finds the Windows CLI.
 fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+    std::env::split_paths(&path).find_map(|dir| {
+        let direct = dir.join(name);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        #[cfg(windows)]
+        {
+            // PATHEXT is a `;`-separated list, e.g. `.COM;.EXE;.BAT;.CMD`.
+            let pathext =
+                std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+            for ext in pathext.split(';').filter(|e| !e.is_empty()) {
+                let candidate = dir.join(format!("{name}{ext}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    })
 }
 
 /// Absolute path of the binary currently executing, so the registered command

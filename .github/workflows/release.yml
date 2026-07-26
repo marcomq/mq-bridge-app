@@ -440,6 +440,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # The tap is cloned and pushed over SSH (GIT_SSH_COMMAND + deploy key),
+          # so the checkout token has no reason to persist in .git/config.
+          persist-credentials: false
 
       - name: Render formula + cask from release assets
         env:

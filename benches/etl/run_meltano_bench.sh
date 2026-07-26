@@ -82,7 +82,11 @@ if [[ ! -x "$MELTANO_BIN" ]]; then
 else
   run_meltano_once() {
     rm -rf "$MELTANO_PROJECT/output"
-    (cd "$MELTANO_PROJECT" && "$MELTANO_BIN" run tap-postgres target-jsonl) >/dev/null 2>&1
+    # Under run_guarded, same as the Sling block: meltano's tap|target pipeline
+    # gets the whole-process-group SIGTERM->SIGKILL escalation, so a stalled run
+    # is killed instead of hanging the matrix. The subshell keeps its cwd.
+    ( cd "$MELTANO_PROJECT" && run_guarded "${MELTANO_TIMEOUT:-$COPY_TIMEOUT}" \
+      "$MELTANO_BIN" run tap-postgres target-jsonl )
   }
 
   echo "-- meltano: warmup"
@@ -94,7 +98,7 @@ else
     run_meltano_once
     t1="$(now)"
     landed="$(landed_rows "$MELTANO_PROJECT/output/public-bench.jsonl")"
-    [[ "$landed" == "$ROWS" ]] || echo "  WARNING: meltano run $i landed ${landed} != expected ${ROWS}" >&2
+    [[ "$landed" == "$ROWS" ]] || { echo "  FAILED: meltano run $i landed ${landed} != expected ${ROWS} — not a publishable measurement" >&2; exit 1; }
     elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"
     echo "  meltano run $i: ${elapsed}s"
     meltano_samples+=("$elapsed")
@@ -133,7 +137,7 @@ else
     run_sling_once
     t1="$(now)"
     landed="$(landed_rows "$SLING_OUT")"
-    [[ "$landed" == "$ROWS" ]] || echo "  WARNING: sling run $i landed ${landed} != expected ${ROWS}" >&2
+    [[ "$landed" == "$ROWS" ]] || { echo "  FAILED: sling run $i landed ${landed} != expected ${ROWS} — not a publishable measurement" >&2; exit 1; }
     elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"
     echo "  sling run $i: ${elapsed}s"
     sling_samples+=("$elapsed")
