@@ -435,10 +435,12 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     let input = endpoint_from_uri(&args.from).context("invalid --from endpoint")?;
     let output = endpoint_from_uri(&args.to).context("invalid --to endpoint")?;
 
-    let mut options = RouteOptions::default();
-    options.concurrency = args.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
-    options.batch_size = args.batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
-    options.exit_on_empty = args.drain;
+    let options = RouteOptions {
+        concurrency: args.concurrency.unwrap_or(DEFAULT_CONCURRENCY),
+        batch_size: args.batch_size.unwrap_or(DEFAULT_BATCH_SIZE),
+        exit_on_empty: args.drain,
+        ..Default::default()
+    };
 
     let route = Route::new(input, output).with_options(options);
     let handle = route
