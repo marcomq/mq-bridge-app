@@ -293,6 +293,11 @@ bench_tool() {
   # Output lines, which is $ROWS for a JSONL sink but not for every format — a CSV
   # sink writes a header line too. Set EXPECT_LINES around the call for those.
   local expect="${EXPECT_LINES:-$ROWS}"
+  # How to count what landed. The default counts lines, which is meaningless for a
+  # compressed or otherwise binary sink; set LANDED_FN to a function that prints the
+  # row count for those. The check itself is never skipped — a format we cannot
+  # count is a format we cannot publish a rate for.
+  local counter="${LANDED_FN:-landed_rows}"
 
   echo "-- ${label}: warmup"
   guarded_sample "$timeout" "${label} warmup" "$@" || return 1
@@ -301,7 +306,7 @@ bench_tool() {
     t0="$(now)"
     guarded_sample "$timeout" "${label} run $i" "$@" || return 1
     t1="$(now)"
-    landed="$(landed_rows "$landed_path")"
+    landed="$("$counter" "$landed_path")"
     [[ "$landed" == "$expect" ]] || {
       echo "  FAILED: ${label} run $i landed ${landed} != expected ${expect}" >&2; return 1; }
     elapsed="$(python3 -c "print(f'{$t1-$t0:.6f}')")"

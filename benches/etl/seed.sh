@@ -82,9 +82,19 @@ SQL
     docker exec -i "$PG_CONTAINER" psql -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 -qtA \
       -c "COPY bench FROM STDIN WITH (FORMAT csv, HEADER true);" < "$csv"
   fi
+  # An index on the cursor column is NOT optional, and its absence is silent.
+  # Every scenario reads this table with `cursor_column=id`, i.e. keyset pagination
+  # (`WHERE id > $last ORDER BY id LIMIT <batch>`). Without an index each page is a
+  # parallel seq scan plus a top-N heapsort of everything remaining — ~75 ms per
+  # 1024-row page, ~977 pages, so a 1M-row read takes ~145 s instead of ~3.4 s and
+  # the published rate collapses from ~267k rows/s to ~7k. Nothing errors; the
+  # benchmark just silently measures the missing index. Created after the load so
+  # COPY isn't slowed by maintaining it.
+  psql_q -c "CREATE INDEX bench_id_idx ON bench (id);" >/dev/null
+  psql_q -c "ANALYZE bench;" >/dev/null
   local n
   n="$(psql_q -c "SELECT count(*) FROM bench;")"
-  echo "seeded bench: ${n} rows (seed=${seed})"
+  echo "seeded bench: ${n} rows (seed=${seed}), indexed on id"
 }
 
 case "${1:-}" in
