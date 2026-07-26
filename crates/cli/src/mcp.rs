@@ -109,6 +109,11 @@ struct StartRouteArgs {
     /// (drain the source then exit). Use `{"null": null}` as the `output` to discard
     /// messages. Set `concurrency`/`batch_size` via the dedicated fields below, not
     /// inside this object.
+    ///
+    /// A `file`/`object_store` source must repeat the `compression`/`encryption`
+    /// its data was written with — neither is auto-detected, and a mismatch ends
+    /// the route as `completed` having moved few or no messages rather than
+    /// failing, so check the moved-message count.
     route: Route,
     /// Route concurrency. Omit for the app default (4). Higher values parallelize
     /// sink writes; sources that read serially do not speed up.
