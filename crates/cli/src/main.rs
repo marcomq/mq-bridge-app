@@ -968,11 +968,10 @@ fn collect_props(
     let Some(obj) = node.as_object() else { return };
 
     if let Some(reference) = obj.get("$ref").and_then(|r| r.as_str()) {
-        if visited.insert(reference.to_string()) {
-            if let Some(target) = resolve_ref(root, reference) {
+        if visited.insert(reference.to_string())
+            && let Some(target) = resolve_ref(root, reference) {
                 collect_props(root, target, out, visited);
             }
-        }
         return;
     }
 
@@ -1006,11 +1005,10 @@ fn resolve_ref<'a>(root: &'a serde_json::Value, reference: &str) -> Option<&'a s
 /// with a null member), and a `$ref` to a scalar def; anything else is treated
 /// as string-like (enums deserialize from a string, so no coercion is needed).
 fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
-    if let Some(reference) = sub.get("$ref").and_then(|r| r.as_str()) {
-        if let Some(target) = resolve_ref(root, reference) {
+    if let Some(reference) = sub.get("$ref").and_then(|r| r.as_str())
+        && let Some(target) = resolve_ref(root, reference) {
             return field_type(root, target);
         }
-    }
     let has = |t: &str| match sub.get("type") {
         Some(serde_json::Value::String(s)) => s == t,
         Some(serde_json::Value::Array(a)) => a.iter().any(|x| x.as_str() == Some(t)),
