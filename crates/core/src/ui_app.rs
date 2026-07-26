@@ -69,6 +69,22 @@ const MCP_STATUS_MAX_ERRORS: u32 = 10;
 /// (`SUN_LEN`), and a config a few directories deep silently blows that budget.
 #[cfg(unix)]
 pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
+    // `XDG_RUNTIME_DIR` is the right home for this on Linux and is short. Fall
+    // back to `TMPDIR` (macOS gives each user a private `/var/folders/.../T`)
+    // before the world-writable `/tmp`, so the socket lands in a per-user
+    // directory even without XDG; the per-config directory below is `0700` on
+    // top of that.
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .or_else(|_| std::env::var("TMPDIR"))
+        .unwrap_or_else(|_| "/tmp".to_string());
+    mcp_status_ipc_url_in(config_file_path, &runtime_dir)
+}
+
+/// Builds the IPC URL under an explicit `runtime_dir`, so tests can pin the base
+/// directory without mutating the process-wide environment. Production callers go
+/// through [`mcp_status_ipc_url`], which resolves the runtime dir from the env.
+#[cfg(unix)]
+fn mcp_status_ipc_url_in(config_file_path: &str, runtime_dir: &str) -> String {
     use sha2::{Digest, Sha256};
 
     let config_path =
@@ -78,21 +94,12 @@ pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
     // and keeps the whole path comfortably short.
     let key = hex::encode(&digest[..8]);
 
-    // `XDG_RUNTIME_DIR` is the right home for this on Linux and is short. Fall
-    // back to `TMPDIR` (macOS gives each user a private `/var/folders/.../T`)
-    // before the world-writable `/tmp`, so the socket lands in a per-user
-    // directory even without XDG; the per-config directory below is `0700` on
-    // top of that.
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .or_else(|_| std::env::var("TMPDIR"))
-        .unwrap_or_else(|_| "/tmp".to_string());
-
     // An explicit absolute path, never a bare `ipc://name`: the latter resolves
     // through `/run/mq-bridge` first, which an unprivileged app cannot bind to
     // if it already exists.
     format!(
         "ipc://{}",
-        Path::new(&runtime_dir)
+        Path::new(runtime_dir)
             .join(format!("mq-bridge-{key}"))
             .join(MCP_STATUS_SOCKET_NAME)
             .display()
@@ -2285,25 +2292,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_status_socket_path_stays_within_the_unix_socket_limit() {
-        // Pin the runtime dir so the assertion exercises the hashing, not the
-        // test runner's ambient XDG_RUNTIME_DIR/TMPDIR (the latter now a
-        // fallback). XDG_RUNTIME_DIR wins over TMPDIR, so setting it fully
-        // controls the base path. `/tmp` is short and always exists, so a
-        // concurrent test that reads the var mid-window can still bind.
-        let prev = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: single-threaded within this test; restored before returning.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/tmp") };
-
+        // Pin the runtime dir via the explicit-base helper so the assertion
+        // exercises the hashing, not the test runner's ambient
+        // XDG_RUNTIME_DIR/TMPDIR — and without mutating the process-wide
+        // environment. `/tmp` is short and always exists.
         let deep_config = format!(
             "/Users/someone/{}/config.yml",
             "nested-directory/".repeat(20)
         );
-        let url = mcp_status_ipc_url(&deep_config);
-
-        match prev {
-            Some(v) => unsafe { std::env::set_var("XDG_RUNTIME_DIR", v) },
-            None => unsafe { std::env::remove_var("XDG_RUNTIME_DIR") },
-        }
+        let url = mcp_status_ipc_url_in(&deep_config, "/tmp");
 
         let path = url.strip_prefix("ipc://").expect("an absolute ipc path");
         assert!(path.starts_with('/'), "must be an explicit path: {path}");
