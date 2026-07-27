@@ -33,11 +33,17 @@ The **scheme selects the endpoint** and **query parameters configure it**, so an
 
 Test connections and dial in a route in the Postman-inspired UI, export the JSON/YAML, then run that exact config — unchanged — however you deploy.
 
-| Form | What it is | How to install |
+| Form | What it is | Quick install |
 | --- | --- | --- |
-| [**Desktop app (UI)**](#desktop-app-ui) | The visual workbench — build/test routes, run request/response traffic, inspect message history | Download the bundle from [Releases](https://github.com/marcomq/mq-bridge-app/releases) |
-| [**CLI / server**](#cli--server) | Headless binary: a one-line `copy`, a drain-then-exit batch job, or a long-lived bridge (also serves the same UI in a browser) | `cargo binstall mq-bridge-app` |
+| [**Desktop app (UI)**](#desktop-app-ui) | The visual workbench — build/test routes, run request/response traffic, inspect message history | `brew install --cask marcomq/tap/mq-bridge` |
+| [**CLI / server**](#cli--server) | Headless binary: a one-line `copy`, a drain-then-exit batch job, or a long-lived bridge (also serves the same UI in a browser) | `brew install marcomq/tap/mq-bridge-app` |
 | [**Library**](#library) | The engine embedded in your own code — native **Rust**, **Python**, or **Node.js** bindings | `cargo add` / `pip` / `npm` |
+
+> `brew` is the quickest path on **macOS and Linux**. On **Windows**, install the
+> CLI with `cargo binstall mq-bridge-app`, or download the desktop installer / CLI
+> executable from the [Releases page](https://github.com/marcomq/mq-bridge-app/releases).
+> For every install method and platform — `cargo install`, Docker, Linux/Windows
+> bundles, IBM MQ — see the **[Install guide](dev/docs/INSTALL.md)**.
 
 ---
 
@@ -47,28 +53,23 @@ The desktop app is a Tauri bundle of the full messaging workbench: manage publis
 
 ![mq-bridge UI - publishers](dev/images/Screen1.jpg)
 
-Prebuilt desktop bundles for macOS, Windows, and Linux are attached to every release on the [GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases).
+**Install it** with the Homebrew cask on Apple Silicon macOS:
 
-### macOS
+```bash
+brew install --cask marcomq/tap/mq-bridge
+```
 
-Download the `.dmg` / `.app` bundle. Because the desktop binaries are currently not notarized, macOS may report the application as "damaged" on first launch. Remove the quarantine attribute to fix it.
+The desktop binaries aren't notarized yet, so — whether you install via the cask or
+download a bundle — macOS may report the app as "damaged" on first launch. Clear the
+quarantine attribute to fix it:
 
-If the app is in your `/Applications` folder:
 ```bash
 sudo xattr -rd com.apple.quarantine /Applications/mq-bridge.app
 ```
-If the app is in a user-owned directory (e.g. `~/Downloads`), `sudo` is not required:
-```bash
-xattr -rd com.apple.quarantine ~/Downloads/mq-bridge.app
-```
 
-### Windows
-
-Download the Windows installer or standalone executable from the [Releases page](https://github.com/marcomq/mq-bridge-app/releases).
-
-### Linux
-
-Download the Linux bundle that suits your distribution — AppImage, `.deb`, `.rpm`, or the unpacked archive.
+Prebuilt bundles for macOS, Windows, and Linux are also on the
+[GitHub Releases page](https://github.com/marcomq/mq-bridge-app/releases); full
+per-platform steps are in the [Install guide](dev/docs/INSTALL.md#desktop-app-ui).
 
 ---
 
@@ -82,40 +83,17 @@ The CLI (`mq-bridge-app`) is a headless binary. It runs in **three modes**:
 
 ### Install
 
-**Recommended — prebuilt binary via `cargo binstall`.** Downloads the prebuilt CLI from [Releases](https://github.com/marcomq/mq-bridge-app/releases) instead of compiling from source, so it installs in seconds:
+On macOS or Linux, install with Homebrew:
 
 ```bash
-cargo binstall mq-bridge-app
+brew install marcomq/tap/mq-bridge-app
 ```
 
-Prebuilt binaries are available for `x86_64` Linux, Apple Silicon macOS, and `x86_64` Windows. ([`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) is a drop-in `cargo install` replacement.)
-
-**From source via `cargo install`.** Requires a Rust toolchain and compiles all supported endpoint client libraries (except IBM MQ), so it may take a while:
-
-```bash
-cargo install mq-bridge-app
-```
-
-For IBM MQ, install the client library first and build with `--features=ibm-mq`.
-
-**Docker.** The CLI is published as a multi-arch image (`amd64` + `arm64`):
-
-```bash
-docker run --rm --name mq-bridge -p 9091:9091 ghcr.io/marcomq/mq-bridge-app:latest
-```
-
-To read+tail from `input.log` and forward its content, mount a config and pass `--init-config`:
-
-```bash
-touch input.log
-docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app \
-  ghcr.io/marcomq/mq-bridge-app:latest --init-config=/config/file-to-http.yml
-```
-
-> [!NOTE]
-> The default `latest` image is a plain multi-arch image for `amd64` and `arm64`. IBM MQ support is published separately as the `latest-ibm-mq` and `ibm-mq` tags on `amd64` only, since there is no redistributable IBM MQ client library for arm64 yet. Start that image in emulation mode with `--platform=linux/amd64`, or build `mq-bridge-app` yourself with `cargo build --release --features=ibm-mq`.
-
-**Build from source.** See [Build from source](#build-from-source).
+Other options: `cargo binstall mq-bridge-app` (prebuilt, also Windows),
+`cargo install mq-bridge-app` (from source), or the multi-arch Docker image
+`ghcr.io/marcomq/mq-bridge-app:latest`. Full instructions — including the IBM MQ
+build and Docker usage — are in the [Install guide](dev/docs/INSTALL.md#cli--server);
+to compile from source see [`dev/docs/BUILD.md`](dev/docs/BUILD.md).
 
 ### Config mode
 
@@ -195,6 +173,8 @@ mq-bridge-app copy \
 - [Quick Start](dev/docs/quick-start.md) — complete, working `copy` commands (Postgres → ClickHouse, Postgres CDC → Postgres, MQTT → Kafka, RabbitMQ → HTTP, File → MongoDB).
 - [Connectors](dev/docs/connectors/) — per-connector pages: purpose, URL format, and practical examples.
 - [URL Parameter Reference](dev/docs/reference/) — every connector's recognised query parameters (name, type, default, required), generated from the JSON Schemas `copy` uses to parse `--from`/`--to`.
+
+**Try it against real endpoints** — the [mq-bridge integration compose files](https://github.com/marcomq/mq-bridge/tree/main/tests/integration/docker-compose) spin up ready-to-use Postgres, Kafka, NATS, MQTT, MongoDB, Redis, IBM MQ, and more (including TLS variants). Start one, then point a `copy` route — or the MCP server below — at it.
 
 ### MCP server
 
