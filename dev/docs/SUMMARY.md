@@ -7,6 +7,7 @@
 - [Quick start: `copy`](quick-start.md)
 - [The three ways to run it](getting-started/run-forms.md)
 - [Learn the architecture](engine/architecture.md)
+- [How the app is built](getting-started/app-architecture.md)
 - [Core concepts](getting-started/concepts.md)
 - [Building from source](BUILD.md)
 
