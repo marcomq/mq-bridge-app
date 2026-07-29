@@ -4,6 +4,9 @@
 ![Windows](https://img.shields.io/badge/Windows-supported-green?logo=windows)
 ![macOS](https://img.shields.io/badge/macOS-supported-green?logo=apple)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-book-orange)](https://marcomq.github.io/mq-bridge-app/)
+
+📖 **[Documentation book](https://marcomq.github.io/mq-bridge-app/)** — installation, tutorials, cookbook, connector reference, and performance tuning.
 
 <p align="center">
   <img src="crates/desktop/icons/icon.png" alt="mq-bridge-app" width="128" height="128">
@@ -168,11 +171,12 @@ mq-bridge-app copy \
 - `--drain` — exit gracefully once the source is empty (drain-then-exit). Without it, `copy` runs as a continuous bridge until Ctrl-C.
 - `--concurrency <N>` / `--batch-size <N>` — route tuning passthrough.
 
-**Full `copy` documentation** lives in [`dev/docs/`](dev/docs/):
+**Full documentation** is the [documentation book](https://marcomq.github.io/mq-bridge-app/) (source in [`dev/docs/`](dev/docs/)):
 
-- [Quick Start](dev/docs/quick-start.md) — complete, working `copy` commands (Postgres → ClickHouse, Postgres CDC → Postgres, MQTT → Kafka, RabbitMQ → HTTP, File → MongoDB).
-- [Connectors](dev/docs/connectors/) — per-connector pages: purpose, URL format, and practical examples.
-- [URL Parameter Reference](dev/docs/reference/) — every connector's recognised query parameters (name, type, default, required), generated from the JSON Schemas `copy` uses to parse `--from`/`--to`.
+- [Quick Start](https://marcomq.github.io/mq-bridge-app/quick-start.html) — complete, working `copy` commands (Postgres → ClickHouse, Postgres CDC → Postgres, MQTT → Kafka, RabbitMQ → HTTP, File → MongoDB).
+- [Connectors](https://marcomq.github.io/mq-bridge-app/connectors/index.html) — per-connector pages: purpose, URL format, and practical examples.
+- [URL Parameter Reference](https://marcomq.github.io/mq-bridge-app/reference/index.html) — every connector's recognised query parameters (name, type, default, required), generated from the JSON Schemas `copy` uses to parse `--from`/`--to`.
+- [Tutorials](https://marcomq.github.io/mq-bridge-app/tutorials/postgres-cdc.html) · [Cookbook](https://marcomq.github.io/mq-bridge-app/cookbook/upserts.html) · [Performance tuning](https://marcomq.github.io/mq-bridge-app/operations/tuning.html)
 
 **Try it against real endpoints** — the [mq-bridge integration compose files](https://github.com/marcomq/mq-bridge/tree/main/tests/integration/docker-compose) spin up ready-to-use Postgres, Kafka, NATS, MQTT, MongoDB, Redis, IBM MQ, and more (including TLS variants). Start one, then point a `copy` route — or the MCP server below — at it.
 

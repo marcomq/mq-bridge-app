@@ -15,7 +15,7 @@ mongodb://[user:pass@]host[:port]?database=<db>&collection=<name>
 **Load a CSV file into a collection, one-shot:**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from file:///data/customers.csv?format=csv \
   --to mongodb://localhost?database=app&collection=customers
 ```
@@ -23,7 +23,7 @@ mq-bridge copy --drain \
 **Non-destructive read of an existing collection (default source behavior):**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from mongodb://localhost?database=app&collection=customers \
   --to postgres://user:pass@localhost/app?table=customers&auto_create_table=true
 ```
@@ -35,7 +35,7 @@ claims/deletes its documents, unlike the library's own `consumer` default.
 **Watch for new documents only (change stream), continuous:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from mongodb://localhost?database=app&collection=orders&consume=capture_new \
   --to kafka://kafka.local:9092?topic=orders
 ```

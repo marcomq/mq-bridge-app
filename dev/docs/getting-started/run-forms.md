@@ -1,0 +1,84 @@
+# The three ways to run it
+
+`mq-bridge-app` is one engine with one config format, exposed three ways. Build and test a
+route in the UI, export the JSON/YAML, then run that exact config — unchanged — however you
+deploy.
+
+| Form | What it is | Quick install |
+| --- | --- | --- |
+| [Desktop app (UI)](#desktop-app-ui) | The visual workbench — build/test routes, run request/response traffic, inspect message history | `brew install --cask marcomq/tap/mq-bridge` |
+| [CLI / server](#cli--server) | Headless binary: a one-line `copy`, a drain-then-exit batch job, or a long-lived bridge (also serves the same UI in a browser) | `brew install marcomq/tap/mq-bridge-app` |
+| [Library](#library) | The engine embedded in your own code — native Rust, Python, or Node.js bindings | `cargo add` / `pip` / `npm` |
+
+See [Installation](../INSTALL.md) for every install method and platform.
+
+## Desktop app (UI)
+
+The desktop app is a Tauri bundle of the full messaging workbench: manage
+publishers/consumers/routes, run request/response traffic (like Postman for REST), inspect
+message history, and import Postman/OpenAPI/AsyncAPI definitions. It is the **same UI** the CLI
+serves in a browser — only the packaging differs.
+
+The UI is generated **dynamically from the Rust configuration structures**: the backend uses
+`schemars` to produce a JSON Schema for the `AppConfig` struct (exposed at `/schema.json`, also
+`mq-bridge-app --schema`), and the frontend renders a complete config form from that schema. So
+when a new middleware or option is added to the engine, the schema updates automatically and
+the UI reflects it with no frontend change.
+
+## CLI / server
+
+The CLI (`mq-bridge-app`) is a headless binary that runs in three modes:
+
+- **Config mode** — load a YAML/JSON/TOML config and run a long-lived bridge; optionally serve
+  the browser UI. Suited to Container/Kubernetes deployments.
+- **`copy` mode** — an ad-hoc one-route job from two endpoint URIs, no config file and no UI.
+- **`mcp` mode** — expose the bridge as MCP tools so an LLM agent can publish and route from
+  natural language.
+
+```bash
+# Config mode: run a long-lived bridge from a file
+mq-bridge-app --config config.yml
+
+# Seed config.yml from a template on first run only
+mq-bridge-app --config config.yml --init-config dev/config/file-to-http.yml
+
+# Start empty, then open the UI to build your config
+mq-bridge-app
+```
+
+In config mode the CLI also **serves the browser UI** (the same UI as the desktop app) on the
+configured port. See the [CLI reference](../reference/cli.md) for every flag, and
+[Configuration grammar](../engine/configuration.md) for the config format.
+
+### The configuration-first workflow
+
+The point of one shared config format is that you can **test connections and dial in a route in
+the UI, export the JSON/YAML, then run that exact config unchanged** — as a `copy` command, a
+config-mode service, or loaded from library code. A known-good route shape from the UI drops
+straight into production.
+
+## Library
+
+Beyond running standalone, the core engine is available as a library so you can produce or
+consume messages with a unified API — no broker-specific SDK, one config format across all
+three bindings:
+
+- **Rust** — [`mq-bridge`](https://crates.io/crates/mq-bridge) (`cargo add mq-bridge`)
+- **Python** — [`pip install mq-bridge-py`](https://pypi.org/project/mq-bridge-py/)
+- **Node.js** — [`npm install mq-bridge`](https://www.npmjs.com/package/mq-bridge)
+
+The core of the library are the `MessageConsumer` and `MessagePublisher` traits in
+`mq_bridge::traits`. See the [Language bindings API](../reference/bindings.md) and the
+[Embed the library](../tutorials/embedding.md) tutorial.
+
+## How the UI differs from API clients
+
+The UI overlaps with API clients like Postman, Bruno, and Insomnia, but its centre of gravity
+is different: it is designed around **message bridging, runtime operation, and long-lived route
+management** rather than just request composition. It adds broker pub/sub workflows, long-lived
+consumers/routes, bridging traffic between protocols, hex-level payload debugging, replay,
+local-first git-friendly config, and encrypted config — while leaving scripting and complex
+request workflows to the dedicated API clients. Use an API client when your main job is
+crafting and sharing API requests; use `mq-bridge-app` when you need to connect systems, move
+messages between protocols, inspect live traffic, and manage bridge-style runtime
+configuration.

@@ -14,7 +14,7 @@ under [`../reference/`](../reference/).
 - [MongoDB](./mongodb.md)
 - [File (CSV / JSON / JSONL)](./file.md)
 
-Other connectors supported by `mq-bridge copy` (NATS, Redis Streams,
+Other connectors supported by `mq-bridge-app copy` (NATS, Redis Streams,
 WebSocket, gRPC, AWS SQS/SNS, ZeroMQ, IBM MQ) don't yet have a hand-written
 page — see their [generated reference](../reference/) for the recognised
 scheme(s) and parameters.

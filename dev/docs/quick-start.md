@@ -1,10 +1,10 @@
 # Quick Start
 
-`mq-bridge copy` moves data between two endpoints described as URIs. The scheme
+`mq-bridge-app copy` moves data between two endpoints described as URIs. The scheme
 picks the connector; `?query=params` configure it.
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from postgres://localhost/app?table=users \
   --to clickhouse://localhost:8123?table=users&database=analytics
 ```
@@ -23,7 +23,7 @@ authoritative source for every parameter's type, default, and description.
 ## PostgreSQL → ClickHouse
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
   --to clickhouse://localhost:8123?table=orders&database=analytics
 ```
@@ -36,7 +36,7 @@ make this resumable instead of a one-shot batch. See
 ## PostgreSQL CDC → PostgreSQL
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot \
   --to postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true
 ```
@@ -49,7 +49,7 @@ stream, so this command doesn't drain — run it as a long-lived process). See
 ## MQTT → Kafka
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from mqtt://broker.local:1883?topic=sensors/+/temperature \
   --to kafka://kafka.local:9092?topic=sensor-readings
 ```
@@ -61,7 +61,7 @@ message to a Kafka topic, continuously. See [MQTT](./connectors/mqtt.md) and
 ## RabbitMQ → HTTP
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from rabbitmq://guest:guest@localhost:5672/%2f?queue=orders \
   --to http://internal-api.local/ingest?method=POST
 ```
@@ -73,7 +73,7 @@ endpoint, continuously. See [RabbitMQ](./connectors/rabbitmq.md) and
 ## File (CSV) → MongoDB
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from file:///data/customers.csv?format=csv \
   --to mongodb://localhost?database=app&collection=customers
 ```
@@ -104,7 +104,7 @@ mis-parsed as config), skip decomposition entirely and pass it verbatim with
 `?url=<url-encoded string>`:
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from 'mongodb://_/?url=mongodb%3A%2F%2Fuser%3Apass%40host%2Fdb%3Ftls%3Dtrue&collection=orders' \
   --to null:
 ```

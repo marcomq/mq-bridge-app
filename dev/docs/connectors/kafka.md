@@ -20,7 +20,7 @@ cluster, use the `?url=` escape hatch (see
 **Forward an MQTT stream into a Kafka topic, continuous:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from mqtt://broker.local:1883?topic=sensors/+/temperature \
   --to kafka://kafka.local:9092?topic=sensor-readings
 ```
@@ -28,7 +28,7 @@ mq-bridge copy \
 **Consume with a durable consumer group, continuous:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from kafka://kafka.local:9092?topic=orders&group_id=mqb-orders-sync \
   --to postgres://user:pass@localhost/app?table=orders&auto_create_table=true
 ```
@@ -39,7 +39,7 @@ Without `group_id`, the consumer runs in ephemeral **subscriber mode**
 **SASL-authenticated broker:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from postgres://user:pass@localhost/app?table=orders \
   --to 'kafka://kafka.local:9093?topic=orders&username=svc&password=secret'
 ```

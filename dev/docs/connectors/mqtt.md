@@ -17,7 +17,7 @@ CLI. MQTT topic wildcards (`+`, `#`) are supported on the source side.
 **Subscribe to a wildcard topic and forward to Kafka, continuous:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from mqtt://broker.local:1883?topic=sensors/+/temperature \
   --to kafka://kafka.local:9092?topic=sensor-readings
 ```
@@ -25,7 +25,7 @@ mq-bridge copy \
 **Publish a file's lines to a topic, one-shot:**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from file:///data/events.jsonl?format=json \
   --to mqtts://user:pass@broker.local:8883?topic=events
 ```
@@ -33,7 +33,7 @@ mq-bridge copy --drain \
 **Fixed client ID and QoS 2 for exactly-once delivery semantics:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from mqtt://broker.local:1883?topic=alerts&client_id=mqb-alerts-01&qos=2 \
   --to null:
 ```

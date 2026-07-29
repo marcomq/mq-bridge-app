@@ -16,11 +16,13 @@ Query parameters recognised as config fields for this connector. The object-type
 | `cursor_id` | string | no | — | The ID used for the cursor in sequenced mode. If not provided, consumption starts from the current sequence (ephemeral). |
 | `database` | string | yes | — | The database name. |
 | `format` | `normal` \| `json` \| `text` \| `raw` | no | `normal` | Format for storing messages. Defaults to Normal. |
+| `id_field` | string | no | — | (Publisher only) Top-level payload field whose value becomes the document `_id`, for idempotent inserts via the unique `_id` index. Sink collections only. |
 | `meta_collection` | string | no | — | (Optional) Collection to store sequence counters and cursor positions. Defaults to the message collection if not set. |
 | `password` | string | no | — | Optional password. Takes precedence over any credentials embedded in the `url`. Use embedded URL credentials for simple one-off connections but prefer explicit username/password fields (or environment-sourced secrets) for clarity and secret management in production. |
 | `polling_interval_ms` | integer | no | — | (Consumer only) Polling interval in milliseconds for the consumer (when not using Change Streams). Defaults to 100ms. |
 | `receive_query` | string | no | — | (Consumer only) Optional custom MongoDB query to filter messages. Provided as a JSON string (e.g., '{"type": "notification"}'). |
 | `reply_polling_ms` | integer | no | — | (Publisher only) Polling interval in milliseconds for the publisher when waiting for a reply. Defaults to 50ms. |
+| `report_outcome` | boolean | no | `false` | (Publisher only) Return the message with metadata `mongodb.outcome` = `inserted`/`existed` (dup-key) so a `request`+`switch` can branch. Sink collections only; pair with `id_field`. |
 | `request_reply` | boolean | no | `false` | (Publisher only) If true, the publisher will wait for a response in a dedicated collection. Defaults to false. |
 | `request_timeout_ms` | integer | no | — | (Publisher only) Timeout for request-reply operations in milliseconds. Defaults to 30000ms. |
 | `shared` | boolean | no | `true` | Share one MongoDB client per connection (default: true); false forces a dedicated client. |

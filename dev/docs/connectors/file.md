@@ -17,7 +17,7 @@ The path comes from the URI path itself (`file:///...`), not a query param.
 **Load a CSV file into MongoDB, one-shot (first row = header):**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from file:///data/customers.csv?format=csv \
   --to mongodb://localhost?database=app&collection=customers
 ```
@@ -25,7 +25,7 @@ mq-bridge copy --drain \
 **Export a table to JSONL, one-shot:**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
   --to file:///data/orders.jsonl?format=json
 ```
@@ -33,7 +33,7 @@ mq-bridge copy --drain \
 **Tail a file as it grows (broadcast/subscribe mode), continuous:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from file:///var/log/app/events.log?mode=subscribe \
   --to kafka://kafka.local:9092?topic=app-events
 ```
