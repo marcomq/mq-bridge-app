@@ -4,7 +4,7 @@ Publishes to or subscribes from an MQTT broker (v5 by default, v3 supported).
 
 ## URL format
 
-```
+```text
 mqtt://[user:pass@]host[:port]?topic=<topic>
 ```
 
@@ -34,7 +34,7 @@ mq-bridge-app copy --drain \
 
 ```bash
 mq-bridge-app copy \
-  --from mqtt://broker.local:1883?topic=alerts&client_id=mqb-alerts-01&qos=2 \
+  --from 'mqtt://broker.local:1883?topic=alerts&client_id=mqb-alerts-01&qos=2' \
   --to null:
 ```
 

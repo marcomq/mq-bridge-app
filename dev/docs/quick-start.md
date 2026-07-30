@@ -6,7 +6,7 @@ picks the connector; `?query=params` configure it.
 ```bash
 mq-bridge-app copy \
   --from postgres://localhost/app?table=users \
-  --to clickhouse://localhost:8123?table=users&database=analytics
+  --to 'clickhouse://localhost:8123?table=users&database=analytics'
 ```
 
 This copies every row currently in `app.users` (PostgreSQL) into
@@ -25,7 +25,7 @@ authoritative source for every parameter's type, default, and description.
 ```bash
 mq-bridge-app copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
-  --to clickhouse://localhost:8123?table=orders&database=analytics
+  --to 'clickhouse://localhost:8123?table=orders&database=analytics'
 ```
 
 Reads all rows from the `orders` table and bulk-inserts them into ClickHouse's
@@ -37,8 +37,8 @@ make this resumable instead of a one-shot batch. See
 
 ```bash
 mq-bridge-app copy \
-  --from postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot \
-  --to postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true
+  --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
+  --to 'postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true'
 ```
 
 Streams inserts/updates/deletes from a PostgreSQL logical-replication
@@ -75,7 +75,7 @@ endpoint, continuously. See [RabbitMQ](./connectors/rabbitmq.md) and
 ```bash
 mq-bridge-app copy --drain \
   --from file:///data/customers.csv?format=csv \
-  --to mongodb://localhost?database=app&collection=customers
+  --to 'mongodb://localhost?database=app&collection=customers'
 ```
 
 Reads a CSV file (first row = header) and inserts one document per row into

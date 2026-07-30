@@ -12,7 +12,8 @@ The CLI is published as a multi-arch image (`amd64` + `arm64`):
 docker run --rm --name mq-bridge -p 9091:9091 ghcr.io/marcomq/mq-bridge-app:latest
 ```
 
-Mount a config directory and seed the config on first run:
+Mount the working directory at `/app` and seed the config on first run from one of the
+templates baked into the image at `/config`:
 
 ```bash
 touch input.log
@@ -74,7 +75,10 @@ the JSON logs to your aggregator. See [Observability & metrics](observability.md
 
 ## Continuous deployment of this book
 
-Publishing the book itself (GitHub Pages) is a separate follow-up. Note that the book vendors
-the engine's canonical docs at build time — a CI job must run `docs/sync-engine-docs.sh` (with
-access to the `mq-bridge` repo, or `ENGINE_REPO` pointed at a checkout) **before** `mdbook build
-docs`. See [the book's README](https://github.com/marcomq/mq-bridge-app/blob/main/docs/README.md).
+The book is published to GitHub Pages by
+[`.github/workflows/docs.yml`](https://github.com/marcomq/mq-bridge-app/blob/main/.github/workflows/docs.yml)
+on every push to `main` that touches `dev/docs/**`. It vendors the engine's canonical docs at
+build time, so it checks out the `mq-bridge` repo and runs `dev/docs/sync-engine-docs.sh` (with
+`ENGINE_REPO` pointed at that checkout) **before** `mdbook build dev/docs`. To build it locally,
+run the same two commands from the repository root. See
+[the book's README](https://github.com/marcomq/mq-bridge-app/blob/main/dev/docs/README.md).

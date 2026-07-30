@@ -6,7 +6,7 @@ path the way this connector reads them (unlike PostgreSQL).
 
 ## URL format
 
-```
+```text
 mongodb://[user:pass@]host[:port]?database=<db>&collection=<name>
 ```
 
@@ -17,15 +17,15 @@ mongodb://[user:pass@]host[:port]?database=<db>&collection=<name>
 ```bash
 mq-bridge-app copy --drain \
   --from file:///data/customers.csv?format=csv \
-  --to mongodb://localhost?database=app&collection=customers
+  --to 'mongodb://localhost?database=app&collection=customers'
 ```
 
 **Non-destructive read of an existing collection (default source behavior):**
 
 ```bash
 mq-bridge-app copy --drain \
-  --from mongodb://localhost?database=app&collection=customers \
-  --to postgres://user:pass@localhost/app?table=customers&auto_create_table=true
+  --from 'mongodb://localhost?database=app&collection=customers' \
+  --to 'postgres://user:pass@localhost/app?table=customers&auto_create_table=true'
 ```
 
 By default (no `consume` given), a MongoDB *source* reads existing documents
@@ -36,7 +36,7 @@ claims/deletes its documents, unlike the library's own `consumer` default.
 
 ```bash
 mq-bridge-app copy \
-  --from mongodb://localhost?database=app&collection=orders&consume=capture_new \
+  --from 'mongodb://localhost?database=app&collection=orders&consume=capture_new' \
   --to kafka://kafka.local:9092?topic=orders
 ```
 

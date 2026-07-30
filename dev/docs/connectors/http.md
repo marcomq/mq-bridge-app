@@ -6,7 +6,7 @@ messages.
 
 ## URL format
 
-```
+```text
 http://host[:port][/path]?method=<verb>
 ```
 
@@ -37,7 +37,7 @@ mq-bridge-app copy \
 ```bash
 mq-bridge-app copy --drain \
   --from file:///data/events.jsonl?format=json \
-  --to https://api.example.com/ingest?method=POST&request_timeout_ms=5000
+  --to 'https://api.example.com/ingest?method=POST&request_timeout_ms=5000'
 ```
 
 ## Key options

@@ -31,7 +31,7 @@ One process reads from a Unix socket and forwards to Kafka. Start this consumer
 ipc_ingest:
   input:
     memory:
-      url: "ipc:///run/mq-bridge/orders.sock"
+      url: "ipc://orders"
       capacity: 256
   output:
     kafka:
@@ -43,8 +43,13 @@ ipc_ingest:
 mq-bridge-app --config ipc_ingest.yaml
 ```
 
+The named form is used rather than an explicit path so no privileged directory has to exist
+up front: `/run/mq-bridge/` needs root, and `ipc://orders` falls back to
+`$XDG_RUNTIME_DIR/mq-bridge` or `/tmp/mq-bridge`. Give an absolute
+`ipc:///abs/path.sock` only once you have created and permissioned that directory.
+
 Any other process on the same host can now publish into
-`ipc:///run/mq-bridge/orders.sock` — via its own `mq-bridge` route, or programmatically
+`ipc://orders` — via its own `mq-bridge` route, or programmatically
 through a `Publisher` built on a `memory` endpoint (see the
 [embedding tutorial](embedding.md)) — and the messages flow through to Kafka.
 

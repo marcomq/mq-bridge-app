@@ -6,7 +6,7 @@ Consumers use a consumer group by default for durable, acked delivery;
 
 ## URL format
 
-```
+```text
 redis://[user:pass@]host[:port]?stream=<key>
 ```
 
@@ -27,8 +27,8 @@ mq-bridge-app copy --drain \
 
 ```bash
 mq-bridge-app copy \
-  --from redis://localhost:6379?stream=events&group=analytics&consumer_name=w1 \
-  --to clickhouse://localhost:8123?table=events&database=analytics
+  --from 'redis://localhost:6379?stream=events&group=analytics&consumer_name=w1' \
+  --to 'clickhouse://localhost:8123?table=events&database=analytics'
 ```
 
 Unclaimed entries pending longer than `redelivery_timeout_ms` (default 60s)
@@ -38,7 +38,7 @@ are re-delivered via `XAUTOCLAIM`.
 
 ```bash
 mq-bridge-app copy \
-  --from redis://localhost:6379?stream=events&subscriber_mode=true \
+  --from 'redis://localhost:6379?stream=events&subscriber_mode=true' \
   --to kafka://kafka.local:9092?topic=events
 ```
 

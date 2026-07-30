@@ -58,8 +58,8 @@ The CLI is published as a multi-arch image (`amd64` + `arm64`):
 docker run --rm --name mq-bridge -p 9091:9091 ghcr.io/marcomq/mq-bridge-app:latest
 ```
 
-To read+tail from `input.log` and forward its content, mount a config and pass
-`--init-config`:
+To read+tail from `input.log` and forward its content, mount the working directory at
+`/app` and seed the config from one of the templates baked into the image at `/config`:
 
 ```bash
 touch input.log

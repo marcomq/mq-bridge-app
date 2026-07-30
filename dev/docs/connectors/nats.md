@@ -5,7 +5,7 @@ Publishes to or consumes from NATS subjects. Uses **JetStream** by default
 
 ## URL format
 
-```
+```text
 nats://host[:port]?subject=<subject>[&stream=<name>]
 ```
 
@@ -22,15 +22,15 @@ to `{stream}.>`, so prefix your subject accordingly.
 ```bash
 mq-bridge-app copy --drain \
   --from file:///data/orders.jsonl?format=json \
-  --to nats://localhost:4222?subject=orders&stream=ORDERS
+  --to 'nats://localhost:4222?subject=orders&stream=ORDERS'
 ```
 
 **Consume a durable JetStream stream into Postgres, continuous:**
 
 ```bash
 mq-bridge-app copy \
-  --from nats://localhost:4222?subject=orders&stream=ORDERS \
-  --to postgres://user:pass@localhost/app?table=orders&auto_create_table=true
+  --from 'nats://localhost:4222?subject=orders&stream=ORDERS' \
+  --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
 
 **Core NATS request/reply (no JetStream), continuous:**
@@ -38,7 +38,7 @@ mq-bridge-app copy \
 ```bash
 mq-bridge-app copy \
   --from http://0.0.0.0:8080/rpc \
-  --to nats://localhost:4222?subject=rpc.echo&no_jetstream=true&request_reply=true
+  --to 'nats://localhost:4222?subject=rpc.echo&no_jetstream=true&request_reply=true'
 ```
 
 ## Key options

@@ -6,7 +6,7 @@ IBM MQ build — see [IBM MQ setup](../IBM_MQ_SETUP.md) for prerequisites.
 
 ## URL format
 
-```
+```text
 ibmmq://host(port)?queue_manager=<QM>&channel=<CHANNEL>&queue=<QUEUE>
 ```
 
@@ -21,9 +21,13 @@ channel) are always required; supply `queue` **or** `topic`.
 
 ```bash
 mq-bridge-app copy --drain \
-  --from 'ibmmq://mq.local(1414)?queue_manager=QM1&channel=DEV.APP.SVRCONN&queue=DEV.QUEUE.1&username=app&password=secret' \
+  --from 'ibmmq://mq.local(1414)?queue_manager=QM1&channel=DEV.APP.SVRCONN&queue=DEV.QUEUE.1&username=app&password=<password>' \
   --to file:///data/mq.jsonl?format=json
 ```
+
+Credentials on the command line land in shell history and process listings. Keep them out
+of the URL by interpolating an environment variable instead — see
+[Secrets](../cookbook/secrets.md).
 
 **Bridge a queue into Kafka, continuous:**
 
@@ -38,7 +42,7 @@ mq-bridge-app copy \
 ```bash
 mq-bridge-app copy \
   --from 'ibmmq://mq.local(1414)?queue_manager=QM1&channel=DEV.APP.SVRCONN&topic=orders/new' \
-  --to postgres://user:pass@localhost/app?table=orders&auto_create_table=true
+  --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
 
 ## Key options

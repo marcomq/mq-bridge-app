@@ -4,7 +4,7 @@ Publishes to or consumes from a RabbitMQ queue over the AMQP 0-9-1 protocol.
 
 ## URL format
 
-```
+```text
 rabbitmq://[user:pass@]host[:port]/<vhost>?queue=<name>
 ```
 
@@ -28,14 +28,14 @@ mq-bridge-app copy \
 ```bash
 mq-bridge-app copy --drain \
   --from file:///data/events.jsonl?format=json \
-  --to amqp://guest:guest@localhost:5672/%2f?exchange=events&queue=events
+  --to 'amqp://guest:guest@localhost:5672/%2f?exchange=events&queue=events'
 ```
 
 **Fan-out subscriber mode (ephemeral queue bound to the exchange):**
 
 ```bash
 mq-bridge-app copy \
-  --from amqp://guest:guest@localhost:5672/%2f?exchange=events&subscribe_mode=true \
+  --from 'amqp://guest:guest@localhost:5672/%2f?exchange=events&subscribe_mode=true' \
   --to kafka://kafka.local:9092?topic=events
 ```
 

@@ -7,7 +7,7 @@ for streaming change data instead of table reads.
 
 ## URL format
 
-```
+```text
 postgres://[user:pass@]host[:port]/database?table=<name>
 ```
 
@@ -32,14 +32,14 @@ mq-bridge-app copy --drain \
 ```bash
 mq-bridge-app copy --drain \
   --from file:///data/orders.csv?format=csv \
-  --to postgres://user:pass@localhost/app?table=orders&auto_create_table=true
+  --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
 
 **Resumable incremental read, keyed by a monotonic column, continuous:**
 
 ```bash
 mq-bridge-app copy \
-  --from postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_export \
+  --from 'postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_export' \
   --to kafka://kafka.local:9092?topic=orders
 ```
 
@@ -81,7 +81,7 @@ update/delete) instead of reading a table snapshot. Uses `postgres-cdc://`
 (alias `pgcdc://`) to select the endpoint kind; the connection URL underneath
 it is a plain Postgres URL.
 
-```
+```text
 postgres-cdc://[user:pass@]host[:port]/database?publication=<name>&slot_name=<name>
 ```
 
@@ -89,7 +89,7 @@ postgres-cdc://[user:pass@]host[:port]/database?publication=<name>&slot_name=<na
 
 ```bash
 mq-bridge-app copy \
-  --from postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot \
+  --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
   --to kafka://kafka.local:9092?topic=app-changes
 ```
 
@@ -97,8 +97,8 @@ mq-bridge-app copy \
 
 ```bash
 mq-bridge-app copy \
-  --from postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot \
-  --to postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true
+  --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
+  --to 'postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true'
 ```
 
 `publication` must already exist on the source (`CREATE PUBLICATION mqb_pub

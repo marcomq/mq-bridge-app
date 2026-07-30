@@ -5,7 +5,7 @@ migrating data in or out of the other connectors.
 
 ## URL format
 
-```
+```text
 file:///absolute/path/to/file?format=<normal|json|text|raw|csv>
 ```
 
@@ -19,7 +19,7 @@ The path comes from the URI path itself (`file:///...`), not a query param.
 ```bash
 mq-bridge-app copy --drain \
   --from file:///data/customers.csv?format=csv \
-  --to mongodb://localhost?database=app&collection=customers
+  --to 'mongodb://localhost?database=app&collection=customers'
 ```
 
 **Export a table to JSONL, one-shot:**

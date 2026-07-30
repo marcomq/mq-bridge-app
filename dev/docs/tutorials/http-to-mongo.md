@@ -13,7 +13,7 @@ pipeline.
 webhook_to_mongo:
   input:
     http:
-      url: "0.0.0.0:8080"
+      url: "127.0.0.1:8080"
       # Force the normal route pipeline instead of the inline HTTP response fast path.
       inline_response_fast_path: false
     middlewares:
@@ -46,14 +46,23 @@ The document lands in `app_db.webhooks`.
 
 ## What each piece does
 
-- **`http` input** listens on `0.0.0.0:8080`. Setting `inline_response_fast_path:
-  false` forces requests through the full route pipeline (input → middleware →
-  output) instead of the fast inline-response path, so the `retry` middleware and the
-  MongoDB write both run before the HTTP response is sent.
+- **`http` input** listens on `127.0.0.1:8080`, i.e. localhost only. The endpoint is
+  unauthenticated, so bind it to `0.0.0.0` only behind an authenticating proxy or a
+  network you control. Setting `inline_response_fast_path: false` forces requests
+  through the full route pipeline (input → middleware → output) instead of the fast
+  inline-response path, so the `retry` middleware and the MongoDB write both run
+  before the HTTP response is sent.
 - **`retry` middleware** re-attempts a failed write up to `max_attempts` times,
   starting at `initial_interval_ms` and backing off. See the
   [Retries & backoff](../cookbook/retries.md) recipe for the full knob set and its
   interaction with a [dead-letter queue](../cookbook/dlq.md).
+
+> [!NOTE]
+> Delivery here is **at-least-once**: a write that actually succeeded but whose
+> acknowledgement was lost gets retried and inserts a second document. For an
+> idempotent sink, set `id_field` on the `mongodb` output to a stable business key so
+> retries upsert the same document instead of appending a new one — see
+> [Upserts](../cookbook/upserts.md).
 - **`mongodb` output** with `format: "json"` stores each payload as a readable JSON
   document rather than the default full-message serialization.
 

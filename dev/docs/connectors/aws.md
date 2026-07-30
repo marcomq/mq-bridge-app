@@ -6,7 +6,7 @@ instance role) unless supplied explicitly as query params.
 
 ## URL format
 
-```
+```text
 aws://?queue_url=<sqs-url>&region=<region>
 ```
 
@@ -33,13 +33,20 @@ mq-bridge-app copy --drain \
   --to 'aws://?topic_arn=arn:aws:sns:us-east-1:1234:orders&region=us-east-1'
 ```
 
-**LocalStack with explicit credentials, continuous:**
+**LocalStack, continuous:**
 
 ```bash
 mq-bridge-app copy \
   --from 'aws://?queue_url=http://localhost:4566/000000000000/orders&region=us-east-1&endpoint_url=http://localhost:4566&access_key=test&secret_key=test' \
   --to null:
 ```
+
+> [!WARNING]
+> `access_key` / `secret_key` in the URL are shown here only because LocalStack's
+> `test`/`test` are throwaway values. Never put real credentials in a connector URL —
+> they leak into shell history and process listings. Against real AWS, omit both and let
+> the standard provider chain (env vars, `~/.aws/credentials`, IAM role) supply them; see
+> [Secrets](../cookbook/secrets.md).
 
 ## Key options
 

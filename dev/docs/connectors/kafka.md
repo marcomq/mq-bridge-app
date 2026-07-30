@@ -4,7 +4,7 @@ Produces to or consumes from a Kafka topic via `librdkafka`.
 
 ## URL format
 
-```
+```text
 kafka://broker[:port]?topic=<topic>
 ```
 
@@ -29,8 +29,8 @@ mq-bridge-app copy \
 
 ```bash
 mq-bridge-app copy \
-  --from kafka://kafka.local:9092?topic=orders&group_id=mqb-orders-sync \
-  --to postgres://user:pass@localhost/app?table=orders&auto_create_table=true
+  --from 'kafka://kafka.local:9092?topic=orders&group_id=mqb-orders-sync' \
+  --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
 
 Without `group_id`, the consumer runs in ephemeral **subscriber mode**

@@ -5,7 +5,7 @@ interface (port 8123 by default; 8443 for HTTPS).
 
 ## URL format
 
-```
+```text
 clickhouse://host[:port]?table=<name>[&database=<name>]
 ```
 
@@ -20,7 +20,7 @@ selects the endpoint kind on the CLI.
 ```bash
 mq-bridge-app copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
-  --to clickhouse://localhost:8123?table=orders&database=analytics
+  --to 'clickhouse://localhost:8123?table=orders&database=analytics'
 ```
 
 **Async insert for high-throughput streaming writes, continuous:**
@@ -35,7 +35,7 @@ mq-bridge-app copy \
 
 ```bash
 mq-bridge-app copy \
-  --from clickhouse://localhost:8123?table=events&database=analytics&cursor_column=id&cursor_id=events_export \
+  --from 'clickhouse://localhost:8123?table=events&database=analytics&cursor_column=id&cursor_id=events_export' \
   --to kafka://kafka.local:9092?topic=events
 ```
 

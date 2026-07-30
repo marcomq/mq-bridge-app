@@ -1,8 +1,9 @@
 # The three ways to run it
 
 `mq-bridge-app` is one engine with one config format, exposed three ways. Build and test a
-route in the UI, export the JSON/YAML, then run that exact config — unchanged — however you
-deploy.
+route in the UI, export the JSON/YAML, then run that config in a config-mode service or from
+library code. The `copy` CLI takes the same settings, but expressed as endpoint URIs and flags
+rather than a config file.
 
 | Form | What it is | Quick install |
 | --- | --- | --- |
@@ -55,9 +56,13 @@ configured port. See the [CLI reference](../reference/cli.md) for every flag, an
 ### The configuration-first workflow
 
 The point of one shared config format is that you can **test connections and dial in a route in
-the UI, export the JSON/YAML, then run that exact config unchanged** — as a `copy` command, a
-config-mode service, or loaded from library code. A known-good route shape from the UI drops
-straight into production.
+the UI, export the JSON/YAML, then run that exact config unchanged** — as a config-mode service
+or loaded from library code. A known-good route shape from the UI drops straight into
+production.
+
+`copy` is the exception: it takes no config file, so a route you built in the UI has to be
+mapped by hand onto `--from` / `--to` endpoint URIs and route flags. The settings are the same,
+only the way you pass them differs.
 
 ## Library
 

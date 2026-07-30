@@ -6,7 +6,7 @@ frames; as a publisher it sends them.
 
 ## URL format
 
-```
+```text
 # Consumer (listen):   ws://<bind-address>
 # Publisher (connect):  ws://host[:port]/path
 ```

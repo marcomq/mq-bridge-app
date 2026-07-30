@@ -36,7 +36,7 @@ The **scheme selects the endpoint** and **query parameters configure it**, so an
 
 ## The three ways to run it
 
-Test connections and dial in a route in the Postman-inspired UI, export the JSON/YAML, then run that exact config — unchanged — however you deploy.
+Test connections and dial in a route in the Postman-inspired UI, export the JSON/YAML, then run that config as a service or from library code. One engine, one config format.
 
 | Form | What it is | Quick install |
 | --- | --- | --- |

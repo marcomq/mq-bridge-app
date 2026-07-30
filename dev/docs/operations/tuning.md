@@ -39,7 +39,7 @@ thousand single-row inserts.
 **When bigger hurts:**
 
 - **Latency.** A larger batch means the first message waits longer before the batch flushes and
-  ships. For a low-latency bridge, keep it small — or use a [`buffer`](#compression--encryption-cost)
+  ships. For a low-latency bridge, keep it small — or use a [`buffer`](../engine/reference.md#buffer)
   middleware with a `max_delay_ms` bound so a partial batch still flushes on a timer.
 - **Memory.** The whole batch is held in memory (and, over IPC, written as one frame — frames
   over 100 MB are rejected). Very large batches of large payloads raise peak RSS.

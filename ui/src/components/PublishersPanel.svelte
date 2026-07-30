@@ -335,8 +335,8 @@
       ArrowDown: -5,
       PageUp: 15,
       PageDown: -15,
-      Home: (100 - $detailPaneTopPercent) - MIN_DETAIL_PANE_PERCENT,
-      End: (100 - $detailPaneTopPercent) - MAX_DETAIL_PANE_PERCENT,
+      Home: MIN_DETAIL_PANE_PERCENT - (100 - $detailPaneTopPercent),
+      End: MAX_DETAIL_PANE_PERCENT - (100 - $detailPaneTopPercent),
     };
     const delta = steps[event.key];
     if (delta === undefined) return;

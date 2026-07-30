@@ -6,11 +6,16 @@ and select it from config by name.
 
 ## Config
 
+Middleware attaches to a route side, so the list goes under `input:` or `output:`:
+
 ```yaml
-middlewares:
-  - custom:
-      name: "my_enricher"
-      config: { lookup_url: "http://enrich.internal" }
+output:
+  mongodb:
+    url: "mongodb://localhost:27017"
+  middlewares:
+    - custom:
+        name: "my_enricher"
+        config: { lookup_url: "http://enrich.internal" }
 ```
 
 | Field | Type | Required |

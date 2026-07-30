@@ -6,7 +6,7 @@ a remote server and issues `Publish` / `PublishBatch` RPCs; as a **server**
 
 ## URL format
 
-```
+```text
 grpc://host[:port]?topic=<topic>
 ```
 
@@ -28,8 +28,8 @@ mq-bridge-app copy \
 
 ```bash
 mq-bridge-app copy \
-  --from grpc://0.0.0.0:50051?server_mode=true&topic=orders \
-  --to postgres://user:pass@localhost/app?table=orders&auto_create_table=true
+  --from 'grpc://0.0.0.0:50051?server_mode=true&topic=orders' \
+  --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
 
 ## Key options

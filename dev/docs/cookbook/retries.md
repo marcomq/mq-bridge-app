@@ -12,8 +12,10 @@ output:
 
 From the `copy` CLI:
 
+Attach the chain to `--to`, since `retry` is output-only:
+
 ```bash
---from 'postgres://user:pass@host/db?table=src|retry?max_attempts=5&initial_interval_ms=200'
+--to 'kafka://localhost:9092?topic=orders|retry?max_attempts=5&initial_interval_ms=200'
 ```
 
 | Field | Default |

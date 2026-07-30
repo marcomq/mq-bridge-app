@@ -21,7 +21,7 @@ new changes keep flowing until you stop it.
 
 ```bash
 mq-bridge-app copy \
-  --from postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot \
+  --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
   --to file:///data/orders.jsonl?format=json
 ```
 

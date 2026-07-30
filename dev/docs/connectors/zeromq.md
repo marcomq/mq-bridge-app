@@ -6,7 +6,7 @@ binds or connects.
 
 ## URL format
 
-```
+```text
 zeromq://<transport>?socket_type=<type>[&bind=true]
 ```
 
@@ -37,7 +37,7 @@ mq-bridge-app copy \
 ```bash
 mq-bridge-app copy \
   --from 'zeromq://tcp://feed.local:5556?socket_type=sub&topic=orders' \
-  --to postgres://user:pass@localhost/app?table=orders&auto_create_table=true
+  --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
 
 ## Key options
