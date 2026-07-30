@@ -55,7 +55,33 @@ export function formatThroughput(value: number): string {
   return `${Math.round(value)} msg/s`;
 }
 
+function isNullableEndpointProperty(property: unknown): boolean {
+  if (!property || typeof property !== "object") return false;
+  const branches = (property as Record<string, unknown>).anyOf || (property as Record<string, unknown>).oneOf;
+  if (!Array.isArray(branches)) return false;
+  const refsEndpoint = branches.some((branch) =>
+    Boolean(branch) && typeof branch === "object" && (branch as { $ref?: string }).$ref === "#/$defs/Endpoint");
+  const allowsNull = branches.some((branch) =>
+    Boolean(branch) && typeof branch === "object" && (branch as { type?: string }).type === "null");
+  return refsEndpoint && allowsNull;
+}
+
+// Optional nested endpoints (e.g. HttpConfig.stream_response_to) have no editor in this UI, and
+// the schema form library turns the `null` branch into the literal string "null" while building
+// its data - which made every form load report unsaved changes. Drop them from the form schema.
+function dropNullableEndpointProperties(routeSchema: RouteSchema): void {
+  for (const definition of Object.values(routeSchema.$defs || {})) {
+    const properties = definition?.properties;
+    if (!properties) continue;
+    for (const [name, property] of Object.entries(properties)) {
+      if (isNullableEndpointProperty(property)) delete properties[name];
+    }
+  }
+}
+
 export function applyEndpointSchemaDefaults(routeSchema: RouteSchema): void {
+  dropNullableEndpointProperties(routeSchema);
+
   const fileConfigSchema = routeSchema.$defs?.FileConfig;
   if (fileConfigSchema?.properties?.format) {
     fileConfigSchema.properties.format.default = "raw";
