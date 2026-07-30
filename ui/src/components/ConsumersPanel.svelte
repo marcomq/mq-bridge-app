@@ -1,6 +1,13 @@
 <script lang="ts">
   import "@awesome.me/webawesome/dist/components/details/details.js";
-  import { activeMainTab, consumersPanelState } from "../lib/stores";
+  import {
+    activeMainTab,
+    consumersPanelState,
+    detailPaneTopPercent,
+    MAX_DETAIL_PANE_PERCENT,
+    MIN_DETAIL_PANE_PERCENT,
+    sidebarWidthStore,
+  } from "../lib/stores";
   import type { ConsumerTreeNode } from "../lib/consumer-grouping";
   import SidebarImportActions from "./SidebarImportActions.svelte";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
@@ -40,8 +47,6 @@
   let addMenuOpen = $state(false);
   let consumersContainerEl = $state<HTMLDivElement | null>(null);
   let messagesPaneEl = $state<HTMLDivElement | null>(null);
-  let sidebarWidth = $state<number | null>(null);
-  let messageListHeightPercent = $state(40);
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
   let configJsonOpen = $state(false);
@@ -268,7 +273,7 @@
 
   function startSidebarResize(event: MouseEvent) {
     beginSidebarResize(event, consumersContainerEl, (nextWidth) => {
-      sidebarWidth = nextWidth;
+      sidebarWidthStore.set(nextWidth);
     });
   }
 
@@ -281,7 +286,9 @@
       const rect = container.getBoundingClientRect();
       const offset = clientY - rect.top;
       const clampedOffset = Math.min(Math.max(offset, 100), Math.max(rect.height - 100, 100));
-      messageListHeightPercent = Math.min(Math.max((clampedOffset / rect.height) * 100, 20), 80);
+      detailPaneTopPercent.set(
+        Math.min(Math.max((clampedOffset / rect.height) * 100, MIN_DETAIL_PANE_PERCENT), MAX_DETAIL_PANE_PERCENT),
+      );
     };
 
     updateSplit(event.clientY);
@@ -304,7 +311,7 @@
   style="width: 100%"
 >
   <div bind:this={consumersContainerEl} id="consumers-container" class="publishers-layout">
-    <div class="sidebar" style={`width:${sidebarWidth ?? 280}px;`}>
+    <div class="sidebar" style={`width:${$sidebarWidthStore}px;`}>
       <div class="sidebar-header">
         <input class="sidebar-search" id="cons-filter" type="text" placeholder="Filter consumers…" bind:value={filterText} />
         <div class="add-menu-container">
@@ -628,7 +635,7 @@
           <div
             class="pane-top"
             id="cons-list-pane"
-            style={`flex: 0 0 calc(${messageListHeightPercent}% - 1.5px);`}
+            style={`flex: 0 0 calc(${$detailPaneTopPercent}% - 1.5px);`}
           >
             <div style="overflow:auto;flex:1;" id="consumer-log-body-wrapper">
               <table class="msg-table">
@@ -686,7 +693,7 @@
           <div
             class="pane-bottom"
             id="cons-detail-pane"
-            style={`height: auto; flex: 1 1 calc(${100 - messageListHeightPercent}% - 1.5px);`}
+            style={`height: auto; flex: 1 1 calc(${100 - $detailPaneTopPercent}% - 1.5px);`}
           >
             <div class="detail-header">
               <span id="cons-msg-detail-info" style="display:block;width:52%;">{$consumersPanelState.detailInfo}</span>

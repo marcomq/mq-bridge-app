@@ -41,6 +41,7 @@ let historyStore: PublisherHistoryStore = { version: 1, updated_at: 0, publisher
 let responseStateByPublisher: Record<string, PublisherResponseState> = {};
 let nextHeaderRowId = 1;
 let historySyncTimer: number | null = null;
+let renderedPublisherFormSignature: string | null = null;
 
 export { PUBLISHER_TYPE_OPTIONS, createConsumerEndpointFromPublisherEndpoint };
 
@@ -50,6 +51,7 @@ export async function initPublishers(config: PublishersAppConfig, schema: Publis
   formDrafts = new Map();
   responseStateByPublisher = {};
   nextHeaderRowId = 1;
+  renderedPublisherFormSignature = null;
   loadLocalState();
   hydrateHistory();
   activeConfig.publishers = (activeConfig.publishers || []).map(normalizePublisher);
@@ -765,6 +767,11 @@ async function renderPublisherForm() {
   const publisher = currentPublisher();
   const container = document.getElementById("pub-config-form");
   if (!publisher || !container) return;
+  // Rebuilding the schema form dominates the cost of a tab switch, and the panels stay mounted,
+  // so the already-rendered form is reused whenever it still matches the selected publisher.
+  const signature = JSON.stringify(publisher);
+  if (container.childElementCount > 0 && renderedPublisherFormSignature === signature) return;
+  renderedPublisherFormSignature = signature;
   const forms = appShell.forms() as any;
   (window as any)._mqb_form_mode = "publisher";
   const schema = resolveRootArrayItemSchema(activeSchema as Record<string, any>, "publishers");
@@ -797,6 +804,7 @@ async function renderPublisherForm() {
     const current = currentPublisher();
     if (!current) return;
     Object.assign(current, normalizePublisher({ ...current, ...updated }));
+    renderedPublisherFormSignature = JSON.stringify(current);
     refreshPublisherDirty();
     renderSelectedPublisher();
   });

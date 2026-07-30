@@ -1,6 +1,13 @@
 <script lang="ts">
   import { get } from "svelte/store";
-  import { activeMainTab, publishersPanelState } from "../lib/stores";
+  import {
+    activeMainTab,
+    detailPaneTopPercent,
+    MAX_DETAIL_PANE_PERCENT,
+    MIN_DETAIL_PANE_PERCENT,
+    publishersPanelState,
+    sidebarWidthStore,
+  } from "../lib/stores";
   import type { PublisherTreeNode } from "../lib/publisher-grouping";
   import SidebarImportActions from "./SidebarImportActions.svelte";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
@@ -61,8 +68,6 @@
   ];
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
-  let sidebarWidth = $state<number | null>(null);
-  let responsePaneHeightPercent = $state(40);
   let configJsonOpen = $state(false);
   let configJsonVariants = $state<ConfigJsonVariant[]>([]);
   const responsePaneVisible = $derived($publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition");
@@ -286,12 +291,18 @@
 
   function startSidebarResize(event: MouseEvent) {
     beginSidebarResize(event, publishersContainerEl, (nextWidth) => {
-      sidebarWidth = nextWidth;
+      sidebarWidthStore.set(nextWidth);
     });
   }
 
+  // The keyboard steps below are expressed as a change to the response (bottom) pane, so they
+  // move the shared top share the other way.
   function resizeResponsePaneBy(delta: number) {
-    responsePaneHeightPercent = Math.min(Math.max(responsePaneHeightPercent + delta, 20), 80);
+    detailPaneTopPercent.update((topPercent) => setTopPercent(topPercent - delta));
+  }
+
+  function setTopPercent(value: number) {
+    return Math.min(Math.max(value, MIN_DETAIL_PANE_PERCENT), MAX_DETAIL_PANE_PERCENT);
   }
 
   function startResponsePaneResize(event: MouseEvent) {
@@ -303,8 +314,7 @@
       const rect = container.getBoundingClientRect();
       const offset = clientY - rect.top;
       const clampedOffset = Math.min(Math.max(offset, 100), Math.max(rect.height - 100, 100));
-      const topPercent = Math.min(Math.max((clampedOffset / rect.height) * 100, 20), 80);
-      responsePaneHeightPercent = 100 - topPercent;
+      detailPaneTopPercent.set(setTopPercent((clampedOffset / rect.height) * 100));
     };
 
     updateSplit(event.clientY);
@@ -325,8 +335,8 @@
       ArrowDown: -5,
       PageUp: 15,
       PageDown: -15,
-      Home: 80 - responsePaneHeightPercent,
-      End: 20 - responsePaneHeightPercent,
+      Home: (100 - $detailPaneTopPercent) - MIN_DETAIL_PANE_PERCENT,
+      End: (100 - $detailPaneTopPercent) - MAX_DETAIL_PANE_PERCENT,
     };
     const delta = steps[event.key];
     if (delta === undefined) return;
@@ -337,7 +347,7 @@
 
 <div class:active={$activeMainTab === "publishers"} class="tab-content-panel" id="tab-publishers">
   <div bind:this={publishersContainerEl} id="publishers-container" class="publishers-layout">
-    <div class="sidebar" style={`width:${sidebarWidth ?? 280}px;`}>
+    <div class="sidebar" style={`width:${$sidebarWidthStore}px;`}>
       <div class="sidebar-header">
         <input class="sidebar-search" id="pub-filter" type="text" placeholder="Filter publishers…" bind:value={filterText} />
         <div class="add-menu-container">
@@ -487,7 +497,7 @@
         <div bind:this={publisherPaneEl} class="pane-container">
           <div
             id="pub-top-content-wrapper"
-            style={`display: flex; flex-direction: column; overflow: hidden; flex: 0 0 ${responsePaneVisible ? `calc(${100 - responsePaneHeightPercent}% - 1.5px)` : "100%"};`}
+            style={`display: flex; flex-direction: column; overflow: hidden; flex: 0 0 ${responsePaneVisible ? `calc(${$detailPaneTopPercent}% - 1.5px)` : "100%"};`}
           >
             <div
               class="pane-top"
@@ -670,7 +680,7 @@
           <div
             class="pane-bottom"
             id="pub-response-container"
-            style={`height: auto; flex: 1 1 calc(${responsePaneHeightPercent}% - 1.5px);`}
+            style={`height: auto; flex: 1 1 calc(${100 - $detailPaneTopPercent}% - 1.5px);`}
             style:display={responsePaneVisible ? "flex" : "none"}
           >
             <div class="detail-header">

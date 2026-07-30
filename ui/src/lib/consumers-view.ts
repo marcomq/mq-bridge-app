@@ -57,6 +57,7 @@ let lastMessageSequenceByConsumer: Record<string, number> = {};
 // so it is polled exactly once per terminal state instead of every cycle.
 let finalPollByConsumer: Record<string, string> = {};
 let consumerErrorByKey: Record<string, string> = {};
+let renderedConsumerFormSignature: string | null = null;
 const DETAIL_METADATA_ORDER = ["content-length", "host", "http_method", "http_path", "http_query", "http_version", "content-type"];
 
 function formatLocalTimeFromIso(value: string): string {
@@ -542,6 +543,11 @@ async function renderConsumerForm() {
   const consumer = currentConsumer();
   const container = document.getElementById("cons-config-form");
   if (!consumer || !container) return;
+  // Rebuilding the schema form dominates the cost of a tab switch, and the panels stay mounted,
+  // so the already-rendered form is reused whenever it still matches the selected consumer.
+  const signature = JSON.stringify(consumer);
+  if (container.childElementCount > 0 && renderedConsumerFormSignature === signature) return;
+  renderedConsumerFormSignature = signature;
   const forms = appShell.forms() as any;
   getAppState().form_mode = "consumer";
   (window as any)._mqb_form_mode = "consumer";
@@ -554,6 +560,7 @@ async function renderConsumerForm() {
     normalized.message_capture = current.message_capture;
     normalized.response = current.response;
     Object.assign(current, normalized);
+    renderedConsumerFormSignature = JSON.stringify(current);
     refreshConsumerDirty();
     renderSelectedConsumer();
   });
@@ -986,6 +993,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   messagesByConsumer = await readStoredMessages();
   consumerErrorByKey = {};
   formDrafts = new Map();
+  renderedConsumerFormSignature = null;
   nextResponseHeaderId = 1;
   lastMessageSequenceByConsumer = {};
   finalPollByConsumer = {};
