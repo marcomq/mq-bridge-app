@@ -1128,7 +1128,11 @@ function extractPublisherResponseHeaders(responseData: unknown): Array<[string, 
   if (!responseData || typeof responseData !== "object" || Array.isArray(responseData)) return [];
   const metadata = (responseData as Record<string, unknown>).metadata;
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
-  return Object.entries(metadata).map(([key, value]) => [key, String(value ?? "")]);
+  // The backend serialises metadata from a hash map, so the order differs per response; sorting
+  // here keeps the response and history header tables stable between clicks.
+  return Object.entries(metadata)
+    .map(([key, value]) => [key, String(value ?? "")] as [string, string])
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
 }
 
 function extractPublisherResponsePayload(responseData: unknown) {
