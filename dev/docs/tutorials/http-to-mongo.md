@@ -61,7 +61,8 @@ The document lands in `app_db.webhooks`.
 > Delivery here is **at-least-once**: a write that actually succeeded but whose
 > acknowledgement was lost gets retried and inserts a second document. For an
 > idempotent sink, set `id_field` on the `mongodb` output to a stable business key so
-> retries upsert the same document instead of appending a new one — see
+> the value becomes the document `_id`: a retry of an already-written message is then
+> rejected by the unique `_id` instead of appending a new document — see
 > [Upserts](../cookbook/upserts.md).
 - **`mongodb` output** with `format: "json"` stores each payload as a readable JSON
   document rather than the default full-message serialization.
