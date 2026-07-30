@@ -46,7 +46,7 @@ Test connections and dial in a route in the Postman-inspired UI, export the JSON
 
 ![mq-bridge UI - publishers](dev/images/Screen1.jpg)
 
-**Learn each form in the book:** [the three ways to run it](https://marcomq.github.io/mq-bridge-app/getting-started/run-forms.html) · [CLI commands](https://marcomq.github.io/mq-bridge-app/reference/cli.html) · [MCP server](https://marcomq.github.io/mq-bridge-app/MCP.html) · [library bindings](https://marcomq.github.io/mq-bridge-app/reference/bindings.html).
+**Learn each form in the book:** [the three ways to run it](https://marcomq.github.io/mq-bridge-app/getting-started/run-forms.html) · [the desktop / web UI](https://marcomq.github.io/mq-bridge-app/getting-started/desktop-ui.html) · [CLI commands](https://marcomq.github.io/mq-bridge-app/reference/cli.html) · [MCP server](https://marcomq.github.io/mq-bridge-app/MCP.html) · [library bindings](https://marcomq.github.io/mq-bridge-app/reference/bindings.html).
 
 ## Install
 

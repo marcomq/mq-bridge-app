@@ -19,7 +19,7 @@ path = "src/lib.rs"
 # NOTE: this is a local path dep on the sibling ../mq-bridge checkout, so the
 # build only works with that checkout present. Switch to the crates.io line
 # below (or use `cargo --config patch`) before publishing.
-mq-bridge = { version = "0.3.7", features = ["schema"] }
+mq-bridge = { version = "0.3.8", features = ["schema"] }
 # mq-bridge = { path = "../../../mq-bridge", version = "0.3.7", features = ["schema"] } # keep for debugging / dev
 
 config = { version = "0.15.22", features = ["yaml"] }

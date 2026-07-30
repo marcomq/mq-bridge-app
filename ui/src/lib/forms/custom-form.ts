@@ -581,12 +581,19 @@ const basicAuthRenderer = {
   },
 };
 
+// Data paths handed to renderers are prefixed with the form root key, which is not
+// part of the store state. A single-segment path is the root node itself.
+function toStorePath(dataPath: Array<string | number>): Array<string | number> {
+  return dataPath.length > 1 ? dataPath.slice(1) : dataPath;
+}
+
 // Both custom headers and env vars are a sorted key/value map edited through HeadersEditor;
 // they differ only in labels, so share one renderer factory.
 const createKeyValueRenderer = (editorProps: (node: SchemaNode) => Record<string, unknown>) => ({
   render: (node: SchemaNode, _path: string, _elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     const store = context.store;
-    const currentValue = store.getPath(dataPath) ?? node.defaultValue ?? {};
+    const storePath = toStorePath(dataPath);
+    const currentValue = store.getPath(storePath) ?? node.defaultValue ?? {};
     const rows = Object.entries(currentValue)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => ({ key: String(key), value: String(value ?? "") }));
@@ -601,7 +608,7 @@ const createKeyValueRenderer = (editorProps: (node: SchemaNode) => Record<string
             .filter((row) => row.key.trim().length > 0)
             .map((row) => [row.key.trim(), row.value]),
         );
-        store.setPath(dataPath, nextValue);
+        store.setPath(storePath, nextValue);
       },
     });
   },

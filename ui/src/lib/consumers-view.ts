@@ -377,13 +377,29 @@ function responseRowsFromConsumer(consumer: ConsumerConfig): ConsumerResponseHea
   }));
 }
 
+function headersFromResponseRows(rows: ConsumerResponseHeaderRow[]): Record<string, string> {
+  return Object.fromEntries(
+    rows.filter((row) => row.enabled && row.key.trim()).map((row) => [row.key.trim(), row.value]),
+  );
+}
+
+// The rows are the live editing surface, so rebuilding them costs an edit in
+// progress: fresh ids re-create the keyed inputs (dropping focus) and a row that
+// is still blank or disabled is not in the consumer at all. Only rebuild when the
+// stored headers no longer match what the rows already express. The comparison
+// runs against the raw headers the rows were written to, not the normalized view,
+// which drops a header whose value has not been typed yet.
+function responseRowsMatchConsumer(rows: ConsumerResponseHeaderRow[], consumer: ConsumerConfig): boolean {
+  const stored = (consumer.response as { headers?: Record<string, string> } | undefined)?.headers;
+  if (!stored || typeof stored !== "object") return rows.length === 0;
+  const fromRows = headersFromResponseRows(rows);
+  const keys = Object.keys(stored);
+  return keys.length === Object.keys(fromRows).length && keys.every((key) => fromRows[key] === stored[key]);
+}
+
 function applyResponseStateToConsumer(consumer: ConsumerConfig) {
   const state = get(consumersPanelState);
-  const enabledHeaders = Object.fromEntries(
-    state.responseHeaders
-      .filter((row) => row.enabled && row.key.trim())
-      .map((row) => [row.key.trim(), row.value]),
-  );
+  const enabledHeaders = headersFromResponseRows(state.responseHeaders);
   const nextResponse = { payload: state.responsePayload, headers: enabledHeaders };
   consumer.response = nextResponse;
   consumer.output = { mode: "response", response: nextResponse };
@@ -434,7 +450,6 @@ function renderSelectedConsumer() {
   const runtimeError = consumerErrorByKey[runtimeKey];
   const responseCapable = RESPONSE_CAPABLE_CONSUMER_TYPES.has(getEndpointType(consumer.endpoint));
   const publisherOptions = nextPublisherOptions();
-  const responseRows = responseRowsFromConsumer(consumer);
   const responseValue = normalizeConsumerResponse(consumer.response) ?? { headers: {}, payload: "" };
 
   consumersPanelState.update((state) => ({
@@ -452,7 +467,9 @@ function renderSelectedConsumer() {
     publisherOptions,
     selectedPublisher: getSelectedPublisherValue(output),
     responseSupported: responseCapable,
-    responseHeaders: responseRows,
+    responseHeaders: state.currentConsumerKey === runtimeKey && responseRowsMatchConsumer(state.responseHeaders, consumer)
+      ? state.responseHeaders
+      : responseRowsFromConsumer(consumer),
     responsePayload: responseValue.payload || "",
     liveStatusText: runtimeError || finishedStatusText(status) || (!status.running ? "Consumer Stopped" : status.status?.healthy === false ? (status.status?.error || "Consumer Error") : "Connected"),
     liveStatusVariant: runtimeError || status.outcome === "failed" ? "danger" : !status.running ? "neutral" : status.status?.healthy === false ? "danger" : "success",
