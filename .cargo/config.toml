@@ -4,3 +4,9 @@ CMAKE_ARGS = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 [build]
 rustflags = ["--cfg", "tokio_unstable"]
 
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-no_compact_unwind"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-no_compact_unwind"]
+

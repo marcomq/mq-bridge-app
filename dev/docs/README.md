@@ -46,7 +46,7 @@ dev/docs/
 ├── sync-engine-docs.sh     vendors engine docs into engine/ (build step)
 ├── README.md               this file
 ├── introduction.md         book landing page
-├── INSTALL.md BUILD.md quick-start.md MCP.md IBM_MQ_SETUP.md   product pages
+├── INSTALL.md BUILD.md quick-start.md MCP.md IBM_MQ_SETUP.md   top-level pages
 ├── getting-started/        run-forms, core concepts
 ├── tutorials/              end-to-end, copy-pasteable walkthroughs
 ├── cookbook/               short task-focused recipes

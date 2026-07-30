@@ -45,5 +45,6 @@ mq-bridge-app copy \
 | `format` | `normal`, `json`, `text`, `raw`, or `csv`. |
 | `delimiter` | Message delimiter. Defaults to newline. |
 | `mode` | Consumer only: `consume` (from start), `subscribe` (tail from end), or persistent offset-tracked modes. |
+| `compression` | Compress/decompress each batch: `none` (default), `gzip`, `lz4`, `zstd` (needs the `compression` build feature). A source must declare the same codec the file was written with. See [Compression](../cookbook/compression.md). |
 
 Full field list: [reference/file.md](../reference/file.md).

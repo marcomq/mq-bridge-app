@@ -63,6 +63,7 @@ mq-bridge-app copy --drain \
 |---|---|
 | `table` | **Required.** Table to read from / write to. |
 | `cursor_column` + `cursor_id` | Non-destructive, resumable incremental reads instead of a one-shot full-table copy. |
+| `checkpoint_store` | (Consumer, `cursor_column` mode) Where to persist the resume cursor. Absent → a `mqb_cursors_<table>` table in the **source** database; a bare name reuses the source datastore with that table; a URL (`file://`, `postgres://`, `mysql://`, `mongodb://`, `s3://`/`gs://`/`az://`/`abfs://`) selects an external backend. Treated as a secret since it may embed credentials. |
 | `auto_create_table` | Publisher creates the destination table if missing. |
 | `insert_query` | Custom INSERT with `${payload:field}` / `${metadata:key}` tokens for multi-column writes. |
 | `bulk_copy` | PostgreSQL only — use `COPY FROM STDIN` for high-throughput bulk loads. |

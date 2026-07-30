@@ -27,13 +27,15 @@ the UI reflects it with no frontend change.
 
 ## CLI / server
 
-The CLI (`mq-bridge-app`) is a headless binary that runs in three modes:
+The CLI (`mq-bridge-app`) is a headless binary that runs in three modes. They share the same
+engine and config format but differ in how you drive them — and only **config mode** serves the
+browser UI:
 
-- **Config mode** — load a YAML/JSON/TOML config and run a long-lived bridge; optionally serve
-  the browser UI. Suited to Container/Kubernetes deployments.
-- **`copy` mode** — an ad-hoc one-route job from two endpoint URIs, no config file and no UI.
-- **`mcp` mode** — expose the bridge as MCP tools so an LLM agent can publish and route from
-  natural language.
+| Mode | Invocation | Serves web UI? | Best for |
+| --- | --- | --- | --- |
+| **Config mode** (default) | `mq-bridge-app [--config x.yml]` | **Yes** — the same UI as the desktop app, on the configured port | Long-lived bridge from a config file; Container/Kubernetes deployments |
+| **`copy`** | `mq-bridge-app copy --from … --to …` | No (headless) | Ad-hoc one-route job from two endpoint URIs, no config file; add `--drain` to exit once the source is empty |
+| **`mcp`** | `mq-bridge-app mcp` | No (headless) | Expose the bridge as MCP tools so an LLM agent can publish and route from natural language |
 
 ```bash
 # Config mode: run a long-lived bridge from a file

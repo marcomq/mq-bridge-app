@@ -10,11 +10,17 @@ under [`../reference/`](../reference/).
 - [MQTT](./mqtt.md)
 - [Kafka](./kafka.md)
 - [RabbitMQ (AMQP)](./rabbitmq.md)
+- [NATS](./nats.md)
+- [Redis Streams](./redis.md)
 - [HTTP](./http.md)
+- [WebSocket](./websocket.md)
+- [gRPC](./grpc.md)
 - [MongoDB](./mongodb.md)
+- [AWS SQS / SNS](./aws.md)
+- [ZeroMQ](./zeromq.md)
+- [IBM MQ](./ibmmq.md)
 - [File (CSV / JSON / JSONL)](./file.md)
 
-Other connectors supported by `mq-bridge-app copy` (NATS, Redis Streams,
-WebSocket, gRPC, AWS SQS/SNS, ZeroMQ, IBM MQ) don't yet have a hand-written
-page — see their [generated reference](../reference/) for the recognised
-scheme(s) and parameters.
+Every connector recognised by `mq-bridge-app copy` now has a hand-written page.
+For the full, auto-generated parameter tables see the matching page under
+[`../reference/`](../reference/).

@@ -1,5 +1,10 @@
 # Introduction
 
+<p align="center">
+  <img src="images/logo.png" alt="mq-bridge-app" width="128" height="128">
+</p>
+<p style="margin-top:-12px" align="center"><em>crossing streams</em></p>
+
 `mq-bridge-app` is a **fast, single-command ETL and data-movement tool** built in Rust — and,
 on top of the same engine, a multi-protocol bridge and traffic workbench for messaging.
 
@@ -61,7 +66,7 @@ route code should still be able to receive a batch, process it, publish it, and 
 
 ## App vs. engine
 
-`mq-bridge` is the **engine/library**; `mq-bridge-app` is the **product** — desktop app +
+`mq-bridge` is the **engine/library**; `mq-bridge-app` is the **application** — desktop app +
 CLI/server + library distribution — built on that engine. This book is the user-facing home;
 the engine's deep API reference lives on [docs.rs](https://docs.rs/mq-bridge). The
 [library bindings](reference/bindings.md) let you embed the same engine in Rust, Python, or

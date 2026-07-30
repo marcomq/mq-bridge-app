@@ -52,5 +52,6 @@ from a query param — use a YAML route config for that.)
 | `columns` | Map target columns to `${payload:field}` / `${metadata:key}` tokens instead of inserting the whole JSON payload as one row. |
 | `async_insert` | Server-side buffered inserts for higher publisher throughput. |
 | `cursor_column` + `cursor_id` | Non-destructive, resumable reads of an existing table. |
+| `checkpoint_store` | (Consumer, `cursor_column` mode) Where to persist the resume cursor. ClickHouse can't do per-row cursor upserts, so a durable checkpoint needs an **external** store URL: `file://`, `postgres://`/`mysql://`, `mongodb://`, or `s3://`/`gs://`/`az://`/`abfs://`. Treated as a secret since it may embed credentials. |
 
 Full field list: [reference/clickhouse.md](../reference/clickhouse.md).
