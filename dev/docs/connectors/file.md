@@ -5,7 +5,7 @@ migrating data in or out of the other connectors.
 
 ## URL format
 
-```
+```text
 file:///absolute/path/to/file?format=<normal|json|text|raw|csv>
 ```
 
@@ -17,15 +17,15 @@ The path comes from the URI path itself (`file:///...`), not a query param.
 **Load a CSV file into MongoDB, one-shot (first row = header):**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from file:///data/customers.csv?format=csv \
-  --to mongodb://localhost?database=app&collection=customers
+  --to 'mongodb://localhost?database=app&collection=customers'
 ```
 
 **Export a table to JSONL, one-shot:**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
   --to file:///data/orders.jsonl?format=json
 ```
@@ -33,7 +33,7 @@ mq-bridge copy --drain \
 **Tail a file as it grows (broadcast/subscribe mode), continuous:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from file:///var/log/app/events.log?mode=subscribe \
   --to kafka://kafka.local:9092?topic=app-events
 ```
@@ -45,5 +45,6 @@ mq-bridge copy \
 | `format` | `normal`, `json`, `text`, `raw`, or `csv`. |
 | `delimiter` | Message delimiter. Defaults to newline. |
 | `mode` | Consumer only: `consume` (from start), `subscribe` (tail from end), or persistent offset-tracked modes. |
+| `compression` | Compress/decompress each batch: `none` (default), `gzip`, `lz4`, `zstd` (needs the `compression` build feature). A source must declare the same codec the file was written with. See [Compression](../cookbook/compression.md). |
 
 Full field list: [reference/file.md](../reference/file.md).

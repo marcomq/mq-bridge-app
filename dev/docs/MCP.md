@@ -199,7 +199,7 @@ partial send is not mistaken for success.
 
 ## Known limitations
 
-Both of these originate in the upstream `mq-bridge` crate, not in the MCP layer.
+This originates in the upstream `mq-bridge` crate, not in the MCP layer.
 
 - **Finished routes are not reaped.** A route started with `exit_on_empty` stays
   in `list_routes` after it has drained and exited; call `stop_route` to clear
@@ -211,12 +211,6 @@ Both of these originate in the upstream `mq-bridge` crate, not in the MCP layer.
 
   `stop_route` removes the entry from `list_routes` as it stops the route, so
   the third outcome, `stopped`, is not observable through these tools.
-- **A drained Redis Streams source reports an error.** With `exit_on_empty`, a
-  `redis_streams` input ends at `"healthy": false` with
-  `Redis XREAD failed: timed out` even though every message was moved
-  correctly. The clean BLOCK-timeout path is handled, but the client's own
-  socket timeout surfaces through the error arm. Cosmetic — verify the sink
-  rather than trusting the final status. NATS does not behave this way.
 
 ## Testing against local brokers
 

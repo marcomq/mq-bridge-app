@@ -80,6 +80,50 @@ describe("routes helpers", () => {
     expect(routeSchema.required).toEqual(["name", "input"]);
   });
 
+  test("drops nullable endpoint properties declared with anyOf or oneOf", () => {
+    const nullableEndpoint = (keyword: "anyOf" | "oneOf") => ({
+      [keyword]: [{ $ref: "#/$defs/Endpoint" }, { type: "null" }],
+    });
+    const routeSchema = {
+      $defs: {
+        HttpConfig: {
+          properties: {
+            stream_response_to: nullableEndpoint("anyOf"),
+            url: { type: "string" },
+          },
+        },
+        SwitchConfig: {
+          properties: {
+            fallback: nullableEndpoint("oneOf"),
+            required_endpoint: { $ref: "#/$defs/Endpoint" },
+            nullable_string: { anyOf: [{ type: "string" }, { type: "null" }] },
+          },
+        },
+        FileConfig: {
+          properties: {
+            format: {},
+          },
+        },
+      },
+      properties: {
+        enabled: { type: "boolean" },
+        input: { type: "object" },
+      },
+      required: ["name", "enabled", "input"],
+    };
+
+    applyEndpointSchemaDefaults(routeSchema);
+
+    expect(routeSchema.$defs.HttpConfig.properties).toEqual({ url: { type: "string" } });
+    expect(routeSchema.$defs.SwitchConfig.properties).toEqual({
+      required_endpoint: { $ref: "#/$defs/Endpoint" },
+      nullable_string: { anyOf: [{ type: "string" }, { type: "null" }] },
+    });
+    expect(routeSchema.$defs.FileConfig.properties.format.default).toBe("raw");
+    expect(routeSchema.properties).toEqual({ input: { type: "object" } });
+    expect(routeSchema.required).toEqual(["name", "input"]);
+  });
+
   test("generates stable unique names for copied route resources", () => {
     expect(nextUniqueName("route", [])).toBe("route");
     expect(nextUniqueName("route", ["route"])).toBe("route_1");

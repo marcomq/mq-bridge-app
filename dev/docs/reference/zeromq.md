@@ -8,6 +8,7 @@ Query parameters recognised as config fields for this connector. Unrecognised pa
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
+| `backend` | `zmq` \| `omq` | no | `zmq` | Backend: `zmq` (default, the `zeromq` crate) or `omq` (the `omq-tokio` PoC — PUSH/PULL + PUB/SUB only). `omq` needs the `zeromq-omq` build feature. |
 | `bind` | boolean | no | `false` | If true, bind to the address. If false, connect. |
 | `format` | `json` \| `raw` \| `raw_framed` | no | `json` | Wire format: `json` wraps the CanonicalMessage; `raw` sends payload bytes per frame; `raw_framed` adds a JSON metadata frame. Default `json`. |
 | `internal_buffer_size` | integer | no | `null` | Internal buffer size for the channel. Defaults to 128. |

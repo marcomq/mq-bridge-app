@@ -1,0 +1,79 @@
+# .github/workflows/docs.yml
+# Builds the mdbook documentation (dev/docs) and publishes it to GitHub Pages.
+# Requires: repo Settings → Pages → Source = "GitHub Actions" (one-time, manual).
+name: Deploy Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "dev/docs/**"
+      - ".github/workflows/docs.yml"
+      # The reference pages are generated from these config structs.
+      - "crates/cli/examples/gen_url_docs.rs"
+  # The book vendors docs from the mq-bridge engine repo, whose commits cannot
+  # trigger this workflow. Rebuild weekly so those pages don't go stale.
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Allow one concurrent deployment; don't cancel an in-progress run.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build book
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The engine reference docs (REFERENCE/CONFIGURATION/ARCHITECTURE) are vendored
+      # from the sibling engine repo by dev/docs/sync-engine-docs.sh.
+      - name: Checkout engine repo
+        uses: actions/checkout@v4
+        with:
+          repository: marcomq/mq-bridge
+          path: _engine
+          persist-credentials: false
+
+      - name: Install mdbook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "0.5.4"
+
+      - name: Vendor engine docs
+        env:
+          ENGINE_REPO: ${{ github.workspace }}/_engine
+        run: bash dev/docs/sync-engine-docs.sh
+
+      - name: Build book
+        run: mdbook build dev/docs
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dev/docs/book
+
+  deploy:
+    name: Deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

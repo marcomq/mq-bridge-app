@@ -7,7 +7,7 @@ for streaming change data instead of table reads.
 
 ## URL format
 
-```
+```text
 postgres://[user:pass@]host[:port]/database?table=<name>
 ```
 
@@ -22,7 +22,7 @@ replaced by a file path, e.g. `sqlite:///var/data/app.db?table=orders`.
 **Full-table read (source), one-shot:**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
   --to null:
 ```
@@ -30,16 +30,16 @@ mq-bridge copy --drain \
 **Write with auto-created table (destination):**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from file:///data/orders.csv?format=csv \
-  --to postgres://user:pass@localhost/app?table=orders&auto_create_table=true
+  --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
 
 **Resumable incremental read, keyed by a monotonic column, continuous:**
 
 ```bash
-mq-bridge copy \
-  --from postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_export \
+mq-bridge-app copy \
+  --from 'postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_export' \
   --to kafka://kafka.local:9092?topic=orders
 ```
 
@@ -49,7 +49,7 @@ instead of re-copying from the start.
 **Custom multi-column insert, MySQL:**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from postgres://user:pass@src/app?table=orders \
   --to 'mysql://user:pass@dst/app?table=orders&insert_query=INSERT+INTO+orders+%28id%2C+sku%2C+qty%29+VALUES+%28%24%7Bpayload%3Aid%7D%2C+%24%7Bpayload%3Asku%7D%2C+%24%7Bpayload%3Aqty%7D%29'
 ```
@@ -63,6 +63,7 @@ mq-bridge copy --drain \
 |---|---|
 | `table` | **Required.** Table to read from / write to. |
 | `cursor_column` + `cursor_id` | Non-destructive, resumable incremental reads instead of a one-shot full-table copy. |
+| `checkpoint_store` | (Consumer, `cursor_column` mode) Where to persist the resume cursor. Absent → a `mqb_cursors_<table>` table in the **source** database; a bare name reuses the source datastore with that table; a URL (`file://`, `postgres://`, `mysql://`, `mongodb://`, `s3://`/`gs://`/`az://`/`abfs://`) selects an external backend. Treated as a secret since it may embed credentials. |
 | `auto_create_table` | Publisher creates the destination table if missing. |
 | `insert_query` | Custom INSERT with `${payload:field}` / `${metadata:key}` tokens for multi-column writes. |
 | `bulk_copy` | PostgreSQL only — use `COPY FROM STDIN` for high-throughput bulk loads. |
@@ -80,24 +81,24 @@ update/delete) instead of reading a table snapshot. Uses `postgres-cdc://`
 (alias `pgcdc://`) to select the endpoint kind; the connection URL underneath
 it is a plain Postgres URL.
 
-```
+```text
 postgres-cdc://[user:pass@]host[:port]/database?publication=<name>&slot_name=<name>
 ```
 
 **Stream changes from a publication into Kafka, continuous:**
 
 ```bash
-mq-bridge copy \
-  --from postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot \
+mq-bridge-app copy \
+  --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
   --to kafka://kafka.local:9092?topic=app-changes
 ```
 
 **Replicate a table into another PostgreSQL instance, continuous:**
 
 ```bash
-mq-bridge copy \
-  --from postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot \
-  --to postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true
+mq-bridge-app copy \
+  --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
+  --to 'postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true'
 ```
 
 `publication` must already exist on the source (`CREATE PUBLICATION mqb_pub

@@ -57,6 +57,7 @@ let lastMessageSequenceByConsumer: Record<string, number> = {};
 // so it is polled exactly once per terminal state instead of every cycle.
 let finalPollByConsumer: Record<string, string> = {};
 let consumerErrorByKey: Record<string, string> = {};
+let renderedConsumerFormSignature: string | null = null;
 const DETAIL_METADATA_ORDER = ["content-length", "host", "http_method", "http_path", "http_query", "http_version", "content-type"];
 
 function formatLocalTimeFromIso(value: string): string {
@@ -377,13 +378,29 @@ function responseRowsFromConsumer(consumer: ConsumerConfig): ConsumerResponseHea
   }));
 }
 
+function headersFromResponseRows(rows: ConsumerResponseHeaderRow[]): Record<string, string> {
+  return Object.fromEntries(
+    rows.filter((row) => row.enabled && row.key.trim()).map((row) => [row.key.trim(), row.value]),
+  );
+}
+
+// The rows are the live editing surface, so rebuilding them costs an edit in
+// progress: fresh ids re-create the keyed inputs (dropping focus) and a row that
+// is still blank or disabled is not in the consumer at all. Only rebuild when the
+// stored headers no longer match what the rows already express. The comparison
+// runs against the raw headers the rows were written to, not the normalized view,
+// which drops a header whose value has not been typed yet.
+function responseRowsMatchConsumer(rows: ConsumerResponseHeaderRow[], consumer: ConsumerConfig): boolean {
+  const stored = (consumer.response as { headers?: Record<string, string> } | undefined)?.headers;
+  if (!stored || typeof stored !== "object") return rows.length === 0;
+  const fromRows = headersFromResponseRows(rows);
+  const keys = Object.keys(stored);
+  return keys.length === Object.keys(fromRows).length && keys.every((key) => fromRows[key] === stored[key]);
+}
+
 function applyResponseStateToConsumer(consumer: ConsumerConfig) {
   const state = get(consumersPanelState);
-  const enabledHeaders = Object.fromEntries(
-    state.responseHeaders
-      .filter((row) => row.enabled && row.key.trim())
-      .map((row) => [row.key.trim(), row.value]),
-  );
+  const enabledHeaders = headersFromResponseRows(state.responseHeaders);
   const nextResponse = { payload: state.responsePayload, headers: enabledHeaders };
   consumer.response = nextResponse;
   consumer.output = { mode: "response", response: nextResponse };
@@ -434,7 +451,6 @@ function renderSelectedConsumer() {
   const runtimeError = consumerErrorByKey[runtimeKey];
   const responseCapable = RESPONSE_CAPABLE_CONSUMER_TYPES.has(getEndpointType(consumer.endpoint));
   const publisherOptions = nextPublisherOptions();
-  const responseRows = responseRowsFromConsumer(consumer);
   const responseValue = normalizeConsumerResponse(consumer.response) ?? { headers: {}, payload: "" };
 
   consumersPanelState.update((state) => ({
@@ -452,7 +468,9 @@ function renderSelectedConsumer() {
     publisherOptions,
     selectedPublisher: getSelectedPublisherValue(output),
     responseSupported: responseCapable,
-    responseHeaders: responseRows,
+    responseHeaders: state.currentConsumerKey === runtimeKey && responseRowsMatchConsumer(state.responseHeaders, consumer)
+      ? state.responseHeaders
+      : responseRowsFromConsumer(consumer),
     responsePayload: responseValue.payload || "",
     liveStatusText: runtimeError || finishedStatusText(status) || (!status.running ? "Consumer Stopped" : status.status?.healthy === false ? (status.status?.error || "Consumer Error") : "Connected"),
     liveStatusVariant: runtimeError || status.outcome === "failed" ? "danger" : !status.running ? "neutral" : status.status?.healthy === false ? "danger" : "success",
@@ -525,6 +543,11 @@ async function renderConsumerForm() {
   const consumer = currentConsumer();
   const container = document.getElementById("cons-config-form");
   if (!consumer || !container) return;
+  // Rebuilding the schema form dominates the cost of a tab switch, and the panels stay mounted,
+  // so the already-rendered form is reused whenever it still matches the selected consumer.
+  const signature = JSON.stringify(consumer);
+  if (container.childElementCount > 0 && renderedConsumerFormSignature === signature) return;
+  renderedConsumerFormSignature = signature;
   const forms = appShell.forms() as any;
   getAppState().form_mode = "consumer";
   (window as any)._mqb_form_mode = "consumer";
@@ -537,6 +560,7 @@ async function renderConsumerForm() {
     normalized.message_capture = current.message_capture;
     normalized.response = current.response;
     Object.assign(current, normalized);
+    renderedConsumerFormSignature = JSON.stringify(current);
     refreshConsumerDirty();
     renderSelectedConsumer();
   });
@@ -969,6 +993,7 @@ export async function initConsumers(config: ConsumersAppConfig, schema: Consumer
   messagesByConsumer = await readStoredMessages();
   consumerErrorByKey = {};
   formDrafts = new Map();
+  renderedConsumerFormSignature = null;
   nextResponseHeaderId = 1;
   lastMessageSequenceByConsumer = {};
   finalPollByConsumer = {};

@@ -206,6 +206,30 @@ test("consumer custom response headers can be added and removed", async ({ page 
   await expect(rows).toHaveCount(1);
 });
 
+test("consumer response header row survives a message poll while being edited", async ({ page }) => {
+  await openConsumerResponse(page, 0);
+  const rows = page.locator("#cons-response-editor .response-header-row");
+  const initialCount = await rows.count();
+
+  await page.locator("#cons-response-editor").getByText("Add Header", { exact: true }).click();
+  await expect(rows).toHaveCount(initialCount + 1);
+
+  const keyInput = rows.last().locator("input.field-input").nth(0);
+  await keyInput.click();
+  await page.keyboard.type("x-poll");
+
+  // The message poll re-renders the panel every 2s; a blank row is not in the
+  // consumer config, so a rebuild would drop the row and the focused input.
+  await page.waitForTimeout(4500);
+
+  await expect(rows).toHaveCount(initialCount + 1);
+  await expect(keyInput).toHaveValue("x-poll");
+  await expect(keyInput).toBeFocused();
+
+  await page.keyboard.type("-tail");
+  await expect(keyInput).toHaveValue("x-poll-tail");
+});
+
 test("publisher and consumer save buttons are not dirty on initial load", async ({ page }) => {
   await openPublisherDefinition(page, 0);
   await expectSaveButtonClean(page, "#workspace-save-button");

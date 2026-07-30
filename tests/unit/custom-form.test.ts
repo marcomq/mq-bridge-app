@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
 type SchemaNode = Record<string, any>;
 
@@ -457,6 +457,13 @@ async function loadCustomForm() {
 }
 
 describe("custom form runtime", () => {
+  // Every test re-imports custom-form via vi.resetModules(). The first transform of that
+  // module graph costs ~2s, which would otherwise land inside one test's 5s timeout and
+  // flake on a loaded machine. Warm it here, where no per-test timeout applies.
+  beforeAll(async () => {
+    await loadCustomForm();
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
   });

@@ -1,0 +1,26 @@
+[book]
+title    = "mq-bridge"
+authors  = ["mq-bridge contributors"]
+language = "en"
+src      = "."
+
+[output.html]
+default-theme      = "light"
+preferred-dark-theme = "navy"
+site-url           = "/mq-bridge-app/"
+git-repository-url = "https://github.com/marcomq/mq-bridge-app"
+edit-url-template  = "https://github.com/marcomq/mq-bridge-app/edit/main/dev/docs/{path}"
+additional-css     = ["theme/custom.css"]
+
+[output.html.fold]
+enable = true
+level  = 1
+
+[output.html.search]
+enable = true
+
+[output.html.playground]
+runnable = false
+
+[build]
+build-dir = "book"

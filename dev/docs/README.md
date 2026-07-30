@@ -1,7 +1,24 @@
-# mq-bridge CLI Docs
+# mq-bridge Docs
 
-Docs for `mq-bridge copy --from <uri> --to <uri>`, the headless one-shot/
-continuous copy command.
+This directory is the source of the **mq-bridge documentation book** (built with
+[mdbook](https://rust-lang.github.io/mdBook/)) *and* the standalone Markdown pages it
+is assembled from. `SUMMARY.md` is the book's table of contents.
+
+## Building the book
+
+```bash
+# from repo root
+dev/docs/sync-engine-docs.sh     # vendor engine docs into dev/docs/engine/ (do this first)
+mdbook build dev/docs            # output → dev/docs/book/
+mdbook serve dev/docs --open     # live-reload preview
+```
+
+`dev/docs/engine/` and `dev/docs/book/` are build artifacts (git-ignored). The engine
+reference (`REFERENCE.md`, `CONFIGURATION.md`, `ARCHITECTURE.md`) is vendored from the
+sibling `mq-bridge` engine repo by `sync-engine-docs.sh` — **never edit those copies
+here; edit the source in `mq-bridge` and re-run the script.**
+
+## Key entry points
 
 - **[Quick Start](./quick-start.md)** — five working `copy` commands
   (Postgres → ClickHouse, Postgres CDC → Postgres, MQTT → Kafka, RabbitMQ →
@@ -10,7 +27,7 @@ continuous copy command.
   practical examples, and a link to the full option list.
 - **[URL Parameter Reference](./reference/)** — every connector's recognised
   query parameters (name, type, default, required, description),
-  auto-generated from the JSON Schemas `mq-bridge copy` uses to parse
+  auto-generated from the JSON Schemas `mq-bridge-app copy` uses to parse
   `--from`/`--to`. Regenerate with:
 
   ```bash
@@ -24,24 +41,25 @@ continuous copy command.
 
 ```text
 dev/docs/
-├── README.md              this file
-├── quick-start.md          workflow-first examples
-├── MCP.md                  MCP server mode (`mq-bridge-app mcp`)
-├── connectors/              hand-written, one page per connector
+├── SUMMARY.md              book table of contents
+├── book.toml               mdbook config (src = ".")
+├── sync-engine-docs.sh     vendors engine docs into engine/ (build step)
+├── README.md               this file
+├── introduction.md         book landing page
+├── INSTALL.md BUILD.md quick-start.md MCP.md IBM_MQ_SETUP.md   top-level pages
+├── getting-started/        run-forms, core concepts
+├── tutorials/              end-to-end, copy-pasteable walkthroughs
+├── cookbook/               short task-focused recipes
+├── operations/             deploying, observability, tuning, troubleshooting
+├── extending/              custom endpoints/middleware, contributing
+├── connectors/             hand-written, one page per connector
 │   ├── README.md
-│   ├── postgres.md
-│   ├── clickhouse.md
-│   ├── mqtt.md
-│   ├── kafka.md
-│   ├── rabbitmq.md
-│   ├── http.md
-│   ├── mongodb.md
-│   └── file.md
-└── reference/                generated, one page per connector — do not edit by hand
-    ├── README.md
-    ├── postgres.md
-    ├── clickhouse.md
-    └── ...
+│   └── postgres.md clickhouse.md mqtt.md kafka.md rabbitmq.md http.md mongodb.md file.md
+├── reference/              cli/mcp/bindings/endpoints (hand-written) +
+│   │                       per-connector URL params (generated — do not edit by hand)
+│   └── README.md postgres.md clickhouse.md ...
+├── engine/                 vendored from mq-bridge repo (git-ignored artifact)
+└── book/                   mdbook output (git-ignored)
 ```
 
 Connector pages are hand-written and stay that way: purpose, URL format, and

@@ -5,7 +5,7 @@ interface (port 8123 by default; 8443 for HTTPS).
 
 ## URL format
 
-```
+```text
 clickhouse://host[:port]?table=<name>[&database=<name>]
 ```
 
@@ -18,15 +18,15 @@ selects the endpoint kind on the CLI.
 **Bulk insert from a full-table Postgres read, one-shot:**
 
 ```bash
-mq-bridge copy --drain \
+mq-bridge-app copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
-  --to clickhouse://localhost:8123?table=orders&database=analytics
+  --to 'clickhouse://localhost:8123?table=orders&database=analytics'
 ```
 
 **Async insert for high-throughput streaming writes, continuous:**
 
 ```bash
-mq-bridge copy \
+mq-bridge-app copy \
   --from kafka://kafka.local:9092?topic=events \
   --to 'clickhouse://user:pass@ch.local:8123?table=events&database=analytics&async_insert=true'
 ```
@@ -34,8 +34,8 @@ mq-bridge copy \
 **Resumable, non-destructive read of an existing table into Kafka:**
 
 ```bash
-mq-bridge copy \
-  --from clickhouse://localhost:8123?table=events&database=analytics&cursor_column=id&cursor_id=events_export \
+mq-bridge-app copy \
+  --from 'clickhouse://localhost:8123?table=events&database=analytics&cursor_column=id&cursor_id=events_export' \
   --to kafka://kafka.local:9092?topic=events
 ```
 
@@ -52,5 +52,6 @@ from a query param — use a YAML route config for that.)
 | `columns` | Map target columns to `${payload:field}` / `${metadata:key}` tokens instead of inserting the whole JSON payload as one row. |
 | `async_insert` | Server-side buffered inserts for higher publisher throughput. |
 | `cursor_column` + `cursor_id` | Non-destructive, resumable reads of an existing table. |
+| `checkpoint_store` | (Consumer, `cursor_column` mode) Where to persist the resume cursor. ClickHouse can't do per-row cursor upserts, so a durable checkpoint needs an **external** store URL: `file://`, `postgres://`/`mysql://`, `mongodb://`, or `s3://`/`gs://`/`az://`/`abfs://`. Treated as a secret since it may embed credentials. |
 
 Full field list: [reference/clickhouse.md](../reference/clickhouse.md).
