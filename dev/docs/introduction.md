@@ -63,6 +63,8 @@ route code should still be able to receive a batch, process it, publish it, and 
 - Need exact fields and defaults? The [Reference](reference/endpoints.md) is authoritative.
 - Running it in production? See [Operations](operations/deploying.md), especially the
   [Performance tuning](operations/tuning.md) page.
+- Driving it from an AI agent? The same binary is an [MCP server](MCP.md) — the rows
+  move without entering the model's context.
 
 ## App vs. engine
 

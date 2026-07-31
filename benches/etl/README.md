@@ -403,6 +403,7 @@ benches/etl/run_mcp_bench.sh          # -> results/mcp_bench.json (+ a row in re
 REPEATS=3 LATENCY_CALLS=1000 benches/etl/run_mcp_bench.sh
 ```
 
+<!-- ANCHOR: mcp_results -->
 | Measurement | Result |
 | --- | --- |
 | Tool-call round-trip latency (1,000 calls) | **p50 0.065 ms** · p95 0.097 ms · p99 0.184 ms |
@@ -411,6 +412,7 @@ REPEATS=3 LATENCY_CALLS=1000 benches/etl/run_mcp_bench.sh
 | `copy` CLI baseline, same dataset (§6 untyped) | 766,283 rows/s (session range 766,283–788,022) |
 | Agent tool traffic to move the whole dataset | **1,482 bytes** (~370 tokens, 3 calls) |
 | The same 116.3 MiB through a model's context | ~30.5M tokens |
+<!-- ANCHOR_END: mcp_results -->
 
 - **The MCP interface costs one round-trip, not a per-row tax.** Client wall-clock
   is ~4% under the `copy` CLI's nearest row and inside its ~2.5% run-to-run spread
