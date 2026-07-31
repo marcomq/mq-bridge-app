@@ -435,7 +435,7 @@ jobs:
     name: Update Homebrew tap
     # Needs the jobs that publish the CLI tarballs and the Tauri .dmg, because
     # render.sh streams those assets to compute their sha256.
-    needs: [metadata, build-release, build-tauri-release]
+    needs: [metadata, build-release, build-linux-arm64-asset, build-tauri-release]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -475,3 +475,96 @@ jobs:
           git add Formula/mq-bridge-app.rb Casks/mq-bridge.rb
           git commit -m "mq-bridge ${VERSION}" || exit 0
           git push
+
+  publish-mcp-registry:
+    name: Publish to MCP Registry
+    # The registry validates that every package in server.json actually exists
+    # and carries the ownership marker, so both the ghcr manifest and the
+    # crates.io release must land first.
+    needs: [metadata, publish-manifest, publish-crates-io]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for `mcp-publisher login github-oidc`.
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pin server.json to the release version
+        env:
+          VERSION: ${{ needs.metadata.outputs.cargo_version }}
+        run: |
+          python3 - "$VERSION" <<'PY'
+          import json, sys
+          version = sys.argv[1]
+          with open("server.json") as f:
+              server = json.load(f)
+          server["version"] = version
+          for pkg in server.get("packages", []):
+              if pkg["registryType"] == "oci":
+                  pkg["identifier"] = pkg["identifier"].rsplit(":", 1)[0] + ":" + version
+              else:
+                  pkg["version"] = version
+          with open("server.json", "w") as f:
+              json.dump(server, f, indent=2)
+              f.write("\n")
+          PY
+          cat server.json
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+
+      - name: Publish
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish
+
+  build-linux-arm64-asset:
+    name: Extract linux/arm64 CLI asset
+    # The arm64 binary is already cross-compiled by the docker job (the
+    # Dockerfile carries the cmake/pkg-config toolchain that makes librdkafka
+    # and OpenSSL build for aarch64). Rather than reproduce that with `cross`,
+    # lift the finished binary out of the image that was just pushed.
+    needs: [metadata, release, build-linux-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract the binary from the arm64 image
+        env:
+          IMAGE: ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.cargo_version }}-arm64
+        run: |
+          # `create` + `cp` only unpack the filesystem, so no QEMU is needed to
+          # pull a foreign-arch binary out of the image.
+          docker pull --platform linux/arm64 "$IMAGE"
+          CID="$(docker create --platform linux/arm64 "$IMAGE")"
+          mkdir staging
+          docker cp "$CID:/usr/local/bin/mq-bridge-app" staging/mq-bridge-cli
+          docker rm "$CID"
+          file staging/mq-bridge-cli
+
+      - name: Package artifacts
+        run: |
+          cp LICENSE README.md staging/
+          tar -czf mq-bridge-cli-aarch64-unknown-linux-gnu.tar.gz -C staging .
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.metadata.outputs.release_tag }}
+          files: mq-bridge-cli-aarch64-unknown-linux-gnu.tar.gz

@@ -61,6 +61,18 @@ On **Windows**, install the CLI with `cargo binstall mq-bridge-app`, or download
 
 → Every install method and platform (including the IBM MQ build and Docker) is in the **[Install guide](https://marcomq.github.io/mq-bridge-app/INSTALL.html)**; to compile from source see [Building](https://marcomq.github.io/mq-bridge-app/BUILD.html).
 
+## Use it from an AI agent
+
+The same binary is an MCP server, so an agent can move data without the rows passing through its context:
+
+```bash
+mq-bridge-app mcp install          # register with Claude Code / Claude Desktop / Cursor
+```
+
+- MCP Registry name: `mcp-name: io.github.marcomq/mq-bridge-app`
+
+→ Tools, transports, and the token-cost measurement: **[MCP server](https://marcomq.github.io/mq-bridge-app/MCP.html)**.
+
 ## Features
 
 - **Multi-protocol bridging** — Kafka, IBM MQ, NATS, AMQP (RabbitMQ), MQTT, AWS SQS, gRPC, ZeroMQ, MongoDB, sqlx (MySQL/MariaDB/PostgreSQL), HTTP, and files. Act as an HTTP server *and* client, with full request-response support.
@@ -96,7 +108,7 @@ Use Postman/Bruno when your main job is crafting and sharing API requests; use `
 
 ## Performance
 
-A 1,000,000-row Postgres → JSONL ETL job sustained **266,951 rows/s** at **~20 MiB peak RSS** (~17.4x faster and ~30x leaner than Meltano on the same machine). A CSV → JSONL conversion hit **784,313 rows/s**; the same job **through an MCP tool call** ran at **735,330 rows/s** while costing an agent a *flat* ~370 tokens regardless of row count, because the rows never enter the model's context.
+A CSV → JSONL conversion hit **784,313 rows/s**; the same job **through an MCP tool call** ran at **735,330 rows/s** while costing an agent a *flat* ~370 tokens regardless of row count, because the rows never enter the model's context.
 
 → Full numbers, methodology, and knobs: [Performance tuning](https://marcomq.github.io/mq-bridge-app/operations/tuning.html) and [`benches/etl/README.md`](benches/etl/README.md).
 

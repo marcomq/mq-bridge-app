@@ -34,6 +34,7 @@ sha() {
 echo "resolving checksums for ${REPO} ${VERSION} ..." >&2
 MAC_ARM="$(sha "mq-bridge-cli-aarch64-apple-darwin.tar.gz")"
 LINUX_X64="$(sha "mq-bridge-cli-x86_64-unknown-linux-gnu.tar.gz")"
+LINUX_ARM64="$(sha "mq-bridge-cli-aarch64-unknown-linux-gnu.tar.gz")"
 DMG="$(sha "mq-bridge_${CARGO_VERSION}_aarch64.dmg")"
 
 mkdir -p "${OUTDIR}/Formula" "${OUTDIR}/Casks"
@@ -60,6 +61,10 @@ class MqBridgeApp < Formula
     on_intel do
       url "${BASE}/mq-bridge-cli-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "${LINUX_X64}"
+    end
+    on_arm do
+      url "${BASE}/mq-bridge-cli-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "${LINUX_ARM64}"
     end
   end
 
