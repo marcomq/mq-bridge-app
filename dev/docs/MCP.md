@@ -82,6 +82,52 @@ Under `stdio` the client spawns the server process, so a rebuilt binary is only
 picked up after the client restarts the server — an edit to `mcp.rs` alone will
 not change the behaviour of an already-running session.
 
+## MCP Registry (`server.json`)
+
+`mcp install` and the registry solve different problems, and neither needs the
+other:
+
+| | `mq-bridge-app mcp install` | MCP Registry |
+| --- | --- | --- |
+| For | Someone who already has the binary | Someone who has not heard of it yet |
+| Does | Writes the client config directly | Publishes discovery metadata only |
+| Needs `server.json` | No | Yes |
+
+So `install` remains the shortest path on a machine that already has the binary
+— it is not superseded by publishing to the registry.
+
+[`server.json`](https://github.com/marcomq/mq-bridge-app/blob/main/server.json)
+at the repository root is the registry entry. It publishes the server under
+`io.github.marcomq/mq-bridge-app` and offers two package types, both of which
+run the same `mcp --transport=stdio` command:
+
+| `registryType` | Identifier | Requires |
+| --- | --- | --- |
+| `oci` | `ghcr.io/marcomq/mq-bridge-app:<version>` | Docker; no Rust toolchain |
+| `cargo` | `mq-bridge-app` | `cargo install`, so a Rust toolchain |
+
+The registry only stores metadata — it never hosts the artifact — so it verifies
+that each package really belongs to this project by looking for an **ownership
+marker** inside the published artifact itself:
+
+- **OCI** — a `LABEL io.modelcontextprotocol.server.name` in the [`Dockerfile`](https://github.com/marcomq/mq-bridge-app/blob/main/Dockerfile) final stage.
+- **Cargo** — an `mcp-name:` line in the crate README, which crates.io renders. It must be *visible* markdown: crates.io strips HTML comments during rendering, so the hidden `<!-- mcp-name: … -->` form that works for PyPI and NuGet is silently dropped here.
+
+Both markers must equal the `name` field in `server.json`.
+
+Publishing happens in the `publish-mcp-registry` job of the release workflow. It
+runs after the ghcr manifest and the crates.io release exist, rewrites the
+versions in `server.json` from the release tag, authenticates with
+`mcp-publisher login github-oidc` (the `io.github.*` namespace is proven by the
+workflow's own OIDC token, so there is no secret to rotate) and publishes. To do
+it by hand:
+
+```bash
+brew install mcp-publisher
+mcp-publisher login github
+mcp-publisher publish
+```
+
 ## Tools
 
 | Tool | Purpose |
