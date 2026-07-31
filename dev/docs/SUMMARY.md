@@ -7,6 +7,7 @@
 - [Quick start: `copy`](quick-start.md)
 - [The three ways to run it](getting-started/run-forms.md)
 - [The desktop / web UI](getting-started/desktop-ui.md)
+- [MCP server (for AI agents)](MCP.md)
 - [Learn the architecture](engine/architecture.md)
 - [How the app is built](getting-started/app-architecture.md)
 - [Core concepts](getting-started/concepts.md)
@@ -70,7 +71,6 @@
 - [Middleware & structural endpoints](engine/reference.md)
 - [Configuration grammar](engine/configuration.md)
 - [CLI commands](reference/cli.md)
-- [MCP server](MCP.md)
 - [Language bindings API](reference/bindings.md)
 - [IBM MQ setup](IBM_MQ_SETUP.md)
 

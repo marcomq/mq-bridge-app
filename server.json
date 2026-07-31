@@ -4,7 +4,7 @@
   "title": "mq-bridge-app",
   "description": "Move data between 15+ databases, queues and files at high throughput, without it entering context",
   "version": "0.2.11",
-  "websiteUrl": "https://marcomq.github.io/mq-bridge-app/",
+  "websiteUrl": "https://marcomq.github.io/mq-bridge-app/MCP.html",
   "repository": {
     "url": "https://github.com/marcomq/mq-bridge-app",
     "source": "github"
