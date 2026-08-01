@@ -22,7 +22,7 @@ engine moves the bytes. Moving a 116.3 MiB dataset costs three tool calls and
 | | Registry name | `io.github.marcomq/mq-bridge-app` |
 | --- | --- | --- |
 | **Transports** | `stdio`, streamable HTTP | |
-| **Tools** | 7 | [see below](#tools) |
+| **Tools** | 8 | [see below](#tools) |
 | **Connectors** | 15+ | [see below](#endpoints) |
 | **Install** | `mq-bridge-app mcp install` | Docker / cargo / Homebrew / binaries — [Installation](INSTALL.md) |
 
@@ -70,6 +70,7 @@ transport owns stdout for the protocol itself.
 | `start_route` | `route` (`input`/`output`), `name`, `batch_size`, `concurrency`, `capture_last` | Run a route moving messages from source to sink. Returns the route name. |
 | `list_routes` | — | Every route started by this server, with live connection health and rates. |
 | `route_status` | `name` (optional) | Health, totals and rates for one route, or all of them. |
+| `wait_route` | `name`, `timeout_ms` | Block until a route finishes, then report how it ended. One call instead of a polling loop. |
 | `route_messages` | `name` | The most recent messages captured on a route. Requires `capture_last`; reads drain the buffer. |
 | `stop_route` | `name` | Stop a route; returns total messages and the rate it achieved. |
 | `server_info` | — | Crate version, git hash, build profile and build time. |
@@ -150,14 +151,62 @@ Alongside `input` and `output`, a route accepts `batch_size`, `concurrency`,
 `exit_on_empty` (drain the source, then exit) and `capture_last`. Without
 `exit_on_empty` a route polls indefinitely until `stop_route`.
 
-`batch_size` and `concurrency` are top-level `start_route` arguments, not fields
-inside `route` — the MCP server applies the tuned app defaults (**1024** and
-**4**) rather than the library's conservative `1`/`1`.
+`batch_size` and `concurrency` may be written inside `route` or as top-level
+`start_route` arguments. They resolve most-specific-first:
+
+1. the top-level argument, if given;
+2. otherwise the same key inside `route`, if given;
+3. otherwise the app default — **1024** and **4**, rather than the library's
+   conservative `1`/`1`.
+
+Only a value you never wrote is replaced, so an explicit `1` is honoured either
+way. `start_route` echoes the resolved `batch_size`/`concurrency` in its result.
 
 `capture_last: N` keeps the last N messages that flow through the route for
 `route_messages` to return. It is off by default: captured payloads are held in
 memory and handed to the model verbatim, which is exactly what "the rows never
 enter the context" otherwise avoids. Use it to *sample* a stream, not to move it.
+
+### Middleware
+
+Either endpoint may carry a `middlewares` array, so delivery behaviour is added
+without changing the route:
+
+```json
+{
+  "input":  {"kafka": {"url": "localhost:9092", "topic": "orders", "group_id": "agent"}},
+  "output": {
+    "sqlx": {"url": "postgres://user:pass@localhost:5432/db", "table": "orders"},
+    "middlewares": [
+      {"retry": {"max_attempts": 5}},
+      {"dlq": {"endpoint": {"file": {"path": "/tmp/failed.jsonl"}}}}
+    ]
+  }
+}
+```
+
+Available: `retry`, `dlq`, `deduplication`, `limiter`, `transform`, `compression`,
+`encryption`, `buffer`, `delay`, `weak_join`, `cookie_jar`, `metrics`. Each is
+documented with its options in the [Cookbook](cookbook/retries.md) and
+[Middleware reference](engine/reference.md).
+
+### Waiting for a job to finish
+
+For a job started with `exit_on_empty`, call `wait_route` rather than polling
+`route_status` in a loop:
+
+```json
+{"name": "redis-to-postgres", "timeout_ms": 300000}
+```
+
+It returns once the route's task ends, reporting `finished`, `outcome`,
+`messages`, `elapsed_s` and `average_messages_per_second`. On timeout it returns
+`finished: false` and **leaves the route running**, so the agent can wait again
+or stop it. The default timeout is 60 s and the ceiling is 1 h; the server polls
+internally every 50 ms, which the client never pays for.
+
+This is what keeps agent token cost flat: one call covers a job of any duration,
+where a polling loop costs a call per tick.
 
 ### Route status
 

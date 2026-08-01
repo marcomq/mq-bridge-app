@@ -97,6 +97,41 @@ struct PublishArgs {
     name: Option<String>,
 }
 
+/// The `route` argument, together with which tuning keys the caller actually
+/// wrote inside it.
+///
+/// `RouteOptions::{concurrency,batch_size}` are plain `usize` with serde
+/// defaults, so a deserialized `Route` cannot say whether the caller omitted
+/// them or set them to the library's default of `1`. Going through the raw JSON
+/// preserves that distinction, which is what lets `start_route` fill in the app
+/// defaults *only* where the caller said nothing.
+#[derive(Debug)]
+struct RouteArg {
+    route: Route,
+    /// `concurrency` as written inside `route`, or `None` if the key was absent.
+    concurrency: Option<usize>,
+    /// `batch_size` as written inside `route`, or `None` if the key was absent.
+    batch_size: Option<usize>,
+}
+
+impl<'de> Deserialize<'de> for RouteArg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        // A key that is present but malformed reads as `None` here and is
+        // reported by `Route`'s own deserializer below, so this never has to
+        // raise an error of its own.
+        let written = |key: &str| value.get(key).and_then(|v| v.as_u64()).map(|v| v as usize);
+        let concurrency = written("concurrency");
+        let batch_size = written("batch_size");
+        let route = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            route,
+            concurrency,
+            batch_size,
+        })
+    }
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct StartRouteArgs {
     /// Optional unique route name (auto-generated if omitted).
@@ -105,21 +140,23 @@ struct StartRouteArgs {
     /// The route to run: an `input` (source) endpoint and an `output` (sink)
     /// endpoint — each keyed by connector type, e.g.
     /// `{"input": {"nats": {"url": "localhost:4222", "subject": "orders"}},
-    ///   "output": {"file": {"path": "/tmp/out.jsonl"}}}` — plus `exit_on_empty`
-    /// (drain the source then exit). Use `{"null": null}` as the `output` to discard
-    /// messages. Set `concurrency`/`batch_size` via the dedicated fields below, not
-    /// inside this object.
+    ///   "output": {"file": {"path": "/tmp/out.jsonl"}}}` — plus route options such
+    /// as `exit_on_empty` (drain the source then exit), `concurrency` and
+    /// `batch_size`. Use `{"null": null}` as the `output` to discard messages.
     ///
     /// A `file`/`object_store` source must repeat the `compression`/`encryption`
     /// its data was written with — neither is auto-detected, and a mismatch ends
     /// the route as `completed` having moved few or no messages rather than
     /// failing, so check the moved-message count.
-    route: Route,
-    /// Route concurrency. Omit for the app default (4). Higher values parallelize
-    /// sink writes; sources that read serially do not speed up.
+    #[schemars(with = "Route")]
+    route: RouteArg,
+    /// Route concurrency. Overrides `concurrency` inside `route` if both are given;
+    /// if neither is given the app default (4) applies, not the library's 1. Higher
+    /// values parallelize sink writes; sources that read serially do not speed up.
     #[serde(default)]
     concurrency: Option<usize>,
-    /// Batch size. Omit for the app default (1024).
+    /// Batch size. Overrides `batch_size` inside `route` if both are given; if
+    /// neither is given the app default (1024) applies, not the library's 1.
     #[serde(default)]
     batch_size: Option<usize>,
     /// Keep the last N messages that flow through this route, readable with
@@ -133,6 +170,17 @@ struct StartRouteArgs {
 struct RouteNameArg {
     /// The route name.
     name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WaitRouteArgs {
+    /// The route name.
+    name: String,
+    /// How long to wait before giving up and returning `finished: false`, in
+    /// milliseconds. Defaults to 60000; values above 3600000 are clamped. The
+    /// route keeps running when the wait times out.
+    #[serde(default)]
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -517,29 +565,49 @@ impl BridgeMcp {
         description = "Create and run a route that moves messages from its `input` (source) \
             endpoint to its `output` (sink) endpoint, each keyed by connector type. Supports \
             route options like `concurrency`, `batch_size`, and `exit_on_empty` (drain the source \
-            then exit; otherwise the route runs continuously until stopped). Returns the route \
-            name for use with route_status / stop_route.",
+            then exit; otherwise the route runs continuously until stopped). Either endpoint may \
+            carry a `middlewares` array — `retry`, `dlq`, `deduplication`, `limiter`, `transform`, \
+            `compression`, `encryption`, `buffer`, `delay`, `weak_join`, `cookie_jar`, `metrics` — \
+            e.g. `{\"sqlx\": {...}, \"middlewares\": [{\"retry\": {\"max_attempts\": 3}}]}`. \
+            `concurrency`/`batch_size` may be given inside `route` or as top-level arguments \
+            — the top-level argument wins, and an unset value becomes the app default \
+            (4 / 1024). Returns the route name for use with wait_route / route_status / \
+            stop_route, plus the tuning that took effect.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn start_route(
         &self,
-        Parameters(mut args): Parameters<StartRouteArgs>,
+        Parameters(args): Parameters<StartRouteArgs>,
     ) -> Result<CallToolResult, McpError> {
         let name = args
             .name
             .map(|n| n.trim().to_string())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(auto_route_name);
-        let exit_on_empty = args.route.options.exit_on_empty;
         let capture_last = args.capture_last.unwrap_or(0);
 
-        // `route.options.{concurrency,batch_size}` arrive already filled to the
-        // library's serde defaults (1/1), so "omitted" is indistinguishable here.
-        // The dedicated `concurrency`/`batch_size` args are the single source of
-        // truth: apply them with the app defaults, overriding whatever the route
-        // JSON carried for these two fields.
-        args.route.options.concurrency = args.concurrency.unwrap_or(crate::DEFAULT_CONCURRENCY);
-        args.route.options.batch_size = args.batch_size.unwrap_or(crate::DEFAULT_BATCH_SIZE);
+        // Both spellings are accepted, so resolve them in one place, most
+        // specific first: the dedicated argument, else the same key written
+        // inside `route`, else the app default. Only a value the caller never
+        // wrote is replaced — an explicit `1` in either position survives, which
+        // it could not if these were read off the deserialized `RouteOptions`
+        // (see `RouteArg`).
+        let RouteArg {
+            mut route,
+            concurrency: in_route_concurrency,
+            batch_size: in_route_batch_size,
+        } = args.route;
+        let concurrency = args
+            .concurrency
+            .or(in_route_concurrency)
+            .unwrap_or(crate::DEFAULT_CONCURRENCY);
+        let batch_size = args
+            .batch_size
+            .or(in_route_batch_size)
+            .unwrap_or(crate::DEFAULT_BATCH_SIZE);
+        route.options.concurrency = concurrency;
+        route.options.batch_size = batch_size;
+        let exit_on_empty = route.options.exit_on_empty;
 
         // Claim the name before the potentially slow `run()`, then release the
         // locks so other route tools aren't blocked on startup. Reserving up
@@ -556,7 +624,6 @@ impl BridgeMcp {
         // Wrap the route in the same counting/capturing handler the web UI puts on
         // its consumer routes, so `route_status` can report a live message rate.
         // The handler forwards every message unchanged unless the sink is `null`.
-        let route = args.route;
         let publishes = !matches!(route.output.endpoint_type, EndpointType::Null);
         let counter = self.metrics.counter_for(&name).await;
         let capture = (capture_last > 0)
@@ -599,6 +666,10 @@ impl BridgeMcp {
             "route": name,
             "exit_on_empty": exit_on_empty,
             "capture_last": capture_last,
+            // Echo the resolved tuning, so the caller sees what actually took
+            // effect rather than inferring it from the precedence rules.
+            "concurrency": concurrency,
+            "batch_size": batch_size,
         })))
     }
 
@@ -661,6 +732,58 @@ impl BridgeMcp {
                 self.all_routes_json().await,
             ))),
         }
+    }
+
+    #[tool(
+        description = "Block until a route finishes, then report how it ended. Use this instead of \
+            polling `route_status` for a job started with `exit_on_empty`: it costs one tool call \
+            regardless of how long the job runs. Returns `finished` (false if `timeout_ms` elapsed \
+            first — the route is left running), the `outcome`, the total messages moved and the \
+            rate achieved. Default timeout 60000 ms, maximum 3600000 ms.",
+        annotations(read_only_hint = true)
+    )]
+    async fn wait_route(
+        &self,
+        Parameters(args): Parameters<WaitRouteArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let timeout = Duration::from_millis(
+            args.timeout_ms
+                .unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+                .min(MAX_WAIT_TIMEOUT_MS),
+        );
+
+        // The engine exposes completion as a poll (`RouteHandle::outcome`), not a
+        // notification, so this polls too — but server-side, at a tick the client
+        // never pays for. The route lock is held only for the check, so
+        // `stop_route` and the other tools stay responsive while a wait is parked.
+        let started = tokio::time::Instant::now();
+        let deadline = started + timeout;
+        let outcome = loop {
+            {
+                let routes = self.routes.lock().await;
+                let Some(handle) = routes.get(&args.name) else {
+                    return Err(invalid(format!("no route named '{}'", args.name)));
+                };
+                if let Some(outcome) = handle.outcome() {
+                    break Some(outcome);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break None;
+            }
+            tokio::time::sleep(WAIT_POLL_INTERVAL.min(deadline - tokio::time::Instant::now())).await;
+        };
+
+        let timing = self.metrics.timing(&args.name).await;
+        Ok(ok_json(serde_json::json!({
+            "route": args.name,
+            "finished": outcome.is_some(),
+            "outcome": outcome,
+            "waited_ms": started.elapsed().as_millis() as u64,
+            "messages": self.metrics.sequence(&args.name).await,
+            "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
+            "average_messages_per_second": timing.map(|t| round2(t.average_throughput)),
+        })))
     }
 
     #[tool(
@@ -772,7 +895,11 @@ impl ServerHandler for BridgeMcp {
              \"...\"}}. Use `publish` to \
              send messages to a target; `start_route` to move messages from a source (`input`) to \
              a sink (`output`), optionally setting `exit_on_empty` to drain-then-exit; and \
-             `list_routes` / `route_status` / `stop_route` to manage running routes.",
+             `list_routes` / `route_status` / `stop_route` to manage running routes. Prefer \
+             `wait_route` over polling `route_status` for a drain-then-exit job: it is one call \
+             however long the job runs. Either endpoint may carry a `middlewares` array (retry, \
+             dlq, deduplication, limiter, transform, compression, encryption, ...) to add delivery \
+             behaviour without changing the route.",
         )
     }
 }
@@ -783,6 +910,16 @@ fn auto_route_name() -> String {
     static ROUTE_SEQ: AtomicU64 = AtomicU64::new(1);
     format!("mcp-route-{}", ROUTE_SEQ.fetch_add(1, Ordering::Relaxed))
 }
+
+/// Default and ceiling for `wait_route`'s timeout. The ceiling keeps a client's
+/// own request timeout, not the server, from being what ends a long wait.
+const DEFAULT_WAIT_TIMEOUT_MS: u64 = 60_000;
+const MAX_WAIT_TIMEOUT_MS: u64 = 36_000_000;
+
+/// How often `wait_route` re-checks a route for completion. Matches the poll the
+/// bench client used: fine enough not to distort a sub-second job, coarse enough
+/// not to perturb the run it is observing.
+const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How often the server reports its routes and publishers to a local UI.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
@@ -948,4 +1085,47 @@ async fn run_http(server: BridgeMcp, bind: String) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DEFAULT_BATCH_SIZE, DEFAULT_CONCURRENCY};
+
+    fn parse(route: serde_json::Value) -> RouteArg {
+        serde_json::from_value(route).expect("route parses")
+    }
+
+    /// The two tuning knobs may be written inside `route` or as a top-level
+    /// `start_route` argument. Presence, not value, decides: an explicit `1`
+    /// must survive even though it equals the library's own default.
+    #[test]
+    fn route_arg_records_only_the_tuning_keys_that_were_written() {
+        let bare = parse(serde_json::json!({ "input": { "null": null } }));
+        assert_eq!(bare.concurrency, None);
+        assert_eq!(bare.batch_size, None);
+
+        let tuned = parse(serde_json::json!({
+            "input": { "null": null },
+            "concurrency": 1,
+            "batch_size": 8,
+        }));
+        assert_eq!(tuned.concurrency, Some(1));
+        assert_eq!(tuned.batch_size, Some(8));
+        // The library fills its own defaults in, which is why presence has to be
+        // read off the raw JSON rather than off `RouteOptions`.
+        assert_eq!(bare.route.options.concurrency, 1);
+    }
+
+    #[test]
+    fn tuning_precedence_is_argument_then_route_then_app_default() {
+        let resolve = |arg: Option<usize>, in_route: Option<usize>, default: usize| {
+            arg.or(in_route).unwrap_or(default)
+        };
+        assert_eq!(resolve(Some(8), Some(2), DEFAULT_CONCURRENCY), 8);
+        assert_eq!(resolve(None, Some(2), DEFAULT_CONCURRENCY), 2);
+        assert_eq!(resolve(None, Some(1), DEFAULT_CONCURRENCY), 1);
+        assert_eq!(resolve(None, None, DEFAULT_CONCURRENCY), DEFAULT_CONCURRENCY);
+        assert_eq!(resolve(None, None, DEFAULT_BATCH_SIZE), DEFAULT_BATCH_SIZE);
+    }
 }
