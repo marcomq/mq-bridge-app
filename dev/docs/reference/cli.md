@@ -95,8 +95,10 @@ mq-bridge-app copy \
   --drain
 ```
 
-- Names: `retry`, `metrics`, `dlq`, `deduplication`, `delay`, `limiter`, `buffer`,
-  `weak_join`, `cookie_jar`, `random_panic`, `custom` (`-` is accepted for `_`).
+- Names: `retry`, `metrics`, `dlq`, `deduplication`, `transform`, `delay`, `limiter`,
+  `buffer`, `weak_join`, `cookie_jar`, `random_panic`, `custom` (`-` is accepted for `_`).
+- The `compression` and `encryption` middleware are **not** available in this inline syntax —
+  configure them in a YAML/JSON config file (or over [MCP](../MCP.md)) instead.
 - A middleware with no params needs no `?` — `|metrics`.
 - `dlq`'s `endpoint` is itself a URL-encoded endpoint URI:
   `|dlq?endpoint=file%3A%2F%2F%2Ftmp%2Ffailed.jsonl`.

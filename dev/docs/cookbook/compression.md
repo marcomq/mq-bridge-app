@@ -1,7 +1,16 @@
 # Compression
 
+There are **two kinds of compression**, both behind the `compression` feature:
+
+- the **batch `compression` field** on the `file` / `object_store` endpoints — compresses whole
+  write batches, so the output stays readable with `zcat` / `lz4 -d`;
+- the [**`compression` middleware**](#the-compression-middleware) — compresses each message
+  *payload*, so it works over any transport (Kafka, NATS, HTTP, …), not just files.
+
+## Endpoint batch compression
+
 The `file` and `object_store` endpoints can compress each batch on write with the
-`compression` field (requires the `compression` feature):
+`compression` field:
 
 ```yaml
 output:
@@ -41,6 +50,38 @@ emitted as messages.
 
 File compression supports only the default `consume` mode. `csv` works too: the header
 row is written into the first member, so the decoded stream is a normal CSV file.
+
+## The `compression` middleware
+
+To compress payloads **over the wire** — a Kafka topic, a NATS subject, an HTTP body — attach
+the [`compression`](../engine/reference.md#compression) middleware instead. It compresses each
+message payload on the output side and decompresses it on the input side; metadata and routing
+keys are untouched. It works on **input and output**:
+
+```yaml
+orders_bridge:
+  input:
+    middlewares:
+      - compression: { algorithm: zstd }
+    kafka: { topic: "orders", url: "localhost:9092" }
+  output:
+    middlewares:
+      - compression: { algorithm: zstd }
+    nats: { subject: "orders.out", url: "nats://localhost:4222" }
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `algorithm` | `zstd` | `none` \| `gzip` \| `lz4` \| `zstd`; `none` is a passthrough |
+| `max_decompressed_bytes` | unset | consumer-side bomb guard; exceeding it is a permanent error |
+
+Put the **same** `algorithm` on both sides of a route. Each payload is framed independently, so
+unlike the endpoint field this is only readable through a matching consumer — a truncated or
+corrupt frame is a permanent consumer error rather than an endlessly re-read poison message.
+
+> This middleware is available in YAML/JSON config and over [MCP](../MCP.md). The `copy` CLI's
+> inline `|middleware` syntax does **not** yet accept it — use a config file for compressed
+> transports.
 
 ## Compression *and* encryption
 

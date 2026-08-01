@@ -126,9 +126,13 @@ connection errors, with exponential backoff (`initial_interval_ms`, `multiplier`
 
 ## Compression & encryption cost
 
-- **Compression** (`file` / `object_store` `compression: none|gzip|lz4|zstd`) trades CPU for
-  smaller output. `lz4` is cheapest; `zstd` compresses best; `gzip` is roughly 33% slower than
-  zstd at similar ratios in practice. See the [Compression](../cookbook/compression.md) recipe.
+- **Compression** trades CPU for smaller output, whether it's the `file` / `object_store` batch
+  field (`compression: none|gzip|lz4|zstd`) or the
+  [`compression` middleware](../engine/reference.md#compression) compressing payloads over the
+  wire. `lz4` is cheapest; `zstd` compresses best; `gzip` is roughly 33% slower than zstd at
+  similar ratios in practice. The middleware frames **per message**, so it pays its codec cost
+  far more often than the batch field — prefer the endpoint field when the sink is a file or
+  object. See the [Compression](../cookbook/compression.md) recipe.
 - **Encryption** costs an AEAD seal/open per batch. Do **not** stack the
   [`encryption`](../engine/reference.md#encryption) middleware on top of a sink's batch
   `compression` — ciphertext does not compress; use the file endpoints' own compress-then-encrypt
