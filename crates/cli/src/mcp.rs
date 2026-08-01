@@ -177,7 +177,7 @@ struct WaitRouteArgs {
     /// The route name.
     name: String,
     /// How long to wait before giving up and returning `finished: false`, in
-    /// milliseconds. Defaults to 60000; values above 3600000 are clamped. The
+    /// milliseconds. Defaults to 60000; values above 18000000 are clamped. The
     /// route keeps running when the wait times out.
     #[serde(default)]
     timeout_ms: Option<u64>,
@@ -650,8 +650,19 @@ impl BridgeMcp {
         let handle = match route.run(&name).await {
             Ok(handle) => handle,
             Err(e) => {
-                // Startup failed, so release the name for a later retry.
+                // Startup failed, so release the name for a later retry — and with
+                // it the counter created above. Leaving it behind would keep the
+                // sampler working on a key no route will ever feed, and a retry
+                // under the same name would inherit the failed attempt's start
+                // time, so its `elapsed_s` and average rate would cover the
+                // startup that never happened. Any capture buffer is dropped for
+                // the same reason: it outlives the route in a process-global
+                // registry keyed by topic.
                 self.starting.lock().await.remove(&name);
+                self.metrics.forget(&name).await;
+                if capture_last > 0 {
+                    MessageCapture::open(&capture_topic(&name)).drain();
+                }
                 return Err(internal(format!("failed to start route '{name}': {e}")));
             }
         };
@@ -739,7 +750,8 @@ impl BridgeMcp {
             polling `route_status` for a job started with `exit_on_empty`: it costs one tool call \
             regardless of how long the job runs. Returns `finished` (false if `timeout_ms` elapsed \
             first — the route is left running), the `outcome`, the total messages moved and the \
-            rate achieved. Default timeout 60000 ms, maximum 3600000 ms.",
+            rate achieved. An `outcome` of `failed` carries the cause in `error`. Default timeout \
+            60000 ms, maximum 18000000 ms.",
         annotations(read_only_hint = true)
     )]
     async fn wait_route(
@@ -758,18 +770,23 @@ impl BridgeMcp {
         // `stop_route` and the other tools stay responsive while a wait is parked.
         let started = tokio::time::Instant::now();
         let deadline = started + timeout;
-        let outcome = loop {
+        // The route's error is read under the same lock as its outcome: a bare
+        // `outcome: "failed"` says nothing about *why*, and the caller would have
+        // to follow up with `route_status` to find out. The CLI already prints
+        // the cause on a permanent error, so dropping it here made the two
+        // interfaces disagree about the same failure.
+        let (outcome, error) = loop {
             {
                 let routes = self.routes.lock().await;
                 let Some(handle) = routes.get(&args.name) else {
                     return Err(invalid(format!("no route named '{}'", args.name)));
                 };
                 if let Some(outcome) = handle.outcome() {
-                    break Some(outcome);
+                    break (Some(outcome), handle.status().error);
                 }
             }
             if tokio::time::Instant::now() >= deadline {
-                break None;
+                break (None, None);
             }
             tokio::time::sleep(WAIT_POLL_INTERVAL.min(deadline - tokio::time::Instant::now())).await;
         };
@@ -779,6 +796,7 @@ impl BridgeMcp {
             "route": args.name,
             "finished": outcome.is_some(),
             "outcome": outcome,
+            "error": error,
             "waited_ms": started.elapsed().as_millis() as u64,
             "messages": self.metrics.sequence(&args.name).await,
             "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
@@ -914,7 +932,7 @@ fn auto_route_name() -> String {
 /// Default and ceiling for `wait_route`'s timeout. The ceiling keeps a client's
 /// own request timeout, not the server, from being what ends a long wait.
 const DEFAULT_WAIT_TIMEOUT_MS: u64 = 60_000;
-const MAX_WAIT_TIMEOUT_MS: u64 = 36_000_000;
+const MAX_WAIT_TIMEOUT_MS: u64 = 18_000_000;
 
 /// How often `wait_route` re-checks a route for completion. Matches the poll the
 /// bench client used: fine enough not to distort a sub-second job, coarse enough
@@ -1127,5 +1145,550 @@ mod tests {
         assert_eq!(resolve(None, Some(1), DEFAULT_CONCURRENCY), 1);
         assert_eq!(resolve(None, None, DEFAULT_CONCURRENCY), DEFAULT_CONCURRENCY);
         assert_eq!(resolve(None, None, DEFAULT_BATCH_SIZE), DEFAULT_BATCH_SIZE);
+    }
+}
+
+/// Exercises the MCP tools the way a client does: real endpoints, real routes,
+/// results read back out of the returned `CallToolResult` JSON.
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn params<T: for<'de> Deserialize<'de>>(value: serde_json::Value) -> Parameters<T> {
+        Parameters(serde_json::from_value(value).expect("tool arguments parse"))
+    }
+
+    /// The JSON a tool returned. Every tool answers with one pretty-printed text block.
+    fn result_json(result: &CallToolResult) -> serde_json::Value {
+        let text = result
+            .content
+            .first()
+            .and_then(|block| block.as_text())
+            .expect("a text content block");
+        serde_json::from_str(&text.text).expect("the tool result is JSON")
+    }
+
+    /// Memory topics live in a process-global registry, so every test needs its own.
+    fn topic(prefix: &str) -> String {
+        format!("{prefix}_{}", uuid::Uuid::new_v4().simple())
+    }
+
+    fn memory_endpoint(topic: &str) -> serde_json::Value {
+        json!({ "memory": { "topic": topic, "capacity": 1000 } })
+    }
+
+    async fn publish_n(server: &BridgeMcp, topic: &str, count: usize) {
+        let messages: Vec<serde_json::Value> = (0..count)
+            .map(|i| json!({ "payload": { "n": i }, "metadata": { "kind": "test" } }))
+            .collect();
+        let result = server
+            .publish(params(json!({
+                "publisher": memory_endpoint(topic),
+                "messages": messages,
+            })))
+            .await
+            .expect("publish succeeds");
+        assert_ne!(result.is_error, Some(true), "{:?}", result.content);
+    }
+
+    /// Waits for a route to finish, returning `wait_route`'s report.
+    async fn wait_for(server: &BridgeMcp, name: &str) -> serde_json::Value {
+        let result = server
+            .wait_route(params(json!({ "name": name, "timeout_ms": 10_000 })))
+            .await
+            .expect("wait_route succeeds");
+        result_json(&result)
+    }
+
+    /// The whole client-visible lifecycle of a drain job: publish into a source,
+    /// route it to a sink with capture on, wait for it, read the captured
+    /// messages, then stop it.
+    #[tokio::test]
+    async fn a_captured_drain_route_reports_its_messages_and_outcome() {
+        let server = BridgeMcp::new();
+        let source = topic("mcp_src");
+        let sink = topic("mcp_sink");
+        publish_n(&server, &source, 3).await;
+
+        let started = result_json(
+            &server
+                .start_route(params(json!({
+                    "name": "drain-lifecycle",
+                    "route": {
+                        "input": memory_endpoint(&source),
+                        "output": memory_endpoint(&sink),
+                        "exit_on_empty": true,
+                    },
+                    "capture_last": 10,
+                })))
+                .await
+                .expect("start_route succeeds"),
+        );
+        assert_eq!(started["route"], "drain-lifecycle");
+        assert_eq!(started["exit_on_empty"], true);
+        // Neither knob was written, so the app defaults apply, not the library's 1.
+        assert_eq!(started["concurrency"], crate::DEFAULT_CONCURRENCY);
+        assert_eq!(started["batch_size"], crate::DEFAULT_BATCH_SIZE);
+
+        let waited = wait_for(&server, "drain-lifecycle").await;
+        assert_eq!(waited["finished"], true, "{waited}");
+        assert_eq!(waited["outcome"], "completed", "{waited}");
+        assert_eq!(waited["messages"], 3, "{waited}");
+
+        let captured = result_json(
+            &server
+                .route_messages(params(json!({ "name": "drain-lifecycle" })))
+                .await
+                .expect("route_messages succeeds"),
+        );
+        assert_eq!(captured["count"], 3, "{captured}");
+        assert_eq!(captured["messages"][0]["payload"]["n"], 0);
+        assert_eq!(captured["messages"][2]["payload"]["n"], 2);
+        // The capture bookkeeping keys are internal and must not reach the model.
+        let metadata = &captured["messages"][0]["metadata"];
+        assert_eq!(metadata["kind"], "test");
+        assert!(metadata.get(CAPTURE_SOURCE_KEY).is_none(), "{metadata}");
+        assert!(metadata.get(CAPTURE_TIME_KEY).is_none(), "{metadata}");
+        assert!(
+            !captured["messages"][0]["time"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "the capture time must be rendered: {captured}"
+        );
+
+        // Reads are destructive, so the second call sees nothing.
+        let again = result_json(
+            &server
+                .route_messages(params(json!({ "name": "drain-lifecycle" })))
+                .await
+                .expect("route_messages succeeds"),
+        );
+        assert_eq!(again["count"], 0, "{again}");
+
+        let stopped = result_json(
+            &server
+                .stop_route(params(json!({ "name": "drain-lifecycle" })))
+                .await
+                .expect("stop_route succeeds"),
+        );
+        assert_eq!(stopped["messages"], 3, "{stopped}");
+        assert_eq!(stopped["discarded_captured_messages"], 0, "{stopped}");
+
+        // A stopped route is gone from every reporting surface.
+        assert!(
+            server
+                .route_status(params(json!({ "name": "drain-lifecycle" })))
+                .await
+                .is_err()
+        );
+        let listed = result_json(&server.list_routes().await.expect("list_routes succeeds"));
+        assert_eq!(listed.as_array().expect("an array").len(), 0, "{listed}");
+    }
+
+    /// A name is claimed before the (slow) route startup, so a second start for
+    /// the same name must be rejected rather than bringing up a second consumer
+    /// of the same source.
+    #[tokio::test]
+    async fn a_duplicate_route_name_is_rejected() {
+        let server = BridgeMcp::new();
+        let source = topic("mcp_dup_src");
+        let route = json!({
+            "name": "dup",
+            "route": { "input": memory_endpoint(&source), "output": { "null": null } },
+        });
+
+        server
+            .start_route(params(route.clone()))
+            .await
+            .expect("the first start succeeds");
+        let err = server
+            .start_route(params(route))
+            .await
+            .expect_err("the second start must be rejected");
+        assert!(err.to_string().contains("already exists"), "{err}");
+
+        server
+            .stop_route(params(json!({ "name": "dup" })))
+            .await
+            .expect("stop_route succeeds");
+    }
+
+    /// Two concurrent starts race for the same name; exactly one may win.
+    #[tokio::test]
+    async fn concurrent_starts_of_one_name_leave_a_single_route() {
+        let server = BridgeMcp::new();
+        let source = topic("mcp_race_src");
+        let route = json!({
+            "name": "raced",
+            "route": { "input": memory_endpoint(&source), "output": { "null": null } },
+        });
+
+        let (a, b) = tokio::join!(
+            server.start_route(params(route.clone())),
+            server.start_route(params(route)),
+        );
+        assert_eq!(
+            a.is_ok() as u8 + b.is_ok() as u8,
+            1,
+            "exactly one concurrent start may win"
+        );
+
+        let listed = result_json(&server.list_routes().await.expect("list_routes succeeds"));
+        assert_eq!(listed.as_array().expect("an array").len(), 1, "{listed}");
+        server
+            .stop_route(params(json!({ "name": "raced" })))
+            .await
+            .expect("stop_route succeeds");
+    }
+
+    /// `publish` takes exactly one of `message` / `messages`; the malformed
+    /// spellings must be reported rather than silently sending nothing.
+    #[tokio::test]
+    async fn publish_rejects_malformed_message_arguments() {
+        let server = BridgeMcp::new();
+        let target = topic("mcp_pub_bad");
+
+        let neither = server
+            .publish(params(json!({ "publisher": memory_endpoint(&target) })))
+            .await
+            .expect_err("neither message nor messages");
+        assert!(neither.to_string().contains("either"), "{neither}");
+
+        let both = server
+            .publish(params(json!({
+                "publisher": memory_endpoint(&target),
+                "message": { "payload": "a" },
+                "messages": [{ "payload": "b" }],
+            })))
+            .await
+            .expect_err("both message and messages");
+        assert!(both.to_string().contains("only one"), "{both}");
+
+        let empty = server
+            .publish(params(json!({
+                "publisher": memory_endpoint(&target),
+                "messages": [],
+            })))
+            .await
+            .expect_err("an empty batch");
+        assert!(empty.to_string().contains("must not be empty"), "{empty}");
+    }
+
+    /// A caller-supplied id that cannot be parsed must be reported, never
+    /// silently replaced by a generated one.
+    #[tokio::test]
+    async fn publish_rejects_an_unparseable_message_id() {
+        let server = BridgeMcp::new();
+        let err = server
+            .publish(params(json!({
+                "publisher": memory_endpoint(&topic("mcp_bad_id")),
+                "message": { "payload": "x", "message_id": { "not": "an id" } },
+            })))
+            .await
+            .expect_err("a malformed message_id must be reported");
+        assert!(err.to_string().contains("invalid message_id"), "{err}");
+    }
+
+    /// Every route tool must reject a name it does not know rather than
+    /// reporting an empty-but-successful result.
+    #[tokio::test]
+    async fn the_route_tools_reject_an_unknown_name() {
+        let server = BridgeMcp::new();
+        let name = json!({ "name": "never-started" });
+        assert!(server.route_status(params(name.clone())).await.is_err());
+        assert!(server.stop_route(params(name.clone())).await.is_err());
+        assert!(server.route_messages(params(name.clone())).await.is_err());
+        assert!(
+            server
+                .wait_route(params(json!({ "name": "never-started" })))
+                .await
+                .is_err()
+        );
+    }
+
+    /// A failed route explains itself in `wait_route`, not only in `route_status`.
+    /// The CLI prints the cause of a permanent error, so a caller that only ever
+    /// waits must not be told `failed` and nothing more.
+    #[tokio::test]
+    async fn a_failed_route_reports_its_cause_to_wait_route() {
+        let server = BridgeMcp::new();
+        let source = topic("mcp_fail_src");
+        server
+            .publish(params(json!({
+                "publisher": memory_endpoint(&source),
+                "message": { "payload": "x" },
+            })))
+            .await
+            .expect("publish succeeds");
+        server
+            .start_route(params(json!({
+                "name": "doomed",
+                "route": {
+                    "input": memory_endpoint(&source),
+                    // Fault injection is the only permanent failure reachable
+                    // without an external endpoint to break.
+                    "output": {
+                        "null": null,
+                        "middlewares": [{ "random_panic": { "mode": "json_format_error" } }],
+                    },
+                    "allow_fault_injection": true,
+                    "exit_on_empty": true,
+                },
+            })))
+            .await
+            .expect("start_route succeeds");
+
+        let waited = result_json(
+            &server
+                .wait_route(params(json!({ "name": "doomed", "timeout_ms": 10_000 })))
+                .await
+                .expect("wait_route returns"),
+        );
+        assert_eq!(waited["finished"], true, "{waited}");
+        assert_eq!(waited["outcome"], "failed", "{waited}");
+        let error = waited["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("JSON format error"),
+            "the failure cause reaches the caller: {waited}"
+        );
+
+        server
+            .stop_route(params(json!({ "name": "doomed" })))
+            .await
+            .expect("stop_route succeeds");
+    }
+
+    /// A route that is still running has no failure to report.
+    /// `wait_route` leaves a route that outlives the timeout running, and says so.
+    #[tokio::test]
+    async fn wait_route_times_out_without_stopping_the_route() {
+        let server = BridgeMcp::new();
+        let source = topic("mcp_wait_src");
+        server
+            .start_route(params(json!({
+                "name": "long-runner",
+                "route": { "input": memory_endpoint(&source), "output": { "null": null } },
+            })))
+            .await
+            .expect("start_route succeeds");
+
+        let waited = result_json(
+            &server
+                .wait_route(params(json!({ "name": "long-runner", "timeout_ms": 100 })))
+                .await
+                .expect("wait_route returns"),
+        );
+        assert_eq!(waited["finished"], false, "{waited}");
+        assert!(waited["outcome"].is_null(), "{waited}");
+        assert!(waited["error"].is_null(), "{waited}");
+
+        // Still running, and still stoppable.
+        let status = result_json(
+            &server
+                .route_status(params(json!({ "name": "long-runner" })))
+                .await
+                .expect("route_status succeeds"),
+        );
+        assert_eq!(status["finished"], false, "{status}");
+        server
+            .stop_route(params(json!({ "name": "long-runner" })))
+            .await
+            .expect("stop_route succeeds");
+    }
+
+    /// The `timeout_ms` ceiling the tool description promises the model.
+    #[test]
+    fn the_wait_timeout_ceiling_matches_the_documented_maximum() {
+        assert_eq!(MAX_WAIT_TIMEOUT_MS, 18_000_000);
+    }
+
+    /// A route started without `capture_last` captures nothing, so
+    /// `route_messages` must answer empty rather than failing.
+    #[tokio::test]
+    async fn an_uncaptured_route_reports_no_messages() {
+        let server = BridgeMcp::new();
+        let source = topic("mcp_nocap_src");
+        publish_n(&server, &source, 2).await;
+        server
+            .start_route(params(json!({
+                "name": "uncaptured",
+                "route": {
+                    "input": memory_endpoint(&source),
+                    "output": { "null": null },
+                    "exit_on_empty": true,
+                },
+            })))
+            .await
+            .expect("start_route succeeds");
+
+        let waited = wait_for(&server, "uncaptured").await;
+        assert_eq!(waited["messages"], 2, "{waited}");
+
+        let captured = result_json(
+            &server
+                .route_messages(params(json!({ "name": "uncaptured" })))
+                .await
+                .expect("route_messages succeeds"),
+        );
+        assert_eq!(captured["count"], 0, "{captured}");
+    }
+
+    /// The status report the UI receives must carry the route's liveness and
+    /// counters, and must never carry the endpoint config.
+    #[tokio::test]
+    async fn the_ui_status_report_covers_routes_and_publishers_without_config() {
+        let server = BridgeMcp::new();
+        let source = topic("mcp_report_src");
+        publish_n(&server, &source, 2).await;
+
+        server
+            .start_route(params(json!({
+                "name": "reported",
+                "route": {
+                    "input": memory_endpoint(&source),
+                    "output": { "null": null },
+                    "exit_on_empty": true,
+                },
+            })))
+            .await
+            .expect("start_route succeeds");
+        wait_for(&server, "reported").await;
+
+        let report = server.status_report().await;
+        let route = report
+            .routes
+            .get("reported")
+            .expect("the route is reported");
+        assert!(!route.running, "a drained route is not running");
+        assert_eq!(route.outcome, Some(RouteOutcomeSnapshot::Completed));
+        assert_eq!(route.message_sequence, 2);
+        assert_eq!(route.status.target, "reported");
+        assert!(
+            route.status.details.is_null(),
+            "config must not be reported"
+        );
+
+        // The publish above registered its target under the connector type.
+        let publisher = report
+            .publishers
+            .get("memory")
+            .expect("the publish target is reported");
+        assert_eq!(publisher.message_sequence, 2);
+        assert!(publisher.status.details.is_null());
+    }
+}
+
+/// What a route start that fails, and a route that cannot make progress, leave
+/// behind. Both are ordinary outcomes of a model handing over an endpoint that
+/// does not resolve, so neither may corrupt what the next call reports.
+#[cfg(test)]
+mod start_failure_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn params<T: for<'de> Deserialize<'de>>(value: serde_json::Value) -> Parameters<T> {
+        Parameters(serde_json::from_value(value).expect("tool arguments parse"))
+    }
+
+    /// An `ipc://` address under a directory that does not exist cannot be bound,
+    /// so `run()` fails rather than the route failing later.
+    fn unstartable_input() -> serde_json::Value {
+        json!({ "memory": { "url": "ipc:///nonexistent-dir-xyz/mqb-test.sock" } })
+    }
+
+    async fn start(
+        server: &BridgeMcp,
+        name: &str,
+        input: serde_json::Value,
+        capture_last: usize,
+    ) -> Result<CallToolResult, McpError> {
+        server
+            .start_route(params(json!({
+                "name": name,
+                "route": { "input": input, "output": { "null": null }, "exit_on_empty": true },
+                "capture_last": capture_last,
+            })))
+            .await
+    }
+
+    /// A failed start released the route name but kept the counter it had already
+    /// created, so the sampler kept working on a dead key and a retry under the
+    /// same name inherited the failed attempt's start time — reporting an
+    /// `elapsed_s` that covered a startup which never happened.
+    #[tokio::test]
+    async fn a_failed_start_leaves_no_metrics_behind() {
+        let server = BridgeMcp::new();
+        let err = start(&server, "unstartable", unstartable_input(), 0)
+            .await
+            .expect_err("the route must fail to start");
+        assert!(err.to_string().contains("failed to start route"), "{err}");
+
+        assert!(
+            !server.metrics.sequences().await.contains_key("unstartable"),
+            "a failed start must not leave a counter: {:?}",
+            server.metrics.sequences().await
+        );
+        assert!(server.metrics.timing("unstartable").await.is_none());
+        // The name is free again, and nothing is listed as running.
+        assert!(!server.routes.lock().await.contains_key("unstartable"));
+        assert!(!server.starting.lock().await.contains("unstartable"));
+    }
+
+    /// The capture buffer is created before the route runs and lives in a
+    /// process-global registry keyed by topic, so a failed start must empty it —
+    /// otherwise the next route to claim the name would inherit its contents.
+    #[tokio::test]
+    async fn a_failed_start_does_not_poison_the_next_routes_capture() {
+        let server = BridgeMcp::new();
+        let name = format!("recapture_{}", uuid::Uuid::new_v4().simple());
+
+        // Push something into the buffer the failed start will create, the way a
+        // route that briefly ran would have.
+        MessageCapture::with_capacity(&capture_topic(&name), 10)
+            .push(&name, CanonicalMessage::from("stale"));
+        start(&server, &name, unstartable_input(), 10)
+            .await
+            .expect_err("the route must fail to start");
+
+        assert!(
+            MessageCapture::open(&capture_topic(&name))
+                .drain()
+                .is_empty(),
+            "a failed start must not leave captured messages for the next route"
+        );
+    }
+
+    /// A source that never yields and never errors — a file path that does not
+    /// exist — must not be reported as having moved anything, and must stay
+    /// stoppable.
+    #[tokio::test]
+    async fn a_source_that_never_yields_stays_stoppable() {
+        let server = BridgeMcp::new();
+        start(
+            &server,
+            "stalled",
+            json!({ "file": { "path": "/nonexistent-dir-xyz/in.jsonl" } }),
+            0,
+        )
+        .await
+        .expect("the route starts");
+
+        let waited = server
+            .wait_route(params(json!({ "name": "stalled", "timeout_ms": 200 })))
+            .await
+            .expect("wait_route returns");
+        let waited = serde_json::from_str::<serde_json::Value>(
+            &waited.content[0].as_text().expect("text").text,
+        )
+        .expect("json");
+        assert_eq!(waited["messages"], 0, "{waited}");
+
+        server
+            .stop_route(params(json!({ "name": "stalled" })))
+            .await
+            .expect("a stalled route must still be stoppable");
+        assert!(!server.metrics.sequences().await.contains_key("stalled"));
     }
 }

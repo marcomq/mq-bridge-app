@@ -21,8 +21,11 @@ export HERE
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 export REPO_ROOT
 
+# Honour CARGO_TARGET_DIR if the caller shares a target dir across repos.
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+
 # Path to the built lean benchmark binary (see README: cargo build --features bench).
-export BIN="${BIN:-$REPO_ROOT/target/release/mq-bridge-app}"
+export BIN="${BIN:-$CARGO_TARGET_DIR/release/mq-bridge-app}"
 
 # Path to the Sling CLI — a compiled (Go) EL baseline alongside Meltano. Kept
 # repo-local so a run never depends on what's on $PATH. Install with:

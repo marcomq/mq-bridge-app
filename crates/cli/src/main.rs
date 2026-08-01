@@ -31,6 +31,10 @@ pub(crate) const DEFAULT_BATCH_SIZE: usize = 1024;
 /// caller does not specify one. See [`DEFAULT_BATCH_SIZE`].
 pub(crate) const DEFAULT_CONCURRENCY: usize = 4;
 
+/// How often `copy --drain` checks whether the route task has ended. The engine
+/// exposes completion as a poll, not a notification; see [`run_copy`].
+const COPY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -457,15 +461,28 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 
     if args.drain {
         // One-shot: run until the source is drained, or abort on Ctrl-C.
-        tokio::select! {
-            res = handle.join() => {
-                res.context("copy route task failed")?;
-                info!("copy completed; source drained");
-            }
+        //
+        // The route task ends on a permanent error just as it does on a real drain, so
+        // joining it alone cannot tell a succeeded batch job from a failed one — and
+        // `join` consumes the handle, making the outcome unreadable afterwards. Poll
+        // `outcome()` instead (the same completion signal `wait_route` uses) so a cron
+        // or systemd-timer invocation gets a non-zero exit when nothing was copied.
+        let outcome = tokio::select! {
+            outcome = async {
+                loop {
+                    if let Some(outcome) = handle.outcome() {
+                        break outcome;
+                    }
+                    tokio::time::sleep(COPY_POLL_INTERVAL).await;
+                }
+            } => Some(outcome),
             _ = tokio::signal::ctrl_c() => {
                 info!("Ctrl+C received; aborting copy");
+                None
             }
-        }
+        };
+
+        copy_result(outcome, handle.status().error)?;
     } else {
         // Continuous bridge: run until Ctrl-C, then stop gracefully.
         tokio::signal::ctrl_c()
@@ -475,6 +492,27 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
         handle.stop().await;
     }
 
+    Ok(())
+}
+
+/// Maps a finished `copy --drain` route to the process result: a route killed by a
+/// permanent error must not exit 0, or a cron/timer job reports success while having
+/// copied nothing. `None` means Ctrl-C interrupted the wait.
+fn copy_result(
+    outcome: Option<mq_bridge::route::RouteOutcome>,
+    error: Option<String>,
+) -> anyhow::Result<()> {
+    use mq_bridge::route::RouteOutcome;
+
+    match outcome {
+        Some(RouteOutcome::Failed) => {
+            let cause = error.unwrap_or_else(|| "no error reported".to_string());
+            anyhow::bail!("copy failed: {cause}");
+        }
+        Some(RouteOutcome::Stopped) => info!("copy stopped before the source drained"),
+        Some(RouteOutcome::Completed) => info!("copy completed; source drained"),
+        None => {}
+    }
     Ok(())
 }
 
@@ -1170,6 +1208,42 @@ async fn platform_specific_shutdown() {
     #[cfg(not(unix))]
     // On non-unix, ctrl_c is the primary mechanism. This future never completes.
     std::future::pending::<()>().await
+}
+
+#[cfg(test)]
+mod copy_result_tests {
+    use super::copy_result;
+    use super::mq_bridge::route::RouteOutcome;
+
+    /// A route killed by a permanent error ends its task exactly like a real drain
+    /// does, so `copy --drain` used to exit 0 and log "source drained" after copying
+    /// nothing — silent success for a cron job. The cause must reach the exit status.
+    #[test]
+    fn failed_outcome_is_an_error_carrying_the_cause() {
+        let err = copy_result(
+            Some(RouteOutcome::Failed),
+            Some("Any driver does not support MySql type Timestamp".to_string()),
+        )
+        .expect_err("a failed route must not report success");
+        assert!(
+            err.to_string()
+                .contains("Any driver does not support MySql type Timestamp"),
+            "the permanent error must be surfaced, got: {err}"
+        );
+    }
+
+    #[test]
+    fn failed_outcome_without_a_recorded_error_still_fails() {
+        assert!(copy_result(Some(RouteOutcome::Failed), None).is_err());
+    }
+
+    #[test]
+    fn drained_and_stopped_and_interrupted_succeed() {
+        assert!(copy_result(Some(RouteOutcome::Completed), None).is_ok());
+        assert!(copy_result(Some(RouteOutcome::Stopped), None).is_ok());
+        // Ctrl-C before the route finished.
+        assert!(copy_result(None, None).is_ok());
+    }
 }
 
 #[cfg(test)]

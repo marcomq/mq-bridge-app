@@ -1793,6 +1793,18 @@ impl UiApp {
                 continue;
             }
             let consumer_key = consumer_runtime_key(consumer);
+            // Starting a consumer that is already running is a no-op. Inserting a
+            // second handle would drop the first, and `RouteHandle` has no `Drop`,
+            // so the route behind it would keep consuming the same source
+            // untracked — invisible to the UI and impossible to stop. A handle
+            // whose task has ended is kept only so its outcome stays queryable,
+            // and may be replaced by a restart.
+            if handles
+                .get(&consumer_key)
+                .is_some_and(|handle| handle.outcome().is_none())
+            {
+                continue;
+            }
             let topic = format!("ui_collector_{consumer_key}");
             let capture_enabled = consumer.message_capture.enabled;
             let capture = MessageCapture::with_capacity(&topic, consumer.message_capture.keep_last);
@@ -2423,6 +2435,61 @@ mod tests {
         assert!(snapshot.status.error.is_none());
 
         app.stop_consumer("mem-status-test").await;
+    }
+
+    // The UI's start button is a plain POST, so a double click (or two browser
+    // tabs) calls `start_consumer` twice. The second start used to insert its
+    // handle over the first, and `RouteHandle` has no `Drop` — so the displaced
+    // route kept running, consuming the same source, invisible to the UI and
+    // impossible to stop, while every message it handled was counted again.
+    //
+    // A file source makes the duplicate unambiguous: each route reads the whole
+    // file, so a second one doubles the message count instead of merely sharing
+    // a queue with the first.
+    #[tokio::test]
+    async fn starting_a_running_consumer_twice_leaves_no_untracked_route() {
+        let source = std::env::temp_dir().join(format!("mqb-restart-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&source, "a\nb\nc\n").expect("write the source file");
+
+        let mut consumer = memory_consumer("double-start", "DoubleStart", "unused");
+        consumer.endpoint = Endpoint::new(EndpointType::File(mq_bridge::models::FileConfig {
+            path: source.to_string_lossy().to_string(),
+            delimiter: None,
+            mode: None,
+            format: Default::default(),
+            compression: Default::default(),
+            encryption: None,
+        }));
+        let mut config = AppConfig::default();
+        config.consumers.push(consumer);
+        let app = test_app(config);
+
+        assert!(app.start_consumer("double-start").await.unwrap());
+        for _ in 0..100 {
+            if app.metrics.sequence("double-start").await >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // The second start must be a no-op while the first route is alive.
+        assert!(app.start_consumer("double-start").await.unwrap());
+        assert_eq!(
+            app.ui_handles.read().await.len(),
+            1,
+            "one consumer must never track more than one route"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert_eq!(
+            app.metrics.sequence("double-start").await,
+            3,
+            "the file must be read once; a higher count means a second, untracked \
+             route is consuming the same source"
+        );
+
+        app.stop_consumer("double-start").await;
+        let _ = std::fs::remove_file(&source);
     }
 
     // A consumer configured to drain and exit finishes on its own, with nothing
