@@ -603,7 +603,8 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
     use mq_bridge::models::{
         AmqpConfig, AwsConfig, ClickHouseConfig, Endpoint, EndpointType, FileConfig, GrpcConfig,
         HttpConfig, IbmMqConfig, KafkaConfig, MongoDbConfig, MqttConfig, NatsConfig,
-        PostgresCdcConfig, RedisStreamsConfig, SqlxConfig, WebSocketConfig, ZeroMqConfig,
+        ObjectStoreConfig, PostgresCdcConfig, RedisStreamsConfig, SqlxConfig, WebSocketConfig,
+        ZeroMqConfig,
     };
     use std::collections::HashMap;
     use url::Url;
@@ -725,6 +726,13 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
             schema_fields(schemars::schema_for!(RedisStreamsConfig)),
         ),
         "file" => ("file", schema_fields(schemars::schema_for!(FileConfig))),
+        // Cloud object storage. The bucket scheme both selects the endpoint and is
+        // the connection URL the `object_store` crate expects, so it is not
+        // rewritten below; credentials come from the environment.
+        "s3" | "s3a" | "gs" | "gcs" | "az" | "azure" | "abfs" | "abfss" => (
+            "object_store",
+            schema_fields(schemars::schema_for!(ObjectStoreConfig)),
+        ),
         "kafka" => ("kafka", schema_fields(schemars::schema_for!(KafkaConfig))),
         "mqtt" | "mqtts" => ("mqtt", schema_fields(schemars::schema_for!(MqttConfig))),
         // AMQP is RabbitMQ's wire protocol; both scheme spellings are accepted.
@@ -753,7 +761,7 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
         "aws" | "aws-sqs" => ("aws", schema_fields(schemars::schema_for!(AwsConfig))),
         "zeromq" | "zmq" => ("zeromq", schema_fields(schemars::schema_for!(ZeroMqConfig))),
         other => bail!(
-            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq"
+            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq, s3, gs, az, abfs"
         ),
     };
 
@@ -894,6 +902,8 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
             "clickhouse" => &[("clickhouses://", "https://"), ("clickhouse://", "http://")],
             "grpc" => &[("grpcs://", "https://"), ("grpc://", "http://")],
             "zeromq" => &[("zeromq://", "tcp://"), ("zmq://", "tcp://")],
+            // `object_store` only recognizes `gs://` for GCS, not the `gcs://` alias.
+            "object_store" => &[("gcs://", "gs://")],
             _ => &[],
         };
         for (prefix, replacement) in rewrites {
@@ -1571,6 +1581,24 @@ mod uri_tests {
         assert_eq!(cfg["url"], "http://host:8123");
         assert_eq!(cfg["table"], "events");
         assert_eq!(cfg["database"], "analytics");
+    }
+
+    // Bucket schemes select the `object_store` endpoint and are also the connection
+    // URL the crate expects, so they pass through unrewritten; `gcs://` is the one
+    // alias normalised (to `gs://`). `cursor_id`/`checkpoint_store` are scalar fields.
+    #[test]
+    fn object_store_bucket_schemes() {
+        let cfg = config(
+            "s3://my-bucket/events?cursor_id=replayer&checkpoint_store=file:///tmp/c.json",
+            "object_store",
+        );
+        assert_eq!(cfg["url"], "s3://my-bucket/events");
+        assert_eq!(cfg["cursor_id"], "replayer");
+        assert_eq!(cfg["checkpoint_store"], "file:///tmp/c.json");
+
+        assert_eq!(config("gs://b/p", "object_store")["url"], "gs://b/p");
+        assert_eq!(config("az://b/p", "object_store")["url"], "az://b/p");
+        assert_eq!(config("gcs://b/p", "object_store")["url"], "gs://b/p");
     }
 
     // `ws://`/`wss://` pass through unchanged.

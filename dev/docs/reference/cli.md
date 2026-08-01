@@ -63,6 +63,24 @@ mq-bridge-app copy \
 > library's route defaults (`concurrency: 1`, `batch_size: 1`), because `copy` is built for
 > bulk throughput. See [Performance tuning](../operations/tuning.md).
 
+### Resumable copies
+
+By default a `copy` re-reads the whole source every run. Add `cursor_column` (SQL) or
+`consume=capture_all` (MongoDB) plus a `cursor_id` on `--from` and the position is persisted, so
+each run copies only what is new — a `copy … --drain` on a timer becomes an incremental sync:
+
+```bash
+mq-bridge-app copy \
+  --from 'postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_sync' \
+  --to   'file:///data/orders.jsonl' \
+  --drain
+```
+
+Without `cursor_id` nothing is persisted. `checkpoint_store` chooses where the position lives
+(source DB by default; `file://`, `postgres://`, `mongodb://`, `s3://` otherwise) and must be
+percent-encoded inside the URI. Full details, guarantees and gotchas:
+[Checkpoints & resumable copies](../cookbook/checkpoints.md).
+
 ### URI grammar
 
 `scheme://…?param=a&next=b`: the **scheme selects the endpoint** and **query parameters set
@@ -71,7 +89,9 @@ config; every other query param stays on the connection URL, so driver params pa
 unchanged (e.g. `postgres://…/db?table=src&sslmode=disable`).
 
 - **Schemes**: `postgres` / `postgresql` / `mysql` / `mariadb` / `sqlite` → sqlx, `nats` →
-  NATS, `mongodb` → MongoDB, `redis` → Redis streams, `file` → file, and the rest by name.
+  NATS, `mongodb` → MongoDB, `redis` → Redis streams, `file` → file,
+  `s3` / `gs` / `az` / `abfs` → cloud object storage (credentials from the environment), and
+  the rest by name.
 - **Common config params**: `table`, `insert_query` (URL-encoded; supports
   `${metadata:<key>}` / `${payload:<field>}` token mapping), `delete_after_read`, `subject`,
   `stream`, `collection`, `database`, `format`, … — anything on the endpoint's config struct.
