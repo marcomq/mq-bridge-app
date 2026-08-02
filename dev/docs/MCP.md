@@ -202,7 +202,7 @@ For a job started with `exit_on_empty`, call `wait_route` rather than polling
 It returns once the route's task ends, reporting `finished`, `outcome`,
 `messages`, `elapsed_s` and `average_messages_per_second`. On timeout it returns
 `finished: false` and **leaves the route running**, so the agent can wait again
-or stop it. The default timeout is 60 s and the ceiling is 1 h; the server polls
+or stop it. The default timeout is 60 s and the ceiling is 5 h; the server polls
 internally every 50 ms, which the client never pays for.
 
 This is what keeps agent token cost flat: one call covers a job of any duration,

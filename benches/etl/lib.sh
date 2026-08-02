@@ -21,8 +21,16 @@ export HERE
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 export REPO_ROOT
 
-# Honour CARGO_TARGET_DIR if the caller shares a target dir across repos.
+# Honour CARGO_TARGET_DIR if the caller shares a target dir across repos, or
+# points the harness at a second build (see README: default vs. lean). A relative
+# value is resolved against REPO_ROOT, not the runner's cwd, so BIN is the same
+# path no matter where the script was invoked from.
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+case "$CARGO_TARGET_DIR" in
+  /*) ;;
+  *) CARGO_TARGET_DIR="$REPO_ROOT/$CARGO_TARGET_DIR" ;;
+esac
+export CARGO_TARGET_DIR
 
 # Path to the built lean benchmark binary (see README: cargo build --features bench).
 export BIN="${BIN:-$CARGO_TARGET_DIR/release/mq-bridge-app}"

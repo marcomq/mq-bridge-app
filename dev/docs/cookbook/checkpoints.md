@@ -22,7 +22,6 @@ colliding. `checkpoint_store` may embed credentials and is treated as a secret.
 | **ClickHouse** | `cursor_column` + `cursor_id` + external `checkpoint_store` | Last value of `cursor_column` |
 | **MongoDB** (`consume: capture_new` / `capture_all` / `subscriber`) | `cursor_id` | Last `_id` / change-stream resume token |
 | **Object store** (`s3://`, `gs://`, `az://`) | `cursor_id` + external `checkpoint_store` | Last fully-acked object key |
-
 | **Postgres CDC** | (automatic) | Confirmed LSN — the replication **slot** is authoritative; `cursor_id` only adds a local copy |
 
 An SQLx source with **no** `cursor_column` is a destructive work queue, not a resumable read —

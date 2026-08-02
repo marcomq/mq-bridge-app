@@ -177,8 +177,10 @@ Two things the table shows:
 - **Typing has a real but modest cost.** Adding a `transform` that coerces `id` to an integer
   and decodes an embedded JSON document costs ~0.47 µs/row — CSV→JSONL drops from 1.13M to 742k
   rows/s but every output record is fully typed.
-- **Peak RSS stays flat regardless of dataset size**, because rows stream in batches rather
-  than being buffered whole — ~22 MiB for a passthrough copy however large the input. The
+- **Peak RSS does not scale with dataset size**, because rows stream in batches rather than
+  being buffered whole — at the fixed batch size and concurrency above, ~22 MiB for a
+  passthrough copy however large the input. It is not a constant: batch size, connector-side
+  buffering, allocator retention and transforms all move it. The
   typing `transform` is the exception: its per-row JSON decode and buffering push peak RSS to
   ~94 MiB, still far leaner than tools that materialize the dataset.
 

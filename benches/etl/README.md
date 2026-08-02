@@ -57,7 +57,7 @@ Quoting the untyped figure against Sling would overstate the margin (it would re
 [A note on the Sling comparison](#a-note-on-the-sling-comparison). Peak RSS
 (measured with `/usr/bin/time -l`): untyped **21.9 MiB**, typed **93.8 MiB** — the
 transform's per-row JSON decode/buffer adds ~72 MiB, still well under Meltano's
-443.8 MiB, and now slightly above Sling's 111.2 MiB only on the typed path.
+443.8 MiB and 17.4 MiB under Sling's 111.2 MiB even on the typed path.
 
 Both mq-bridge-app columns are measured with the **mimalloc** global allocator,
 which the shipped binaries use. It is the `mimalloc` cargo feature — on by
@@ -126,8 +126,12 @@ cargo build -p mq-bridge-app --release
 #    A lean build is also supported and is enough for the Postgres/CDC
 #    scenarios; it avoids the heavy `full` deps (rdkafka/librdkafka,
 #    grpc/protoc, ibm-mq) and builds much faster. Numbers from the two builds
-#    should not be mixed in one table.
-# cargo build -p mq-bridge-app --no-default-features --features bench --release
+#    should not be mixed in one table. Give it its own CARGO_TARGET_DIR so it
+#    cannot overwrite the default build's binary, and pass the same value when
+#    running the benchmarks against it (the runners resolve BIN from it):
+# CARGO_TARGET_DIR=target-lean cargo build -p mq-bridge-app \
+#   --no-default-features --features bench --release
+# CARGO_TARGET_DIR=target-lean benches/etl/run_pipeline.sh
 
 # 2. Postgres 16 with logical replication (mirrors the library's CDC compose).
 benches/etl/seed.sh up
@@ -228,7 +232,9 @@ benches/etl/run_ipc_throughput.sh      # -> benches/etl/results/ipc_throughput.c
 ```
 
 **Latest result: 1,769,700 rows/s** at `concurrency: 1`, sustained over a 5-minute
-window (system-allocator baseline on the same run: 1,207,906 rows/s). An earlier
+window — `RUN_SECONDS=300 benches/etl/run_ipc_throughput.sh`, i.e. the same script
+with the sampling window widened from its 15-second default (system-allocator
+baseline on the same run: 1,207,906 rows/s). An earlier
 pre-mimalloc session measured 1,202,926 rows/s at `concurrency: 1`; `concurrency: 4`
 gave a very slightly *lower* 1,167,428 rows/s there — expected, since both sides talk over a
 single Unix socket connection either way, serialized through one mutex-guarded
@@ -608,7 +614,7 @@ against the *same* file decoded by the external `zstd` CLI: 1,000,000 records,
 > The byte-identity assertion here was verified in the 2026-07-25 session and has
 > **not** been re-run with mimalloc — an allocator cannot change output bytes, so
 > the correctness claim carries over, but the ~3.5 s and ~5.0 s timings below are
-> pre-mimalloc and will be faster. Re-running the assertion needs the full
+> pre-mimalloc and may differ. Re-running the assertion needs the full
 > `run_pg_vendor.sh`, which requires a host `psql`/`pg_dump`.
 
 - **Compare against that same file, not a re-read.** Comparing the restore against

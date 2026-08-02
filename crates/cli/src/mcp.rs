@@ -658,11 +658,14 @@ impl BridgeMcp {
                 // startup that never happened. Any capture buffer is dropped for
                 // the same reason: it outlives the route in a process-global
                 // registry keyed by topic.
-                self.starting.lock().await.remove(&name);
                 self.metrics.forget(&name).await;
                 if capture_last > 0 {
                     MessageCapture::open(&capture_topic(&name)).drain();
                 }
+                // Release the name last: while it is held, no concurrent `start_route`
+                // can create a capture buffer for this topic that the drain above
+                // would then throw away.
+                self.starting.lock().await.remove(&name);
                 return Err(internal(format!("failed to start route '{name}': {e}")));
             }
         };

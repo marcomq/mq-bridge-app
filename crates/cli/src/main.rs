@@ -486,6 +486,12 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             }
         };
 
+        // Interrupted: shut the route down the same way the continuous branch does,
+        // so the source connection and any checkpoint are released before we exit.
+        if outcome.is_none() {
+            handle.stop().await;
+        }
+
         copy_result(outcome, handle.status().error)?;
     } else {
         // Continuous bridge: run until Ctrl-C, then stop gracefully.

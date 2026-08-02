@@ -418,32 +418,39 @@ export async function importAsyncApiToPublisherAction(jsonText: string) {
 }
 
 function importRequestsToPublishers(jsonText: string) {
-  const imported = extractImportedRequests(jsonText);
-  for (const request of imported.requests) {
-    const endpointType = String(request.endpoint_type || "http");
-    const endpoint = createDefaultPublisherEndpoint(endpointType);
-    const endpointConfig = endpoint[endpointType] as Record<string, unknown>;
-    if (endpointType === "http") {
-      if (request.url) applyHttpUrlToEndpoint(endpointConfig, request.url);
-      if (request.method) endpointConfig.method = request.method;
+  // Malformed JSON, an unsupported document or an unknown endpoint type all throw
+  // from here; the callers are async, so an escaping error is an unhandled rejection.
+  try {
+    const imported = extractImportedRequests(jsonText);
+    for (const request of imported.requests) {
+      const endpointType = String(request.endpoint_type || "http");
+      const endpoint = createDefaultPublisherEndpoint(endpointType);
+      const endpointConfig = endpoint[endpointType] as Record<string, unknown>;
+      if (endpointType === "http") {
+        if (request.url) applyHttpUrlToEndpoint(endpointConfig, request.url);
+        if (request.method) endpointConfig.method = request.method;
+      }
+      for (const [field, value] of Object.entries(request.request_fields || {})) {
+        if (value) endpointConfig[field] = value;
+      }
+      const headers = Array.isArray(request.headers) ? request.headers : [];
+      const publisher = normalizePublisher({
+        id: createLocalEntityId("publisher"),
+        name: String(request.name || "Imported request"),
+        endpoint,
+        payload: String(request.payload || ""),
+        headers,
+        comment: "",
+      } as PublisherConfig);
+      activeConfig.publishers.push(publisher);
+      setLocalPublisherState(publisher, {
+        payload: publisher.payload,
+        headers: (publisher.headers || []).map((row) => ({ id: nextHeaderRowId++, ...row })),
+      });
     }
-    for (const [field, value] of Object.entries(request.request_fields || {})) {
-      if (value) endpointConfig[field] = value;
-    }
-    const headers = Array.isArray(request.headers) ? request.headers : [];
-    const publisher = normalizePublisher({
-      id: createLocalEntityId("publisher"),
-      name: String(request.name || "Imported request"),
-      endpoint,
-      payload: String(request.payload || ""),
-      headers,
-      comment: "",
-    } as PublisherConfig);
-    activeConfig.publishers.push(publisher);
-    setLocalPublisherState(publisher, {
-      payload: publisher.payload,
-      headers: (publisher.headers || []).map((row) => ({ id: nextHeaderRowId++, ...row })),
-    });
+  } catch (error) {
+    console.error("Failed to import requests:", error);
+    void browserWindow().mqbAlert?.(`Import failed: ${(error as Error)?.message || error}`);
   }
   renderSelectedPublisher();
 }
@@ -549,6 +556,7 @@ async function writeClipboardText(text: string) {
     await navigator.clipboard.writeText(text);
   } catch (error) {
     console.error("Failed to copy to clipboard:", error);
+    void browserWindow().mqbAlert?.("Failed to copy to clipboard");
   }
 }
 
