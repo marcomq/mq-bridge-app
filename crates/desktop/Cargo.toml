@@ -20,20 +20,21 @@ path = "src/main.rs"
 
 [dependencies]
 mq_bridge_app = { package = "mq-bridge-app-core", path = "../core" }
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 metrics = { version = "0.24.6" }
-metrics-exporter-prometheus = "0.18.1"
-rustls = "0.23.38"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+mimalloc = { version = "0.1", default-features = false, optional = true }
+metrics-exporter-prometheus = "0.18.3"
+rustls = "0.23.43"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tauri = { version = "2", features = ["protocol-asset"] }
-tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 hex = "0.4"
-getrandom = "0.4.2"
-uuid = { version = "1.23", features = ["v4"] }
+getrandom = "0.4.3"
+uuid = { version = "1.24", features = ["v4"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -41,10 +42,13 @@ serde_json = "1.0"
 
 [features]
 default = ["full"]
+# mimalloc global allocator; disable (--no-default-features) on platforms
+# where it is unsupported or to benchmark the system allocator.
+mimalloc = ["dep:mimalloc"]
 integration-test = ["mq_bridge_app/integration-test"]
 ibm-mq = ["mq_bridge_app/ibm-mq"]
 arm64-cross-compile = ["mq_bridge_app/arm64-cross-compile"]
-full = ["mq_bridge_app/full"]
+full = ["mq_bridge_app/full", "mimalloc"]
 middleware = ["mq_bridge_app/middleware"]
 mongodb = ["mq_bridge_app/mongodb"]
 http = ["mq_bridge_app/http"]

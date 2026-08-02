@@ -414,16 +414,36 @@ export async function deleteCurrentPublisherAction() {
 }
 
 export async function importAsyncApiToPublisherAction(jsonText: string) {
+  importRequestsToPublishers(jsonText);
+}
+
+function importRequestsToPublishers(jsonText: string) {
   const imported = extractImportedRequests(jsonText);
   for (const request of imported.requests) {
-    activeConfig.publishers.push(normalizePublisher({
+    const endpointType = String(request.endpoint_type || "http");
+    const endpoint = createDefaultPublisherEndpoint(endpointType);
+    const endpointConfig = endpoint[endpointType] as Record<string, unknown>;
+    if (endpointType === "http") {
+      if (request.url) applyHttpUrlToEndpoint(endpointConfig, request.url);
+      if (request.method) endpointConfig.method = request.method;
+    }
+    for (const [field, value] of Object.entries(request.request_fields || {})) {
+      if (value) endpointConfig[field] = value;
+    }
+    const headers = Array.isArray(request.headers) ? request.headers : [];
+    const publisher = normalizePublisher({
       id: createLocalEntityId("publisher"),
-      name: String((request as any).name || "Imported request"),
-      endpoint: createDefaultPublisherEndpoint("http"),
-      payload: String((request as any).payload || ""),
-      headers: [],
+      name: String(request.name || "Imported request"),
+      endpoint,
+      payload: String(request.payload || ""),
+      headers,
       comment: "",
-    } as PublisherConfig));
+    } as PublisherConfig);
+    activeConfig.publishers.push(publisher);
+    setLocalPublisherState(publisher, {
+      payload: publisher.payload,
+      headers: (publisher.headers || []).map((row) => ({ id: nextHeaderRowId++, ...row })),
+    });
   }
   renderSelectedPublisher();
 }
@@ -444,13 +464,73 @@ export async function importMqbToPublisherAction(jsonText: string) {
   renderSelectedPublisher();
 }
 
-export async function importPostmanToPublisherAction() {}
-export async function importOpenApiToPublisherAction() {}
-export function copyPublisherResponse() {}
-export function copyPublisherResponseJson() {}
-export function copyPublisherAsCurl() {}
-export async function savePublisherHistoryAsPublisherAction() {}
-export async function resendPublisherHistoryAction() {}
+export async function importPostmanToPublisherAction(jsonText: string) {
+  importRequestsToPublishers(jsonText);
+}
+
+export async function importOpenApiToPublisherAction(jsonText: string) {
+  importRequestsToPublishers(jsonText);
+}
+
+export function copyPublisherResponse() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  void writeClipboardText(String(getPublisherResponseState(publisher)?.responsePayload || ""));
+}
+
+export function copyPublisherResponseJson() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const payload = String(getPublisherResponseState(publisher)?.responsePayload || "");
+  const parsed = parseJsonIfPossible(payload);
+  void writeClipboardText(typeof parsed === "string" ? payload : JSON.stringify(parsed, null, 2));
+}
+
+export function copyPublisherAsCurl() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const { endpointType, endpointConfig, values } = currentRequestBarValues(publisher);
+  if (endpointType !== "http") {
+    void browserWindow().mqbAlert?.("Copy as curl is only available for HTTP publishers.");
+    return;
+  }
+  const method = String(endpointConfig.method || "POST").trim() || "POST";
+  const url = String(values["pub-url"] || "").trim();
+  const parts = [`curl -X ${method} ${shellQuote(url)}`];
+  for (const row of get(publishersPanelState).metadataRows) {
+    if (!row.enabled || !row.key.trim()) continue;
+    parts.push(`-H ${shellQuote(`${row.key.trim()}: ${row.value}`)}`);
+  }
+  const payload = String(publisher.payload || "");
+  if (payload) parts.push(`-d ${shellQuote(payload)}`);
+  void writeClipboardText(parts.join(" \\\n  "));
+}
+
+export async function savePublisherHistoryAsPublisherAction(historyIndex: number) {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const entry = currentHistoryEntries()[historyIndex];
+  if (!entry) return;
+  const name = await browserWindow().mqbPrompt?.("Choose a name for the new publisher.", "Save History Entry As Publisher");
+  if (!name) return;
+  const next = normalizePublisher(deepClone(publisher));
+  next.id = createLocalEntityId("publisher");
+  next.name = name;
+  next.payload = entry.payload;
+  next.headers = entry.metadata.map((row) => ({ key: row.k, value: row.v, enabled: true }));
+  applyHistoryRequestFieldsToPublisher(next, entry);
+  activeConfig.publishers.push(next);
+  setLocalPublisherState(next, {
+    payload: entry.payload,
+    headers: next.headers.map((row) => ({ id: nextHeaderRowId++, ...row })),
+  });
+  await restorePublisherStateFromView(activeConfig.publishers.length - 1, { tab: "payload" });
+}
+export async function resendPublisherHistoryAction(historyIndex: number) {
+  if (!currentHistoryEntries()[historyIndex]) return;
+  await showPublisherHistoryEntry(historyIndex);
+  await sendPublisherAction();
+}
 export async function editEnvironmentVarsAction() {}
 
 export function beautifyPublisherPayloadAction() {
@@ -462,6 +542,18 @@ export function beautifyPublisherPayloadAction() {
   } catch {
     void browserWindow().mqbAlert?.("Invalid JSON");
   }
+}
+
+async function writeClipboardText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (error) {
+    console.error("Failed to copy to clipboard:", error);
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function deepClone<T>(value: T): T {

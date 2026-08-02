@@ -25,9 +25,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 fn generate_ephemeral_message_key() -> (String, String) {
-    use aes_gcm::aead::{OsRng, rand_core::RngCore};
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    use aes_gcm::aead::Generate;
+    let bytes = <[u8; 32]>::generate();
     let kid = Uuid::new_v4().to_string();
     (hex::encode(bytes), kid)
 }

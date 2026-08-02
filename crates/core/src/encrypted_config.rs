@@ -1,6 +1,6 @@
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, AeadCore, KeyInit, OsRng, Payload},
+    aead::{Aead, Generate, KeyInit, Payload, consts::U12},
 };
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -120,7 +120,7 @@ fn encrypt_config_payload(plaintext: &str) -> Result<EncryptedEnvelope, anyhow::
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| anyhow::anyhow!("Failed to initialize config encryption"))?;
     // 96-bit nonce from the OS CSPRNG (best practice), not a UUID.
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let nonce = Nonce::<U12>::generate();
     let ciphertext = cipher
         .encrypt(
             &nonce,
@@ -154,15 +154,14 @@ fn decrypt_config_payload(envelope: &EncryptedEnvelope) -> Result<String, anyhow
     let nonce_bytes = BASE64
         .decode(envelope.nonce.as_bytes())
         .map_err(|_| anyhow::anyhow!("Invalid encrypted config nonce"))?;
-    if nonce_bytes.len() != 12 {
-        anyhow::bail!("Invalid encrypted config nonce length");
-    }
+    let nonce = Nonce::<U12>::try_from(nonce_bytes.as_slice())
+        .map_err(|_| anyhow::anyhow!("Invalid encrypted config nonce length"))?;
     let ciphertext = BASE64
         .decode(envelope.ciphertext.as_bytes())
         .map_err(|_| anyhow::anyhow!("Invalid encrypted config ciphertext"))?;
     let plaintext = cipher
         .decrypt(
-            Nonce::from_slice(&nonce_bytes),
+            &nonce,
             Payload {
                 msg: ciphertext.as_ref(),
                 aad: CONFIG_ENVELOPE_AAD,
