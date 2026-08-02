@@ -8,18 +8,39 @@ and the sink's own unique constraint (the robust choice for multi-writer ETL, co
 ## The `deduplication` middleware
 
 Drops messages whose ID was already seen within a TTL. **Input only.** Requires the `dedup`
-feature (pulls `sled`):
+feature:
 
 ```yaml
 input:
   middlewares:
-    - deduplication: { sled_path: "/var/lib/mq-bridge/dedup", ttl_seconds: 3600 }
+    - deduplication: { store: "sled:///var/lib/mq-bridge/dedup", ttl_seconds: 3600 }
   kafka: { topic: "orders", url: "localhost:9092" }
 ```
 
-State is a local sled database, so deduplication is **per-process, not cluster-wide**. For
-multi-writer pipelines prefer the sink constraint (below); use the middleware as a complement,
-not a replacement.
+### Picking a store
+
+`store` selects the backend by URL scheme, and the scheme decides whether deduplication is
+process-local or **shared across every instance of the route**:
+
+| `store` | Scope | Extra feature |
+|---|---|---|
+| `sled:///path` (or a bare path) | per-process only | — |
+| `mongodb://host/db[/collection]` | shared between instances | `mongodb` |
+| `postgres` / `mysql` / `mariadb` / `sqlite` `://…[/table]` | shared between instances | `sqlx` |
+
+The collection/table defaults to `mqb_dedup_<route>`. Point a shared store at the deployment
+your sink already uses rather than standing up extra infrastructure. `sled_path` is the legacy
+spelling of a local sled store, equivalent to `store: "sled://<path>"`.
+
+```yaml
+# Shared across every instance of this route.
+- deduplication: { store: "mongodb://localhost:27017/etl", ttl_seconds: 3600 }
+```
+
+A `sled` store is **per-process, not cluster-wide**, so for multi-writer pipelines use either a
+shared store above or the sink constraint (below). Even with a shared store, the sink's own
+unique constraint remains the more robust choice when the sink has one — it is already the
+authority, with no second write.
 
 ## Sink-side dedup (the robust path)
 

@@ -24,6 +24,7 @@
 - [Upserts & insert-if-absent](cookbook/upserts.md)
 - [Dead-letter queues](cookbook/dlq.md)
 - [Deduplication](cookbook/deduplication.md)
+- [Checkpoints & resumable copies](cookbook/checkpoints.md)
 - [Retries & backoff](cookbook/retries.md)
 - [Transform & schema mapping](cookbook/transform.md)
 - [Content-based routing (switch)](cookbook/switch.md)

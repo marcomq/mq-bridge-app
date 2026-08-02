@@ -30,7 +30,7 @@ mq-bridge-app copy \
   --drain
 ```
 
-The **scheme selects the endpoint** and **query parameters configure it**, so any source→sink pair (Postgres, MySQL, MariaDB, SQLite, NATS, Redis, MongoDB, files, …) is just one URL each. And it's quick: in our benchmarks a 1,000,000-row Postgres → JSONL job sustained **266,951 rows/s** at **~20 MiB peak RSS** — about **17x faster** and ~30x leaner than Meltano on the same machine.
+The **scheme selects the endpoint** and **query parameters configure it**, so any source→sink pair (Postgres, MySQL, MariaDB, SQLite, NATS, Redis, MongoDB, files, …) is just one URL each. And it's quick.
 
 → [Quick start](https://marcomq.github.io/mq-bridge-app/quick-start.html) · [Connectors](https://marcomq.github.io/mq-bridge-app/connectors/index.html) · [Performance tuning](https://marcomq.github.io/mq-bridge-app/operations/tuning.html)
 
@@ -108,7 +108,7 @@ Use Postman/Bruno when your main job is crafting and sharing API requests; use `
 
 ## Performance
 
-A CSV → JSONL conversion hit **784,313 rows/s**; the same job **through an MCP tool call** ran at **735,330 rows/s** while costing an agent a *flat* ~370 tokens regardless of row count, because the rows never enter the model's context.
+A CSV → JSONL conversion hit **1,133,786 rows/s**; the same job **through an MCP tool call** ran at **1,176,489 rows/s** while costing an agent a *flat* ~381 tokens regardless of row count, because the rows never enter the model's context.
 
 → Full numbers, methodology, and knobs: [Performance tuning](https://marcomq.github.io/mq-bridge-app/operations/tuning.html) and [`benches/etl/README.md`](benches/etl/README.md).
 

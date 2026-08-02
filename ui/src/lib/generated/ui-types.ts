@@ -104,7 +104,7 @@ export interface FeatureAvailabilityResponse {
 export interface RouteConfig {
   enabled?: boolean;
   input: Endpoint;
-  output?: Endpoint;
+  output?: Endpoint | null;
   description?: string;
   concurrency?: number;
   batch_size?: number;
@@ -123,8 +123,10 @@ export interface Endpoint {
 export type Middleware = Record<string, never>;
 
 export interface DeduplicationMiddleware {
-  sled_path: string;
+  store?: string | null;
+  sled_path?: string | null;
   ttl_seconds: number;
+  key?: string | null;
 }
 
 export type MetricsMiddleware = Record<string, never>;
@@ -209,6 +211,13 @@ export interface EncryptionConfig {
 
 export type CipherKind = "xchacha20poly1305" | "aes256gcm";
 
+export interface CompressionMiddleware {
+  algorithm?: Compression;
+  max_decompressed_bytes?: number | null;
+}
+
+export type Compression = "none" | "gzip" | "lz4" | "zstd";
+
 export interface AwsConfig {
   queue_url?: string | null;
   topic_arn?: string | null;
@@ -279,8 +288,6 @@ export interface FileConfig {
 
 export type FileFormat = "normal" | "json" | "text" | "raw" | "csv";
 
-export type Compression = "none" | "gzip" | "lz4" | "zstd";
-
 export interface ObjectStoreConfig {
   url: string;
   format?: FileFormat;
@@ -339,14 +346,16 @@ export interface MongoDbConfig {
   reply_polling_ms?: number | null;
   request_reply?: boolean;
   consume?: MongoConsume | null;
+  receive_query?: string | null;
   change_stream?: boolean;
   checkpoint_store?: string | null;
   request_timeout_ms?: number | null;
   ttl_seconds?: number | null;
   capped_size_bytes?: number | null;
   format?: MongoDbFormat;
+  id_field?: string | null;
+  report_outcome?: boolean;
   cursor_id?: string | null;
-  receive_query?: string | null;
   meta_collection?: string | null;
   shared?: boolean | null;
 }
@@ -445,11 +454,15 @@ export interface ZeroMqConfig {
   bind?: boolean;
   internal_buffer_size?: number | null;
   format?: ZeroMqFormat;
+  backend?: ZeroMqBackend;
+  request_timeout_ms?: number | null;
 }
 
 export type ZeroMqSocketType = "push" | "pull" | "pub" | "sub" | "req" | "rep";
 
 export type ZeroMqFormat = "json" | "raw" | "raw_framed";
+
+export type ZeroMqBackend = "zmq" | "omq";
 
 export interface RedisStreamsConfig {
   url: string;

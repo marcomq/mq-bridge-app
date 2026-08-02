@@ -22,6 +22,10 @@ use anyhow::Context;
 mod mcp;
 mod mcp_install;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// App-level default batch size for headless routes (`copy`, MCP) when the caller
 /// does not specify one. The library's `RouteOptions::default()` stays at 1; this
 /// is the batteries-included value the app applies on top.
@@ -30,6 +34,10 @@ pub(crate) const DEFAULT_BATCH_SIZE: usize = 1024;
 /// App-level default route concurrency for headless routes (`copy`, MCP) when the
 /// caller does not specify one. See [`DEFAULT_BATCH_SIZE`].
 pub(crate) const DEFAULT_CONCURRENCY: usize = 4;
+
+/// How often `copy --drain` checks whether the route task has ended. The engine
+/// exposes completion as a poll, not a notification; see [`run_copy`].
+const COPY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -457,15 +465,34 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 
     if args.drain {
         // One-shot: run until the source is drained, or abort on Ctrl-C.
-        tokio::select! {
-            res = handle.join() => {
-                res.context("copy route task failed")?;
-                info!("copy completed; source drained");
-            }
+        //
+        // The route task ends on a permanent error just as it does on a real drain, so
+        // joining it alone cannot tell a succeeded batch job from a failed one — and
+        // `join` consumes the handle, making the outcome unreadable afterwards. Poll
+        // `outcome()` instead (the same completion signal `wait_route` uses) so a cron
+        // or systemd-timer invocation gets a non-zero exit when nothing was copied.
+        let outcome = tokio::select! {
+            outcome = async {
+                loop {
+                    if let Some(outcome) = handle.outcome() {
+                        break outcome;
+                    }
+                    tokio::time::sleep(COPY_POLL_INTERVAL).await;
+                }
+            } => Some(outcome),
             _ = tokio::signal::ctrl_c() => {
                 info!("Ctrl+C received; aborting copy");
+                None
             }
+        };
+
+        // Interrupted: shut the route down the same way the continuous branch does,
+        // so the source connection and any checkpoint are released before we exit.
+        if outcome.is_none() {
+            handle.stop().await;
         }
+
+        copy_result(outcome, handle.status().error)?;
     } else {
         // Continuous bridge: run until Ctrl-C, then stop gracefully.
         tokio::signal::ctrl_c()
@@ -475,6 +502,27 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
         handle.stop().await;
     }
 
+    Ok(())
+}
+
+/// Maps a finished `copy --drain` route to the process result: a route killed by a
+/// permanent error must not exit 0, or a cron/timer job reports success while having
+/// copied nothing. `None` means Ctrl-C interrupted the wait.
+fn copy_result(
+    outcome: Option<mq_bridge::route::RouteOutcome>,
+    error: Option<String>,
+) -> anyhow::Result<()> {
+    use mq_bridge::route::RouteOutcome;
+
+    match outcome {
+        Some(RouteOutcome::Failed) => {
+            let cause = error.unwrap_or_else(|| "no error reported".to_string());
+            anyhow::bail!("copy failed: {cause}");
+        }
+        Some(RouteOutcome::Stopped) => info!("copy stopped before the source drained"),
+        Some(RouteOutcome::Completed) => info!("copy completed; source drained"),
+        None => {}
+    }
     Ok(())
 }
 
@@ -528,9 +576,10 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
 fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middleware> {
     use anyhow::bail;
     use mq_bridge::models::{
-        BufferMiddleware, CookieJarMiddleware, DeadLetterQueueMiddleware, DeduplicationMiddleware,
-        DelayMiddleware, LimiterMiddleware, MetricsMiddleware, RandomPanicMiddleware,
-        RetryMiddleware, TransformMiddleware, WeakJoinMiddleware,
+        BufferMiddleware, CompressionMiddleware, CookieJarMiddleware, DeadLetterQueueMiddleware,
+        DeduplicationMiddleware, DelayMiddleware, EncryptionConfig, LimiterMiddleware,
+        MetricsMiddleware, RandomPanicMiddleware, RetryMiddleware, TransformMiddleware,
+        WeakJoinMiddleware,
     };
     use std::collections::HashMap;
 
@@ -554,6 +603,8 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
         "buffer" => schema_fields(schemars::schema_for!(BufferMiddleware)),
         "cookie_jar" => schema_fields(schemars::schema_for!(CookieJarMiddleware)),
         "transform" => schema_fields(schemars::schema_for!(TransformMiddleware)),
+        "encryption" => schema_fields(schemars::schema_for!(EncryptionConfig)),
+        "compression" => schema_fields(schemars::schema_for!(CompressionMiddleware)),
         // The escape hatch for a handler-provided middleware: `name` selects it,
         // `config` carries its free-form JSON.
         "custom" => HashMap::from([
@@ -561,7 +612,7 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
             ("config".to_string(), FieldType::Object),
         ]),
         other => bail!(
-            "unsupported middleware '{other}'. Supported middlewares: deduplication, metrics, dlq, retry, random_panic, delay, weak_join, limiter, buffer, cookie_jar, transform, custom"
+            "unsupported middleware '{other}'. Supported middlewares: deduplication, metrics, dlq, retry, random_panic, delay, weak_join, limiter, buffer, cookie_jar, transform, encryption, compression, custom"
         ),
     };
 
@@ -603,7 +654,8 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
     use mq_bridge::models::{
         AmqpConfig, AwsConfig, ClickHouseConfig, Endpoint, EndpointType, FileConfig, GrpcConfig,
         HttpConfig, IbmMqConfig, KafkaConfig, MongoDbConfig, MqttConfig, NatsConfig,
-        PostgresCdcConfig, RedisStreamsConfig, SqlxConfig, WebSocketConfig, ZeroMqConfig,
+        ObjectStoreConfig, PostgresCdcConfig, RedisStreamsConfig, SqlxConfig, WebSocketConfig,
+        ZeroMqConfig,
     };
     use std::collections::HashMap;
     use url::Url;
@@ -725,6 +777,13 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
             schema_fields(schemars::schema_for!(RedisStreamsConfig)),
         ),
         "file" => ("file", schema_fields(schemars::schema_for!(FileConfig))),
+        // Cloud object storage. The bucket scheme both selects the endpoint and is
+        // the connection URL the `object_store` crate expects, so it is not
+        // rewritten below; credentials come from the environment.
+        "s3" | "s3a" | "gs" | "gcs" | "az" | "azure" | "abfs" | "abfss" => (
+            "object_store",
+            schema_fields(schemars::schema_for!(ObjectStoreConfig)),
+        ),
         "kafka" => ("kafka", schema_fields(schemars::schema_for!(KafkaConfig))),
         "mqtt" | "mqtts" => ("mqtt", schema_fields(schemars::schema_for!(MqttConfig))),
         // AMQP is RabbitMQ's wire protocol; both scheme spellings are accepted.
@@ -753,7 +812,7 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
         "aws" | "aws-sqs" => ("aws", schema_fields(schemars::schema_for!(AwsConfig))),
         "zeromq" | "zmq" => ("zeromq", schema_fields(schemars::schema_for!(ZeroMqConfig))),
         other => bail!(
-            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq"
+            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq, s3, gs, az, abfs"
         ),
     };
 
@@ -894,6 +953,8 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
             "clickhouse" => &[("clickhouses://", "https://"), ("clickhouse://", "http://")],
             "grpc" => &[("grpcs://", "https://"), ("grpc://", "http://")],
             "zeromq" => &[("zeromq://", "tcp://"), ("zmq://", "tcp://")],
+            // `object_store` only recognizes `gs://` for GCS, not the `gcs://` alias.
+            "object_store" => &[("gcs://", "gs://")],
             _ => &[],
         };
         for (prefix, replacement) in rewrites {
@@ -1160,6 +1221,42 @@ async fn platform_specific_shutdown() {
     #[cfg(not(unix))]
     // On non-unix, ctrl_c is the primary mechanism. This future never completes.
     std::future::pending::<()>().await
+}
+
+#[cfg(test)]
+mod copy_result_tests {
+    use super::copy_result;
+    use super::mq_bridge::route::RouteOutcome;
+
+    /// A route killed by a permanent error ends its task exactly like a real drain
+    /// does, so `copy --drain` used to exit 0 and log "source drained" after copying
+    /// nothing — silent success for a cron job. The cause must reach the exit status.
+    #[test]
+    fn failed_outcome_is_an_error_carrying_the_cause() {
+        let err = copy_result(
+            Some(RouteOutcome::Failed),
+            Some("Any driver does not support MySql type Timestamp".to_string()),
+        )
+        .expect_err("a failed route must not report success");
+        assert!(
+            err.to_string()
+                .contains("Any driver does not support MySql type Timestamp"),
+            "the permanent error must be surfaced, got: {err}"
+        );
+    }
+
+    #[test]
+    fn failed_outcome_without_a_recorded_error_still_fails() {
+        assert!(copy_result(Some(RouteOutcome::Failed), None).is_err());
+    }
+
+    #[test]
+    fn drained_and_stopped_and_interrupted_succeed() {
+        assert!(copy_result(Some(RouteOutcome::Completed), None).is_ok());
+        assert!(copy_result(Some(RouteOutcome::Stopped), None).is_ok());
+        // Ctrl-C before the route finished.
+        assert!(copy_result(None, None).is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -1571,6 +1668,24 @@ mod uri_tests {
         assert_eq!(cfg["url"], "http://host:8123");
         assert_eq!(cfg["table"], "events");
         assert_eq!(cfg["database"], "analytics");
+    }
+
+    // Bucket schemes select the `object_store` endpoint and are also the connection
+    // URL the crate expects, so they pass through unrewritten; `gcs://` is the one
+    // alias normalised (to `gs://`). `cursor_id`/`checkpoint_store` are scalar fields.
+    #[test]
+    fn object_store_bucket_schemes() {
+        let cfg = config(
+            "s3://my-bucket/events?cursor_id=replayer&checkpoint_store=file:///tmp/c.json",
+            "object_store",
+        );
+        assert_eq!(cfg["url"], "s3://my-bucket/events");
+        assert_eq!(cfg["cursor_id"], "replayer");
+        assert_eq!(cfg["checkpoint_store"], "file:///tmp/c.json");
+
+        assert_eq!(config("gs://b/p", "object_store")["url"], "gs://b/p");
+        assert_eq!(config("az://b/p", "object_store")["url"], "az://b/p");
+        assert_eq!(config("gcs://b/p", "object_store")["url"], "gs://b/p");
     }
 
     // `ws://`/`wss://` pass through unchanged.
