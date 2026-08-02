@@ -22,6 +22,10 @@ use anyhow::Context;
 mod mcp;
 mod mcp_install;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// App-level default batch size for headless routes (`copy`, MCP) when the caller
 /// does not specify one. The library's `RouteOptions::default()` stays at 1; this
 /// is the batteries-included value the app applies on top.
@@ -566,9 +570,10 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
 fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middleware> {
     use anyhow::bail;
     use mq_bridge::models::{
-        BufferMiddleware, CookieJarMiddleware, DeadLetterQueueMiddleware, DeduplicationMiddleware,
-        DelayMiddleware, LimiterMiddleware, MetricsMiddleware, RandomPanicMiddleware,
-        RetryMiddleware, TransformMiddleware, WeakJoinMiddleware,
+        BufferMiddleware, CompressionMiddleware, CookieJarMiddleware, DeadLetterQueueMiddleware,
+        DeduplicationMiddleware, DelayMiddleware, EncryptionConfig, LimiterMiddleware,
+        MetricsMiddleware, RandomPanicMiddleware, RetryMiddleware, TransformMiddleware,
+        WeakJoinMiddleware,
     };
     use std::collections::HashMap;
 
@@ -592,6 +597,8 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
         "buffer" => schema_fields(schemars::schema_for!(BufferMiddleware)),
         "cookie_jar" => schema_fields(schemars::schema_for!(CookieJarMiddleware)),
         "transform" => schema_fields(schemars::schema_for!(TransformMiddleware)),
+        "encryption" => schema_fields(schemars::schema_for!(EncryptionConfig)),
+        "compression" => schema_fields(schemars::schema_for!(CompressionMiddleware)),
         // The escape hatch for a handler-provided middleware: `name` selects it,
         // `config` carries its free-form JSON.
         "custom" => HashMap::from([
@@ -599,7 +606,7 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
             ("config".to_string(), FieldType::Object),
         ]),
         other => bail!(
-            "unsupported middleware '{other}'. Supported middlewares: deduplication, metrics, dlq, retry, random_panic, delay, weak_join, limiter, buffer, cookie_jar, transform, custom"
+            "unsupported middleware '{other}'. Supported middlewares: deduplication, metrics, dlq, retry, random_panic, delay, weak_join, limiter, buffer, cookie_jar, transform, encryption, compression, custom"
         ),
     };
 

@@ -20,6 +20,21 @@ The key is a base64-encoded 32-byte key; `${env:VAR}` reads it from the environm
 [Secrets & interpolation](secrets.md)). Cipher defaults to `xchacha20poly1305` (`aes256gcm`
 also available).
 
+A sealed payload is binary, so a `file`/`object_store` sink that stores it must use
+`format=normal` — `format=json`/`text` render the payload as a JSON value and it cannot be read
+back (the reader reports "unsupported encryption envelope version 91"). Stacking it with
+`compression` works, but the reading route must list the two middlewares in the **reverse**
+order, since middlewares apply in list order on both ends.
+
+From the `copy` CLI it is an inline middleware; keep the key in `${env:VAR}` so it never reaches
+the process list or shell history (`{`/`}` percent-encode to `%7B`/`%7D`):
+
+```bash
+MQB_ENC_KEY=… mq-bridge-app copy \
+  --from 'file:///tmp/orders.jsonl' \
+  --to   'nats://localhost:4222?stream=secure&subject=secure.orders|encryption?key=$%7Benv:MQB_ENC_KEY%7D'
+```
+
 **Key rotation:** seal with a new `key_id`/`key` while listing the old key under `decrypt_keys`
 on the consuming side. Each payload is authenticated independently — tampering, a torn frame, or
 a wrong/missing key is a hard consumer error, not a silent drop.

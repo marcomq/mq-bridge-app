@@ -32,7 +32,7 @@ mq-bridge-app copy \
 
 The **scheme selects the endpoint** and **query parameters configure it**, so any source→sink
 pair is just one URL each. And it's quick: in benchmarks a 1,000,000-row Postgres → JSONL job
-sustained **266,951 rows/s** at **~20 MiB peak RSS** — see [Performance tuning](operations/tuning.md).
+sustained **338,066 rows/s** at **~40 MiB peak RSS** — see [Performance tuning](operations/tuning.md).
 
 ## Philosophy
 

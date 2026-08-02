@@ -116,9 +116,17 @@ mq-bridge-app copy \
 ```
 
 - Names: `retry`, `metrics`, `dlq`, `deduplication`, `transform`, `delay`, `limiter`,
-  `buffer`, `weak_join`, `cookie_jar`, `random_panic`, `custom` (`-` is accepted for `_`).
-- The `compression` and `encryption` middleware are **not** available in this inline syntax —
-  configure them in a YAML/JSON config file (or over [MCP](../MCP.md)) instead.
+  `buffer`, `weak_join`, `cookie_jar`, `random_panic`, `compression`, `encryption`, `custom`
+  (`-` is accepted for `_`).
+- `encryption`'s `key` is a shell-visible argument; prefer `${env:VAR}` to keep it out of the
+  process list and shell history: `|encryption?key=$%7Benv:MQB_KEY%7D`.
+- `compression` and `encryption` produce **binary** payloads, so a `file` sink holding them must
+  use `format=normal`. `format=json`/`text` render the payload as a JSON value and it does not
+  survive the round trip (it comes back as a JSON array, and the reader reports a bogus
+  "unsupported encryption envelope version 91").
+- Middlewares apply in list order on **both** ends, so a route that reads back what another wrote
+  must list them in the **reverse** order. Writing with `|compression?algorithm=zstd|encryption?key=…`
+  reads back with `|encryption?key=…|compression?algorithm=zstd`.
 - A middleware with no params needs no `?` — `|metrics`.
 - `dlq`'s `endpoint` is itself a URL-encoded endpoint URI:
   `|dlq?endpoint=file%3A%2F%2F%2Ftmp%2Ffailed.jsonl`.

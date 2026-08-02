@@ -161,20 +161,26 @@ Measured through `mq-bridge-app`'s `copy` CLI (the zero-code path) on an Apple M
 
 | Scenario | Batch | Conc. | Throughput | Peak RSS |
 |---|---|---|---|---|
-| IPC forward (`static` → `memory`) | 1024 | 1 | **1,202,926 rows/s** | — |
-| CSV → JSONL (strings passthrough, 1M rows ~116 MiB) | 1024 | 1 | **784,313 rows/s** | ~20 MiB |
-| CSV → JSONL with typing `transform` (id→int, embedded JSON) | 1024 | 1 | **540,248 rows/s** | ~20 MiB |
-| Postgres → JSONL (1M rows, 7 mixed-type cols) | 1024 | 1 | **266,951 rows/s** | ~20 MiB |
-| Postgres → JSONL (same) | 1024 | 4 | **303,398 rows/s** | — |
+| IPC forward (`static` → `memory`) | 1024 | 1 | **1,769,700 rows/s** | — |
+| CSV → JSONL (strings passthrough, 1M rows ~116 MiB) | 1024 | 1 | **1,133,786 rows/s** | ~22 MiB |
+| CSV → JSONL with typing `transform` (id→int, embedded JSON) | 1024 | 1 | **742,390 rows/s** | ~94 MiB |
+| Postgres → JSONL (1M rows, 7 mixed-type cols) | 1024 | 1 | **338,066 rows/s** | ~40 MiB |
+| Postgres → JSONL (same) | 1024 | 4 | **384,615 rows/s** | ~41 MiB |
+
+All rows measured with the mimalloc allocator used by the shipped binaries. It is
+the default-on `mimalloc` cargo feature (also implied by `bench`); build with
+`--no-default-features` and without it in the feature list to fall back to the
+system allocator on platforms where mimalloc is unsupported.
 
 Two things the table shows:
 
 - **Typing has a real but modest cost.** Adding a `transform` that coerces `id` to an integer
-  and decodes an embedded JSON document costs ~0.58 µs/row — CSV→JSONL drops from 784k to 540k
+  and decodes an embedded JSON document costs ~0.47 µs/row — CSV→JSONL drops from 1.13M to 742k
   rows/s but every output record is fully typed.
-- **Peak RSS stays flat (~20 MiB) regardless of dataset size**, because rows stream in batches
-  rather than being buffered whole — the reason mq-bridge is ~30x leaner than tools that
-  materialize the dataset.
+- **Peak RSS stays flat regardless of dataset size**, because rows stream in batches rather
+  than being buffered whole — ~22 MiB for a passthrough copy however large the input. The
+  typing `transform` is the exception: its per-row JSON decode and buffering push peak RSS to
+  ~94 MiB, still far leaner than tools that materialize the dataset.
 
 > **Keyset cursor needs an index.** The Postgres bulk-copy reader uses keyset pagination
 > (`WHERE id > $cursor ORDER BY id LIMIT batch`). Without an index on the cursor column it does

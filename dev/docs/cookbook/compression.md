@@ -79,9 +79,26 @@ Put the **same** `algorithm` on both sides of a route. Each payload is framed in
 unlike the endpoint field this is only readable through a matching consumer — a truncated or
 corrupt frame is a permanent consumer error rather than an endlessly re-read poison message.
 
-> This middleware is available in YAML/JSON config and over [MCP](../MCP.md). The `copy` CLI's
-> inline `|middleware` syntax does **not** yet accept it — use a config file for compressed
-> transports.
+From the `copy` CLI it is an inline middleware like any other:
+
+```bash
+mq-bridge-app copy \
+  --from 'nats://localhost:4222?stream=orders&subject=orders.in|compression?algorithm=zstd' \
+  --to   'file:///tmp/orders.jsonl'
+```
+
+A compressed payload is binary, so a `file`/`object_store` sink that stores it must use
+`format=normal`. With `format=json` or `text` the payload is rendered as a JSON value and cannot
+be read back. Verified round trip:
+
+```bash
+mq-bridge-app copy --drain \
+  --from 'file:///tmp/in.jsonl?format=json' \
+  --to   'file:///tmp/packed.bin?format=normal|compression?algorithm=zstd'
+mq-bridge-app copy --drain \
+  --from 'file:///tmp/packed.bin?format=normal|compression?algorithm=zstd' \
+  --to   'file:///tmp/out.jsonl?format=json'
+```
 
 ## Compression *and* encryption
 
