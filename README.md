@@ -112,6 +112,13 @@ A CSV → JSONL conversion hit **1,133,786 rows/s**; the same job **through an M
 
 → Full numbers, methodology, and knobs: [Performance tuning](https://marcomq.github.io/mq-bridge-app/operations/tuning.html) and [`benches/etl/README.md`](benches/etl/README.md).
 
+## Test on nats / kafka / postgres ....
+
+For testing, [docker-compose files](https://github.com/marcomq/mq-bridge/tree/main/tests/integration/docker-compose) are available for supported backends:
+```bash
+docker-compose -f https://raw.githubusercontent.com/marcomq/mq-bridge/main/tests/integration/docker-compose/postgres.yml up
+```
+
 ## How it's built
 
 `mq-bridge-app` uses the [`mq-bridge`](https://github.com/marcomq/mq-bridge) engine *on itself* — the management UI is served through the engine's own HTTP-request/response routing, and the UI form is generated from the Rust config schema (no hand-written form code). See [How the app is built](https://marcomq.github.io/mq-bridge-app/getting-started/app-architecture.html).
