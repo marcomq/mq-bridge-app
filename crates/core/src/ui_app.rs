@@ -3,7 +3,9 @@ use crate::config::{
     ConsumerOutputConfig, ConsumerResponseConfig, EnvFileSecretStore, PublisherClient, SecretStore,
 };
 use crate::encrypted_config::has_config_master_key;
-use crate::route_metrics::{CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics};
+use crate::route_metrics::{
+    CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, is_redelivery,
+};
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -1840,7 +1842,11 @@ impl UiApp {
                 .with_handler(move |msg: CanonicalMessage| {
                     let ctx = Arc::clone(&context);
                     async move {
-                        ctx.counter.fetch_add(1, Ordering::Relaxed);
+                        // A `retry` redelivery re-enters the handler, so counting
+                        // it would inflate the consumer's total by `max_attempts`.
+                        if !is_redelivery(&msg) {
+                            ctx.counter.fetch_add(1, Ordering::Relaxed);
+                        }
 
                         if ctx.capture_enabled {
                             let mut enriched = msg.clone();

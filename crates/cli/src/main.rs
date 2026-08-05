@@ -1074,6 +1074,12 @@ fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
     {
         return field_type(root, target);
     }
+    // A `serde_json::Value` field (e.g. `transform`'s `schema`) constrains
+    // nothing, so schemars renders it as the always-true schema. It takes whole
+    // JSON rather than a scalar, which is exactly the `Object` handling.
+    if is_unconstrained_schema(sub) {
+        return FieldType::Object;
+    }
     let has = |t: &str| match sub.get("type") {
         Some(serde_json::Value::String(s)) => s == t,
         Some(serde_json::Value::Array(a)) => a.iter().any(|x| x.as_str() == Some(t)),
@@ -1103,6 +1109,23 @@ fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
         }
     }
     FieldType::StringLike
+}
+
+/// Whether a subschema accepts any JSON at all, i.e. states no `type`, `$ref`,
+/// combinator or enumeration. Only annotations such as `description`/`default`
+/// may remain.
+fn is_unconstrained_schema(sub: &serde_json::Value) -> bool {
+    match sub {
+        serde_json::Value::Bool(accepts_anything) => *accepts_anything,
+        serde_json::Value::Object(obj) => !obj.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "type" | "$ref" | "allOf" | "anyOf" | "oneOf" | "enum" | "const" | "properties"
+                    | "items"
+            )
+        }),
+        _ => false,
+    }
 }
 
 /// Whether a query-param value is written as a JSON object or array literal.
@@ -1590,6 +1613,25 @@ mod uri_tests {
         let wj = &v["middlewares"][0]["weak_join"];
         assert_eq!(wj["group_by"], "cid");
         assert_eq!(wj["required"], serde_json::json!(["a", "b"]));
+    }
+
+    // `transform`'s `schema` is an untyped `serde_json::Value`, so it must still
+    // be read as a JSON literal rather than handed through as a string (which
+    // `transform` rejects with "schema must be a JSON object").
+    #[test]
+    fn transform_schema_param_is_a_json_literal() {
+        let schema = r#"{"type":"object","properties":{"qty":{"type":"number"}}}"#;
+        let mut spec = String::from("null:|transform?");
+        let mut q = url::form_urlencoded::Serializer::new(String::new());
+        q.append_pair("schema", schema);
+        spec.push_str(&q.finish());
+
+        let ep = endpoint_from_uri(&spec).expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(
+            v["middlewares"][0]["transform"]["schema"],
+            serde_json::from_str::<serde_json::Value>(schema).unwrap()
+        );
     }
 
     // `dlq`'s `endpoint` param is itself an endpoint URI, parsed recursively.

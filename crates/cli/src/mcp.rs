@@ -19,7 +19,7 @@ use mq_bridge_app::mq_bridge::{
 };
 use mq_bridge_app::route_metrics::{
     CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, RouteTiming,
-    format_capture_time,
+    format_capture_time, is_redelivery,
 };
 use mq_bridge_app::ui_app::{
     ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport, RouteOutcomeSnapshot,
@@ -623,7 +623,9 @@ impl BridgeMcp {
 
         // Wrap the route in the same counting/capturing handler the web UI puts on
         // its consumer routes, so `route_status` can report a live message rate.
-        // The handler forwards every message unchanged unless the sink is `null`.
+        // The handler forwards every message unchanged unless the sink is `null`,
+        // and counts each one once — a `retry` redelivery re-enters the handler
+        // but is not a new message.
         let publishes = !matches!(route.output.endpoint_type, EndpointType::Null);
         let counter = self.metrics.counter_for(&name).await;
         let capture = (capture_last > 0)
@@ -635,7 +637,9 @@ impl BridgeMcp {
             let capture = capture.clone();
             let source_key = source_key.clone();
             async move {
-                counter.fetch_add(1, Ordering::Relaxed);
+                if !is_redelivery(&msg) {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
                 if let Some(capture) = capture {
                     capture.push(&source_key, msg.clone());
                 }
