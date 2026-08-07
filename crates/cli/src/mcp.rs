@@ -1437,7 +1437,7 @@ mod tool_tests {
                     // Fault injection is the only permanent failure reachable
                     // without an external endpoint to break.
                     "output": {
-                        "null": null,
+                        "memory": { "topic": "mcp_fail_sink", "capacity": 1000 },
                         "middlewares": [{ "random_panic": { "mode": "json_format_error" } }],
                     },
                     "allow_fault_injection": true,

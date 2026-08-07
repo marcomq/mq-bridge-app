@@ -17,6 +17,7 @@ Query parameters recognised as config fields for this connector. The object-type
 | `request_reply` | boolean | no | `false` | (Publisher only) If true, the publisher uses the request-reply pattern. It sends a request and waits for a response (using `core_client.request_with_headers()`). Defaults to false. |
 | `request_timeout_ms` | integer | no | — | (Publisher only) Timeout for request-reply operations in milliseconds. Defaults to 30000ms. |
 | `shared` | boolean | no | `true` | Share one NATS client per connection (default: true); false forces a dedicated connection. |
+| `source_metadata` | boolean | no | `false` | (Consumer only) Include authoritative `mqb.src.nats_*` source positions. Defaults to false. |
 | `stream` | string | no | — | The JetStream stream name. Required for Consumers, even with `no_jetstream: true` (unused there, but still validated). |
 | `stream_max_bytes` | integer | no | — | (Publisher only) Maximum total bytes in the stream (if created by the bridge). Defaults to 1GB. |
 | `stream_max_messages` | integer | no | — | (Publisher only) Maximum number of messages in the stream (if created by the bridge). Defaults to 1,000,000. |

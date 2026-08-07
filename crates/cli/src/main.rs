@@ -1447,6 +1447,12 @@ mod uri_tests {
         assert_eq!(cfg["delete"], true);
     }
 
+    #[test]
+    fn file_idempotency_is_a_scalar_flag() {
+        let cfg = config("file:///var/lib/mqb/parts?idempotency=true", "file");
+        assert_eq!(cfg["idempotency"], true);
+    }
+
     // Rejecting unrecognised params on the endpoints that have no driver options
     // only works if every documented param really is a config field. These are the
     // example URIs from README.md, dev/docs/ and benches/etl/.
@@ -1667,6 +1673,15 @@ mod uri_tests {
         assert_eq!(cfg["topic"], "orders");
     }
 
+    #[test]
+    fn kafka_source_metadata_is_a_scalar_flag() {
+        let cfg = config(
+            "kafka://broker:9092?topic=orders&source_metadata=true",
+            "kafka",
+        );
+        assert_eq!(cfg["source_metadata"], true);
+    }
+
     // `mqtt://` is rewritten to `tcp://` (what rumqtt expects); `mqtts://`
     // becomes `ssl://`.
     #[test]
@@ -1729,6 +1744,12 @@ mod uri_tests {
         assert_eq!(config("gs://b/p", "object_store")["url"], "gs://b/p");
         assert_eq!(config("az://b/p", "object_store")["url"], "az://b/p");
         assert_eq!(config("gcs://b/p", "object_store")["url"], "gs://b/p");
+    }
+
+    #[test]
+    fn object_store_idempotency_is_a_scalar_flag() {
+        let cfg = config("s3://my-bucket/events?idempotency=true", "object_store");
+        assert_eq!(cfg["idempotency"], true);
     }
 
     // `ws://`/`wss://` pass through unchanged.

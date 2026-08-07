@@ -15,6 +15,7 @@ Query parameters recognised as config fields for this connector. The object-type
 | `password` | string | no | — | Optional password for authentication. |
 | `prefetch_count` | integer | no | — | (Consumer only) Number of messages to prefetch. Defaults to 100. |
 | `queue` | string | no | — | The AMQP queue name. |
+| `source_metadata` | boolean | no | `false` | (Consumer only) Include authoritative `mqb.src.amqp_*` source positions. Defaults to false. |
 | `subscribe_mode` | boolean | no | `false` | (Consumer only) If true, act as a **Subscriber** (fan-out). Defaults to false. |
 | `tls` | object | no | [see below](#tls) | TLS configuration. |
 | `url` | string | yes | — | AMQP connection URI. The `lapin` client connects to a single host specified in the URI. If it contains userinfo, it will be treated as a secret. For high availability, provide the address of a load balancer or use DNS resolution that points to multiple brokers. Example: "amqp://localhost:5672/vhost". |
