@@ -13,7 +13,7 @@ full-dataset ETL jobs on a 1,000,000-row seed-42 dataset, reporting throughput
 **and** peak RSS against a Sling and a Meltano (`tap-*` → `target-jsonl`) baseline (see
 [Results](#results--the-two-headline-etl-scenarios-1m-rows)). The remaining
 scenarios (1 & 3 table→table copy, 2 CDC latency, 4 local IPC, 7 the MCP server,
-8 Postgres' own tools) are additional coverage.
+8 Postgres' own tools, and 9 Kafka streaming) are additional coverage.
 
 ## Why this path is credible
 
@@ -66,11 +66,9 @@ have it. To measure the system allocator instead, build with
 `--no-default-features --features mq_bridge_app/bench` (the core feature set
 without the app's `bench` alias). On this scenario it is worth ~+36% throughput for
 ~+33% peak RSS on the typed path; the Sling and Meltano columns are unaffected by
-it. Sections A and B, §4 and §7 are all mimalloc numbers. **§1/§3 (table→table),
-§2 (CDC latency) and §8 (vs. Postgres' own tools) have not been re-measured** and
-still report system-allocator figures — they are marked where they appear. §8's
-mq-bridge-app cells **have** now been re-measured (its `psql`/`zstd` peers were not
-— same hardware, unchanged tools).
+it. Sections A, B and C, §4, §7 and §8 are all mimalloc numbers. **§1/§3 (table→table)
+and §2 (CDC latency) have not been re-measured** and still report system-allocator
+figures — they are marked where they appear.
 
 ### B — Postgres → JSONL (1,000,000 rows, 7-col)
 
@@ -101,13 +99,91 @@ Raising concurrency to 4 gives **384,615 rows/s** at 41.2 MiB.
 > it does and mq-bridge-app doesn't. B has no typed column yet.
 > See [A note on the Sling comparison](#a-note-on-the-sling-comparison).
 
+### C — Kafka → JSONL: mq-bridge-app vs. Arroyo (1,000,000 rows)
+
+This is a deliberately narrow streaming comparison, not a third headline ETL
+scenario. Both sides consume the same four-partition Kafka topic containing the
+usual seven-column JSON row, project the same four columns (`id`, `first_name`,
+`country`, `amount`), and write newline-delimited JSON. The run uses four-way
+parallelism and Arroyo `0.15.0` (`ghcr.io/arroyosystems/arroyo:0.15.0`).
+
+| Tool | Median wall-clock | Throughput | Startup | Peak RSS |
+| ---- | ----------------: | ---------: | ------: | -------: |
+| mq-bridge-app passthrough (no transform) | 1.244 s | 803,640 rows/s | — | 105 MiB |
+| mq-bridge-app projection (+ `transform`) | 1.472 s | 679,546 rows/s | — | 93 MiB |
+| Arroyo projection | 1.764 s | 566,991 rows/s | 0.548 s | 362 MiB |
+
+The mq-bridge-app rows are fresh results from 1 warmup + 3 timed runs with the
+explicit release feature set `bench,kafka,mimalloc`. Arroyo's row is the existing
+retained result (1 warmup + 5 timed runs), not a new Arroyo run. Both tools use
+the same stopwatch: start the job and poll until all 1,000,000 output rows have
+landed; Arroyo's one-off pipeline startup is reported separately. Output parity
+was checked before quoting the comparison: both projected sinks were 65,615,161
+bytes and contained the same 1,000,000 records. Arroyo's stateful features are
+intentionally not exercised.
+
+The delivery guarantees are not equivalent: Arroyo provides **exactly-once
+processing within its checkpointed pipeline**, while mq-bridge-app provides
+**at-least-once delivery** for the Kafka route. mq-bridge-app resumes from the
+source's committed consumer offset, so a failure can replay records; the
+`transform` measurement does not add deduplication or upgrade that guarantee.
+
+The exact mq-bridge-app build command was:
+
+```bash
+cargo build -p mq-bridge-app --no-default-features \
+  --features bench,kafka,mimalloc --release
+```
+
+The `mimalloc` allocator is included by the app's `bench` feature; do not compare
+these rows with a system-allocator build.
+
+### D — Kafka → native `.ss`: mq-bridge-app vs. Sea Streamer (1,000,000 rows)
+
+This is a separate library/backend comparison. Both tools relay the original
+Kafka payload from the same four-partition, 1,000,000-row topic without a
+transform. mq-bridge-app writes its default `format=normal` file encoding: a
+JSON `CanonicalMessage` envelope per record. Sea Streamer writes its native
+framed and indexed `.ss` file. The Sea Streamer path uses the pinned official
+`0.5.2` crates.
+
+| Tool | Median wall-clock | Throughput | Peak RSS | Sink bytes |
+| ---- | ----------------: | ---------: | -------: | ---------: |
+| mq-bridge-app (`format=normal`, mimalloc) | 1.354 s | 738,297 rows/s | 109 MiB | 391,985,602 |
+| Sea Streamer 0.5.2 relay (native `.ss`, system allocator) | 2.434 s | 410,786 rows/s | 689 MiB | 244,991,425 |
+| Sea Streamer 0.5.2 relay (native `.ss`, mimalloc) | 2.235 s | 447,356 rows/s | 835 MiB | 244,991,425 |
+
+All rows are fresh results from 1 warmup + 3 timed runs, using the same
+stopwatch. Each Sea Streamer result was run with the repository-contained helper
+and its output was verified with `sea-streamer-count` to contain exactly
+1,000,000 messages. Its mimalloc build is a separate application-level allocator
+measurement, not a Sea Streamer crate feature. The two native file formats are
+not byte-for-byte equivalent, so the data supports a Kafka-to-file throughput
+comparison—not a claim of identical sink encoding, delivery, or checkpoint
+semantics. On these runs mq-bridge-app is 1.80x faster than Sea Streamer's default
+allocator result and 1.65x faster than its mimalloc result; do not round this to
+"twice as fast."
+
+The reproducible Sea Streamer helper is committed in
+[`benches/etl/sea_streamer`](sea_streamer). It contains the relay and count
+programs and pins the Sea Streamer `0.5.2` dependencies:
+
+```bash
+cargo build --manifest-path benches/etl/sea_streamer/Cargo.toml \
+  --release --target-dir target
+```
+
+To add the allocator comparison, rebuild the same helper in the same target
+directory with `--features mimalloc`, then run
+`SEA_STREAMER_LABEL=sea-streamer-mimalloc REPEATS=3 ./benches/etl/run_kafka_stream.sh sea`.
+
 ## Fixed parameters (printed next to every number)
 
 | Parameter     | Value                                             |
 | ------------- | ------------------------------------------------- |
 | Payload       | 256 B and 4 KiB JSON rows (both reported)         |
 | Message count | 1 000 000 per run                                 |
-| Batch sizes   | 1 / 128 (table→table §1 & §3); 1024 (§5 & §6)     |
+| Batch sizes   | 1 / 128 (table→table §1 & §3); 1024 (§5, §6 & §9)  |
 | Concurrency   | 1 and 4 route workers                             |
 | Postgres      | `postgres:16-alpine`, `wal_level=logical`         |
 | Warm-up       | 5 000-message pre-roll, excluded from timing      |
@@ -123,15 +199,21 @@ Payload rows are `{"id":<n>,"pad":"xxx…"}` padded to exactly 256 / 4096 bytes.
 #    cargo-binstall — so the figures describe what a user actually installs.
 cargo build -p mq-bridge-app --release
 
-#    A lean build is also supported and is enough for the Postgres/CDC
-#    scenarios; it avoids the heavy `full` deps (rdkafka/librdkafka,
-#    grpc/protoc, ibm-mq) and builds much faster. Numbers from the two builds
-#    should not be mixed in one table. Give it its own CARGO_TARGET_DIR so it
-#    cannot overwrite the default build's binary, and pass the same value when
-#    running the benchmarks against it (the runners resolve BIN from it):
+#    A lean build is also supported and is enough for the Postgres scenarios;
+#    it avoids the heavy `full` deps (rdkafka/librdkafka, grpc/protoc, ibm-mq)
+#    and builds much faster. Numbers from the two builds should not be mixed in
+#    one table. Give it its own CARGO_TARGET_DIR so it cannot overwrite the
+#    default build's binary, and pass the same value when running the
+#    benchmarks against it (the runners resolve BIN from it):
 # CARGO_TARGET_DIR=target-lean cargo build -p mq-bridge-app \
 #   --no-default-features --features bench --release
 # CARGO_TARGET_DIR=target-lean benches/etl/run_pipeline.sh
+#
+#    For run_cdc_latency.sh use `bench-cdc` instead: CDC needs the postgres
+#    logical-replication endpoint, which pulls aws-lc-sys (a slow C build) and
+#    is therefore not in plain `bench`.
+# CARGO_TARGET_DIR=target-lean cargo build -p mq-bridge-app \
+#   --no-default-features --features bench-cdc --release
 
 # 2. Postgres 16 with logical replication (mirrors the library's CDC compose).
 benches/etl/seed.sh up
@@ -506,41 +588,43 @@ The Meltano and Sling comparisons line mq-bridge-app up against other ETL tools.
 This one lines it up against what a Postgres user **already has installed**, which
 is the more common reference point. The peer is **`psql \copy … TO … (FORMAT csv,
 HEADER true)`**: both sides read the same `bench` table and write the same CSV, so
-the ratio is meaningful.
+the ratio is meaningful. **`pg_dump`** is in the table too, but as a floor rather
+than a peer — it writes a restore format and never decodes a row, so it marks the
+cost of getting bytes out of Postgres at all.
 
 ```bash
 benches/etl/seed.sh up && benches/etl/seed.sh bench 1000000
 # A HOST psql/pg_dump is required here (see below). macOS:
 brew install libpq && export PATH="$(brew --prefix libpq)/bin:$PATH"
-benches/etl/run_pg_vendor.sh          # -> results/pg_vendor.csv
+BATCH=32768 CONC=4 benches/etl/run_pg_vendor.sh   # -> results/pg_vendor.csv
 ```
 
-> **The mq-bridge-app cells in §8 were re-measured on 2026-08-01 with mimalloc.**
-> The `psql \copy`, `pg_dump` and external `zstd`/`lz4` peer figures are carried
-> over from the 2026-07-25 session on the same machine — those tools did not
-> change — so §8 is not single-session.
+> **Measured 2026-08-05 on an idle machine.** The `psql \copy` and `pg_dump`
+> baselines are from the 0.2.13 session and are unchanged — neither takes a batch
+> size, so there was nothing to re-measure. Every mq-bridge-app cell in §8a, §8b
+> and §8c was re-measured together at `--batch-size 32768` on a later build, with
+> 1 warmup and 3 timed runs per cell and a landed-row check on each.
 
 #### 8a — vs. `psql \copy`
 
-1M rows, batch 1024 / concurrency 4 (the product's own defaults), median of 5:
+1M rows, batch 32768 / concurrency 4, median of 3:
 
-| Tool | rows/s | median | on disk |
-| --- | ---: | ---: | ---: |
-| `psql \copy` → csv | 573,723 | 1.743 s | 129 MB |
-| mq-bridge-app → csv | 330,907 | 3.022 s | 129 MB |
+| Tool | rows/s | median | on disk | writes |
+| --- | ---: | ---: | ---: | --- |
+| `pg_dump` (floor, not a peer) | 660,066 | 1.515 s | 111 MB | COPY-block SQL script |
+| `psql \copy` → csv | 668,449 | 1.496 s | 129 MB | csv |
+| mq-bridge-app → csv | 498,504 | 2.006 s | 129 MB | csv |
 
-- **`psql \copy` is ~1.7x faster, and that is the expected result.** It is a byte
-  pump: the server serializes CSV in C inside the backend and psql copies bytes
-  from the socket to a file, never parsing a row, in one query. mq-bridge-app
-  issues one keyset query per batch, decodes every value into a typed message, and
-  re-serializes it — a full decode/encode round trip per row. Raising
-  `--batch-size` to 32768 (far fewer queries) closes it to ~1.23x at **466,636
-  rows/s**.
-- **The allocator barely moves this cell** (315,955 → 330,907, +4.7%) even though
-  it was worth +27% on §5's Postgres→JSONL job and +36% on the CSV scenarios. At
-  batch 1024 / concurrency 4 the Postgres cursor is the constraint, so there is
-  little per-row allocation left to win back; at batch 32768 the balance shifts
-  toward decode/encode and the gain roughly doubles (421,762 → 466,636, +10.6%).
+- **`psql \copy` is ~1.34x faster, and being faster is the expected result.** It is
+  a byte pump: the server serializes CSV in C inside the backend and psql copies
+  bytes from the socket to a file, never parsing a row, in one query.
+  mq-bridge-app issues one keyset query per batch, decodes every value into a
+  typed message, and re-serializes it — a full decode/encode round trip per row.
+  The two CSVs are identical (parity-checked by value: 1,000,000 rows equal,
+  10,091 differing only in float spelling).
+- **Batch size is the parameter that matters here.** At `--batch-size 1024` the
+  same job runs at 356,252 rows/s (2.807 s) — 1.9x behind `\copy` — because the
+  per-batch query cost is paid ~977 times instead of ~31. Nothing else changed.
 - **What that cost buys** is that the same command targets any other sink — a
   broker, a second database, object storage, compressed or encrypted — where
   `\copy` writes one local CSV and stops. For a comparison against tools doing the
@@ -548,74 +632,77 @@ benches/etl/run_pg_vendor.sh          # -> results/pg_vendor.csv
 
 #### 8b — Output formats
 
-The same read, written seven ways (batch 1024 / concurrency 4, fastest of 2, all
+The same read, written seven ways (batch 32768 / concurrency 4, median of 3, all
 seven measured in one session). The read column is the reverse trip: that file
 back in through mq-bridge-app, same parameters, written to a `raw` sink.
 
 | Format | write rows/s | on disk | read rows/s |
 | --- | ---: | ---: | ---: |
-| `format=csv` | 351,000 | 128,982,268 | 1,094,092 |
-| `format=normal` | 338,639 | 763,468,511 | 337,952 |
-| `format=json` | 350,754 | 286,982,210 | 720,461 |
-| `format=text` | 369,004 | 334,985,602 | 1,156,069 |
-| `format=raw` | 364,697 | 208,982,210 | 3,389,831 |
-| `format=normal&compression=lz4` | 327,439 | 94,719,535 | 328,192 |
-| `format=normal&compression=zstd` | 350,263 | 55,292,829 | 322,997 |
+| `format=csv` | 498,504 | 128,982,268 | 920,810 |
+| `format=normal` | 499,251 | 320,985,602 | 1,137,656 |
+| `format=json` | 499,251 | 286,982,210 | 687,757 |
+| `format=text` | 492,853 | 334,985,602 | 1,077,586 |
+| `format=raw` | 489,236 | 208,982,210 | 3,802,281 |
+| `format=normal&compression=lz4` | 501,350 | 73,225,866 | 1,067,235 |
+| `format=normal&compression=zstd` | 467,954 | 45,417,349 | 953,288 |
 
-- **Writes are source-bound; reads are not.** Every write cell lands within ~12% of
-  the others because the Postgres cursor (~350k rows/s, one keyset query per batch)
-  is the limit, not the sink — the sink alone does 2.1-4.3M rows/s with no source in
-  front of it. The read column is where the format actually shows up, spanning 10x.
-- **The allocator shows up in the read column, not the write column.** Writes gained
-  ~6-14% over the pre-mimalloc session (they are source-bound, so there is little to
-  gain), while reads gained ~9-36% — `csv` 802,584 → 1,094,092 and `raw` 2,603,082 →
-  3,389,831. The compressed reads moved least (~9%), being CPU-bound in the codec
-  rather than in allocation.
-- **`normal` is the interchange format** — the whole message envelope as JSON. It is
-  bulky *and slow to read back* because the payload serializes as a decimal byte
-  array (`[123,34,105,…]`): ~200 numeric tokens to parse per record, 763 B on disk
-  for a ~180 B row. `json` (payload as a JSON value) and `text` (payload as a
-  string) carry the same envelope, including `message_id`, at 2.1x and 3.4x the
-  read speed. `raw` writes the payload alone — fastest and smallest, but no
-  envelope, so no `message_id`. All four read back; verified at 1M records each.
+> The two compressed **write** cells are from an interleaved re-measurement
+> (lz4/zstd/lz4/zstd, 1 warmup + 3 timed each). The first pass put lz4 at 392,927,
+> below zstd — implausible for the cheaper codec, and it did not reproduce in
+> either later pair. Everything else in the table is from the single session.
+
+- **Writes are source-bound; reads are not.** The five uncompressed write cells land
+  within ~2% of each other (489,236-499,251) because the Postgres cursor is the
+  limit, not the sink — at this batch size it tops out near 499k rows/s. The read
+  column, where the same sinks are fed by a file instead, spans **5.5x**
+  (687,757 to 3,802,281) and every cell in it beats the write column. So treat the
+  write column as a floor for the sink, not a measurement of it; the format only
+  starts to matter once the source stops being the constraint.
+- **`normal` is the interchange format** — the whole message envelope as JSON — and
+  it is the one to reach for. A UTF-8 payload is written as a plain string; only a
+  non-UTF-8 payload is base64-encoded, into a separate `payload_base64` field
+  (mutually exclusive with `payload`, mirroring the CloudEvents `data`/`data_base64`
+  split). `text` (payload as a string) and `json` (payload as a JSON value) carry the
+  same envelope including `message_id`; `raw` writes the payload alone — smallest and
+  by far the fastest to read, but no envelope, so no `message_id`. All read back;
+  verified at 1M records each.
+- **`normal` is both smaller and faster than `text`** — 321 MB against 335 MB, and
+  1,137,656 against 1,077,586 rows/s on read — so there is no case for choosing
+  `text` over it on either axis. `text` remains the right choice only when the
+  consumer requires the payload as an opaque string field.
+- **`json` is the slowest format to read**, at 687,757 against `normal`'s 1,137,656.
+  It is the only one that materializes the payload into a `serde_json::Value` and
+  re-serializes it; the others hand bytes through. Choose it when you want the
+  payload as queryable JSON, not for speed.
 - **CSV cannot be compressed** — the endpoint rejects the combination — so the
   compressed cells use `normal`, which is the right pairing anyway.
-- **zstd over lz4.** On read they are within ~1.6% (322,997 vs 328,192, lz4
-  marginally ahead); on write zstd measured ~7% *faster* here (350,263 vs 327,439),
-  which is larger than the previous session's 0.5% gap but still inside the spread
-  of the source-bound write cells and should not be read as zstd being genuinely
-  cheaper to compress. Either way the 1.7x better ratio decides it. zstd's output is
-  also *2.3x smaller than the CSV* while carrying strictly more.
-- **Compression is effectively free on write** — zstd lands at 350,263 against
-  uncompressed `normal`'s 338,639 in the same session, i.e. nominally *faster*,
-  which simply means both are pinned by the Postgres cursor and the difference is
-  run-to-run noise. (The pre-mimalloc session measured this as a ~4% cost, also
-  within noise; the honest statement is that it is not measurable while the source
-  is the constraint.) It is a clear win once the *sink* is the constraint (with a
-  fast source, a compressed sink does 4.0M rows/s against 2.1M uncompressed at
-  concurrency 4), and it costs ~4% on read, where decompression lands on the file
-  source's single reader thread.
-- **Superseded measurement.** Earlier revisions of this table showed compression
-  costing ~35% (lz4 205,888 / zstd 193,461) and not scaling with concurrency at all
-  (192,591 / 192,141 / 192,261 at 1, 4 and 8 workers). That was a defect, not a
-  property of compression: the member write path ran its whole encode+compress
-  before its first await, so the task held the thread that had woken it and stalled
-  the route's producer — ~1.9 ms of dead time per batch, invisible as CPU. Fixed by
-  opening the file before the build. The read column moved too (`normal` 203,380 →
-  310,948): decoding the byte-array payload built a `serde_json::Value`, cloned the
-  array and walked it a third time, and now runs as a single pass.
+- **zstd for size, lz4 for speed.** zstd is **1.6x smaller** (45.4 MB against
+  73.2 MB; 7.1x smaller than uncompressed `normal`, and *2.8x smaller than the CSV*
+  while carrying strictly more), and costs ~7% against lz4 on write (467,954 vs
+  501,350) and ~11% on read (953,288 vs 1,067,235). zstd is the default
+  recommendation: 1.6x on disk is worth ~10% of CPU for almost any at-rest or
+  transfer use. Pick lz4 when the pipeline is CPU-bound and the bytes are transient.
+- **What compression costs depends on which end is the constraint.** The codec
+  always burns CPU; whether that CPU is on the critical path is the whole question.
+  On write here it mostly is not — lz4's 501,350 sits inside the ~2% spread of the
+  uncompressed cells and zstd's 467,954 is only ~6% under, because the Postgres
+  source, not the sink, sets the pace. On read there is no slow source to hide
+  behind and the cost surfaces in full: ~6% for lz4 and ~16% for zstd against
+  uncompressed `normal`, all of it landing on the file source's single reader
+  thread. Measure this on your own source rate rather than reading either number as
+  the codec's price.
 
 #### 8c — Round trip
 
-The compressed file is restored through mq-bridge-app and compared byte-for-byte
-against the *same* file decoded by the external `zstd` CLI: 1,000,000 records,
-**identical including `message_id`**, ~3.5 s.
+Does the interchange format survive a full trip out and back? The zstd file from
+§8b is read in again, written out as uncompressed `normal`, and compared
+byte-for-byte against the *same* file decoded by the external `zstd` CLI.
 
-> The byte-identity assertion here was verified in the 2026-07-25 session and has
-> **not** been re-run with mimalloc — an allocator cannot change output bytes, so
-> the correctness claim carries over, but the ~3.5 s and ~5.0 s timings below are
-> pre-mimalloc and may differ. Re-running the assertion needs the full
-> `run_pg_vendor.sh`, which requires a host `psql`/`pg_dump`.
+| | |
+| --- | --- |
+| Records restored | 1,000,000 |
+| Elapsed | 1.067 s |
+| Result | byte-identical, **including `message_id`** |
 
 - **Compare against that same file, not a re-read.** Comparing the restore against
   a separately written `normal` file would be wrong, and is a mistake worth naming:
@@ -626,13 +713,15 @@ against the *same* file decoded by the external `zstd` CLI: 1,000,000 records,
 - **Row counts come from the external `zstd`/`lz4` CLIs**, not from mq-bridge:
   verifying a writer with its own reader would hide a bug in both, and this doubles
   as a check that the concatenated members decode as one stream.
-- **Restore takes ~5.0 s at concurrency 1 and at 4 alike.** The file source does
-  not parallelize — one reader thread owns decode, delimiter splitting and message
+- **Restore does not speed up with `--concurrency`.** The file source does not
+  parallelize — one reader thread owns decode, delimiter splitting and message
   construction — which is also why the read column above is flat in
   `--concurrency`.
 
+#### 8d — Methodology
+
 <details>
-<summary><b>Methodology notes</b> — the host-client guard, <code>pg_dump</code>, and how parity is checked</summary>
+<summary><b>Methodology notes for all of §8</b> — the host-client guard, <code>pg_dump</code>, and how parity is checked</summary>
 
 - **This scenario refuses to run without a host `psql` and `pg_dump`**, and says
   why — unlike every other scenario. `lib.sh` otherwise falls back to the client
@@ -642,13 +731,14 @@ against the *same* file decoded by the external `zstd` CLI: 1,000,000 records,
   rather than the TCP connection mq-bridge-app uses. Different disk, different
   network path — a faster number that is not a comparison. The guard exists because
   that failure is silent.
-- **`pg_dump` is timed but deliberately not published here.** A dump is a *restore
+- **`pg_dump` is published as a floor, not as a peer.** A dump is a *restore
   format* — a COPY-block SQL script, not interchange data — and it skips the
-  `ORDER BY` this comparison needs, skips CSV quoting, and writes less. It is a
-  useful sanity bound in the harness (exceeding it would mean the measurement is
-  wrong), but printed next to a throughput table it reads as a head-to-head that
-  was lost, which is not what it is. `mongodump` is the same category;
-  `mongoexport --type=json` would be the fair Mongo peer and is not wired up yet.
+  `ORDER BY` this comparison needs, skips CSV quoting, and writes less (111 MB
+  against 129 MB). So it is not a head-to-head that anyone won or lost: it is the
+  cost of getting bytes out of Postgres at all, and therefore the bound no
+  extraction tool can beat. Read the row that way. `mongodump` is the same
+  category; `mongoexport --type=json` would be the fair Mongo peer and is not
+  wired up yet.
 - **Parity is checked by value, not by bytes.** The two outputs are not
   byte-identical and should not be: a `double precision` holding a whole number
   renders as `7535.0` from the sink (it serializes an f64) and as `7535` from

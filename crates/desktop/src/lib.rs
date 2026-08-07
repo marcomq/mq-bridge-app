@@ -948,6 +948,7 @@ fn delete_desktop_secrets_for_metadata(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(feature = "rustls-aws-lc")]
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tauri::Builder::default()

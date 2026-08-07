@@ -8,7 +8,9 @@
 # p50/p95/p99 latency proxy. See METHODOLOGY.md for what this measures.
 #
 # Prereqs:  ./seed.sh up   and a lean build with CDC:
-#           cargo build -p mq-bridge-app --no-default-features --features bench --release
+#           cargo build -p mq-bridge-app --no-default-features --features bench-cdc --release
+#           (`bench-cdc`, not `bench` — CDC needs the postgres logical-replication
+#           endpoint, which plain `bench` leaves out.)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/seed.sh"   # sources lib.sh

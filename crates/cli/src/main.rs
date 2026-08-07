@@ -188,6 +188,7 @@ struct CopyArgs {
 async fn main() -> anyhow::Result<()> {
     // Initialize the default crypto provider for rustls (required for rustls 0.23.0+)
     // This allows mq-bridge to create TLS configurations for secure endpoints.
+    #[cfg(feature = "rustls-aws-lc")]
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let args = Args::parse();

@@ -97,12 +97,12 @@ mqb_once() {
 # "what does it cost to land the data in a form mq-bridge can read back?", which is
 # the interchange/backup use case rather than the CSV export one.
 #
-# `normal` is the default format: the whole CanonicalMessage as JSON, payload as a
-# byte array. That array is why the file is ~7x the CSV — each payload byte is
-# written as a decimal number plus a comma. It is also why zstd pays for itself so
-# heavily here. The three cells below measure the alternatives: `json` renders the
-# payload as a JSON value, `text` as a string, `raw` writes the payload alone (no
-# envelope, so no message_id). All four read back.
+# `normal` is the default format: the whole CanonicalMessage as JSON, with a UTF-8
+# payload written as a plain string and only a non-UTF-8 one base64-encoded into a
+# separate `payload_base64` field. The envelope is why the file is ~2.5x the CSV.
+# The three cells below measure the alternatives: `json` renders the payload as a
+# JSON value, `text` as a string, `raw` writes the payload alone (no envelope, so
+# no message_id). All four read back.
 normal_once() {
   rm -f "$OUT_NORMAL"
   "$BIN" copy \
