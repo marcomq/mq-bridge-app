@@ -795,7 +795,8 @@ impl BridgeMcp {
             if tokio::time::Instant::now() >= deadline {
                 break (None, None);
             }
-            tokio::time::sleep(WAIT_POLL_INTERVAL.min(deadline - tokio::time::Instant::now())).await;
+            tokio::time::sleep(WAIT_POLL_INTERVAL.min(deadline - tokio::time::Instant::now()))
+                .await;
         };
 
         let timing = self.metrics.timing(&args.name).await;
@@ -1150,7 +1151,10 @@ mod tests {
         assert_eq!(resolve(Some(8), Some(2), DEFAULT_CONCURRENCY), 8);
         assert_eq!(resolve(None, Some(2), DEFAULT_CONCURRENCY), 2);
         assert_eq!(resolve(None, Some(1), DEFAULT_CONCURRENCY), 1);
-        assert_eq!(resolve(None, None, DEFAULT_CONCURRENCY), DEFAULT_CONCURRENCY);
+        assert_eq!(
+            resolve(None, None, DEFAULT_CONCURRENCY),
+            DEFAULT_CONCURRENCY
+        );
         assert_eq!(resolve(None, None, DEFAULT_BATCH_SIZE), DEFAULT_BATCH_SIZE);
     }
 }

@@ -1121,7 +1121,14 @@ fn is_unconstrained_schema(sub: &serde_json::Value) -> bool {
         serde_json::Value::Object(obj) => !obj.keys().any(|key| {
             matches!(
                 key.as_str(),
-                "type" | "$ref" | "allOf" | "anyOf" | "oneOf" | "enum" | "const" | "properties"
+                "type"
+                    | "$ref"
+                    | "allOf"
+                    | "anyOf"
+                    | "oneOf"
+                    | "enum"
+                    | "const"
+                    | "properties"
                     | "items"
             )
         }),

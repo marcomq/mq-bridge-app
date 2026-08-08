@@ -10,8 +10,41 @@ rust-version = "1.94"
 
 
 [workspace.dependencies]
-# Define the core crate as a workspace dependency with its version for crates.io
-mq_bridge_app = { version = "0.2.13", path = "crates/core", package = "mq-bridge-app-core" }
+# Define the core crate as a workspace dependency with its version for crates.io.
+# `default-features = false` is load-bearing: core's default is `full`, so without
+# it a lean build such as `cargo build -p mq-bridge-app --no-default-features
+# --features bench` is silently widened back to the full endpoint set. The binary
+# crates re-enable what they need through their own `full` feature.
+mq_bridge_app = { version = "0.2.13", path = "crates/core", package = "mq-bridge-app-core", default-features = false }
+
+# Shared third-party deps. Members opt in with `{ workspace = true }` and may add
+# extra `features` on top (they are additive) — see e.g. tokio in the CLI crate.
+anyhow = "1.0.104"
+hex = "0.4.3"
+metrics = "0.24.6"
+# `default-features = false` drops the unused `push-gateway` feature, which pulls
+# hyper-rustls + aws-lc-rs (BoringSSL C build). Only the CLI serves metrics over
+# HTTP, so only it adds `http-listener`.
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+mimalloc = { version = "0.1", default-features = false }
+rustls = "0.23.43"
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+url = "2.5.8"
+uuid = { version = "1.24", features = ["v4"] }
+
+# Local crates keep full debuginfo (debugger-friendly); dependencies and build
+# scripts drop it, which is where nearly all of target/debug's size sits.
+# Mirrored in ../mq-bridge/Cargo.toml.
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+debug = false
 
 [profile.release]
 opt-level = 3

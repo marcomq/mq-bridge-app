@@ -25,19 +25,23 @@ pkg-fmt = "zip"
 
 [dependencies]
 mq_bridge_app = { workspace = true }
-anyhow = "1.0.104"
+anyhow = { workspace = true }
+metrics = { workspace = true }
+# `http-listener` serves the `--metrics-addr` endpoint; this crate is the only
+# one that needs it.
+metrics-exporter-prometheus = { workspace = true, features = ["http-listener"] }
+mimalloc = { workspace = true, optional = true }
+# Only used to install the process-wide crypto provider; see `rustls-aws-lc`.
+rustls = { workspace = true, optional = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+
 clap = { version = "4.6.5", features = ["derive"] }
-metrics = { version = "0.24.6" }
-mimalloc = { version = "0.1", default-features = false, optional = true }
-metrics-exporter-prometheus = "0.18.3"
-rustls = "0.23.43"
-schemars = "1.2.2"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "tracing", "sync", "net"] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
-url = "2.5.8"
 
 # MCP server mode (`mq-bridge-app mcp`). Streamable-HTTP is served over hyper (no axum).
 rmcp = { version = "3.1.0", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
@@ -50,17 +54,20 @@ default = ["full"]
 # where it is unsupported or to benchmark the system allocator.
 mimalloc = ["dep:mimalloc"]
 integration-test = ["mq_bridge_app/integration-test"]
-# Lean feature set for the ETL/CDC benchmarks (benches/etl): see the core crate.
+# Lean feature set for the ETL benchmarks (benches/etl): see the core crate.
 bench = ["mq_bridge_app/bench", "mimalloc"]
+# `bench` plus Postgres logical-replication CDC, for run_cdc_latency.sh. Split
+# out because it costs the aws-lc-sys build; see the core crate for why.
+bench-cdc = ["bench", "mq_bridge_app/bench-cdc", "rustls-aws-lc"]
 ibm-mq = ["mq_bridge_app/ibm-mq"]
 arm64-cross-compile = ["mq_bridge_app/arm64-cross-compile"]
-full = ["mq_bridge_app/full", "mimalloc"]
+full = ["mq_bridge_app/full", "mimalloc", "rustls-aws-lc"]
 middleware = ["mq_bridge_app/middleware"]
 compression = ["mq_bridge_app/compression"]
 encryption = ["mq_bridge_app/encryption"]
 sqlx = ["mq_bridge_app/sqlx"]
 postgres-cdc = ["mq_bridge_app/postgres-cdc"]
-rustls-aws-lc = ["mq_bridge_app/rustls-aws-lc"]
+rustls-aws-lc = ["dep:rustls", "rustls/aws_lc_rs", "mq_bridge_app/rustls-aws-lc"]
 mongodb = ["mq_bridge_app/mongodb"]
 http = ["mq_bridge_app/http"]
 kafka = ["mq_bridge_app/kafka"]
@@ -74,8 +81,8 @@ amqp = ["mq_bridge_app/amqp"]
 redis-streams = ["mq_bridge_app/redis-streams"]
 
 [dev-dependencies]
-metrics = { version = "0.24.6" }
-metrics-exporter-prometheus = "0.18.3"
-serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["io-util", "net", "rt-multi-thread", "macros", "sync", "time"] }
-uuid = { version = "1.24", features = ["v4"] }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "time"] }
+uuid = { workspace = true }
