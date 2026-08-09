@@ -1,6 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   filterPeerRows,
+  peerActivity,
+  peerActivityLabel,
   peerConsumerRows,
   peerPublisherRows,
 } from "../../ui/src/lib/peer-status";
@@ -58,6 +60,17 @@ describe("peer status rows", () => {
     expect(filterPeerRows(rows, "kafka").map((row) => row.label)).toEqual(["publisher"]);
     expect(filterPeerRows(rows, "MCP").length).toBe(rows.length);
     expect(filterPeerRows(rows, "nothing-matches")).toEqual([]);
+  });
+
+  // A route is one unit of traffic here, not the two sidebar rows it renders as.
+  test("summarises peer traffic without double-counting routes", () => {
+    expect(peerActivity(status)).toEqual({ instances: 1, running: 1, throughput: 1 });
+    expect(peerActivityLabel(peerActivity(status))).toBe(
+      "1 other instance • 1 running • 1.0 msg/s",
+    );
+    expect(peerActivity({ current_instance_id: "local", instances: [status.instances[0]] })).toEqual(
+      { instances: 0, running: 0, throughput: 0 },
+    );
   });
 });
 

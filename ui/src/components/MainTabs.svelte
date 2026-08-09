@@ -1,8 +1,9 @@
 <script lang="ts">
   import HeaderSaveButton from "./HeaderSaveButton.svelte";
-  import { activeMainTab, runtimeStatusStore } from "../lib/stores";
+  import { activeMainTab, peerStatusStore, runtimeStatusStore } from "../lib/stores";
   import { switchMain } from "../bootstrap";
   import { isRuntimeConnected, runtimeStatusLabel } from "../lib/runtime-status";
+  import { peerActivity, peerActivityLabel } from "../lib/peer-status";
   import { getThemePreference, setThemePreference } from "../lib/utils";
   import { onMount } from "svelte";
 
@@ -10,6 +11,8 @@
 
   let theme = $state<Theme>("auto");
   let themeSelectorOpen = $state(false);
+
+  const peers = $derived(peerActivity($peerStatusStore));
 
   onMount(() => {
     theme = getThemePreference() ?? "auto";
@@ -65,6 +68,17 @@
       <div class="status-dot" id="runtime-status-dot"></div>
       <span id="runtime-status-label">{runtimeStatusLabel($runtimeStatusStore)}</span>
     </div>
+    {#if peers.instances > 0}
+      <div
+        class="topbar-status topbar-status--peer"
+        class:topbar-status-live={peers.running > 0}
+        id="peer-status"
+        title="Routes and consumers running in other mq-bridge instances on this machine"
+      >
+        <div class="status-dot"></div>
+        <span id="peer-status-label">{peerActivityLabel(peers)}</span>
+      </div>
+    {/if}
     <div class="theme">
       <button
         type="button"

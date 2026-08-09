@@ -287,6 +287,17 @@ body {
     background: var(--text-dim);
 }
 
+/* Peer traffic reads as its own thing, in the same purple the peer sidebar
+   rows use, so it is never mistaken for this instance's own status. */
+.topbar-status--peer {
+    margin-left: 12px;
+    color: var(--accent-purple, #a78bfa);
+}
+
+.topbar-status--peer.topbar-status-live .status-dot {
+    background: var(--accent-purple, #a78bfa);
+}
+
 /* ── MAIN TABS (Routes / Publishers / Consumers) ── */
 .main-tabs {
     height: var(--tab-h);
@@ -516,6 +527,12 @@ body {
 .sidebar-item--peer {
     cursor: default;
     opacity: 0.9;
+}
+
+/* Peer rows are not clickable, so a name that ellipses can only be read from
+   the row's tooltip — keep the rate chip from eating into it. */
+.sidebar-item--peer .msg-count {
+    flex-shrink: 0;
 }
 
 .sidebar-item--peer:hover {

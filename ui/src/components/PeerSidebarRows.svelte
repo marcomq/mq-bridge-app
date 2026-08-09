@@ -23,7 +23,7 @@
     {/if}
     <div
       class={`sidebar-item sidebar-item--peer ${itemClass}`}
-      title={`${row.instanceLabel} · ${row.workspaceLabel} · ${row.endpoint}`}
+      title={`${row.label} · ${row.endpoint} · ${row.instanceLabel} · ${row.workspaceLabel}`}
       aria-label={`${row.label} from ${row.instanceLabel}`}
     >
       <span class="proto-badge proto-peer">{row.endpoint}</span>

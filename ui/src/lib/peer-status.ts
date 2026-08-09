@@ -1,4 +1,4 @@
-import type { InstanceStatus, StatusEntity } from "./generated/ui-types";
+import type { InstanceStatus, StatusEntity, StatusSummary } from "./generated/ui-types";
 import type { PeerStatus } from "./runtime-status";
 
 export interface PeerSidebarRow {
@@ -53,6 +53,42 @@ export function peerPublisherRows(status: PeerStatus): PeerSidebarRow[] {
     ...(instance.publishers || []).map((entity) => row(instance, entity, "publisher")),
     ...(instance.routes || []).map((route) => row(instance, route.output, `route-output:${route.id}`)),
   ]);
+}
+
+export interface PeerActivity {
+  /** Instances other than this one that currently hold a lease. */
+  instances: number;
+  running: number;
+  throughput: number;
+}
+
+/** What the other instances are doing, for the top bar's peer indicator. */
+export function peerActivity(status: PeerStatus): PeerActivity {
+  const instances = instancesForDisplay(status);
+  let running = 0;
+  let throughput = 0;
+  for (const instance of instances) {
+    // A route counts once here, unlike the sidebar where it appears as both an
+    // input row and an output row.
+    const summaries: (StatusSummary | undefined)[] = [
+      ...(instance.consumers || []).map((entity) => entity.summary),
+      ...(instance.routes || []).map((route) => route.summary),
+    ];
+    for (const summary of summaries) {
+      if (summary?.running) running += 1;
+      throughput += Number(summary?.throughput || 0);
+    }
+  }
+  return { instances: instances.length, running, throughput };
+}
+
+export function peerActivityLabel(activity: PeerActivity): string {
+  const parts = [
+    `${activity.instances} other instance${activity.instances === 1 ? "" : "s"}`,
+  ];
+  if (activity.running > 0) parts.push(`${activity.running} running`);
+  if (activity.throughput > 0) parts.push(`${activity.throughput.toFixed(1)} msg/s`);
+  return parts.join(" • ");
 }
 
 /** Applies a sidebar's free-text filter to peer rows. */

@@ -194,7 +194,7 @@ struct RouteStatusArgs {
 /// The MCP server. Holds the routes it has started so it can report and stop them.
 #[derive(Clone)]
 pub struct BridgeMcp {
-    routes: Arc<Mutex<HashMap<String, RouteHandle>>>,
+    routes: Arc<Mutex<HashMap<String, RunningRoute>>>,
     /// Names that are being started but have no handle yet. A name is reserved
     /// here before the route runs, so two concurrent starts can never both bring
     /// up a route that consumes the same source. Always locked *while holding
@@ -351,8 +351,17 @@ fn describe_sent_batch(sent: SentBatch, count: usize) -> (serde_json::Value, boo
     }
 }
 
+/// A route started via this server. The connector types of its endpoints are
+/// kept alongside the handle so status can label the rows it contributes; only
+/// the type labels are kept, never the endpoint config.
+pub(crate) struct RunningRoute {
+    handle: RouteHandle,
+    input: String,
+    output: String,
+}
+
 /// Shared map of routes started via this server, keyed by route name.
-type RouteMap = Arc<Mutex<HashMap<String, RouteHandle>>>;
+type RouteMap = Arc<Mutex<HashMap<String, RunningRoute>>>;
 
 /// Publish targets used via this server, keyed by name, holding the connector
 /// type. Only the type is kept — never the endpoint config, which carries URLs
@@ -362,6 +371,8 @@ type PublisherMap = Arc<Mutex<HashMap<String, String>>>;
 #[derive(Default)]
 struct McpStatusSnapshot {
     routes: HashMap<String, ConsumerStatusSnapshot>,
+    /// Connector type of each route's input and output, keyed by route name.
+    route_endpoints: HashMap<String, (String, String)>,
     publishers: HashMap<String, ConsumerStatusSnapshot>,
 }
 
@@ -452,7 +463,9 @@ impl BridgeMcp {
     /// expects. Used by the reporting task.
     async fn status_report(&self) -> McpStatusSnapshot {
         let mut routes = HashMap::new();
-        for (name, handle) in self.routes.lock().await.iter() {
+        let mut route_endpoints = HashMap::new();
+        for (name, route) in self.routes.lock().await.iter() {
+            let handle = &route.handle;
             let status = handle.status();
             routes.insert(
                 name.clone(),
@@ -468,6 +481,7 @@ impl BridgeMcp {
                     self.metrics.throughput(name).await,
                 ),
             );
+            route_endpoints.insert(name.clone(), (route.input.clone(), route.output.clone()));
         }
 
         let mut publishers = HashMap::new();
@@ -488,20 +502,30 @@ impl BridgeMcp {
             );
         }
 
-        McpStatusSnapshot { routes, publishers }
+        McpStatusSnapshot {
+            routes,
+            route_endpoints,
+            publishers,
+        }
     }
 
     /// The same status in registry terms: each route contributes a consumer row
     /// for its input and a publisher row for its output.
     async fn status_snapshot(&self) -> StatusSnapshot {
         let report = self.status_report().await;
-        // A route's endpoint types are not kept (only its name is), so the rows
-        // it contributes carry no connector label. The publisher map does hold
-        // the type, which is what `report_snapshot` put in `target` there.
+        // A route's endpoint types come from the route map; the publisher map
+        // holds the type, which is what `report_snapshot` put in `target` there.
+        let endpoints = |name: &String| {
+            report
+                .route_endpoints
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()))
+        };
         let mut consumers: Vec<StatusEntity> = report
             .routes
             .iter()
-            .map(|(name, snapshot)| status_entity(name, "unknown", snapshot))
+            .map(|(name, snapshot)| status_entity(name, &endpoints(name).0, snapshot))
             .collect();
         let mut publishers: Vec<StatusEntity> = report
             .publishers
@@ -511,12 +535,15 @@ impl BridgeMcp {
         let mut routes: Vec<StatusRoute> = report
             .routes
             .iter()
-            .map(|(name, snapshot)| StatusRoute {
-                id: name.clone(),
-                label: name.clone(),
-                input: status_entity(&format!("{name}:input"), "unknown", snapshot),
-                output: status_entity(&format!("{name}:output"), "unknown", snapshot),
-                summary: StatusSummary::from(snapshot),
+            .map(|(name, snapshot)| {
+                let (input, output) = endpoints(name);
+                StatusRoute {
+                    id: name.clone(),
+                    label: name.clone(),
+                    input: status_entity(&format!("{name}:input"), &input, snapshot),
+                    output: status_entity(&format!("{name}:output"), &output, snapshot),
+                    summary: StatusSummary::from(snapshot),
+                }
             })
             .collect();
         // The maps above iterate in hash order, so sort: a peer's rows must not
@@ -674,6 +701,8 @@ impl BridgeMcp {
         // and counts each one once — a `retry` redelivery re-enters the handler
         // but is not a new message.
         let publishes = !matches!(route.output.endpoint_type, EndpointType::Null);
+        let input_label = endpoint_type_label(&route.input.endpoint_type);
+        let output_label = endpoint_type_label(&route.output.endpoint_type);
         let counter = self.metrics.counter_for(&name).await;
         let capture = (capture_last > 0)
             .then(|| MessageCapture::with_capacity(&capture_topic(&name), capture_last));
@@ -725,7 +754,14 @@ impl BridgeMcp {
         // the name is never momentarily free while the route is live.
         let mut routes = self.routes.lock().await;
         self.starting.lock().await.remove(&name);
-        routes.insert(name.clone(), handle);
+        routes.insert(
+            name.clone(),
+            RunningRoute {
+                handle,
+                input: input_label,
+                output: output_label,
+            },
+        );
 
         Ok(ok_json(serde_json::json!({
             "route": name,
@@ -781,12 +817,12 @@ impl BridgeMcp {
         match args.name {
             Some(name) => {
                 let routes = self.routes.lock().await;
-                let Some(handle) = routes.get(&name) else {
+                let Some(route) = routes.get(&name) else {
                     return Err(invalid(format!("no route named '{name}'")));
                 };
                 let entry = route_entry_json(
                     &name,
-                    handle,
+                    &route.handle,
                     self.metrics.sequence(&name).await,
                     self.metrics.throughput(&name).await,
                     self.metrics.timing(&name).await,
@@ -832,11 +868,11 @@ impl BridgeMcp {
         let (outcome, error) = loop {
             {
                 let routes = self.routes.lock().await;
-                let Some(handle) = routes.get(&args.name) else {
+                let Some(route) = routes.get(&args.name) else {
                     return Err(invalid(format!("no route named '{}'", args.name)));
                 };
-                if let Some(outcome) = handle.outcome() {
-                    break (Some(outcome), handle.status().error);
+                if let Some(outcome) = route.handle.outcome() {
+                    break (Some(outcome), route.handle.status().error);
                 }
             }
             if tokio::time::Instant::now() >= deadline {
@@ -897,10 +933,10 @@ impl BridgeMcp {
         &self,
         Parameters(args): Parameters<RouteNameArg>,
     ) -> Result<CallToolResult, McpError> {
-        let handle = self.routes.lock().await.remove(&args.name);
-        match handle {
-            Some(handle) => {
-                handle.stop().await;
+        let route = self.routes.lock().await.remove(&args.name);
+        match route {
+            Some(route) => {
+                route.handle.stop().await;
                 let messages = self.metrics.sequence(&args.name).await;
                 // Read the timing before forgetting the route: this is the last
                 // chance to report what it achieved.
@@ -930,10 +966,10 @@ impl BridgeMcp {
     async fn all_routes_json(&self) -> Vec<serde_json::Value> {
         let routes = self.routes.lock().await;
         let mut entries: Vec<serde_json::Value> = Vec::with_capacity(routes.len());
-        for (name, handle) in routes.iter() {
+        for (name, route) in routes.iter() {
             entries.push(route_entry_json(
                 name,
-                handle,
+                &route.handle,
                 self.metrics.sequence(name).await,
                 self.metrics.throughput(name).await,
                 self.metrics.timing(name).await,
