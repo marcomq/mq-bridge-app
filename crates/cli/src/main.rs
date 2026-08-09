@@ -6,7 +6,11 @@
 use mq_bridge_app::{
     config::{AppConfig, load_config},
     mq_bridge,
-    ui_app::mcp_status_ipc_url,
+    status_registry::{
+        InstanceKind, StatusEntity, StatusLease, StatusRoute, StatusSnapshot, StatusSummary,
+        endpoint_type_label,
+    },
+    ui_app::consumer_runtime_key,
     web_ui,
 };
 
@@ -93,18 +97,26 @@ struct McpArgs {
     #[arg(long)]
     bind: Option<String>,
 
-    /// Report running routes and publish targets to a local mq-bridge-app UI
-    /// (web or desktop), so they show up alongside its configured consumers and
-    /// publishers.
+    /// Publish this process's sanitized status to the same-user local status
+    /// registry (on by default).
     ///
-    /// Off by default: without this flag nothing about this server ever leaves the
-    /// process. Only names, connector types, health and message counts are sent —
-    /// never endpoint URLs or credentials. The UI is reached over a local IPC
-    /// socket next to the config file, so a remote UI cannot be targeted.
-    ///
-    /// `install` bakes this flag into the registered command when set.
-    #[arg(long, global = true)]
+    /// Bare `--report-to-ui` is a no-op kept for MCP client configurations
+    /// written by older `mcp install` runs, which baked the flag in while
+    /// reporting was still opt-in. Use `--report-to-ui=false` or
+    /// `--no-report-to-ui` to turn publication off.
+    #[arg(
+        long,
+        global = true,
+        num_args = 0..=1,
+        default_value_t = true,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set,
+    )]
     report_to_ui: bool,
+
+    /// Do not publish this process's status to the local status registry.
+    #[arg(long, global = true, conflicts_with = "report_to_ui")]
+    no_report_to_ui: bool,
 
     /// Register/unregister this binary with local MCP clients instead of serving.
     #[command(subcommand)]
@@ -208,9 +220,9 @@ async fn main() -> anyhow::Result<()> {
                     print_config,
                 }) => {
                     return if print_config {
-                        mcp_install::print_config(mcp_args.report_to_ui)
+                        mcp_install::print_config()
                     } else {
-                        mcp_install::install(client, local, mcp_args.report_to_ui)
+                        mcp_install::install(client, local)
                     };
                 }
                 Some(McpAction::Uninstall { client, local }) => {
@@ -222,33 +234,23 @@ async fn main() -> anyhow::Result<()> {
 
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
             init_mcp_logging();
-            // Resolving the config is how the MCP finds the UI: both processes
-            // derive the same status socket from the config file they were
-            // pointed at. Strictly best-effort — a missing, unreadable or
-            // invalid config just means no reporting, never a failure to start.
-            let ui_status_ipc_url = if mcp_args.report_to_ui {
-                match load_config(
-                    args.config.clone(),
-                    args.init_config.clone(),
-                    args.init_config_str.clone(),
-                    args.config_str.clone(),
-                ) {
-                    Ok((_, config_file_path)) => Some(mcp_status_ipc_url(&config_file_path)),
-                    Err(e) => {
-                        warn!(
-                            "Could not read configuration ({e}); MCP status will not be reported"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            };
+            let workspace_path = load_config(
+                args.config.clone(),
+                args.init_config.clone(),
+                args.init_config_str.clone(),
+                args.config_str.clone(),
+            )
+            .map(|(_, path)| path)
+            .unwrap_or_else(|_| {
+                args.config
+                    .clone()
+                    .unwrap_or_else(|| "workspace".to_string())
+            });
             return mcp::run(
                 mcp_args.transport,
                 mcp_args.bind,
-                mcp_args.report_to_ui,
-                ui_status_ipc_url,
+                mcp_args.report_to_ui && !mcp_args.no_report_to_ui,
+                workspace_path,
             )
             .await;
         }
@@ -346,6 +348,15 @@ async fn main() -> anyhow::Result<()> {
     // encoding the actual data (version, etc.) in the labels.
     metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
+    // Headless only: with a web UI running, its own `UiApp` owns the lease and
+    // publishes richer state, so a second lease for the same process would just
+    // duplicate every row.
+    let _cli_status = config
+        .ui_addr
+        .is_empty()
+        .then(|| cli_status_lease(config_file_path.clone(), config.clone()))
+        .flatten();
+
     // Start Web UI
     let web_ui_handle = if !config.ui_addr.is_empty() {
         let addr = &config.ui_addr;
@@ -435,6 +446,95 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Advertises a headless run: the configured entities, with running state read
+/// from the live route registry rather than assumed.
+fn cli_status_lease(workspace_path: String, config: AppConfig) -> Option<StatusLease> {
+    StatusLease::spawn(
+        InstanceKind::Cli,
+        env!("CARGO_PKG_VERSION"),
+        &workspace_path,
+        move || {
+            let config = config.clone();
+            async move {
+                let running = mq_bridge::list_routes();
+                let is_running = |name: &str| running.iter().any(|route| route == name);
+                StatusSnapshot {
+                    consumers: config
+                        .consumers
+                        .iter()
+                        .map(|consumer| {
+                            let id = consumer_runtime_key(consumer);
+                            let running = is_running(&id);
+                            StatusEntity {
+                                label: consumer.name.clone(),
+                                endpoint: endpoint_type_label(&consumer.endpoint.endpoint_type)
+                                    .to_string(),
+                                summary: StatusSummary {
+                                    running,
+                                    healthy: running,
+                                    ..Default::default()
+                                },
+                                id,
+                            }
+                        })
+                        .collect(),
+                    publishers: config
+                        .publishers
+                        .iter()
+                        .map(|publisher| StatusEntity {
+                            id: publisher.id.clone(),
+                            label: publisher.name.clone(),
+                            endpoint: endpoint_type_label(&publisher.endpoint.endpoint_type)
+                                .to_string(),
+                            summary: StatusSummary::default(),
+                        })
+                        .collect(),
+                    routes: running
+                        .iter()
+                        .map(|name| route_entity(name, &config))
+                        .collect(),
+                }
+            }
+        },
+    )
+}
+
+/// A running route as a linked input/output pair.
+fn route_entity(name: &str, config: &AppConfig) -> StatusRoute {
+    let summary = StatusSummary {
+        running: true,
+        healthy: true,
+        ..Default::default()
+    };
+    let (input, output) = config
+        .routes
+        .get(name)
+        .map(|route| {
+            (
+                endpoint_type_label(&route.route.input.endpoint_type),
+                endpoint_type_label(&route.route.output.endpoint_type),
+            )
+        })
+        .unwrap_or(("unknown", "unknown"));
+    StatusRoute {
+        id: name.to_string(),
+        label: name.to_string(),
+        input: StatusEntity {
+            id: format!("{name}:input"),
+            label: name.to_string(),
+            endpoint: input.to_string(),
+            summary: summary.clone(),
+        },
+        output: StatusEntity {
+            id: format!("{name}:output"),
+            label: name.to_string(),
+            endpoint: output.to_string(),
+            summary: summary.clone(),
+        },
+        summary,
+    }
+}
 /// Runs the `copy` subcommand: builds a single in-memory route from the `--from`
 /// and `--to` URIs and awaits its completion. With `--drain` the underlying route
 /// exits once the source is empty; otherwise it runs until Ctrl-C.
@@ -443,6 +543,9 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 
     let input = endpoint_from_uri(&args.from).context("invalid --from endpoint")?;
     let output = endpoint_from_uri(&args.to).context("invalid --to endpoint")?;
+    let input_endpoint_label = endpoint_type_label(&input.endpoint_type);
+    let output_endpoint_label = endpoint_type_label(&output.endpoint_type);
+    let copy_status = copy_status_lease(input_endpoint_label, output_endpoint_label);
 
     let options = RouteOptions {
         concurrency: args.concurrency.unwrap_or(DEFAULT_CONCURRENCY),
@@ -464,7 +567,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
         "copy route started"
     );
 
-    if args.drain {
+    let result = if args.drain {
         // One-shot: run until the source is drained, or abort on Ctrl-C.
         //
         // The route task ends on a permanent error just as it does on a real drain, so
@@ -493,7 +596,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             handle.stop().await;
         }
 
-        copy_result(outcome, handle.status().error)?;
+        copy_result(outcome, handle.status().error)
     } else {
         // Continuous bridge: run until Ctrl-C, then stop gracefully.
         tokio::signal::ctrl_c()
@@ -501,9 +604,50 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             .context("failed to listen for Ctrl+C")?;
         info!("Ctrl+C received; stopping copy");
         handle.stop().await;
-    }
+        Ok(())
+    };
 
-    Ok(())
+    drop(copy_status);
+
+    result
+}
+
+fn copy_status_lease(
+    input_endpoint: &'static str,
+    output_endpoint: &'static str,
+) -> Option<StatusLease> {
+    StatusLease::spawn(
+        InstanceKind::Cli,
+        env!("CARGO_PKG_VERSION"),
+        "copy",
+        move || async move {
+            let summary = StatusSummary {
+                running: true,
+                healthy: true,
+                ..Default::default()
+            };
+            StatusSnapshot {
+                routes: vec![StatusRoute {
+                    id: "copy".to_string(),
+                    label: "copy".to_string(),
+                    input: StatusEntity {
+                        id: "copy:input".to_string(),
+                        label: "copy".to_string(),
+                        endpoint: input_endpoint.to_string(),
+                        summary: summary.clone(),
+                    },
+                    output: StatusEntity {
+                        id: "copy:output".to_string(),
+                        label: "copy".to_string(),
+                        endpoint: output_endpoint.to_string(),
+                        summary: summary.clone(),
+                    },
+                    summary,
+                }],
+                ..Default::default()
+            }
+        },
+    )
 }
 
 /// Maps a finished `copy --drain` route to the process result: a route killed by a
@@ -1252,6 +1396,52 @@ async fn platform_specific_shutdown() {
     #[cfg(not(unix))]
     // On non-unix, ctrl_c is the primary mechanism. This future never completes.
     std::future::pending::<()>().await
+}
+
+#[cfg(test)]
+mod report_to_ui_flag_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn reporting_enabled(argv: &[&str]) -> bool {
+        let args = Args::try_parse_from(argv).expect("arguments should parse");
+        let Some(Command::Mcp(mcp)) = args.command else {
+            panic!("expected the mcp subcommand")
+        };
+        mcp.report_to_ui && !mcp.no_report_to_ui
+    }
+
+    // Older `mcp install` runs baked `--report-to-ui` into client configs while
+    // reporting was still opt-in. Those configs must keep working, so the bare
+    // flag asks for what is now the default rather than inverting it.
+    #[test]
+    fn the_bare_legacy_flag_is_a_no_op() {
+        assert!(reporting_enabled(&["mq-bridge-app", "mcp"]));
+        assert!(reporting_enabled(&[
+            "mq-bridge-app",
+            "mcp",
+            "--report-to-ui"
+        ]));
+        assert!(reporting_enabled(&[
+            "mq-bridge-app",
+            "mcp",
+            "--report-to-ui=true"
+        ]));
+    }
+
+    #[test]
+    fn both_disable_spellings_turn_reporting_off() {
+        assert!(!reporting_enabled(&[
+            "mq-bridge-app",
+            "mcp",
+            "--report-to-ui=false"
+        ]));
+        assert!(!reporting_enabled(&[
+            "mq-bridge-app",
+            "mcp",
+            "--no-report-to-ui"
+        ]));
+    }
 }
 
 #[cfg(test)]

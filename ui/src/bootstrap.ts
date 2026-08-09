@@ -2,6 +2,7 @@ import { tick } from "svelte";
 import {
   activeMainTab,
   runtimeStatusStore,
+  peerStatusStore,
   storageSecurityStore,
   workspaceDirtyStore,
   workspaceSavingStore,
@@ -249,6 +250,9 @@ const runtimeStatusPoller = createRuntimeStatusPoller({
     renderRuntimeStatus(status);
     browserWindow().renderConsumersRuntimeStatus?.();
     browserWindow().renderRoutesRuntimeMetrics?.();
+  },
+  onPeerStatus: (status) => {
+    peerStatusStore.set(status);
   },
 });
 

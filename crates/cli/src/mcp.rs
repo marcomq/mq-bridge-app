@@ -14,16 +14,17 @@ use std::time::Duration;
 
 use mq_bridge_app::mq_bridge::{
     CanonicalMessage, Handled, Publisher, Sent, SentBatch,
-    models::{Endpoint, EndpointType, MemoryConfig, Route},
+    models::{Endpoint, EndpointType, Route},
     route::{RouteHandle, RouteOutcome},
 };
 use mq_bridge_app::route_metrics::{
     CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, RouteTiming,
     format_capture_time, is_redelivery,
 };
-use mq_bridge_app::ui_app::{
-    ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport, RouteOutcomeSnapshot,
+use mq_bridge_app::status_registry::{
+    InstanceKind, StatusEntity, StatusLease, StatusRoute, StatusSnapshot, StatusSummary,
 };
+use mq_bridge_app::ui_app::{ConsumerStatusSnapshot, EndpointStatusSnapshot, RouteOutcomeSnapshot};
 use rmcp::schemars;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -358,6 +359,12 @@ type RouteMap = Arc<Mutex<HashMap<String, RouteHandle>>>;
 /// and credentials.
 type PublisherMap = Arc<Mutex<HashMap<String, String>>>;
 
+#[derive(Default)]
+struct McpStatusSnapshot {
+    routes: HashMap<String, ConsumerStatusSnapshot>,
+    publishers: HashMap<String, ConsumerStatusSnapshot>,
+}
+
 /// The connector type of an endpoint, e.g. `"kafka"`, with no config attached.
 ///
 /// `EndpointType` serializes as a single-key object keyed by connector name, so
@@ -443,7 +450,7 @@ impl BridgeMcp {
 
     /// The current status of every route and publisher, in the shape the UI
     /// expects. Used by the reporting task.
-    pub async fn status_report(&self) -> McpStatusReport {
+    async fn status_report(&self) -> McpStatusSnapshot {
         let mut routes = HashMap::new();
         for (name, handle) in self.routes.lock().await.iter() {
             let status = handle.status();
@@ -481,7 +488,47 @@ impl BridgeMcp {
             );
         }
 
-        McpStatusReport { routes, publishers }
+        McpStatusSnapshot { routes, publishers }
+    }
+
+    /// The same status in registry terms: each route contributes a consumer row
+    /// for its input and a publisher row for its output.
+    async fn status_snapshot(&self) -> StatusSnapshot {
+        let report = self.status_report().await;
+        // A route's endpoint types are not kept (only its name is), so the rows
+        // it contributes carry no connector label. The publisher map does hold
+        // the type, which is what `report_snapshot` put in `target` there.
+        let mut consumers: Vec<StatusEntity> = report
+            .routes
+            .iter()
+            .map(|(name, snapshot)| status_entity(name, "unknown", snapshot))
+            .collect();
+        let mut publishers: Vec<StatusEntity> = report
+            .publishers
+            .iter()
+            .map(|(name, snapshot)| status_entity(name, &snapshot.status.target, snapshot))
+            .collect();
+        let mut routes: Vec<StatusRoute> = report
+            .routes
+            .iter()
+            .map(|(name, snapshot)| StatusRoute {
+                id: name.clone(),
+                label: name.clone(),
+                input: status_entity(&format!("{name}:input"), "unknown", snapshot),
+                output: status_entity(&format!("{name}:output"), "unknown", snapshot),
+                summary: StatusSummary::from(snapshot),
+            })
+            .collect();
+        // The maps above iterate in hash order, so sort: a peer's rows must not
+        // reshuffle on every heartbeat.
+        consumers.sort_by(|left, right| left.id.cmp(&right.id));
+        publishers.sort_by(|left, right| left.id.cmp(&right.id));
+        routes.sort_by(|left, right| left.id.cmp(&right.id));
+        StatusSnapshot {
+            consumers,
+            publishers,
+            routes,
+        }
     }
 
     #[tool(
@@ -947,30 +994,33 @@ const MAX_WAIT_TIMEOUT_MS: u64 = 18_000_000;
 /// not to perturb the run it is observing.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// How often the server reports its routes and publishers to a local UI.
-const REPORT_INTERVAL: Duration = Duration::from_secs(2);
-
-/// How long one status report may block in `send` before it is abandoned.
-///
-/// Status is a periodic snapshot, so a report that cannot be delivered promptly
-/// is worth less than the next one; bounding the wait keeps the reporter alive.
-const REPORT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Entry point for the `mcp` subcommand.
 ///
-/// `report_to_ui` is the opt-in for telling a local UI what this server is
-/// doing; `ui_status_ipc_url` addresses that UI's status socket. Without the
-/// flag nothing is ever sent.
+/// Status publication is on by default. The legacy flag is retained as a
+/// disable switch for clients that need a quiet process.
 pub async fn run(
     transport: String,
     bind: Option<String>,
     report_to_ui: bool,
-    ui_status_ipc_url: Option<String>,
+    workspace_path: String,
 ) -> anyhow::Result<()> {
     let server = BridgeMcp::new();
-    if report_to_ui {
-        spawn_ui_reporter(server.clone(), ui_status_ipc_url);
-    }
+    // Held for the lifetime of the transport; dropping it removes the lease,
+    // including on the `bail!` below.
+    let _lease = report_to_ui
+        .then(|| {
+            let server = server.clone();
+            StatusLease::spawn(
+                InstanceKind::Mcp,
+                env!("CARGO_PKG_VERSION"),
+                &workspace_path,
+                move || {
+                    let server = server.clone();
+                    async move { server.status_snapshot().await }
+                },
+            )
+        })
+        .flatten();
 
     match transport.as_str() {
         "stdio" => run_stdio(server).await,
@@ -979,86 +1029,15 @@ pub async fn run(
     }
 }
 
-/// Starts periodic status reporting to a local UI over its status IPC socket.
-///
-/// A local socket rather than a TCP port: it is the only channel that reaches
-/// the desktop app (which binds no HTTP listener), and its `0600` permissions
-/// confine reporting to this user's own UI — a remote UI cannot be targeted at
-/// all. If the socket address is unknown (no readable config), nothing is sent.
-fn spawn_ui_reporter(server: BridgeMcp, ui_status_ipc_url: Option<String>) {
-    let Some(url) = ui_status_ipc_url else {
-        info!("--report-to-ui was set, but no UI address is configured; not reporting");
-        return;
-    };
-
-    info!("reporting MCP status to {url}");
-
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(REPORT_INTERVAL);
-        let mut publisher: Option<Publisher> = None;
-
-        loop {
-            interval.tick().await;
-
-            // Built lazily and retried, so starting the MCP before the UI works.
-            if publisher.is_none() {
-                let endpoint = Endpoint::new(EndpointType::Memory(MemoryConfig::new_with_url(
-                    url.clone(),
-                    Some(1),
-                )));
-                match Publisher::new(endpoint).await {
-                    Ok(p) => publisher = Some(p),
-                    Err(e) => {
-                        tracing::debug!("MCP status reporting: publisher unavailable: {e}");
-                        continue;
-                    }
-                }
-            }
-
-            let report = server.status_report().await;
-            let payload = match serde_json::to_string(&report) {
-                Ok(payload) => payload,
-                Err(e) => {
-                    tracing::debug!("MCP status reporting: serialize failed: {e}");
-                    continue;
-                }
-            };
-
-            // The UI being down must never disturb the MCP server, so a failed
-            // report is dropped and the publisher rebuilt on the next tick.
-            //
-            // The timeout is what makes that true for a UI that is connected but
-            // not draining: the IPC socket buffer is small (8 KiB by default on
-            // macOS), so a report that outgrows it blocks in `send` until the
-            // consumer reads. Without a bound this task would park there forever
-            // and silently stop reporting — a stall is not an `Err`.
-            if let Some(p) = &publisher {
-                match tokio::time::timeout(
-                    REPORT_SEND_TIMEOUT,
-                    p.send(CanonicalMessage::from(payload)),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => {
-                        tracing::debug!("MCP status reporting: send failed: {e}");
-                        publisher = None;
-                    }
-                    Err(_) => {
-                        tracing::debug!(
-                            "MCP status reporting: send stalled for more than {}s; \
-                             dropping this report and reconnecting",
-                            REPORT_SEND_TIMEOUT.as_secs()
-                        );
-                        // Dropping the publisher closes the half-written socket,
-                        // so the next tick starts from a clean frame boundary
-                        // rather than resuming a partial one the UI can't decode.
-                        publisher = None;
-                    }
-                }
-            }
-        }
-    });
+/// `endpoint` is the connector type, never a name: `sanitize_endpoint` would let
+/// a route name through as if it were one. Callers with no type pass `"unknown"`.
+fn status_entity(name: &str, endpoint: &str, snapshot: &ConsumerStatusSnapshot) -> StatusEntity {
+    StatusEntity {
+        id: name.to_string(),
+        label: name.to_string(),
+        endpoint: endpoint.to_string(),
+        summary: StatusSummary::from(snapshot),
+    }
 }
 
 async fn run_stdio(server: BridgeMcp) -> anyhow::Result<()> {

@@ -506,6 +506,31 @@ body {
     opacity: 0.7;
 }
 
+.sidebar-peer-instance {
+    padding: 6px 8px 2px 16px;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.sidebar-item--peer {
+    cursor: default;
+    opacity: 0.9;
+}
+
+.sidebar-item--peer:hover {
+    background: transparent;
+}
+
+.proto-peer {
+    background: color-mix(in srgb, var(--accent-purple, #a78bfa) 18%, transparent);
+    color: var(--accent-purple, #a78bfa);
+}
+
+.peer-status {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-purple, #a78bfa) 24%, transparent);
+}
+
 button.sidebar-item {
     width: 100%;
     appearance: none;

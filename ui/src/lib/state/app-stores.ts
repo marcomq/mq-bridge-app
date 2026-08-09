@@ -1,6 +1,6 @@
 import { writable } from "svelte/store";
-import type { MainTab, RuntimeStatus } from "../runtime-status";
-import { EMPTY_RUNTIME_STATUS } from "../runtime-status";
+import type { MainTab, PeerStatus, RuntimeStatus } from "../runtime-status";
+import { EMPTY_PEER_STATUS, EMPTY_RUNTIME_STATUS } from "../runtime-status";
 import type { ConsumerTreeNode } from "../consumer-grouping";
 import type { PublisherTreeNode } from "../publisher-grouping";
 import { EMPTY_STORAGE_SECURITY, type StorageSecurityInfo } from "../storage-security";
@@ -15,6 +15,7 @@ function initialMainTab(): MainTab {
 
 export const activeMainTab = writable<MainTab>(initialMainTab());
 export const runtimeStatusStore = writable<RuntimeStatus>(EMPTY_RUNTIME_STATUS);
+export const peerStatusStore = writable<PeerStatus>(EMPTY_PEER_STATUS);
 export const storageSecurityStore = writable<StorageSecurityInfo>({ ...EMPTY_STORAGE_SECURITY });
 export const workspaceDirtyStore = writable(false);
 export const workspaceSavingStore = writable(false);

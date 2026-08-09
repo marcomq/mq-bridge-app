@@ -54,6 +54,11 @@ fast-uuid-v7 = "0.1.8"
 # files from disk for live editing; in release builds it embeds them.
 rust-embed = "8.7"
 
+# Only for `getuid()`, so the status registry can verify it owns its runtime
+# directory. Already in the graph via tokio; std exposes no equivalent.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["full", "zeromq-omq"]
 integration-test = []

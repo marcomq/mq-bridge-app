@@ -122,20 +122,19 @@ fn current_exe() -> Result<String> {
 }
 
 /// Arguments the client should launch this binary with.
-fn server_args(report_to_ui: bool) -> Vec<String> {
-    let mut args = vec![
+///
+/// Status publication is on by default, so nothing is added here for it. Older
+/// installs carry a `--report-to-ui` this binary still accepts as a no-op.
+fn server_args() -> Vec<String> {
+    vec![
         "mcp".to_string(),
         "--transport".to_string(),
         "stdio".to_string(),
-    ];
-    if report_to_ui {
-        args.push("--report-to-ui".to_string());
-    }
-    args
+    ]
 }
 
-fn server_entry(exe: &str, report_to_ui: bool) -> Value {
-    json!({ "command": exe, "args": server_args(report_to_ui) })
+fn server_entry(exe: &str) -> Value {
+    json!({ "command": exe, "args": server_args() })
 }
 
 /// Clients to act on: the explicit one, or every client detected on this machine.
@@ -156,13 +155,13 @@ fn targets(client: Option<Client>) -> Result<Vec<Client>> {
     Ok(detected)
 }
 
-pub fn install(client: Option<Client>, local: bool, report_to_ui: bool) -> Result<()> {
+pub fn install(client: Option<Client>, local: bool) -> Result<()> {
     let exe = current_exe()?;
     for client in targets(client)? {
         // Claude Code owns its config format; let its CLI write it when present.
         if client == Client::Claude
             && which("claude").is_some()
-            && install_via_claude_cli(&exe, local, report_to_ui)?
+            && install_via_claude_cli(&exe, local)?
         {
             println!(
                 "{}: registered '{SERVER_NAME}' via the claude CLI",
@@ -176,7 +175,7 @@ pub fn install(client: Option<Client>, local: bool, report_to_ui: bool) -> Resul
                 client.label()
             );
         };
-        merge_server(&path, server_entry(&exe, report_to_ui))?;
+        merge_server(&path, server_entry(&exe))?;
         println!(
             "{}: registered '{SERVER_NAME}' in {}",
             client.label(),
@@ -188,7 +187,7 @@ pub fn install(client: Option<Client>, local: bool, report_to_ui: bool) -> Resul
 }
 
 /// Returns `false` when the CLI ran but refused, so we can fall back to JSON.
-fn install_via_claude_cli(exe: &str, local: bool, report_to_ui: bool) -> Result<bool> {
+fn install_via_claude_cli(exe: &str, local: bool) -> Result<bool> {
     // Re-adding an existing name is an error, so clear it first; a missing
     // server makes this a no-op and either way we ignore the outcome.
     let _ = Command::new("claude")
@@ -207,7 +206,7 @@ fn install_via_claude_cli(exe: &str, local: bool, report_to_ui: bool) -> Result<
         "--",
         exe,
     ])
-    .args(server_args(report_to_ui));
+    .args(server_args());
 
     let out = cmd.output().context("failed to run the claude CLI")?;
     if out.status.success() {
@@ -287,9 +286,9 @@ fn scope_label(local: bool) -> &'static str {
 }
 
 /// The config snippet, for any client we don't write directly.
-pub fn print_config(report_to_ui: bool) -> Result<()> {
+pub fn print_config() -> Result<()> {
     let exe = current_exe()?;
-    let config = json!({ "mcpServers": { SERVER_NAME: server_entry(&exe, report_to_ui) } });
+    let config = json!({ "mcpServers": { SERVER_NAME: server_entry(&exe) } });
     println!("{}", serde_json::to_string_pretty(&config)?);
     Ok(())
 }
@@ -368,7 +367,7 @@ mod tests {
         )
         .unwrap();
 
-        merge_server(&path, server_entry("/bin/mq-bridge-app", false)).unwrap();
+        merge_server(&path, server_entry("/bin/mq-bridge-app")).unwrap();
 
         let config = read_config(&path).unwrap();
         assert_eq!(config["theme"], "dark");
@@ -382,7 +381,7 @@ mod tests {
     #[test]
     fn merge_is_idempotent() {
         let path = temp_path("idempotent");
-        let entry = server_entry("/bin/mq-bridge-app", true);
+        let entry = server_entry("/bin/mq-bridge-app");
         merge_server(&path, entry.clone()).unwrap();
         let first = read_config(&path).unwrap();
         merge_server(&path, entry).unwrap();
@@ -397,7 +396,7 @@ mod tests {
             &json!({ "mcpServers": { "other": { "command": "x" } } }),
         )
         .unwrap();
-        merge_server(&path, server_entry("/bin/mq-bridge-app", false)).unwrap();
+        merge_server(&path, server_entry("/bin/mq-bridge-app")).unwrap();
 
         assert!(remove_server(&path).unwrap());
         let config = read_config(&path).unwrap();
@@ -407,12 +406,9 @@ mod tests {
         assert!(!remove_server(&path).unwrap());
     }
 
+    // Newly written client configs must not bake in the deprecated flag.
     #[test]
-    fn report_to_ui_is_appended_to_args() {
-        assert_eq!(server_args(false), ["mcp", "--transport", "stdio"]);
-        assert_eq!(
-            server_args(true),
-            ["mcp", "--transport", "stdio", "--report-to-ui"]
-        );
+    fn installed_args_carry_no_report_to_ui_flag() {
+        assert_eq!(server_args(), ["mcp", "--transport", "stdio"]);
     }
 }

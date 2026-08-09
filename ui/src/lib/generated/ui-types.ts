@@ -59,8 +59,11 @@ export interface RuntimeStatusResponse {
   active_routes: string[];
   route_throughput: Record<string, number>;
   consumers: Record<string, ConsumerStatusSnapshot>;
-  mcp_routes?: Record<string, ConsumerStatusSnapshot>;
-  mcp_publishers?: Record<string, ConsumerStatusSnapshot>;
+}
+
+export interface PeerStatusResponse {
+  current_instance_id: string;
+  instances: InstanceStatus[];
 }
 
 export interface ConsumerStatusResponse {
@@ -189,6 +192,7 @@ export interface TransformMiddleware {
   schema_file?: string | null;
   coerce?: boolean;
   apply_defaults?: boolean;
+  coerce_empty_as_null?: boolean;
   on_error?: TransformErrorPolicy;
 }
 
@@ -238,6 +242,7 @@ export interface KafkaConfig {
   password?: string | null;
   tls?: TlsConfig;
   group_id?: string | null;
+  source_metadata?: boolean;
   delayed_ack?: boolean;
   producer_options?: unknown[][] | null;
   consumer_options?: unknown[][] | null;
@@ -269,6 +274,7 @@ export interface NatsConfig {
   deduplicate?: boolean;
   no_jetstream?: boolean;
   subscriber_mode?: boolean;
+  source_metadata?: boolean;
   stream_max_messages?: number | null;
   deliver_policy?: NatsDeliverPolicy | null;
   stream_max_bytes?: number | null;
@@ -280,6 +286,7 @@ export type NatsDeliverPolicy = "all" | "last" | "new" | "last_per_subject";
 
 export interface FileConfig {
   path: string;
+  idempotency?: boolean;
   delimiter?: string | null;
   format?: FileFormat;
   compression?: Compression;
@@ -290,6 +297,7 @@ export type FileFormat = "normal" | "json" | "text" | "raw" | "csv";
 
 export interface ObjectStoreConfig {
   url: string;
+  idempotency?: boolean;
   format?: FileFormat;
   delimiter?: string | null;
   checkpoint_store?: string | null;
@@ -325,6 +333,7 @@ export interface AmqpConfig {
   url: string;
   queue?: string | null;
   subscribe_mode?: boolean;
+  source_metadata?: boolean;
   username?: string | null;
   password?: string | null;
   tls?: TlsConfig;
@@ -347,6 +356,7 @@ export interface MongoDbConfig {
   request_reply?: boolean;
   consume?: MongoConsume | null;
   receive_query?: string | null;
+  source_metadata?: boolean;
   change_stream?: boolean;
   checkpoint_store?: string | null;
   request_timeout_ms?: number | null;
@@ -520,6 +530,7 @@ export interface SqlxConfig {
   acquire_timeout_ms?: number | null;
   idle_timeout_ms?: number | null;
   max_lifetime_ms?: number | null;
+  test_before_acquire?: boolean | null;
   shared?: boolean | null;
 }
 
@@ -547,6 +558,7 @@ export interface ClickHouseConfig {
 export interface PostgresCdcConfig {
   url: string;
   publication: string;
+  source_metadata?: boolean;
   slot_name?: string;
   create_slot?: boolean;
   create_publication?: boolean;
@@ -621,4 +633,46 @@ export interface EndpointStatusSnapshot {
 }
 
 export type RouteOutcomeSnapshot = "completed" | "stopped" | "failed";
+
+export interface InstanceStatus {
+  schema_version: number;
+  instance_id: string;
+  pid: number;
+  kind: InstanceKind;
+  application_version: string;
+  started_at_ms: number;
+  last_seen_at_ms: number;
+  workspace_id: string;
+  workspace_label: string;
+  consumers?: StatusEntity[];
+  publishers?: StatusEntity[];
+  routes?: StatusRoute[];
+}
+
+export type InstanceKind = "cli" | "mcp" | "tauri" | "web-ui";
+
+export interface StatusEntity {
+  id: string;
+  label: string;
+  endpoint: string;
+  summary: StatusSummary;
+}
+
+export interface StatusSummary {
+  running: boolean;
+  healthy: boolean;
+  pending?: number | null;
+  capacity?: number | null;
+  error?: string | null;
+  throughput: number;
+  message_sequence: number;
+}
+
+export interface StatusRoute {
+  id: string;
+  label: string;
+  input: StatusEntity;
+  output: StatusEntity;
+  summary: StatusSummary;
+}
 

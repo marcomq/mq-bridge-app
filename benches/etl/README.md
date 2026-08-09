@@ -161,8 +161,7 @@ measurement, not a Sea Streamer crate feature. The two native file formats are
 not byte-for-byte equivalent, so the data supports a Kafka-to-file throughput
 comparison—not a claim of identical sink encoding, delivery, or checkpoint
 semantics. On these runs mq-bridge-app is 1.80x faster than Sea Streamer's default
-allocator result and 1.65x faster than its mimalloc result; do not round this to
-"twice as fast."
+allocator result and 1.65x faster than its mimalloc result.
 
 The reproducible Sea Streamer helper is committed in
 [`benches/etl/sea_streamer`](sea_streamer). It contains the relay and count

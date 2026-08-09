@@ -6,9 +6,12 @@
     MAX_DETAIL_PANE_PERCENT,
     MIN_DETAIL_PANE_PERCENT,
     publishersPanelState,
+    peerStatusStore,
     sidebarWidthStore,
   } from "../lib/stores";
   import type { PublisherTreeNode } from "../lib/publisher-grouping";
+  import { filterPeerRows, peerPublisherRows } from "../lib/peer-status";
+  import PeerSidebarRows from "./PeerSidebarRows.svelte";
   import SidebarImportActions from "./SidebarImportActions.svelte";
   import HeaderRowsEditor from "./HeaderRowsEditor.svelte";
   import JsonPreviewDialog from "./JsonPreviewDialog.svelte";
@@ -66,6 +69,7 @@
     { key: "asyncapi", label: "Import AsyncAPI" },
     { key: "mqb", label: "Import mq-bridge" },
   ];
+  const peerRows = $derived(filterPeerRows(peerPublisherRows($peerStatusStore), filterText));
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
   let configJsonOpen = $state(false);
@@ -411,6 +415,7 @@
             </button>
           {/if}
         {/each}
+        <PeerSidebarRows rows={peerRows} />
       </div>
       <SidebarImportActions actions={importActions} onImport={handleImport} />
     </div>

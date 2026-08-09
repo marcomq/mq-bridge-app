@@ -38,7 +38,7 @@
     const isLocalUiRequest = (url) => {
         if (!url || url.origin !== window.location.origin) return false;
         const pathname = url.pathname.split('#')[0]; // Strip hash fragment for routing
-        return ['/health', '/schema.json', '/config', '/desktop-secrets', '/consumer-status', '/consumer-start', '/consumer-stop', '/messages', '/publish', '/runtime-status', '/metrics'].includes(pathname);
+        return ['/health', '/schema.json', '/config', '/desktop-secrets', '/consumer-status', '/consumer-start', '/consumer-stop', '/messages', '/publish', '/runtime-status', '/peer-status', '/metrics'].includes(pathname);
     };
 
     // Override fetch for local UI requests
@@ -108,6 +108,9 @@
                 break;
             case '/runtime-status':
                 commandName = 'get_runtime_status_request';
+                break;
+            case '/peer-status':
+                commandName = 'get_peer_status_request';
                 break;
             case '/metrics':
                 commandName = 'get_metrics_request';

@@ -1,5 +1,6 @@
 import type {
   ConsumerStatusSnapshot,
+  PeerStatusResponse,
   RuntimeStatusResponse,
 } from "./generated/ui-types";
 
@@ -7,6 +8,12 @@ export type MainTab = "publishers" | "consumers" | "config";
 
 export type RuntimeConsumerState = ConsumerStatusSnapshot;
 export type RuntimeStatus = RuntimeStatusResponse;
+export type PeerStatus = PeerStatusResponse;
+
+export const EMPTY_PEER_STATUS: PeerStatus = {
+  current_instance_id: "",
+  instances: [],
+};
 
 export const EMPTY_RUNTIME_STATUS: RuntimeStatus = {
   active_consumers: [],
@@ -49,6 +56,8 @@ interface RuntimeStatusPollerOptions {
   endpoint?: string;
   intervalMs?: number;
   onStatus?: (status: RuntimeStatus) => void;
+  peerEndpoint?: string;
+  onPeerStatus?: (status: PeerStatus) => void;
 }
 
 export function createRuntimeStatusPoller({
@@ -56,6 +65,8 @@ export function createRuntimeStatusPoller({
   endpoint = "/runtime-status",
   intervalMs = 1000,
   onStatus,
+  peerEndpoint = "/peer-status",
+  onPeerStatus,
 }: RuntimeStatusPollerOptions = {}): RuntimeStatusPoller {
   let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight = false;
@@ -130,18 +141,50 @@ export function createRuntimeStatusPoller({
     return status;
   };
 
+  // A 403 means this client is not entitled to peer status at all (a
+  // non-loopback browser). That answer will not change for the life of the
+  // page, so stop asking instead of burning a request per tick.
+  let peerStatusForbidden = false;
+
+  const pollPeerStatus = async (): Promise<void> => {
+    if (!onPeerStatus || peerStatusForbidden) return;
+    try {
+      const response = await fetchImpl(peerEndpoint, { cache: "no-store" });
+      if (response.status === 403) {
+        peerStatusForbidden = true;
+        onPeerStatus({ ...EMPTY_PEER_STATUS });
+        return;
+      }
+      if (!response.ok) throw new Error(`peer-status ${response.status}`);
+      const raw = (await response.json()) as Partial<PeerStatus>;
+      onPeerStatus({
+        current_instance_id:
+          typeof raw.current_instance_id === "string" ? raw.current_instance_id : "",
+        instances: Array.isArray(raw.instances) ? (raw.instances as PeerStatus["instances"]) : [],
+      });
+    } catch {
+      // Leave the last good peer list in place: leases have their own TTL
+      // server-side, so a single failed poll should not blank every peer row
+      // and then bring it back a second later.
+    }
+  };
+
   return {
     async poll() {
-      try {
-        const response = await fetchImpl(endpoint, { cache: "no-store" });
-        if (!response.ok) {
-          throw new Error(`runtime-status ${response.status}`);
-        }
+      // Independent endpoints, so they go out together rather than one behind
+      // the other.
+      const [runtimeResult] = await Promise.all([
+        (async () => {
+          const response = await fetchImpl(endpoint, { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`runtime-status ${response.status}`);
+          }
+          return normalizeStatus(await response.json());
+        })().catch(() => null),
+        pollPeerStatus(),
+      ]);
 
-        return publish(normalizeStatus(await response.json()));
-      } catch {
-        return publish({ ...EMPTY_RUNTIME_STATUS });
-      }
+      return publish(runtimeResult ?? { ...EMPTY_RUNTIME_STATUS });
     },
     start() {
       if (timer !== null) return;

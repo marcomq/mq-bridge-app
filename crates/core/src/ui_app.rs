@@ -6,13 +6,15 @@ use crate::encrypted_config::has_config_master_key;
 use crate::route_metrics::{
     CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, is_redelivery,
 };
+use crate::status_registry::{
+    InstanceKind, InstanceStatus, LEASE_TTL, LocalStatusRegistry, StatusEntity, StatusLease,
+    StatusRoute, StatusSnapshot, StatusSummary, endpoint_type_label, list_off_thread,
+};
 use anyhow::{Result, anyhow};
 use chrono;
 use metrics_exporter_prometheus::PrometheusHandle;
-use mq_bridge::endpoints::memory::MemoryConsumer;
-use mq_bridge::models::{Endpoint, EndpointType, MemoryConfig, Route, StaticConfig};
+use mq_bridge::models::{Endpoint, EndpointType, Route, StaticConfig};
 use mq_bridge::route::{RouteHandle, RouteOutcome};
-use mq_bridge::traits::{MessageConsumer, MessageDisposition};
 use mq_bridge::{
     CanonicalMessage, Handled, HandlerError, Publisher, Sent, msg, unregister_publisher,
 };
@@ -35,99 +37,6 @@ fn generate_ephemeral_message_key() -> (String, String) {
 
 static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
     LazyLock::new(generate_ephemeral_message_key);
-
-/// How long an MCP status report stays valid without a fresh one. Comfortably
-/// longer than the MCP's ~2s reporting interval, so a single dropped report does
-/// not make its routes flicker out of the UI.
-const MCP_STATUS_STALE_AFTER: Duration = Duration::from_secs(15);
-
-/// Socket file an MCP server pushes its status to, inside a per-config
-/// directory of its own.
-///
-/// A directory of its own because binding chmods the socket's parent to `0700`:
-/// pointed at a shared directory, that would lock down whatever else lives
-/// there.
-#[cfg(unix)]
-const MCP_STATUS_SOCKET_NAME: &str = "status.sock";
-
-/// Pause before retrying a failed receive, so a permanently broken transport
-/// cannot spin the listener task.
-const MCP_STATUS_RETRY_DELAY: Duration = Duration::from_secs(1);
-
-/// Give up the status listener after this many consecutive receive failures, so
-/// a permanently broken transport neither spins nor warns forever.
-const MCP_STATUS_MAX_ERRORS: u32 = 10;
-
-/// The IPC address a local MCP server pushes its status to.
-///
-/// Keyed by the config file rather than configured, so an MCP and a UI find each
-/// other without either knowing a port — including in the desktop app, which
-/// serves its UI over Tauri IPC and binds no HTTP listener at all. Two UIs on
-/// different configs get different sockets instead of colliding.
-///
-/// The socket lives in the runtime directory under a *hash* of the config path,
-/// not beside the config itself: Unix socket paths are capped near 104 bytes
-/// (`SUN_LEN`), and a config a few directories deep silently blows that budget.
-#[cfg(unix)]
-pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
-    // `XDG_RUNTIME_DIR` is the right home for this on Linux and is short. Fall
-    // back to `TMPDIR` (macOS gives each user a private `/var/folders/.../T`)
-    // before the world-writable `/tmp`, so the socket lands in a per-user
-    // directory even without XDG; the per-config directory below is `0700` on
-    // top of that.
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .or_else(|_| std::env::var("TMPDIR"))
-        .unwrap_or_else(|_| "/tmp".to_string());
-    mcp_status_ipc_url_in(config_file_path, &runtime_dir)
-}
-
-/// Builds the IPC URL under an explicit `runtime_dir`, so tests can pin the base
-/// directory without mutating the process-wide environment. Production callers go
-/// through [`mcp_status_ipc_url`], which resolves the runtime dir from the env.
-#[cfg(unix)]
-fn mcp_status_ipc_url_in(config_file_path: &str, runtime_dir: &str) -> String {
-    use sha2::{Digest, Sha256};
-
-    let config_path =
-        std::path::absolute(config_file_path).unwrap_or_else(|_| PathBuf::from(config_file_path));
-    let digest = Sha256::digest(config_path.as_os_str().as_encoded_bytes());
-    // Half a SHA-256 is far more than enough to separate a handful of configs,
-    // and keeps the whole path comfortably short.
-    let key = hex::encode(&digest[..8]);
-
-    // An explicit absolute path, never a bare `ipc://name`: the latter resolves
-    // through `/run/mq-bridge` first, which an unprivileged app cannot bind to
-    // if it already exists.
-    format!(
-        "ipc://{}",
-        Path::new(runtime_dir)
-            .join(format!("mq-bridge-{key}"))
-            .join(MCP_STATUS_SOCKET_NAME)
-            .display()
-    )
-}
-
-/// The IPC address a local MCP server pushes its status to.
-///
-/// Windows named pipes live in a flat namespace rather than the filesystem, so
-/// the pipe cannot be placed next to the config the way a Unix socket is.
-/// Keyed by a hash of the config path (matching the Unix socket), so two UIs on
-/// different configs get different pipes instead of a machine-global collision.
-///
-/// (Deterministic on purpose: the UI and the separate MCP process each derive
-/// this name independently and must agree, so it has to be a pure function of
-/// the config path — a random per-session component can't be shared between
-/// them and would break the rendezvous.)
-#[cfg(windows)]
-pub fn mcp_status_ipc_url(config_file_path: &str) -> String {
-    use sha2::{Digest, Sha256};
-
-    let config_path =
-        std::path::absolute(config_file_path).unwrap_or_else(|_| PathBuf::from(config_file_path));
-    let digest = Sha256::digest(config_path.as_os_str().as_encoded_bytes());
-    let key = hex::encode(&digest[..8]);
-    format!("ipc://mq-bridge-status-{key}")
-}
 
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
     match config.security_mode() {
@@ -212,12 +121,14 @@ pub struct UiAppRuntimeHooks {
     storage_save_prepare: Option<Arc<StorageSavePrepare>>,
     config_recovery: Option<ConfigRecoveryStatusResponse>,
     config_recovery_reset: Option<Arc<ConfigRecoveryReset>>,
+    instance_kind: InstanceKind,
 }
 
 impl UiAppRuntimeHooks {
     pub fn for_cli() -> Self {
         Self {
             storage_security_resolver: Some(Arc::new(storage_security_for_cli)),
+            instance_kind: InstanceKind::Cli,
             ..Self::default()
         }
     }
@@ -244,6 +155,11 @@ impl UiAppRuntimeHooks {
         self.config_recovery_reset = reset;
         self
     }
+
+    pub fn with_instance_kind(mut self, kind: InstanceKind) -> Self {
+        self.instance_kind = kind;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -256,16 +172,20 @@ pub struct UiApp {
     /// Per-consumer message counters and their smoothed throughput. Shared with
     /// the MCP server via [`crate::route_metrics`] so both report the same rate.
     metrics: RouteMetrics,
-    /// Latest status pushed by a local MCP server, with the time it arrived.
-    /// A single slot: one UI listens to one local MCP, and each report replaces
-    /// the last. Goes stale (see [`MCP_STATUS_STALE_AFTER`]) so a dead MCP does
-    /// not leave phantom rows in the UI.
-    mcp_status: Arc<RwLock<Option<(Instant, McpStatusReport)>>>,
+    /// `None` when no private per-user runtime directory exists. Presence
+    /// reporting is best-effort: the UI runs unchanged without it.
+    status_registry: Option<Arc<LocalStatusRegistry>>,
+    instance_kind: InstanceKind,
+    status_lease: Arc<StdRwLock<Option<StatusLease>>>,
     storage_security: Arc<StdRwLock<StorageSecurityInfoResponse>>,
     storage_security_resolver: Option<Arc<StorageSecurityResolver>>,
     storage_save_prepare: Option<Arc<StorageSavePrepare>>,
     config_recovery: Arc<StdRwLock<Option<ConfigRecoveryStatusResponse>>>,
     config_recovery_reset: Option<Arc<ConfigRecoveryReset>>,
+    /// The last `/runtime-status` result and when it was produced. Building one
+    /// probes every stopped consumer's endpoint, so the status heartbeat reuses
+    /// what the UI's polling already paid for instead of reconnecting every tick.
+    runtime_status_cache: Arc<StdRwLock<Option<(Instant, RuntimeStatusResponse)>>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, JsonSchema)]
@@ -274,31 +194,16 @@ pub struct RuntimeStatusResponse {
     pub active_routes: Vec<String>,
     pub route_throughput: HashMap<String, f64>,
     pub consumers: HashMap<String, ConsumerStatusSnapshot>,
-    /// Routes running in a local MCP server process, which reported them to this
-    /// UI. Deliberately separate from `consumers`: these are ad-hoc, unpersisted,
-    /// and must never be presented (or saved) as configuration.
-    #[serde(default)]
-    pub mcp_routes: HashMap<String, ConsumerStatusSnapshot>,
-    /// Publish targets used by a local MCP server process. Separate from the
-    /// configured `publishers` for the same reason.
-    #[serde(default)]
-    pub mcp_publishers: HashMap<String, ConsumerStatusSnapshot>,
 }
 
-/// A status report pushed by a local MCP server process.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, JsonSchema)]
-pub struct McpStatusReport {
-    #[serde(default)]
-    pub routes: HashMap<String, ConsumerStatusSnapshot>,
-    #[serde(default)]
-    pub publishers: HashMap<String, ConsumerStatusSnapshot>,
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
+pub struct PeerStatusResponse {
+    pub current_instance_id: String,
+    pub instances: Vec<InstanceStatus>,
 }
 
-/// Runtime status of one message source: a configured consumer, or a route or
-/// publisher reported by a separate MCP process.
-///
-/// `Deserialize` is required because a separate MCP process sends these over
-/// the status IPC socket; the UI's own consumers only ever serialize.
+/// Runtime status of one configured consumer. MCP status is converted directly
+/// into the separate, sanitized registry schema before it leaves that process.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct ConsumerStatusSnapshot {
     pub running: bool,
@@ -327,8 +232,7 @@ pub struct ConsumerStatusResponse {
 
 /// How a route's task ended, mirroring [`mq_bridge::route::RouteOutcome`].
 ///
-/// Mirrored rather than re-exported because this crosses both the status IPC
-/// socket and the UI type generator, so it needs `Deserialize` and `JsonSchema`;
+/// Mirrored rather than re-exported because this crosses the UI type generator;
 /// the core enum derives neither. The wire representation is identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -490,6 +394,26 @@ fn query_param(msg: &CanonicalMessage, key: &str) -> Option<String> {
         })
 }
 
+fn request_peer_is_loopback(msg: &CanonicalMessage) -> bool {
+    msg.metadata
+        .get("mqb_peer_loopback")
+        .is_some_and(|value| value == "true")
+}
+
+impl From<&ConsumerStatusSnapshot> for StatusSummary {
+    fn from(snapshot: &ConsumerStatusSnapshot) -> Self {
+        Self {
+            running: snapshot.running,
+            healthy: snapshot.status.healthy,
+            pending: snapshot.status.pending,
+            capacity: snapshot.status.capacity,
+            error: snapshot.status.error.clone(),
+            throughput: snapshot.throughput,
+            message_sequence: snapshot.message_sequence,
+        }
+    }
+}
+
 fn header_value<'a>(msg: &'a CanonicalMessage, key: &str) -> Option<&'a str> {
     msg.metadata
         .get(key)
@@ -542,8 +466,9 @@ fn is_same_origin_request(msg: &CanonicalMessage) -> bool {
     true
 }
 
-/// Time constant for throughput smoothing (EMA) in seconds.
-fn consumer_runtime_key(consumer: &ConsumerConfig) -> String {
+/// The key a consumer is known by at runtime: its id, or its name when it has
+/// none. Shared with the CLI so both surfaces report the same identity.
+pub fn consumer_runtime_key(consumer: &ConsumerConfig) -> String {
     let trimmed_id = consumer.id.trim();
     if trimmed_id.is_empty() {
         consumer.name.trim().to_string()
@@ -744,6 +669,14 @@ fn resolve_consumer_output(
 }
 
 impl UiApp {
+    /// Override the advertised process kind for callers using one of the
+    /// compatibility constructors. Must be set before
+    /// [`Self::spawn_status_registry_publisher`], which is what creates the lease.
+    pub fn with_instance_kind(mut self, kind: InstanceKind) -> Self {
+        self.instance_kind = kind;
+        self
+    }
+
     pub fn new(
         initial_config: AppConfig,
         metrics_handle: PrometheusHandle,
@@ -844,16 +777,22 @@ impl UiApp {
         let app = Self {
             config: Arc::new(RwLock::new(initial_config)),
             metrics_handle,
-            config_file_path: Arc::new(config_file_path),
+            config_file_path: Arc::new(config_file_path.clone()),
             secret_store,
             ui_handles: Arc::new(RwLock::new(HashMap::new())),
             metrics: RouteMetrics::new(),
-            mcp_status: Arc::new(RwLock::new(None)),
+            status_registry: LocalStatusRegistry::new()
+                .inspect_err(|error| tracing::debug!("local status registry unavailable: {error}"))
+                .ok()
+                .map(Arc::new),
+            instance_kind: runtime_hooks.instance_kind,
+            status_lease: Arc::new(StdRwLock::new(None)),
             storage_security: Arc::new(StdRwLock::new(storage_security)),
             storage_security_resolver: runtime_hooks.storage_security_resolver,
             storage_save_prepare: runtime_hooks.storage_save_prepare,
             config_recovery: Arc::new(StdRwLock::new(runtime_hooks.config_recovery)),
             config_recovery_reset: runtime_hooks.config_recovery_reset,
+            runtime_status_cache: Arc::new(StdRwLock::new(None)),
         };
 
         app.ensure_throughput_updater();
@@ -980,6 +919,13 @@ impl UiApp {
             ("POST", "/config-recovery/reset") => self.handle_reset_config_recovery().await,
             ("POST", "/publish") => self.handle_publish_message(msg).await,
             ("GET", "/runtime-status") => self.ok_json(&self.runtime_status().await, true),
+            ("GET", "/peer-status") => {
+                if !request_peer_is_loopback(&msg) {
+                    self.err_response(403, "Peer status is available only to loopback clients")
+                } else {
+                    self.ok_json(&self.peer_status().await, true)
+                }
+            }
             ("GET", "/metrics") => Ok(Handled::Publish(
                 CanonicalMessage::from(self.render_metrics())
                     .with_content_type("text/plain; version=0.0.4"),
@@ -1342,121 +1288,166 @@ impl UiApp {
             }
         }
 
-        let mcp = self.mcp_status_report().await;
-
-        RuntimeStatusResponse {
+        let response = RuntimeStatusResponse {
             active_consumers,
             active_routes,
             route_throughput,
             consumers,
-            mcp_routes: mcp.routes,
-            mcp_publishers: mcp.publishers,
-        }
-    }
-
-    /// The latest MCP report, or an empty one if none has arrived or the last is
-    /// stale. Staleness is evaluated on read, so no background task is needed.
-    async fn mcp_status_report(&self) -> McpStatusReport {
-        self.mcp_status
-            .read()
-            .await
-            .as_ref()
-            .filter(|(seen, _)| seen.elapsed() < MCP_STATUS_STALE_AFTER)
-            .map(|(_, report)| report.clone())
-            .unwrap_or_default()
-    }
-
-    /// Records a status report pushed by a local MCP server process.
-    ///
-    /// Receiving is on by default — *sending* is what the MCP opts into. Nothing
-    /// here touches the config: the report lands in an in-memory slot and expires
-    /// on its own, so an MCP route can never become persisted configuration.
-    async fn record_mcp_status_report(&self, report: McpStatusReport) {
-        *self.mcp_status.write().await = Some((Instant::now(), report));
-    }
-
-    /// Records a report from its serialized form, dropping anything unparseable.
-    /// Garbage on the socket must never disturb what the UI already shows.
-    async fn record_mcp_status_payload(&self, payload: &[u8]) {
-        match serde_json::from_slice::<McpStatusReport>(payload) {
-            Ok(report) => self.record_mcp_status_report(report).await,
-            Err(e) => tracing::debug!("MCP status listener: invalid report: {e}"),
-        }
-    }
-
-    /// Starts receiving MCP status reports over the memory endpoint's IPC
-    /// transport (a Unix socket, or a named pipe on Windows).
-    ///
-    /// IPC rather than HTTP because the desktop app binds no HTTP listener —
-    /// it serves its UI through Tauri IPC — so there is no port for an MCP to
-    /// post to. The socket's `0600` permissions also replace the same-origin
-    /// check the old HTTP endpoint needed: only this user can write to it.
-    ///
-    /// Best-effort by design: a UI that cannot bind still works, it just never
-    /// shows MCP rows.
-    ///
-    /// Returns once the socket cannot be bound, and otherwise runs forever. Use
-    /// [`Self::spawn_mcp_status_listener`] from a Tokio context; the desktop app
-    /// spawns this on Tauri's runtime instead.
-    pub async fn run_mcp_status_listener(self) {
-        let url = mcp_status_ipc_url(self.config_file_path());
-        // Capacity is unused by the IPC transport (it frames straight onto the
-        // socket) but the config requires one.
-        let config = MemoryConfig::new_with_url(url.clone(), Some(1));
-        let mut consumer = match MemoryConsumer::new_async(&config).await {
-            Ok(consumer) => consumer,
-            Err(e) => {
-                tracing::warn!("Not listening for MCP status reports on {url}: {e}");
-                return;
-            }
         };
-        tracing::info!("Listening for MCP status reports on {url}");
+        *self
+            .runtime_status_cache
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Some((Instant::now(), response.clone()));
+        response
+    }
 
-        let mut consecutive_errors: u32 = 0;
-        loop {
-            // Must block on `receive`: the IPC transport's `try_recv_batch` is a
-            // stub that always reports "nothing available", so a polling loop
-            // would silently never see a report.
-            let received = match consumer.receive().await {
-                Ok(received) => {
-                    consecutive_errors = 0;
-                    received
-                }
-                Err(e) => {
-                    // The transport re-accepts by itself when the MCP
-                    // disconnects, so an error here is unexpected. Surface the
-                    // first one at warn! (a persistent failure must be visible at
-                    // default log levels), keep the rest at debug! so a broken
-                    // socket doesn't spam, back off as they pile up, and give up
-                    // rather than spin forever.
-                    consecutive_errors += 1;
-                    if consecutive_errors == 1 {
-                        tracing::warn!("MCP status listener: receive failed: {e}");
-                    } else {
-                        tracing::debug!(
-                            "MCP status listener: receive failed ({consecutive_errors}): {e}"
-                        );
-                    }
-                    if consecutive_errors >= MCP_STATUS_MAX_ERRORS {
-                        tracing::warn!(
-                            "MCP status listener: giving up after {consecutive_errors} consecutive receive failures on {url}"
-                        );
-                        return;
-                    }
-                    tokio::time::sleep(MCP_STATUS_RETRY_DELAY * consecutive_errors.min(5)).await;
-                    continue;
-                }
-            };
-
-            self.record_mcp_status_payload(&received.message.payload)
-                .await;
-            let _ = (received.commit)(MessageDisposition::Ack).await;
+    /// The last runtime status while it is still within the lease TTL, so a
+    /// heartbeat costs nothing whenever the UI is already polling. With nothing
+    /// polling it falls back to computing one, which also refreshes the cache.
+    async fn cached_runtime_status(&self) -> RuntimeStatusResponse {
+        let cached = self
+            .runtime_status_cache
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < LEASE_TTL)
+            .map(|(_, response)| response.clone());
+        match cached {
+            Some(response) => response,
+            None => self.runtime_status().await,
         }
     }
 
-    /// [`Self::run_mcp_status_listener`] on the ambient Tokio runtime.
-    pub fn spawn_mcp_status_listener(&self) {
-        tokio::spawn(self.clone().run_mcp_status_listener());
+    /// What this process is currently running, in registry terms.
+    ///
+    /// Only entities with real runtime state carry live values. A configured
+    /// publisher is a destination rather than a running thing, so it advertises
+    /// the same idle summary the local publisher rows render.
+    async fn status_snapshot(&self) -> StatusSnapshot {
+        let runtime = self.cached_runtime_status().await;
+        let config = self.config.read().await;
+        StatusSnapshot {
+            consumers: config
+                .consumers
+                .iter()
+                .filter_map(|consumer| {
+                    let key = consumer_runtime_key(consumer);
+                    runtime.consumers.get(&key).map(|snapshot| StatusEntity {
+                        id: key,
+                        label: consumer.name.clone(),
+                        endpoint: endpoint_type_label(&consumer.endpoint.endpoint_type).to_string(),
+                        summary: StatusSummary::from(snapshot),
+                    })
+                })
+                .collect(),
+            publishers: config
+                .publishers
+                .iter()
+                .map(|publisher| StatusEntity {
+                    id: publisher.id.clone(),
+                    label: publisher.name.clone(),
+                    endpoint: endpoint_type_label(&publisher.endpoint.endpoint_type).to_string(),
+                    summary: StatusSummary::default(),
+                })
+                .collect(),
+            routes: runtime
+                .active_routes
+                .iter()
+                .map(|name| {
+                    // Membership in `active_routes` is what "running" means here;
+                    // the rate comes from the same metrics the local rows use.
+                    let summary = StatusSummary {
+                        running: true,
+                        healthy: true,
+                        throughput: runtime.route_throughput.get(name).copied().unwrap_or(0.0),
+                        ..Default::default()
+                    };
+                    let (input, output) = config
+                        .routes
+                        .get(name)
+                        .map(|route| {
+                            (
+                                endpoint_type_label(&route.route.input.endpoint_type),
+                                endpoint_type_label(&route.route.output.endpoint_type),
+                            )
+                        })
+                        .unwrap_or(("unknown", "unknown"));
+                    StatusRoute {
+                        id: name.clone(),
+                        label: name.clone(),
+                        input: StatusEntity {
+                            id: format!("{name}:input"),
+                            label: name.clone(),
+                            endpoint: input.to_string(),
+                            summary: summary.clone(),
+                        },
+                        output: StatusEntity {
+                            id: format!("{name}:output"),
+                            label: name.clone(),
+                            endpoint: output.to_string(),
+                            summary: summary.clone(),
+                        },
+                        summary,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Reads the registry. Deliberately does not publish: the heartbeat task
+    /// owns that, and a poll-rate fsync on the read path buys nothing.
+    pub async fn peer_status(&self) -> PeerStatusResponse {
+        let current_instance_id = self
+            .status_lease
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|lease| lease.instance_id().to_string())
+            .unwrap_or_default();
+        let instances = match &self.status_registry {
+            Some(registry) => list_off_thread(registry).await,
+            None => Vec::new(),
+        };
+        PeerStatusResponse {
+            current_instance_id,
+            instances,
+        }
+    }
+
+    pub fn spawn_status_registry_publisher(&self) {
+        let mut slot = self
+            .status_lease
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if slot.is_some() {
+            return;
+        }
+        let app = self.clone();
+        *slot = StatusLease::spawn(
+            self.instance_kind,
+            env!("CARGO_PKG_VERSION"),
+            self.config_file_path(),
+            move || {
+                let app = app.clone();
+                async move { app.status_snapshot().await }
+            },
+        );
+    }
+
+    /// Stops heartbeating and removes this process's lease.
+    ///
+    /// Still explicit rather than left to `Drop`: the heartbeat task holds a
+    /// `UiApp` clone, so the `Arc` graph is cyclic and nothing here is dropped
+    /// on its own.
+    pub fn remove_status_registry_lease(&self) {
+        if let Some(mut lease) = self
+            .status_lease
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            lease.release();
+        }
     }
 
     async fn consumer_status_snapshot(
@@ -2210,6 +2201,78 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn peer_status_requires_server_asserted_loopback() {
+        let app = test_app(AppConfig::default());
+        let request = CanonicalMessage::new(Vec::new(), None)
+            .with_metadata_kv("http_method", "GET")
+            .with_metadata_kv("http_path", "/peer-status");
+        let response = app.handle_ui_message(request, false).await.unwrap();
+        let Handled::Publish(response) = response else {
+            panic!("peer status should return an HTTP response")
+        };
+        assert_eq!(
+            response
+                .metadata
+                .get("http_status_code")
+                .map(String::as_str),
+            Some("403")
+        );
+
+        let request = CanonicalMessage::new(Vec::new(), None)
+            .with_metadata_kv("http_method", "GET")
+            .with_metadata_kv("http_path", "/peer-status")
+            .with_metadata_kv("mqb_peer_loopback", "true");
+        let response = app.handle_ui_message(request, false).await.unwrap();
+        let Handled::Publish(response) = response else {
+            panic!("peer status should return an HTTP response")
+        };
+        assert_eq!(
+            response
+                .metadata
+                .get("http_status_code")
+                .map(String::as_str),
+            Some("200")
+        );
+        // Reading peers must not publish: without a running heartbeat there is
+        // no lease for this process, and the read path never creates one.
+        let peers: PeerStatusResponse = serde_json::from_slice(&response.payload).unwrap();
+        assert!(peers.current_instance_id.is_empty());
+        assert!(
+            !peers
+                .instances
+                .iter()
+                .any(|peer| peer.pid == std::process::id())
+        );
+    }
+
+    // Once the heartbeat is running, this process is one of the instances the
+    // registry reports — that is what makes it visible to other UIs.
+    #[tokio::test]
+    async fn a_running_publisher_lists_its_own_instance() {
+        let app = test_app(AppConfig::default());
+        app.spawn_status_registry_publisher();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let peers = app.peer_status().await;
+        assert!(!peers.current_instance_id.is_empty());
+        assert!(
+            peers
+                .instances
+                .iter()
+                .any(|peer| peer.instance_id == peers.current_instance_id)
+        );
+
+        app.remove_status_registry_lease();
+        let peers = app.peer_status().await;
+        assert!(
+            !peers
+                .instances
+                .iter()
+                .any(|peer| peer.pid == std::process::id())
+        );
+    }
+
     // Reading `/messages` before the collector route exists must not create the
     // capture buffer at some default size, or the writer that follows silently
     // inherits it and `keep_last` stops meaning anything.
@@ -2241,165 +2304,6 @@ mod tests {
             .map(|m| m.get_payload_str().to_string())
             .collect();
         assert_eq!(payloads, vec!["second", "third"]);
-    }
-
-    fn mcp_snapshot(messages: u64) -> ConsumerStatusSnapshot {
-        ConsumerStatusSnapshot {
-            running: true,
-            status: EndpointStatusSnapshot {
-                healthy: true,
-                target: "probe".into(),
-                pending: None,
-                capacity: None,
-                error: None,
-                details: serde_json::Value::Null,
-            },
-            throughput: 12.5,
-            message_sequence: messages,
-            capture_enabled: false,
-            capture_keep_last: 0,
-            outcome: None,
-        }
-    }
-
-    fn mcp_report(names: &[&str]) -> McpStatusReport {
-        let routes: HashMap<String, ConsumerStatusSnapshot> = names
-            .iter()
-            .map(|n| (n.to_string(), mcp_snapshot(7)))
-            .collect();
-        McpStatusReport {
-            routes,
-            publishers: HashMap::new(),
-        }
-    }
-
-    // An MCP report must surface in its own field, never merged into the
-    // config-derived `consumers` map.
-    #[tokio::test]
-    async fn mcp_report_lands_in_its_own_field() {
-        let app = test_app(AppConfig::default());
-
-        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
-
-        let status = app.runtime_status().await;
-        assert_eq!(status.mcp_routes.len(), 1);
-        assert_eq!(status.mcp_routes["route-a"].message_sequence, 7);
-        assert!(status.consumers.is_empty());
-        assert!(status.active_consumers.is_empty());
-    }
-
-    // Each report replaces the last wholesale, so a route the MCP stopped
-    // reporting disappears immediately rather than lingering.
-    #[tokio::test]
-    async fn a_new_mcp_report_replaces_the_previous_one() {
-        let app = test_app(AppConfig::default());
-
-        app.record_mcp_status_report(mcp_report(&["route-a", "route-b"]))
-            .await;
-        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
-
-        let status = app.runtime_status().await;
-        assert_eq!(status.mcp_routes.len(), 1);
-        assert!(status.mcp_routes.contains_key("route-a"));
-    }
-
-    // Unix socket paths are capped near 104 bytes, and binding silently degrades
-    // to "no MCP rows" when that is exceeded — so a deeply nested config must
-    // still produce a bindable path.
-    #[cfg(unix)]
-    #[test]
-    fn the_status_socket_path_stays_within_the_unix_socket_limit() {
-        // Pin the runtime dir via the explicit-base helper so the assertion
-        // exercises the hashing, not the test runner's ambient
-        // XDG_RUNTIME_DIR/TMPDIR — and without mutating the process-wide
-        // environment. `/tmp` is short and always exists.
-        let deep_config = format!(
-            "/Users/someone/{}/config.yml",
-            "nested-directory/".repeat(20)
-        );
-        let url = mcp_status_ipc_url_in(&deep_config, "/tmp");
-
-        let path = url.strip_prefix("ipc://").expect("an absolute ipc path");
-        assert!(path.starts_with('/'), "must be an explicit path: {path}");
-        assert!(path.len() < 104, "{} bytes is too long: {path}", path.len());
-    }
-
-    // The reason for IPC over HTTP: a separate process must be able to push
-    // status to a UI that binds no HTTP listener at all (the desktop app). This
-    // goes over the real socket rather than calling the recording method.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn an_mcp_report_arrives_over_the_ipc_socket() {
-        use mq_bridge::endpoints::memory::MemoryPublisher;
-        use mq_bridge::traits::MessagePublisher;
-
-        let app = test_app(AppConfig::default());
-        app.spawn_mcp_status_listener();
-
-        let config =
-            MemoryConfig::new_with_url(mcp_status_ipc_url(app.config_file_path()), Some(1));
-
-        // The listener binds in a spawned task, so the first connect can lose
-        // the race with it.
-        let mut publisher = None;
-        for _ in 0..50 {
-            match MemoryPublisher::new_async(&config).await {
-                Ok(p) => {
-                    publisher = Some(p);
-                    break;
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
-            }
-        }
-        let publisher = publisher.expect("listener should bind the status socket");
-
-        let payload = serde_json::to_string(&mcp_report(&["route-a"])).unwrap();
-        publisher
-            .send(CanonicalMessage::from(payload))
-            .await
-            .expect("report should be sent over the socket");
-
-        let mut mcp_routes = HashMap::new();
-        for _ in 0..50 {
-            mcp_routes = app.runtime_status().await.mcp_routes;
-            if !mcp_routes.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-
-        assert_eq!(mcp_routes.len(), 1);
-        assert_eq!(mcp_routes["route-a"].message_sequence, 7);
-        // Still never merged into the config-derived consumers.
-        assert!(app.runtime_status().await.consumers.is_empty());
-    }
-
-    // A dead MCP must not leave phantom rows in the UI.
-    #[tokio::test]
-    async fn a_stale_mcp_report_is_ignored() {
-        let app = test_app(AppConfig::default());
-        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
-
-        // Backdate the report past the staleness window.
-        {
-            let mut slot = app.mcp_status.write().await;
-            let entry = slot.as_mut().unwrap();
-            entry.0 = Instant::now() - MCP_STATUS_STALE_AFTER - Duration::from_secs(1);
-        }
-
-        assert!(app.runtime_status().await.mcp_routes.is_empty());
-    }
-
-    // Anything may write to the socket, so a malformed report must be dropped
-    // rather than clearing or corrupting the rows already on display.
-    #[tokio::test]
-    async fn a_malformed_mcp_report_is_ignored() {
-        let app = test_app(AppConfig::default());
-        app.record_mcp_status_report(mcp_report(&["route-a"])).await;
-
-        app.record_mcp_status_payload(b"not json").await;
-
-        assert_eq!(app.runtime_status().await.mcp_routes.len(), 1);
     }
 
     // A running consumer's status must reflect the live route health read from the
@@ -2464,6 +2368,7 @@ mod tests {
             format: Default::default(),
             compression: Default::default(),
             encryption: None,
+            idempotency: Default::default(),
         }));
         let mut config = AppConfig::default();
         config.consumers.push(consumer);
@@ -2516,6 +2421,7 @@ mod tests {
             format: Default::default(),
             compression: Default::default(),
             encryption: None,
+            idempotency: Default::default(),
         }));
         consumer.options.exit_on_empty = true;
         let mut config = AppConfig::default();

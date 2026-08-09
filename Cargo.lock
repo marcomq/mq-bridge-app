@@ -4344,6 +4344,7 @@ dependencies = [
  "fast-uuid-v7",
  "futures",
  "hex",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "mq-bridge",
