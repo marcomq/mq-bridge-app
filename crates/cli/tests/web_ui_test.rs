@@ -3,7 +3,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use mq_bridge_app::config::AppConfig;
 use mq_bridge_app::web_ui;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -28,7 +28,7 @@ fn unique_config_path(port: u16) -> PathBuf {
     ))
 }
 
-async fn start_test_server(port: u16, config: AppConfig, config_file: &PathBuf) -> JoinHandle<()> {
+async fn start_test_server(port: u16, config: AppConfig, config_file: &Path) -> JoinHandle<()> {
     let builder = PrometheusBuilder::new();
     let recorder = builder.build_recorder();
     let handle = recorder.handle();

@@ -1420,9 +1420,7 @@ consumers: []
         let config = sample_security_config("durable");
         let secret_store = RecordingSecretStore::default();
         let path = std::env::temp_dir().join("mqb-config-durable.yml");
-        let _guard = crate::encrypted_config::test_config_master_key_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _guard = crate::encrypted_config::test_config_master_key_lock().blocking_lock();
         unsafe {
             std::env::set_var(
                 crate::encrypted_config::CONFIG_MASTER_KEY_ENV,

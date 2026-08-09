@@ -2022,13 +2022,13 @@ mod tests {
 
     #[tokio::test]
     async fn update_config_runs_storage_hooks_and_refreshes_security() {
-        let _guard = test_config_master_key_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let mut initial_config = AppConfig::default();
-        initial_config.config_security = Some(ConfigSecurity {
-            mode: ConfigSecurityMode::Balanced,
-        });
+        let _guard = test_config_master_key_lock().lock().await;
+        let initial_config = AppConfig {
+            config_security: Some(ConfigSecurity {
+                mode: ConfigSecurityMode::Balanced,
+            }),
+            ..Default::default()
+        };
 
         let temp_path =
             std::env::temp_dir().join(format!("mqb-ui-app-test-{}.yaml", Uuid::new_v4()));
@@ -2081,10 +2081,12 @@ mod tests {
 
     #[tokio::test]
     async fn reset_config_recovery_clears_pending_status() {
-        let mut initial_config = AppConfig::default();
-        initial_config.config_security = Some(ConfigSecurity {
-            mode: ConfigSecurityMode::Balanced,
-        });
+        let initial_config = AppConfig {
+            config_security: Some(ConfigSecurity {
+                mode: ConfigSecurityMode::Balanced,
+            }),
+            ..Default::default()
+        };
 
         let app = UiApp::new_with_secret_store_and_runtime_hooks(
             initial_config.clone(),
@@ -2122,10 +2124,12 @@ mod tests {
 
     #[test]
     fn storage_security_for_cli_uses_explicit_temporary_messages_mode() {
-        let mut config = AppConfig::default();
-        config.config_security = Some(ConfigSecurity {
-            mode: ConfigSecurityMode::EnvTemporaryMessages,
-        });
+        let config = AppConfig {
+            config_security: Some(ConfigSecurity {
+                mode: ConfigSecurityMode::EnvTemporaryMessages,
+            }),
+            ..Default::default()
+        };
 
         let info = storage_security_for_cli(&config);
 
@@ -2142,10 +2146,12 @@ mod tests {
 
     #[test]
     fn storage_security_for_cli_reuses_ephemeral_message_key_within_process() {
-        let mut config = AppConfig::default();
-        config.config_security = Some(ConfigSecurity {
-            mode: ConfigSecurityMode::TemporaryMessages,
-        });
+        let config = AppConfig {
+            config_security: Some(ConfigSecurity {
+                mode: ConfigSecurityMode::TemporaryMessages,
+            }),
+            ..Default::default()
+        };
 
         let first = storage_security_for_cli(&config);
         let second = storage_security_for_cli(&config);
@@ -2156,15 +2162,15 @@ mod tests {
 
     #[test]
     fn storage_security_for_cli_uses_config_master_key_for_sensitive_modes() {
-        let _guard = test_config_master_key_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _guard = test_config_master_key_lock().blocking_lock();
         clear_process_config_master_key();
 
-        let mut config = AppConfig::default();
-        config.config_security = Some(ConfigSecurity {
-            mode: ConfigSecurityMode::Sensitive,
-        });
+        let config = AppConfig {
+            config_security: Some(ConfigSecurity {
+                mode: ConfigSecurityMode::Sensitive,
+            }),
+            ..Default::default()
+        };
         assert!(!storage_security_for_cli(&config).config_encrypted);
 
         set_process_config_master_key_hex(
@@ -2284,8 +2290,10 @@ mod tests {
             enabled: true,
             keep_last: 2,
         };
-        let mut config = AppConfig::default();
-        config.consumers = vec![consumer];
+        let config = AppConfig {
+            consumers: vec![consumer],
+            ..Default::default()
+        };
         let app = test_app(config);
 
         // Reader first: no collector route has run yet.
@@ -2325,11 +2333,12 @@ mod tests {
         let mut snapshot = None;
         for _ in 0..100 {
             let rs = app.runtime_status().await;
-            if let Some(s) = rs.consumers.get("mem-status-test") {
-                if s.running && s.status.healthy {
-                    snapshot = Some(s.clone());
-                    break;
-                }
+            if let Some(s) = rs.consumers.get("mem-status-test")
+                && s.running
+                && s.status.healthy
+            {
+                snapshot = Some(s.clone());
+                break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
