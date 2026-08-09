@@ -1582,12 +1582,15 @@ mod tool_tests {
             .routes
             .get("reported")
             .expect("the route is reported");
-        assert!(!route.running, "a drained route is not running");
-        assert_eq!(route.outcome, Some(RouteOutcomeSnapshot::Completed));
-        assert_eq!(route.message_sequence, 2);
-        assert_eq!(route.status.target, "reported");
+        assert!(!route.snapshot.running, "a drained route is not running");
+        assert_eq!(
+            route.snapshot.outcome,
+            Some(RouteOutcomeSnapshot::Completed)
+        );
+        assert_eq!(route.snapshot.message_sequence, 2);
+        assert_eq!(route.snapshot.status.target, "reported");
         assert!(
-            route.status.details.is_null(),
+            route.snapshot.status.details.is_null(),
             "config must not be reported"
         );
 
