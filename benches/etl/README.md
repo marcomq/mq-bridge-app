@@ -182,7 +182,7 @@ directory with `--features mimalloc`, then run
 | ------------- | ------------------------------------------------- |
 | Payload       | 256 B and 4 KiB JSON rows (both reported)         |
 | Message count | 1 000 000 per run                                 |
-| Batch sizes   | 1 / 128 (table→table §1 & §3); 1024 (§5, §6 & §9)  |
+| Batch sizes   | 1 / 128 (table→table §1 & §3); 1024 (§5, §6 & §9); 32768 (§8) |
 | Concurrency   | 1 and 4 route workers                             |
 | Postgres      | `postgres:16-alpine`, `wal_level=logical`         |
 | Warm-up       | 5 000-message pre-roll, excluded from timing      |

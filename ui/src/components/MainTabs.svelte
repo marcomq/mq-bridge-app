@@ -1,6 +1,7 @@
 <script lang="ts">
   import HeaderSaveButton from "./HeaderSaveButton.svelte";
-  import { activeMainTab, peerStatusStore, runtimeStatusStore } from "../lib/stores";
+  import { activeMainTab, runtimeStatusStore } from "../lib/stores";
+  import { getPeerStatus } from "../lib/state/peer-status.svelte";
   import { switchMain } from "../bootstrap";
   import { isRuntimeConnected, runtimeStatusLabel } from "../lib/runtime-status";
   import { peerActivity, peerActivityLabel } from "../lib/peer-status";
@@ -12,7 +13,7 @@
   let theme = $state<Theme>("auto");
   let themeSelectorOpen = $state(false);
 
-  const peers = $derived(peerActivity($peerStatusStore));
+  const peers = $derived(peerActivity(getPeerStatus()));
 
   onMount(() => {
     theme = getThemePreference() ?? "auto";

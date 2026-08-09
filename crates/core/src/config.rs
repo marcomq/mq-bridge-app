@@ -364,9 +364,7 @@ fn load_config_internal(
     }
 
     let persistent_file = if use_env_overrides {
-        config_path.unwrap_or_else(|| {
-            std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string())
-        })
+        config_file_path(config_path)
     } else {
         config_path.unwrap_or_else(|| "config.yml".to_string())
     };
@@ -484,6 +482,12 @@ pub fn load_config(
         true,
         true,
     )
+}
+
+pub fn config_file_path(config_path: Option<String>) -> String {
+    config_path.unwrap_or_else(|| {
+        std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.yml".to_string())
+    })
 }
 
 pub fn load_config_at_path(

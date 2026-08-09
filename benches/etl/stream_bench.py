@@ -132,6 +132,7 @@ class ArroyoJob:
         self.out_dir = f"{OUT_ROOT}/run_{tag}"
         self.group = f"arroyo_{tag}"
         self.pipeline = None
+        self.log = f"docker logs {ARROYO_CONTAINER}"
         self.startup = 0.0
 
     def start(self):
@@ -166,6 +167,12 @@ class ArroyoJob:
     def sink_lines(self) -> int:
         return int(dexec(f"find {self.out_dir} -type f -exec cat {{}} + 2>/dev/null | wc -l") or 0)
 
+    def is_alive(self) -> bool:
+        if not self.pipeline:
+            return False
+        jobs = api("GET", f"/pipelines/{self.pipeline}/jobs")["data"]
+        return bool(jobs) and jobs[0]["state"] == "Running"
+
     def stop(self):
         # Idempotent: one_run stops the job before counting rows and again in its
         # finally, and a second PATCH against a torn-down pipeline is a 400 that
@@ -194,10 +201,6 @@ class ArroyoJob:
             print(f"KEPT_OUTPUT_DIR={self.out_dir}", flush=True)
         else:
             dexec(f"rm -rf {self.out_dir}")
-
-    def peak_rss_mib(self) -> float:
-        return container_rss_mib(ARROYO_CONTAINER)
-
 
 # --------------------------------------------------------------------------- #
 # mq-bridge-app side
@@ -231,6 +234,8 @@ class MqbJob:
         self.args = args
         self.out = args.out_file
         self.proc = None
+        self.log = f"{self.out}.{tag}.log"
+        self.log_file = None
         self.startup = 0.0
         self.tag = tag
 
@@ -247,10 +252,11 @@ class MqbJob:
             "--batch-size", str(self.args.batch_size),
             "--concurrency", str(self.args.parallelism),
         ]
-        self.proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        self.log_file = open(self.log, "w")
+        self.proc = subprocess.Popen(cmd, stdout=self.log_file, stderr=subprocess.STDOUT, start_new_session=True)
+
+    def is_alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
 
     def sink_bytes(self) -> int:
         try:
@@ -268,10 +274,8 @@ class MqbJob:
             self.proc.wait(timeout=30)
 
     def cleanup(self):
-        pass
-
-    def peak_rss_mib(self) -> float:
-        return 0.0  # sampled by the caller while the process is alive
+        if self.log_file:
+            self.log_file.close()
 
 
 class SeaStreamerJob:
@@ -281,11 +285,15 @@ class SeaStreamerJob:
         self.args = args
         self.out = args.sea_out_file
         self.proc = None
+        self.log = f"{self.out}.{tag}.log"
+        self.log_file = None
         self.startup = 0.0
         self.tag = tag
 
     def start(self):
-        if os.path.exists(self.out):
+        if os.path.isdir(self.out):
+            shutil.rmtree(self.out, ignore_errors=True)
+        elif os.path.exists(self.out):
             os.remove(self.out)
         with open(self.out, "a"):
             pass
@@ -295,10 +303,11 @@ class SeaStreamerJob:
             "--output", f"file://{self.out}/bench",
             "--offset", "start",
         ]
-        self.proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        self.log_file = open(self.log, "w")
+        self.proc = subprocess.Popen(cmd, stdout=self.log_file, stderr=subprocess.STDOUT, start_new_session=True)
+
+    def is_alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
 
     def sink_bytes(self) -> int:
         try:
@@ -319,10 +328,8 @@ class SeaStreamerJob:
             self.proc.wait(timeout=30)
 
     def cleanup(self):
-        pass
-
-    def peak_rss_mib(self) -> float:
-        return 0.0  # sampled by the caller while the process is alive
+        if self.log_file:
+            self.log_file.close()
 
 
 def container_rss_mib(name: str) -> float:
@@ -394,6 +401,8 @@ def one_run(args, expect_bytes: int | None):
             # and subtract that idle window rather than billing it as work.
             last, stable_since = -1, None
             while time.time() < deadline:
+                if hasattr(job, "is_alive") and not job.is_alive():
+                    raise SystemExit(f"{args.label} exited early; see {job.log}")
                 b = job.sink_bytes()
                 if b == last and b > 0:
                     stable_since = stable_since or time.time()
@@ -405,6 +414,8 @@ def one_run(args, expect_bytes: int | None):
             elapsed = (stable_since or time.time()) - t0
         else:
             while time.time() < deadline:
+                if hasattr(job, "is_alive") and not job.is_alive():
+                    raise SystemExit(f"{args.label} exited early; see {job.log}")
                 if job.sink_bytes() >= expect_bytes:
                     break
                 time.sleep(0.05)
@@ -473,7 +484,8 @@ def main():
 
     header = ("tool,rows,repeats,median_elapsed_s,stddev_elapsed_s,median_rows_per_s,"
               "startup_s,sink_bytes,peak_rss_mib")
-    os.makedirs(os.path.dirname(args.results), exist_ok=True)
+    if results_dir := os.path.dirname(args.results):
+        os.makedirs(results_dir, exist_ok=True)
     lines = []
     if os.path.exists(args.results):
         with open(args.results) as f:
@@ -487,5 +499,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import urllib.parse  # noqa: E402  (kept next to its only users below)
     sys.exit(main())

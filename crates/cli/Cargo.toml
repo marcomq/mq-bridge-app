@@ -26,6 +26,7 @@ pkg-fmt = "zip"
 [dependencies]
 mq_bridge_app = { workspace = true }
 anyhow = { workspace = true }
+uuid = { workspace = true }
 metrics = { workspace = true }
 # `http-listener` serves the `--metrics-addr` endpoint; this crate is the only
 # one that needs it.
@@ -85,4 +86,3 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
-uuid = { workspace = true }

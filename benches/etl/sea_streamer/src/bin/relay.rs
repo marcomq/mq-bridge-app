@@ -16,7 +16,7 @@ struct Args {
     input: StreamUrl,
     #[clap(long, help = "Streamer sink URI")]
     output: StreamUrl,
-    #[clap(long, help = "Stream from `start` or `end`, default: `end`")]
+    #[clap(long, default_value = "end", help = "Stream from `start` or `end`")]
     offset: Offset,
 }
 

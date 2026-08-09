@@ -3,12 +3,12 @@
   import {
     activeMainTab,
     consumersPanelState,
-    peerStatusStore,
     detailPaneTopPercent,
     MAX_DETAIL_PANE_PERCENT,
     MIN_DETAIL_PANE_PERCENT,
     sidebarWidthStore,
   } from "../lib/stores";
+  import { getPeerStatus } from "../lib/state/peer-status.svelte";
   import type { ConsumerTreeNode } from "../lib/consumer-grouping";
   import { filterPeerRows, peerConsumerRows } from "../lib/peer-status";
   import PeerSidebarRows from "./PeerSidebarRows.svelte";
@@ -76,7 +76,7 @@
     return "";
   });
   const selectedProto = $derived(selectedConsumer?.inputProto || "");
-  const peerRows = $derived(filterPeerRows(peerConsumerRows($peerStatusStore), filterText));
+  const peerRows = $derived(filterPeerRows(peerConsumerRows(getPeerStatus()), filterText));
 
   async function showCurrentConsumerJson() {
     const variants = await currentConsumerConfigVariants();

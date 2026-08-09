@@ -2,11 +2,11 @@ import { tick } from "svelte";
 import {
   activeMainTab,
   runtimeStatusStore,
-  peerStatusStore,
   storageSecurityStore,
   workspaceDirtyStore,
   workspaceSavingStore,
 } from "./lib/stores";
+import { setPeerStatus } from "./lib/state/peer-status.svelte";
 import { createDirtyTracker, cloneSectionState, isDirty, serializeSectionState } from "./lib/dirty-state";
 import {
   saveWholeConfig,
@@ -252,7 +252,7 @@ const runtimeStatusPoller = createRuntimeStatusPoller({
     browserWindow().renderRoutesRuntimeMetrics?.();
   },
   onPeerStatus: (status) => {
-    peerStatusStore.set(status);
+    setPeerStatus(status);
   },
 });
 

@@ -6,9 +6,9 @@
     MAX_DETAIL_PANE_PERCENT,
     MIN_DETAIL_PANE_PERCENT,
     publishersPanelState,
-    peerStatusStore,
     sidebarWidthStore,
   } from "../lib/stores";
+  import { getPeerStatus } from "../lib/state/peer-status.svelte";
   import type { PublisherTreeNode } from "../lib/publisher-grouping";
   import { filterPeerRows, peerPublisherRows } from "../lib/peer-status";
   import PeerSidebarRows from "./PeerSidebarRows.svelte";
@@ -69,7 +69,7 @@
     { key: "asyncapi", label: "Import AsyncAPI" },
     { key: "mqb", label: "Import mq-bridge" },
   ];
-  const peerRows = $derived(filterPeerRows(peerPublisherRows($peerStatusStore), filterText));
+  const peerRows = $derived(filterPeerRows(peerPublisherRows(getPeerStatus()), filterText));
   let expandedGroupIds = $state<Set<string>>(new Set());
   let knownGroupIds = $state<Set<string>>(new Set());
   let configJsonOpen = $state(false);

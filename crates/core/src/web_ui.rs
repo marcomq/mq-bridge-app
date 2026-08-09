@@ -4,6 +4,7 @@ use crate::ui_app::UiApp;
 use anyhow::Result;
 use mq_bridge::models::{Endpoint, EndpointType, HttpConfig, Route};
 use mq_bridge::{CanonicalMessage, HandlerError};
+use std::net::ToSocketAddrs;
 
 #[derive(Clone)]
 struct WebUiHttpHandler {
@@ -52,8 +53,11 @@ pub async fn start_web_server(
     let _status_guard = WebUiStatusGuard(app.clone());
     app.spawn_status_registry_publisher();
     let bound_to_loopback = bind_addr
-        .parse::<std::net::SocketAddr>()
-        .map(|address| address.ip().is_loopback())
+        .to_socket_addrs()
+        .map(|addresses| {
+            let addresses: Vec<_> = addresses.collect();
+            !addresses.is_empty() && addresses.iter().all(|address| address.ip().is_loopback())
+        })
         .unwrap_or(false);
 
     let input = Endpoint {

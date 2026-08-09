@@ -7,8 +7,8 @@ use crate::route_metrics::{
     CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, is_redelivery,
 };
 use crate::status_registry::{
-    InstanceKind, InstanceStatus, LEASE_TTL, LocalStatusRegistry, StatusEntity, StatusLease,
-    StatusRoute, StatusSnapshot, StatusSummary, endpoint_type_label, list_off_thread,
+    InstanceKind, InstanceStatus, LocalStatusRegistry, StatusEntity, StatusLease, StatusRoute,
+    StatusSnapshot, StatusSummary, endpoint_type_label, list_off_thread,
 };
 use anyhow::{Result, anyhow};
 use chrono;
@@ -37,6 +37,8 @@ fn generate_ephemeral_message_key() -> (String, String) {
 
 static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
     LazyLock::new(generate_ephemeral_message_key);
+
+const RUNTIME_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
 
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
     match config.security_mode() {
@@ -1301,7 +1303,7 @@ impl UiApp {
         response
     }
 
-    /// The last runtime status while it is still within the lease TTL, so a
+    /// The last runtime status while it is still fresh, so a
     /// heartbeat costs nothing whenever the UI is already polling. With nothing
     /// polling it falls back to computing one, which also refreshes the cache.
     async fn cached_runtime_status(&self) -> RuntimeStatusResponse {
@@ -1310,7 +1312,7 @@ impl UiApp {
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .as_ref()
-            .filter(|(at, _)| at.elapsed() < LEASE_TTL)
+            .filter(|(at, _)| at.elapsed() < RUNTIME_STATUS_CACHE_TTL)
             .map(|(_, response)| response.clone());
         match cached {
             Some(response) => response,
@@ -2248,7 +2250,7 @@ mod tests {
             !peers
                 .instances
                 .iter()
-                .any(|peer| peer.pid == std::process::id())
+                .any(|peer| peer.instance_id == "not-running-instance")
         );
     }
 

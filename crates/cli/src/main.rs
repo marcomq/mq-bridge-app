@@ -4,7 +4,7 @@
 //  git clone https://github.com/marcomq/mq-bridge-app
 
 use mq_bridge_app::{
-    config::{AppConfig, load_config},
+    config::{AppConfig, config_file_path, load_config},
     mq_bridge,
     status_registry::{
         InstanceKind, StatusEntity, StatusLease, StatusRoute, StatusSnapshot, StatusSummary,
@@ -16,6 +16,7 @@ use mq_bridge_app::{
 
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -234,18 +235,7 @@ async fn main() -> anyhow::Result<()> {
 
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
             init_mcp_logging();
-            let workspace_path = load_config(
-                args.config.clone(),
-                args.init_config.clone(),
-                args.init_config_str.clone(),
-                args.config_str.clone(),
-            )
-            .map(|(_, path)| path)
-            .unwrap_or_else(|_| {
-                args.config
-                    .clone()
-                    .unwrap_or_else(|| "workspace".to_string())
-            });
+            let workspace_path = config_file_path(args.config.clone());
             return mcp::run(
                 mcp_args.transport,
                 mcp_args.bind,
@@ -450,12 +440,13 @@ async fn main() -> anyhow::Result<()> {
 /// Advertises a headless run: the configured entities, with running state read
 /// from the live route registry rather than assumed.
 fn cli_status_lease(workspace_path: String, config: AppConfig) -> Option<StatusLease> {
+    let heartbeat_config = config.clone();
     StatusLease::spawn(
         InstanceKind::Cli,
         env!("CARGO_PKG_VERSION"),
         &workspace_path,
         move || {
-            let config = config.clone();
+            let config = heartbeat_config.clone();
             async move {
                 let running = mq_bridge::list_routes();
                 let is_running = |name: &str| running.iter().any(|route| route == name);
@@ -545,8 +536,6 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     let output = endpoint_from_uri(&args.to).context("invalid --to endpoint")?;
     let input_endpoint_label = endpoint_type_label(&input.endpoint_type);
     let output_endpoint_label = endpoint_type_label(&output.endpoint_type);
-    let copy_status = copy_status_lease(input_endpoint_label, output_endpoint_label);
-
     let options = RouteOptions {
         concurrency: args.concurrency.unwrap_or(DEFAULT_CONCURRENCY),
         batch_size: args.batch_size.unwrap_or(DEFAULT_BATCH_SIZE),
@@ -555,10 +544,19 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     };
 
     let route = Route::new(input, output).with_options(options);
-    let handle = route
-        .run("copy")
-        .await
-        .context("failed to start copy route")?;
+    let run_id = format!("copy-{}", uuid::Uuid::new_v4());
+    let handle = Arc::new(
+        route
+            .run(&run_id)
+            .await
+            .context("failed to start copy route")?,
+    );
+    let copy_status = copy_status_lease(
+        run_id,
+        input_endpoint_label.to_string(),
+        output_endpoint_label.to_string(),
+        handle.clone(),
+    );
 
     info!(
         from = %args.from,
@@ -613,38 +611,48 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 }
 
 fn copy_status_lease(
-    input_endpoint: &'static str,
-    output_endpoint: &'static str,
+    run_id: String,
+    input_endpoint: String,
+    output_endpoint: String,
+    handle: Arc<mq_bridge::route::RouteHandle>,
 ) -> Option<StatusLease> {
     StatusLease::spawn(
         InstanceKind::Cli,
         env!("CARGO_PKG_VERSION"),
         "copy",
-        move || async move {
-            let summary = StatusSummary {
-                running: true,
-                healthy: true,
-                ..Default::default()
-            };
-            StatusSnapshot {
-                routes: vec![StatusRoute {
-                    id: "copy".to_string(),
-                    label: "copy".to_string(),
-                    input: StatusEntity {
-                        id: "copy:input".to_string(),
+        move || {
+            let handle = Arc::clone(&handle);
+            let run_id = run_id.clone();
+            let input_endpoint = input_endpoint.clone();
+            let output_endpoint = output_endpoint.clone();
+            async move {
+                let status = handle.status();
+                let summary = StatusSummary {
+                    running: handle.outcome().is_none(),
+                    healthy: status.healthy,
+                    error: status.error.clone(),
+                    ..Default::default()
+                };
+                StatusSnapshot {
+                    routes: vec![StatusRoute {
+                        id: run_id.clone(),
                         label: "copy".to_string(),
-                        endpoint: input_endpoint.to_string(),
-                        summary: summary.clone(),
-                    },
-                    output: StatusEntity {
-                        id: "copy:output".to_string(),
-                        label: "copy".to_string(),
-                        endpoint: output_endpoint.to_string(),
-                        summary: summary.clone(),
-                    },
-                    summary,
-                }],
-                ..Default::default()
+                        input: StatusEntity {
+                            id: format!("{}:input", run_id),
+                            label: "copy".to_string(),
+                            endpoint: input_endpoint,
+                            summary: summary.clone(),
+                        },
+                        output: StatusEntity {
+                            id: format!("{}:output", run_id),
+                            label: "copy".to_string(),
+                            endpoint: output_endpoint,
+                            summary: summary.clone(),
+                        },
+                        summary,
+                    }],
+                    ..Default::default()
+                }
             }
         },
     )

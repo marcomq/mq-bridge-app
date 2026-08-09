@@ -1087,8 +1087,12 @@ pub fn run() {
             get_peer_status_request,
             get_metrics_request
         ])
-        .on_window_event(|_, event| {
+        .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                window
+                    .state::<DesktopState>()
+                    .app
+                    .remove_status_registry_lease();
                 tauri::async_runtime::spawn(async {
                     shutdown_routes().await;
                 });

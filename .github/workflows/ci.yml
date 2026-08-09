@@ -17,7 +17,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -27,11 +27,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config zlib1g-dev
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run cargo check
         run: cargo check --all-targets
@@ -43,7 +43,9 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -51,7 +53,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.0.2
         with:
           node-version: lts/*
           cache: npm
@@ -78,7 +80,7 @@ jobs:
 
       - name: Upload Playwright test artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-test-results
           path: |
@@ -96,13 +98,13 @@ jobs:
         checks:
           - advisories
           - bans licenses sources
-    continue-on-error: ${{ matrix.checks == 'advisories' }}
+    continue-on-error: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@f9cc7aa250dec5698b425dc01fbf0d745fcd1b78 # v2.0.13
         with:
           rust-version: "1.94"
           arguments: --all-features

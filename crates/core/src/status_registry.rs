@@ -269,19 +269,17 @@ impl LocalStatusRegistry {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => true,
             Err(error) => return Err(error.into()),
         };
-        // `symlink_metadata` does not follow: a symlink pointing at a directory
-        // we do own would otherwise pass every check below while the writes land
-        // wherever whoever planted it chose.
-        let metadata = fs::symlink_metadata(&directory)?;
-        if metadata.file_type().is_symlink() {
-            return Err(anyhow!("status registry path is a symlink"));
-        }
-        if !metadata.is_dir() {
-            return Err(anyhow!("status registry path is not a directory"));
-        }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+            let directory_file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                .open(&directory)?;
+            let metadata = directory_file.metadata()?;
+            if !metadata.is_dir() {
+                return Err(anyhow!("status registry path is not a directory"));
+            }
             // Ownership before permissions: a directory another user pre-created
             // (or symlinked into place) can be mode 0700 and still be theirs, and
             // the mode check alone would wave it through.
@@ -293,7 +291,17 @@ impl LocalStatusRegistry {
             if metadata.mode() & 0o077 != 0 && existed {
                 return Err(anyhow!("status registry directory is shared"));
             }
-            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+            directory_file.set_permissions(fs::Permissions::from_mode(0o700))?;
+        }
+        #[cfg(not(unix))]
+        {
+            let metadata = fs::symlink_metadata(&directory)?;
+            if metadata.file_type().is_symlink() {
+                return Err(anyhow!("status registry path is a symlink"));
+            }
+            if !metadata.is_dir() {
+                return Err(anyhow!("status registry path is not a directory"));
+            }
         }
         Ok(Self { directory })
     }
@@ -355,7 +363,6 @@ impl StatusRegistry for LocalStatusRegistry {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = options.open(&tmp)?;
         file.write_all(&bytes)?;
-        file.sync_all()?;
         drop(file);
         #[cfg(windows)]
         let _ = fs::remove_file(&path);
@@ -450,7 +457,7 @@ impl StatusLease {
         kind: InstanceKind,
         application_version: &str,
         workspace_path: &str,
-        mut snapshot: F,
+        snapshot: F,
     ) -> Option<Self>
     where
         F: FnMut() -> Fut + Send + 'static,
@@ -459,6 +466,26 @@ impl StatusLease {
         let registry = LocalStatusRegistry::new()
             .inspect_err(|error| tracing::debug!("local status registry unavailable: {error}"))
             .ok()?;
+        Some(Self::spawn_in(
+            registry,
+            kind,
+            application_version,
+            workspace_path,
+            snapshot,
+        ))
+    }
+
+    pub fn spawn_in<F, Fut>(
+        registry: LocalStatusRegistry,
+        kind: InstanceKind,
+        application_version: &str,
+        workspace_path: &str,
+        mut snapshot: F,
+    ) -> Self
+    where
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: Future<Output = StatusSnapshot> + Send,
+    {
         let mut status = InstanceStatus::new(kind, application_version, workspace_path);
         let instance_id = status.instance_id.clone();
         let task_registry = registry.clone();
@@ -466,6 +493,7 @@ impl StatusLease {
         let task_released = Arc::clone(&released);
         let task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
                 let snapshot = snapshot().await;
@@ -474,12 +502,12 @@ impl StatusLease {
                 publish_off_thread(&task_registry, &status, &task_released).await;
             }
         });
-        Some(Self {
+        Self {
             registry,
             instance_id,
             task: Some(task),
             released,
-        })
+        }
     }
 
     pub fn instance_id(&self) -> &str {
@@ -652,21 +680,20 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_lease_removes_it() {
         let temp = std::env::temp_dir().join(format!("mq-bridge-status-test-{}", Uuid::new_v4()));
-        let probe = LocalStatusRegistry::new_in(&temp).unwrap();
-        let lease = StatusLease::spawn(InstanceKind::Cli, "1", "/tmp/workspace.yml", || async {
-            StatusSnapshot::default()
-        })
-        .expect("a registry is available in a temp dir");
-        // The lease publishes into the real per-user registry, not `temp`, so
-        // assert through a registry pointed at the same place.
-        let real = LocalStatusRegistry::new().unwrap();
+        let registry = LocalStatusRegistry::new_in(&temp).unwrap();
+        let lease = StatusLease::spawn_in(
+            registry.clone(),
+            InstanceKind::Cli,
+            "1",
+            "/tmp/workspace.yml",
+            || async { StatusSnapshot::default() },
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
         let id = lease.instance_id().to_string();
-        assert!(real.list().unwrap().iter().any(|s| s.instance_id == id));
+        assert!(registry.list().unwrap().iter().any(|s| s.instance_id == id));
 
         drop(lease);
-        assert!(!real.list().unwrap().iter().any(|s| s.instance_id == id));
-        drop(probe);
+        assert!(!registry.list().unwrap().iter().any(|s| s.instance_id == id));
         let _ = fs::remove_dir_all(temp);
     }
 

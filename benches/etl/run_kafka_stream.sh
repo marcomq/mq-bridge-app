@@ -36,8 +36,6 @@ KAFKA_CONTAINER="${KAFKA_CONTAINER:-kafka-etl-bench-mq-bridge}"
 ARROYO_CONTAINER="${ARROYO_CONTAINER:-arroyo-etl-bench}"
 KAFKA_HOST_BROKERS="${KAFKA_HOST_BROKERS:-localhost:9092}"
 KAFKA_DOCKER_BROKERS="${KAFKA_DOCKER_BROKERS:-kafka:29092}"
-COMPOSE="$HERE/docker-compose.kafka.yml"
-
 ROWS="${ROWS:-1000000}"
 REPEATS="${REPEATS:-3}"
 CONCURRENCY="${CONCURRENCY:-4}"          # matched to PARTITIONS and Arroyo's parallelism
@@ -139,10 +137,11 @@ case "${1:-all}" in
     mkdir -p "$RESULTS_DIR"
     RESULTS_CSV="$RESULTS_DIR/kafka_stream_parity.csv"
     docker exec "$ARROYO_CONTAINER" sh -c 'rm -rf /arroyo-out/*'
-    REPEATS=1 cell mqb projection parity-mqb
+    export REPEATS=1
+    cell mqb projection parity-mqb
     # The last KEPT_OUTPUT_DIR line is the timed run's directory; the warmup's is
     # the first, and concatenating both would double the row count.
-    arroyo_dir="$(REPEATS=1 cell arroyo projection parity-arroyo --keep-output \
+    arroyo_dir="$(cell arroyo projection parity-arroyo --keep-output \
       | tee /dev/stderr | grep '^KEPT_OUTPUT_DIR=' | tail -1 | cut -d= -f2)"
     [[ -n "$arroyo_dir" ]] || { echo "no Arroyo output dir reported" >&2; exit 1; }
     local_dir="$(mktemp -d)"

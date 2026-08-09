@@ -208,6 +208,7 @@ test("peer rows are inspection-only and cannot be selected or edited", async ({ 
   await expect(peerRow).toBeVisible();
   // Local rows are buttons; peer rows must not be actionable.
   expect(await peerRow.evaluate((node) => node.tagName)).toBe("DIV");
+  await expect(peerRow).not.toHaveAttribute("tabindex");
   await expect(peerRow).toHaveCSS("cursor", "default");
 
   const hashBefore = await page.evaluate(() => window.location.hash);

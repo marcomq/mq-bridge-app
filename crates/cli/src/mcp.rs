@@ -370,10 +370,14 @@ type PublisherMap = Arc<Mutex<HashMap<String, String>>>;
 
 #[derive(Default)]
 struct McpStatusSnapshot {
-    routes: HashMap<String, ConsumerStatusSnapshot>,
-    /// Connector type of each route's input and output, keyed by route name.
-    route_endpoints: HashMap<String, (String, String)>,
+    routes: HashMap<String, McpRouteStatus>,
     publishers: HashMap<String, ConsumerStatusSnapshot>,
+}
+
+struct McpRouteStatus {
+    snapshot: ConsumerStatusSnapshot,
+    input: String,
+    output: String,
 }
 
 /// The connector type of an endpoint, e.g. `"kafka"`, with no config attached.
@@ -463,25 +467,27 @@ impl BridgeMcp {
     /// expects. Used by the reporting task.
     async fn status_report(&self) -> McpStatusSnapshot {
         let mut routes = HashMap::new();
-        let mut route_endpoints = HashMap::new();
         for (name, route) in self.routes.lock().await.iter() {
             let handle = &route.handle;
             let status = handle.status();
             routes.insert(
                 name.clone(),
-                report_snapshot(
-                    name,
-                    status.healthy,
-                    status.error.clone(),
-                    // Unknown completion reads as "still running": a route we
-                    // still hold a handle for was never stopped from here.
-                    !route_finished(handle).unwrap_or(false),
-                    route_outcome(handle).map(RouteOutcomeSnapshot::from),
-                    self.metrics.sequence(name).await,
-                    self.metrics.throughput(name).await,
-                ),
+                McpRouteStatus {
+                    snapshot: report_snapshot(
+                        name,
+                        status.healthy,
+                        status.error.clone(),
+                        // Unknown completion reads as "still running": a route we
+                        // still hold a handle for was never stopped from here.
+                        !route_finished(handle).unwrap_or(false),
+                        route_outcome(handle).map(RouteOutcomeSnapshot::from),
+                        self.metrics.sequence(name).await,
+                        self.metrics.throughput(name).await,
+                    ),
+                    input: route.input.clone(),
+                    output: route.output.clone(),
+                },
             );
-            route_endpoints.insert(name.clone(), (route.input.clone(), route.output.clone()));
         }
 
         let mut publishers = HashMap::new();
@@ -502,48 +508,37 @@ impl BridgeMcp {
             );
         }
 
-        McpStatusSnapshot {
-            routes,
-            route_endpoints,
-            publishers,
-        }
+        McpStatusSnapshot { routes, publishers }
     }
 
     /// The same status in registry terms: each route contributes a consumer row
     /// for its input and a publisher row for its output.
     async fn status_snapshot(&self) -> StatusSnapshot {
         let report = self.status_report().await;
-        // A route's endpoint types come from the route map; the publisher map
-        // holds the type, which is what `report_snapshot` put in `target` there.
-        let endpoints = |name: &String| {
-            report
-                .route_endpoints
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()))
-        };
+        let publisher_endpoints = self.publishers.lock().await.clone();
         let mut consumers: Vec<StatusEntity> = report
             .routes
             .iter()
-            .map(|(name, snapshot)| status_entity(name, &endpoints(name).0, snapshot))
+            .map(|(name, route)| status_entity(name, &route.input, &route.snapshot))
             .collect();
         let mut publishers: Vec<StatusEntity> = report
             .publishers
             .iter()
-            .map(|(name, snapshot)| status_entity(name, &snapshot.status.target, snapshot))
+            .filter_map(|(name, snapshot)| {
+                publisher_endpoints
+                    .get(name)
+                    .map(|endpoint| status_entity(name, endpoint, snapshot))
+            })
             .collect();
         let mut routes: Vec<StatusRoute> = report
             .routes
             .iter()
-            .map(|(name, snapshot)| {
-                let (input, output) = endpoints(name);
-                StatusRoute {
-                    id: name.clone(),
-                    label: name.clone(),
-                    input: status_entity(&format!("{name}:input"), &input, snapshot),
-                    output: status_entity(&format!("{name}:output"), &output, snapshot),
-                    summary: StatusSummary::from(snapshot),
-                }
+            .map(|(name, route)| StatusRoute {
+                id: name.clone(),
+                label: name.clone(),
+                input: status_entity(&format!("{name}:input"), &route.input, &route.snapshot),
+                output: status_entity(&format!("{name}:output"), &route.output, &route.snapshot),
+                summary: StatusSummary::from(&route.snapshot),
             })
             .collect();
         // The maps above iterate in hash order, so sort: a peer's rows must not
@@ -1456,7 +1451,7 @@ mod tool_tests {
                     // Fault injection is the only permanent failure reachable
                     // without an external endpoint to break.
                     "output": {
-                        "memory": { "topic": "mcp_fail_sink", "capacity": 1000 },
+                        "memory": { "topic": topic("mcp_fail_sink"), "capacity": 1000 },
                         "middlewares": [{ "random_panic": { "mode": "json_format_error" } }],
                     },
                     "allow_fault_injection": true,

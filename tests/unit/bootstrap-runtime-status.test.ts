@@ -29,6 +29,10 @@ vi.mock("../../ui/src/lib/stores", () => ({
 }));
 
 vi.mock("../../ui/src/lib/runtime-status", () => ({
+  EMPTY_PEER_STATUS: {
+    current_instance_id: "",
+    instances: [],
+  },
   EMPTY_RUNTIME_STATUS: {
     active_consumers: [],
     active_routes: [],
