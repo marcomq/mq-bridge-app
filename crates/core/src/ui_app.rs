@@ -39,6 +39,7 @@ static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
     LazyLock::new(generate_ephemeral_message_key);
 
 const RUNTIME_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
+const RUNTIME_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn storage_security_for_cli(config: &AppConfig) -> StorageSecurityInfoResponse {
     match config.security_mode() {
@@ -190,7 +191,7 @@ pub struct UiApp {
     runtime_status_cache: Arc<StdRwLock<Option<(Instant, RuntimeStatusResponse)>>>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, serde::Serialize, JsonSchema)]
 pub struct RuntimeStatusResponse {
     pub active_consumers: Vec<String>,
     pub active_routes: Vec<String>,
@@ -1218,6 +1219,28 @@ impl UiApp {
     }
 
     pub async fn runtime_status(&self) -> RuntimeStatusResponse {
+        let fallback = self
+            .runtime_status_cache
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|(_, response)| response.clone())
+            .unwrap_or_default();
+        match tokio::time::timeout(RUNTIME_STATUS_PROBE_TIMEOUT, self.probe_runtime_status()).await
+        {
+            Ok(response) => {
+                *self
+                    .runtime_status_cache
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner()) =
+                    Some((Instant::now(), response.clone()));
+                response
+            }
+            Err(_) => fallback,
+        }
+    }
+
+    async fn probe_runtime_status(&self) -> RuntimeStatusResponse {
         let config = self.config.read().await;
         // Finished routes keep their handle so the outcome stays queryable, so
         // map membership is not liveness; a route with an outcome is done.
@@ -1296,10 +1319,6 @@ impl UiApp {
             route_throughput,
             consumers,
         };
-        *self
-            .runtime_status_cache
-            .write()
-            .unwrap_or_else(|error| error.into_inner()) = Some((Instant::now(), response.clone()));
         response
     }
 
@@ -2260,9 +2279,22 @@ mod tests {
     async fn a_running_publisher_lists_its_own_instance() {
         let app = test_app(AppConfig::default());
         app.spawn_status_registry_publisher();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let peers = app.peer_status().await;
+        let peers = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let peers = app.peer_status().await;
+                if !peers.current_instance_id.is_empty()
+                    && peers
+                        .instances
+                        .iter()
+                        .any(|peer| peer.instance_id == peers.current_instance_id)
+                {
+                    break peers;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("status registry publication should complete within 2 seconds");
         assert!(!peers.current_instance_id.is_empty());
         assert!(
             peers

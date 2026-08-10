@@ -411,6 +411,10 @@ def one_run(args, expect_bytes: int | None):
                 else:
                     last, stable_since = b, None
                 time.sleep(0.05)
+            else:
+                raise SystemExit(
+                    f"{args.label} exceeded {args.run_timeout}s before output stabilized"
+                )
             elapsed = (stable_since or time.time()) - t0
         else:
             while time.time() < deadline:
