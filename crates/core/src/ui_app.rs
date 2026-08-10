@@ -1313,13 +1313,12 @@ impl UiApp {
             }
         }
 
-        let response = RuntimeStatusResponse {
+        RuntimeStatusResponse {
             active_consumers,
             active_routes,
             route_throughput,
             consumers,
-        };
-        response
+        }
     }
 
     /// The last runtime status while it is still fresh, so a
@@ -2295,6 +2294,8 @@ mod tests {
         })
         .await
         .expect("status registry publication should complete within 2 seconds");
+        app.remove_status_registry_lease();
+
         assert!(!peers.current_instance_id.is_empty());
         assert!(
             peers
@@ -2303,7 +2304,6 @@ mod tests {
                 .any(|peer| peer.instance_id == peers.current_instance_id)
         );
 
-        app.remove_status_registry_lease();
         let peers = app.peer_status().await;
         assert!(
             !peers
