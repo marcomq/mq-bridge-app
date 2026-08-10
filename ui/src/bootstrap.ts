@@ -6,6 +6,7 @@ import {
   workspaceDirtyStore,
   workspaceSavingStore,
 } from "./lib/stores";
+import { setPeerStatus } from "./lib/state/peer-status.svelte";
 import { createDirtyTracker, cloneSectionState, isDirty, serializeSectionState } from "./lib/dirty-state";
 import {
   saveWholeConfig,
@@ -249,6 +250,9 @@ const runtimeStatusPoller = createRuntimeStatusPoller({
     renderRuntimeStatus(status);
     browserWindow().renderConsumersRuntimeStatus?.();
     browserWindow().renderRoutesRuntimeMetrics?.();
+  },
+  onPeerStatus: (status) => {
+    setPeerStatus(status);
   },
 });
 

@@ -29,6 +29,7 @@ Query parameters recognised as config fields for this connector. The object-type
 | `shared` | boolean | no | `true` | Share one connection pool per connection (default: true); false forces a dedicated pool. |
 | `slot_name` | string | no | — | (Consumer only, CDC) Replication slot name; created if missing. Defaults to `mq_bridge_slot`. |
 | `table` | string | yes | — | The table to interact with. |
+| `test_before_acquire` | boolean | no | — | Ping each pooled connection before handing it out (default false). Costs a round-trip per acquire. |
 | `tls` | object | no | [see below](#tls) | TLS configuration for the database connection. |
 | `url` | string | yes | — | Database connection URL. If it contains userinfo, it will be treated as a secret. |
 | `username` | string | no | `null` | Optional username. Takes precedence over any credentials embedded in the `url`. |

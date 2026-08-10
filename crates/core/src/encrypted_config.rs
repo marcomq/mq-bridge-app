@@ -17,7 +17,7 @@ const DURABLE_MODE_LABEL: &str = "durable";
 const CONFIG_MASTER_KEY_MEMORY_KID: &str = "process-memory";
 
 #[cfg(test)]
-static TEST_CONFIG_MASTER_KEY_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+static TEST_CONFIG_MASTER_KEY_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
     std::sync::OnceLock::new();
 static CONFIG_MASTER_KEY_MEMORY: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 
@@ -53,8 +53,8 @@ pub fn has_config_master_key() -> bool {
 }
 
 #[cfg(test)]
-pub(crate) fn test_config_master_key_lock() -> &'static std::sync::Mutex<()> {
-    TEST_CONFIG_MASTER_KEY_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+pub(crate) fn test_config_master_key_lock() -> &'static tokio::sync::Mutex<()> {
+    TEST_CONFIG_MASTER_KEY_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 pub fn uses_encrypted_config_mode_label(mode: &str) -> bool {
@@ -246,7 +246,7 @@ mod tests {
         }
     }
 
-    fn env_lock() -> &'static Mutex<()> {
+    fn env_lock() -> &'static tokio::sync::Mutex<()> {
         test_config_master_key_lock()
     }
 
@@ -270,13 +270,13 @@ mod tests {
     }
 
     fn with_test_master_key<T>(f: impl FnOnce() -> T) -> T {
-        let _env_guard = env_lock().lock().unwrap_or_else(|error| error.into_inner());
+        let _env_guard = env_lock().blocking_lock();
         let _key_guard = TestMasterKeyGuard::install();
         f()
     }
 
     fn with_test_process_master_key<T>(f: impl FnOnce() -> T) -> T {
-        let _env_guard = env_lock().lock().unwrap_or_else(|error| error.into_inner());
+        let _env_guard = env_lock().blocking_lock();
         clear_process_config_master_key();
         unsafe {
             std::env::remove_var(CONFIG_MASTER_KEY_ENV);
@@ -418,7 +418,7 @@ publishers:
 
     #[test]
     fn encoded_sensitive_file_requires_master_key() {
-        let _guard = env_lock().lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = env_lock().blocking_lock();
         unsafe {
             std::env::remove_var(CONFIG_MASTER_KEY_ENV);
         }

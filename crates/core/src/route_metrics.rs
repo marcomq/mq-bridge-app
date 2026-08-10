@@ -32,6 +32,20 @@ pub const THROUGHPUT_TAU: f64 = 0.5;
 /// Frequency of throughput calculations.
 pub const THROUGHPUT_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
 
+/// Metadata key `retry` stamps on a redelivery (attempt >= 2). Mirrors
+/// `mq_bridge`'s `RETRY_ATTEMPT_KEY`, which the library does not re-export.
+const RETRY_ATTEMPT_KEY: &str = "mq_bridge.retry.attempt";
+
+/// Whether `msg` is a `retry` redelivery rather than a first delivery.
+///
+/// `retry` re-invokes a wrapped handler once per attempt, so counting every
+/// invocation would scale a route's message total with `max_attempts` — five
+/// messages behind `max_attempts: 4` reported as twenty. Absence of the key
+/// means attempt 1, which `retry` guarantees by clearing it on a first try.
+pub fn is_redelivery(msg: &CanonicalMessage) -> bool {
+    msg.metadata.contains_key(RETRY_ATTEMPT_KEY)
+}
+
 /// Metadata key naming the route/consumer a captured message came from.
 pub const CAPTURE_SOURCE_KEY: &str = "ui_source";
 /// Metadata key holding the capture timestamp, as epoch milliseconds.

@@ -4,14 +4,19 @@
 //  git clone https://github.com/marcomq/mq-bridge-app
 
 use mq_bridge_app::{
-    config::{AppConfig, load_config},
+    config::{AppConfig, config_file_path, load_config},
     mq_bridge,
-    ui_app::mcp_status_ipc_url,
+    status_registry::{
+        InstanceKind, StatusEntity, StatusLease, StatusRoute, StatusSnapshot, StatusSummary,
+        endpoint_type_label,
+    },
+    ui_app::consumer_runtime_key,
     web_ui,
 };
 
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -93,18 +98,26 @@ struct McpArgs {
     #[arg(long)]
     bind: Option<String>,
 
-    /// Report running routes and publish targets to a local mq-bridge-app UI
-    /// (web or desktop), so they show up alongside its configured consumers and
-    /// publishers.
+    /// Publish this process's sanitized status to the same-user local status
+    /// registry (on by default).
     ///
-    /// Off by default: without this flag nothing about this server ever leaves the
-    /// process. Only names, connector types, health and message counts are sent —
-    /// never endpoint URLs or credentials. The UI is reached over a local IPC
-    /// socket next to the config file, so a remote UI cannot be targeted.
-    ///
-    /// `install` bakes this flag into the registered command when set.
-    #[arg(long, global = true)]
+    /// Bare `--report-to-ui` is a no-op kept for MCP client configurations
+    /// written by older `mcp install` runs, which baked the flag in while
+    /// reporting was still opt-in. Use `--report-to-ui=false` or
+    /// `--no-report-to-ui` to turn publication off.
+    #[arg(
+        long,
+        global = true,
+        num_args = 0..=1,
+        default_value_t = true,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set,
+    )]
     report_to_ui: bool,
+
+    /// Do not publish this process's status to the local status registry.
+    #[arg(long, global = true, conflicts_with = "report_to_ui")]
+    no_report_to_ui: bool,
 
     /// Register/unregister this binary with local MCP clients instead of serving.
     #[command(subcommand)]
@@ -188,6 +201,7 @@ struct CopyArgs {
 async fn main() -> anyhow::Result<()> {
     // Initialize the default crypto provider for rustls (required for rustls 0.23.0+)
     // This allows mq-bridge to create TLS configurations for secure endpoints.
+    #[cfg(feature = "rustls-aws-lc")]
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let args = Args::parse();
@@ -207,9 +221,9 @@ async fn main() -> anyhow::Result<()> {
                     print_config,
                 }) => {
                     return if print_config {
-                        mcp_install::print_config(mcp_args.report_to_ui)
+                        mcp_install::print_config()
                     } else {
-                        mcp_install::install(client, local, mcp_args.report_to_ui)
+                        mcp_install::install(client, local)
                     };
                 }
                 Some(McpAction::Uninstall { client, local }) => {
@@ -221,33 +235,12 @@ async fn main() -> anyhow::Result<()> {
 
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
             init_mcp_logging();
-            // Resolving the config is how the MCP finds the UI: both processes
-            // derive the same status socket from the config file they were
-            // pointed at. Strictly best-effort — a missing, unreadable or
-            // invalid config just means no reporting, never a failure to start.
-            let ui_status_ipc_url = if mcp_args.report_to_ui {
-                match load_config(
-                    args.config.clone(),
-                    args.init_config.clone(),
-                    args.init_config_str.clone(),
-                    args.config_str.clone(),
-                ) {
-                    Ok((_, config_file_path)) => Some(mcp_status_ipc_url(&config_file_path)),
-                    Err(e) => {
-                        warn!(
-                            "Could not read configuration ({e}); MCP status will not be reported"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            };
+            let workspace_path = config_file_path(args.config.clone());
             return mcp::run(
                 mcp_args.transport,
                 mcp_args.bind,
-                mcp_args.report_to_ui,
-                ui_status_ipc_url,
+                mcp_args.report_to_ui && !mcp_args.no_report_to_ui,
+                workspace_path,
             )
             .await;
         }
@@ -345,6 +338,15 @@ async fn main() -> anyhow::Result<()> {
     // encoding the actual data (version, etc.) in the labels.
     metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
+    // Headless only: with a web UI running, its own `UiApp` owns the lease and
+    // publishes richer state, so a second lease for the same process would just
+    // duplicate every row.
+    let _cli_status = config
+        .ui_addr
+        .is_empty()
+        .then(|| cli_status_lease(config_file_path.clone(), config.clone()))
+        .flatten();
+
     // Start Web UI
     let web_ui_handle = if !config.ui_addr.is_empty() {
         let addr = &config.ui_addr;
@@ -434,6 +436,96 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Advertises a headless run: the configured entities, with running state read
+/// from the live route registry rather than assumed.
+fn cli_status_lease(workspace_path: String, config: AppConfig) -> Option<StatusLease> {
+    let heartbeat_config = config.clone();
+    StatusLease::spawn(
+        InstanceKind::Cli,
+        env!("CARGO_PKG_VERSION"),
+        &workspace_path,
+        move || {
+            let config = heartbeat_config.clone();
+            async move {
+                let running = mq_bridge::list_routes();
+                let is_running = |name: &str| running.iter().any(|route| route == name);
+                StatusSnapshot {
+                    consumers: config
+                        .consumers
+                        .iter()
+                        .map(|consumer| {
+                            let id = consumer_runtime_key(consumer);
+                            let running = is_running(&id);
+                            StatusEntity {
+                                label: consumer.name.clone(),
+                                endpoint: endpoint_type_label(&consumer.endpoint.endpoint_type)
+                                    .to_string(),
+                                summary: StatusSummary {
+                                    running,
+                                    healthy: running,
+                                    ..Default::default()
+                                },
+                                id,
+                            }
+                        })
+                        .collect(),
+                    publishers: config
+                        .publishers
+                        .iter()
+                        .map(|publisher| StatusEntity {
+                            id: publisher.id.clone(),
+                            label: publisher.name.clone(),
+                            endpoint: endpoint_type_label(&publisher.endpoint.endpoint_type)
+                                .to_string(),
+                            summary: StatusSummary::default(),
+                        })
+                        .collect(),
+                    routes: running
+                        .iter()
+                        .map(|name| route_entity(name, &config))
+                        .collect(),
+                }
+            }
+        },
+    )
+}
+
+/// A running route as a linked input/output pair.
+fn route_entity(name: &str, config: &AppConfig) -> StatusRoute {
+    let summary = StatusSummary {
+        running: true,
+        healthy: true,
+        ..Default::default()
+    };
+    let (input, output) = config
+        .routes
+        .get(name)
+        .map(|route| {
+            (
+                endpoint_type_label(&route.route.input.endpoint_type),
+                endpoint_type_label(&route.route.output.endpoint_type),
+            )
+        })
+        .unwrap_or(("unknown", "unknown"));
+    StatusRoute {
+        id: name.to_string(),
+        label: name.to_string(),
+        input: StatusEntity {
+            id: format!("{name}:input"),
+            label: name.to_string(),
+            endpoint: input.to_string(),
+            summary: summary.clone(),
+        },
+        output: StatusEntity {
+            id: format!("{name}:output"),
+            label: name.to_string(),
+            endpoint: output.to_string(),
+            summary: summary.clone(),
+        },
+        summary,
+    }
+}
 /// Runs the `copy` subcommand: builds a single in-memory route from the `--from`
 /// and `--to` URIs and awaits its completion. With `--drain` the underlying route
 /// exits once the source is empty; otherwise it runs until Ctrl-C.
@@ -442,7 +534,8 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 
     let input = endpoint_from_uri(&args.from).context("invalid --from endpoint")?;
     let output = endpoint_from_uri(&args.to).context("invalid --to endpoint")?;
-
+    let input_endpoint_label = endpoint_type_label(&input.endpoint_type);
+    let output_endpoint_label = endpoint_type_label(&output.endpoint_type);
     let options = RouteOptions {
         concurrency: args.concurrency.unwrap_or(DEFAULT_CONCURRENCY),
         batch_size: args.batch_size.unwrap_or(DEFAULT_BATCH_SIZE),
@@ -451,10 +544,19 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     };
 
     let route = Route::new(input, output).with_options(options);
-    let handle = route
-        .run("copy")
-        .await
-        .context("failed to start copy route")?;
+    let run_id = format!("copy-{}", uuid::Uuid::new_v4());
+    let handle = Arc::new(
+        route
+            .run(&run_id)
+            .await
+            .context("failed to start copy route")?,
+    );
+    let copy_status = copy_status_lease(
+        run_id,
+        input_endpoint_label.to_string(),
+        output_endpoint_label.to_string(),
+        handle.clone(),
+    );
 
     info!(
         from = %args.from,
@@ -463,7 +565,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
         "copy route started"
     );
 
-    if args.drain {
+    let result = if args.drain {
         // One-shot: run until the source is drained, or abort on Ctrl-C.
         //
         // The route task ends on a permanent error just as it does on a real drain, so
@@ -492,7 +594,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             handle.stop().await;
         }
 
-        copy_result(outcome, handle.status().error)?;
+        copy_result(outcome, handle.status().error)
     } else {
         // Continuous bridge: run until Ctrl-C, then stop gracefully.
         tokio::signal::ctrl_c()
@@ -500,9 +602,60 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             .context("failed to listen for Ctrl+C")?;
         info!("Ctrl+C received; stopping copy");
         handle.stop().await;
-    }
+        Ok(())
+    };
 
-    Ok(())
+    drop(copy_status);
+
+    result
+}
+
+fn copy_status_lease(
+    run_id: String,
+    input_endpoint: String,
+    output_endpoint: String,
+    handle: Arc<mq_bridge::route::RouteHandle>,
+) -> Option<StatusLease> {
+    StatusLease::spawn(
+        InstanceKind::Cli,
+        env!("CARGO_PKG_VERSION"),
+        "copy",
+        move || {
+            let handle = Arc::clone(&handle);
+            let run_id = run_id.clone();
+            let input_endpoint = input_endpoint.clone();
+            let output_endpoint = output_endpoint.clone();
+            async move {
+                let status = handle.status();
+                let summary = StatusSummary {
+                    running: handle.outcome().is_none(),
+                    healthy: status.healthy,
+                    error: status.error.clone(),
+                    ..Default::default()
+                };
+                StatusSnapshot {
+                    routes: vec![StatusRoute {
+                        id: run_id.clone(),
+                        label: "copy".to_string(),
+                        input: StatusEntity {
+                            id: format!("{}:input", run_id),
+                            label: "copy".to_string(),
+                            endpoint: input_endpoint,
+                            summary: summary.clone(),
+                        },
+                        output: StatusEntity {
+                            id: format!("{}:output", run_id),
+                            label: "copy".to_string(),
+                            endpoint: output_endpoint,
+                            summary: summary.clone(),
+                        },
+                        summary,
+                    }],
+                    ..Default::default()
+                }
+            }
+        },
+    )
 }
 
 /// Maps a finished `copy --drain` route to the process result: a route killed by a
@@ -1074,6 +1227,12 @@ fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
     {
         return field_type(root, target);
     }
+    // A `serde_json::Value` field (e.g. `transform`'s `schema`) constrains
+    // nothing, so schemars renders it as the always-true schema. It takes whole
+    // JSON rather than a scalar, which is exactly the `Object` handling.
+    if is_unconstrained_schema(sub) {
+        return FieldType::Object;
+    }
     let has = |t: &str| match sub.get("type") {
         Some(serde_json::Value::String(s)) => s == t,
         Some(serde_json::Value::Array(a)) => a.iter().any(|x| x.as_str() == Some(t)),
@@ -1103,6 +1262,30 @@ fn field_type(root: &serde_json::Value, sub: &serde_json::Value) -> FieldType {
         }
     }
     FieldType::StringLike
+}
+
+/// Whether a subschema accepts any JSON at all, i.e. states no `type`, `$ref`,
+/// combinator or enumeration. Only annotations such as `description`/`default`
+/// may remain.
+fn is_unconstrained_schema(sub: &serde_json::Value) -> bool {
+    match sub {
+        serde_json::Value::Bool(accepts_anything) => *accepts_anything,
+        serde_json::Value::Object(obj) => !obj.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "type"
+                    | "$ref"
+                    | "allOf"
+                    | "anyOf"
+                    | "oneOf"
+                    | "enum"
+                    | "const"
+                    | "properties"
+                    | "items"
+            )
+        }),
+        _ => false,
+    }
 }
 
 /// Whether a query-param value is written as a JSON object or array literal.
@@ -1221,6 +1404,52 @@ async fn platform_specific_shutdown() {
     #[cfg(not(unix))]
     // On non-unix, ctrl_c is the primary mechanism. This future never completes.
     std::future::pending::<()>().await
+}
+
+#[cfg(test)]
+mod report_to_ui_flag_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn reporting_enabled(argv: &[&str]) -> bool {
+        let args = Args::try_parse_from(argv).expect("arguments should parse");
+        let Some(Command::Mcp(mcp)) = args.command else {
+            panic!("expected the mcp subcommand")
+        };
+        mcp.report_to_ui && !mcp.no_report_to_ui
+    }
+
+    // Older `mcp install` runs baked `--report-to-ui` into client configs while
+    // reporting was still opt-in. Those configs must keep working, so the bare
+    // flag asks for what is now the default rather than inverting it.
+    #[test]
+    fn the_bare_legacy_flag_is_a_no_op() {
+        assert!(reporting_enabled(&["mq-bridge-app", "mcp"]));
+        assert!(reporting_enabled(&[
+            "mq-bridge-app",
+            "mcp",
+            "--report-to-ui"
+        ]));
+        assert!(reporting_enabled(&[
+            "mq-bridge-app",
+            "mcp",
+            "--report-to-ui=true"
+        ]));
+    }
+
+    #[test]
+    fn both_disable_spellings_turn_reporting_off() {
+        assert!(!reporting_enabled(&[
+            "mq-bridge-app",
+            "mcp",
+            "--report-to-ui=false"
+        ]));
+        assert!(!reporting_enabled(&[
+            "mq-bridge-app",
+            "mcp",
+            "--no-report-to-ui"
+        ]));
+    }
 }
 
 #[cfg(test)]
@@ -1423,6 +1652,12 @@ mod uri_tests {
         assert_eq!(cfg["delete"], true);
     }
 
+    #[test]
+    fn file_idempotency_is_a_scalar_flag() {
+        let cfg = config("file:///var/lib/mqb/parts?idempotency=true", "file");
+        assert_eq!(cfg["idempotency"], true);
+    }
+
     // Rejecting unrecognised params on the endpoints that have no driver options
     // only works if every documented param really is a config field. These are the
     // example URIs from README.md, dev/docs/ and benches/etl/.
@@ -1592,6 +1827,25 @@ mod uri_tests {
         assert_eq!(wj["required"], serde_json::json!(["a", "b"]));
     }
 
+    // `transform`'s `schema` is an untyped `serde_json::Value`, so it must still
+    // be read as a JSON literal rather than handed through as a string (which
+    // `transform` rejects with "schema must be a JSON object").
+    #[test]
+    fn transform_schema_param_is_a_json_literal() {
+        let schema = r#"{"type":"object","properties":{"qty":{"type":"number"}}}"#;
+        let mut spec = String::from("null:|transform?");
+        let mut q = url::form_urlencoded::Serializer::new(String::new());
+        q.append_pair("schema", schema);
+        spec.push_str(&q.finish());
+
+        let ep = endpoint_from_uri(&spec).expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(
+            v["middlewares"][0]["transform"]["schema"],
+            serde_json::from_str::<serde_json::Value>(schema).unwrap()
+        );
+    }
+
     // `dlq`'s `endpoint` param is itself an endpoint URI, parsed recursively.
     #[test]
     fn dlq_endpoint_param_is_a_nested_uri() {
@@ -1622,6 +1876,15 @@ mod uri_tests {
         let cfg = config("kafka://broker:9092?topic=orders", "kafka");
         assert_eq!(cfg["url"], "broker:9092");
         assert_eq!(cfg["topic"], "orders");
+    }
+
+    #[test]
+    fn kafka_source_metadata_is_a_scalar_flag() {
+        let cfg = config(
+            "kafka://broker:9092?topic=orders&source_metadata=true",
+            "kafka",
+        );
+        assert_eq!(cfg["source_metadata"], true);
     }
 
     // `mqtt://` is rewritten to `tcp://` (what rumqtt expects); `mqtts://`
@@ -1686,6 +1949,12 @@ mod uri_tests {
         assert_eq!(config("gs://b/p", "object_store")["url"], "gs://b/p");
         assert_eq!(config("az://b/p", "object_store")["url"], "az://b/p");
         assert_eq!(config("gcs://b/p", "object_store")["url"], "gs://b/p");
+    }
+
+    #[test]
+    fn object_store_idempotency_is_a_scalar_flag() {
+        let cfg = config("s3://my-bucket/events?idempotency=true", "object_store");
+        assert_eq!(cfg["idempotency"], true);
     }
 
     // `ws://`/`wss://` pass through unchanged.

@@ -9,8 +9,8 @@
 
 use mq_bridge_app::mq_bridge::models::{
     AmqpConfig, AwsConfig, ClickHouseConfig, FileConfig, GrpcConfig, HttpConfig, IbmMqConfig,
-    KafkaConfig, MongoDbConfig, MqttConfig, NatsConfig, PostgresCdcConfig, RedisStreamsConfig,
-    SqlxConfig, WebSocketConfig, ZeroMqConfig,
+    KafkaConfig, MongoDbConfig, MqttConfig, NatsConfig, ObjectStoreConfig, PostgresCdcConfig,
+    RedisStreamsConfig, SqlxConfig, WebSocketConfig, ZeroMqConfig,
 };
 use schemars::Schema;
 use serde_json::Value;
@@ -107,6 +107,12 @@ fn main() -> std::io::Result<()> {
             title: "File (CSV / JSON / JSONL)",
             schemes: &["file"],
             schema: schemars::schema_for!(FileConfig),
+        },
+        Connector {
+            slug: "object-store",
+            title: "Cloud Object Storage",
+            schemes: &["s3", "s3a", "gs", "gcs", "az", "azure", "abfs", "abfss"],
+            schema: schemars::schema_for!(ObjectStoreConfig),
         },
         Connector {
             slug: "nats",

@@ -110,7 +110,17 @@ Use Postman/Bruno when your main job is crafting and sharing API requests; use `
 
 A CSV → JSONL conversion hit **1,133,786 rows/s**; the same job **through an MCP tool call** ran at **1,176,489 rows/s** while costing an agent a *flat* ~381 tokens regardless of row count, because the rows never enter the model's context.
 
+On a Kafka → file relay using mq-bridge-app's default file format and no transform,
+the same engine was up to **65% faster than Sea Streamer**; the native file-format caveats are detailed in the linked benchmark documentation.
+
 → Full numbers, methodology, and knobs: [Performance tuning](https://marcomq.github.io/mq-bridge-app/operations/tuning.html) and [`benches/etl/README.md`](benches/etl/README.md).
+
+## Test on nats / kafka / postgres ....
+
+For testing, [docker-compose files](https://github.com/marcomq/mq-bridge/tree/main/tests/integration/docker-compose) are available for supported backends:
+```bash
+docker-compose -f https://raw.githubusercontent.com/marcomq/mq-bridge/main/tests/integration/docker-compose/postgres.yml up
+```
 
 ## How it's built
 

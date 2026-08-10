@@ -26,6 +26,7 @@ Query parameters recognised as config fields for this connector. The object-type
 | `request_reply` | boolean | no | `false` | (Publisher only) If true, the publisher will wait for a response in a dedicated collection. Defaults to false. |
 | `request_timeout_ms` | integer | no | — | (Publisher only) Timeout for request-reply operations in milliseconds. Defaults to 30000ms. |
 | `shared` | boolean | no | `true` | Share one MongoDB client per connection (default: true); false forces a dedicated client. |
+| `source_metadata` | boolean | no | `false` | (Consumer only, `capture_new`/`capture_all`) Include authoritative `mqb.src.mongodb_*` source positions. Defaults to false. |
 | `tls` | object | no | [see below](#tls) | TLS configuration. |
 | `ttl_seconds` | integer | no | — | (Publisher only) TTL in seconds for documents created by the publisher. If set, a TTL index is created. |
 | `url` | string | yes | — | MongoDB connection string URI. Can contain a comma-separated list of hosts for a replica set. If it contains userinfo, it will be treated as a secret. Credentials provided via the separate `username` and `password` fields take precedence over any credentials embedded in the URL. |

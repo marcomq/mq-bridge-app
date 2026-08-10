@@ -16,6 +16,7 @@ Query parameters recognised as config fields for this connector. The object-type
 | `password` | string | no | — | Optional password for SASL authentication. |
 | `producer_options` | array of array of any | no | `null` | (Publisher only) Additional librdkafka producer configuration options (key-value pairs). |
 | `shared` | boolean | no | `true` | (Publisher only) Share one producer per connection (default: true); false gives a dedicated producer. |
+| `source_metadata` | boolean | no | `false` | (Consumer only) Include authoritative `mqb.src.kafka_*` source positions. Defaults to false. |
 | `tls` | object | no | [see below](#tls) | TLS configuration. |
 | `topic` | string | no | — | The Kafka topic to produce to or consume from. |
 | `url` | string | yes | — | Comma-separated list of Kafka broker URLs. If it contains userinfo, it will be treated as a secret. |

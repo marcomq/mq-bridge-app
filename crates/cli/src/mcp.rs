@@ -14,16 +14,17 @@ use std::time::Duration;
 
 use mq_bridge_app::mq_bridge::{
     CanonicalMessage, Handled, Publisher, Sent, SentBatch,
-    models::{Endpoint, EndpointType, MemoryConfig, Route},
+    models::{Endpoint, EndpointType, Route},
     route::{RouteHandle, RouteOutcome},
 };
 use mq_bridge_app::route_metrics::{
     CAPTURE_SOURCE_KEY, CAPTURE_TIME_KEY, MessageCapture, RouteMetrics, RouteTiming,
-    format_capture_time,
+    format_capture_time, is_redelivery,
 };
-use mq_bridge_app::ui_app::{
-    ConsumerStatusSnapshot, EndpointStatusSnapshot, McpStatusReport, RouteOutcomeSnapshot,
+use mq_bridge_app::status_registry::{
+    InstanceKind, StatusEntity, StatusLease, StatusRoute, StatusSnapshot, StatusSummary,
 };
+use mq_bridge_app::ui_app::{ConsumerStatusSnapshot, EndpointStatusSnapshot, RouteOutcomeSnapshot};
 use rmcp::schemars;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -193,7 +194,7 @@ struct RouteStatusArgs {
 /// The MCP server. Holds the routes it has started so it can report and stop them.
 #[derive(Clone)]
 pub struct BridgeMcp {
-    routes: Arc<Mutex<HashMap<String, RouteHandle>>>,
+    routes: Arc<Mutex<HashMap<String, RunningRoute>>>,
     /// Names that are being started but have no handle yet. A name is reserved
     /// here before the route runs, so two concurrent starts can never both bring
     /// up a route that consumes the same source. Always locked *while holding
@@ -350,13 +351,34 @@ fn describe_sent_batch(sent: SentBatch, count: usize) -> (serde_json::Value, boo
     }
 }
 
+/// A route started via this server. The connector types of its endpoints are
+/// kept alongside the handle so status can label the rows it contributes; only
+/// the type labels are kept, never the endpoint config.
+pub(crate) struct RunningRoute {
+    handle: RouteHandle,
+    input: String,
+    output: String,
+}
+
 /// Shared map of routes started via this server, keyed by route name.
-type RouteMap = Arc<Mutex<HashMap<String, RouteHandle>>>;
+type RouteMap = Arc<Mutex<HashMap<String, RunningRoute>>>;
 
 /// Publish targets used via this server, keyed by name, holding the connector
 /// type. Only the type is kept — never the endpoint config, which carries URLs
 /// and credentials.
 type PublisherMap = Arc<Mutex<HashMap<String, String>>>;
+
+#[derive(Default)]
+struct McpStatusSnapshot {
+    routes: HashMap<String, McpRouteStatus>,
+    publishers: HashMap<String, ConsumerStatusSnapshot>,
+}
+
+struct McpRouteStatus {
+    snapshot: ConsumerStatusSnapshot,
+    input: String,
+    output: String,
+}
 
 /// The connector type of an endpoint, e.g. `"kafka"`, with no config attached.
 ///
@@ -443,23 +465,28 @@ impl BridgeMcp {
 
     /// The current status of every route and publisher, in the shape the UI
     /// expects. Used by the reporting task.
-    pub async fn status_report(&self) -> McpStatusReport {
+    async fn status_report(&self) -> McpStatusSnapshot {
         let mut routes = HashMap::new();
-        for (name, handle) in self.routes.lock().await.iter() {
+        for (name, route) in self.routes.lock().await.iter() {
+            let handle = &route.handle;
             let status = handle.status();
             routes.insert(
                 name.clone(),
-                report_snapshot(
-                    name,
-                    status.healthy,
-                    status.error.clone(),
-                    // Unknown completion reads as "still running": a route we
-                    // still hold a handle for was never stopped from here.
-                    !route_finished(handle).unwrap_or(false),
-                    route_outcome(handle).map(RouteOutcomeSnapshot::from),
-                    self.metrics.sequence(name).await,
-                    self.metrics.throughput(name).await,
-                ),
+                McpRouteStatus {
+                    snapshot: report_snapshot(
+                        name,
+                        status.healthy,
+                        status.error.clone(),
+                        // Unknown completion reads as "still running": a route we
+                        // still hold a handle for was never stopped from here.
+                        !route_finished(handle).unwrap_or(false),
+                        route_outcome(handle).map(RouteOutcomeSnapshot::from),
+                        self.metrics.sequence(name).await,
+                        self.metrics.throughput(name).await,
+                    ),
+                    input: route.input.clone(),
+                    output: route.output.clone(),
+                },
             );
         }
 
@@ -481,7 +508,49 @@ impl BridgeMcp {
             );
         }
 
-        McpStatusReport { routes, publishers }
+        McpStatusSnapshot { routes, publishers }
+    }
+
+    /// The same status in registry terms: each route contributes a consumer row
+    /// for its input and a publisher row for its output.
+    async fn status_snapshot(&self) -> StatusSnapshot {
+        let report = self.status_report().await;
+        let publisher_endpoints = self.publishers.lock().await.clone();
+        let mut consumers: Vec<StatusEntity> = report
+            .routes
+            .iter()
+            .map(|(name, route)| status_entity(name, &route.input, &route.snapshot))
+            .collect();
+        let mut publishers: Vec<StatusEntity> = report
+            .publishers
+            .iter()
+            .filter_map(|(name, snapshot)| {
+                publisher_endpoints
+                    .get(name)
+                    .map(|endpoint| status_entity(name, endpoint, snapshot))
+            })
+            .collect();
+        let mut routes: Vec<StatusRoute> = report
+            .routes
+            .iter()
+            .map(|(name, route)| StatusRoute {
+                id: name.clone(),
+                label: name.clone(),
+                input: status_entity(&format!("{name}:input"), &route.input, &route.snapshot),
+                output: status_entity(&format!("{name}:output"), &route.output, &route.snapshot),
+                summary: StatusSummary::from(&route.snapshot),
+            })
+            .collect();
+        // The maps above iterate in hash order, so sort: a peer's rows must not
+        // reshuffle on every heartbeat.
+        consumers.sort_by(|left, right| left.id.cmp(&right.id));
+        publishers.sort_by(|left, right| left.id.cmp(&right.id));
+        routes.sort_by(|left, right| left.id.cmp(&right.id));
+        StatusSnapshot {
+            consumers,
+            publishers,
+            routes,
+        }
     }
 
     #[tool(
@@ -623,8 +692,12 @@ impl BridgeMcp {
 
         // Wrap the route in the same counting/capturing handler the web UI puts on
         // its consumer routes, so `route_status` can report a live message rate.
-        // The handler forwards every message unchanged unless the sink is `null`.
+        // The handler forwards every message unchanged unless the sink is `null`,
+        // and counts each one once — a `retry` redelivery re-enters the handler
+        // but is not a new message.
         let publishes = !matches!(route.output.endpoint_type, EndpointType::Null);
+        let input_label = endpoint_type_label(&route.input.endpoint_type);
+        let output_label = endpoint_type_label(&route.output.endpoint_type);
         let counter = self.metrics.counter_for(&name).await;
         let capture = (capture_last > 0)
             .then(|| MessageCapture::with_capacity(&capture_topic(&name), capture_last));
@@ -635,7 +708,9 @@ impl BridgeMcp {
             let capture = capture.clone();
             let source_key = source_key.clone();
             async move {
-                counter.fetch_add(1, Ordering::Relaxed);
+                if !is_redelivery(&msg) {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
                 if let Some(capture) = capture {
                     capture.push(&source_key, msg.clone());
                 }
@@ -674,7 +749,14 @@ impl BridgeMcp {
         // the name is never momentarily free while the route is live.
         let mut routes = self.routes.lock().await;
         self.starting.lock().await.remove(&name);
-        routes.insert(name.clone(), handle);
+        routes.insert(
+            name.clone(),
+            RunningRoute {
+                handle,
+                input: input_label,
+                output: output_label,
+            },
+        );
 
         Ok(ok_json(serde_json::json!({
             "route": name,
@@ -730,12 +812,12 @@ impl BridgeMcp {
         match args.name {
             Some(name) => {
                 let routes = self.routes.lock().await;
-                let Some(handle) = routes.get(&name) else {
+                let Some(route) = routes.get(&name) else {
                     return Err(invalid(format!("no route named '{name}'")));
                 };
                 let entry = route_entry_json(
                     &name,
-                    handle,
+                    &route.handle,
                     self.metrics.sequence(&name).await,
                     self.metrics.throughput(&name).await,
                     self.metrics.timing(&name).await,
@@ -781,17 +863,18 @@ impl BridgeMcp {
         let (outcome, error) = loop {
             {
                 let routes = self.routes.lock().await;
-                let Some(handle) = routes.get(&args.name) else {
+                let Some(route) = routes.get(&args.name) else {
                     return Err(invalid(format!("no route named '{}'", args.name)));
                 };
-                if let Some(outcome) = handle.outcome() {
-                    break (Some(outcome), handle.status().error);
+                if let Some(outcome) = route.handle.outcome() {
+                    break (Some(outcome), route.handle.status().error);
                 }
             }
             if tokio::time::Instant::now() >= deadline {
                 break (None, None);
             }
-            tokio::time::sleep(WAIT_POLL_INTERVAL.min(deadline - tokio::time::Instant::now())).await;
+            tokio::time::sleep(WAIT_POLL_INTERVAL.min(deadline - tokio::time::Instant::now()))
+                .await;
         };
 
         let timing = self.metrics.timing(&args.name).await;
@@ -845,10 +928,10 @@ impl BridgeMcp {
         &self,
         Parameters(args): Parameters<RouteNameArg>,
     ) -> Result<CallToolResult, McpError> {
-        let handle = self.routes.lock().await.remove(&args.name);
-        match handle {
-            Some(handle) => {
-                handle.stop().await;
+        let route = self.routes.lock().await.remove(&args.name);
+        match route {
+            Some(route) => {
+                route.handle.stop().await;
                 let messages = self.metrics.sequence(&args.name).await;
                 // Read the timing before forgetting the route: this is the last
                 // chance to report what it achieved.
@@ -878,10 +961,10 @@ impl BridgeMcp {
     async fn all_routes_json(&self) -> Vec<serde_json::Value> {
         let routes = self.routes.lock().await;
         let mut entries: Vec<serde_json::Value> = Vec::with_capacity(routes.len());
-        for (name, handle) in routes.iter() {
+        for (name, route) in routes.iter() {
             entries.push(route_entry_json(
                 name,
-                handle,
+                &route.handle,
                 self.metrics.sequence(name).await,
                 self.metrics.throughput(name).await,
                 self.metrics.timing(name).await,
@@ -942,30 +1025,33 @@ const MAX_WAIT_TIMEOUT_MS: u64 = 18_000_000;
 /// not to perturb the run it is observing.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// How often the server reports its routes and publishers to a local UI.
-const REPORT_INTERVAL: Duration = Duration::from_secs(2);
-
-/// How long one status report may block in `send` before it is abandoned.
-///
-/// Status is a periodic snapshot, so a report that cannot be delivered promptly
-/// is worth less than the next one; bounding the wait keeps the reporter alive.
-const REPORT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Entry point for the `mcp` subcommand.
 ///
-/// `report_to_ui` is the opt-in for telling a local UI what this server is
-/// doing; `ui_status_ipc_url` addresses that UI's status socket. Without the
-/// flag nothing is ever sent.
+/// Status publication is on by default. The legacy flag is retained as a
+/// disable switch for clients that need a quiet process.
 pub async fn run(
     transport: String,
     bind: Option<String>,
     report_to_ui: bool,
-    ui_status_ipc_url: Option<String>,
+    workspace_path: String,
 ) -> anyhow::Result<()> {
     let server = BridgeMcp::new();
-    if report_to_ui {
-        spawn_ui_reporter(server.clone(), ui_status_ipc_url);
-    }
+    // Held for the lifetime of the transport; dropping it removes the lease,
+    // including on the `bail!` below.
+    let _lease = report_to_ui
+        .then(|| {
+            let server = server.clone();
+            StatusLease::spawn(
+                InstanceKind::Mcp,
+                env!("CARGO_PKG_VERSION"),
+                &workspace_path,
+                move || {
+                    let server = server.clone();
+                    async move { server.status_snapshot().await }
+                },
+            )
+        })
+        .flatten();
 
     match transport.as_str() {
         "stdio" => run_stdio(server).await,
@@ -974,86 +1060,15 @@ pub async fn run(
     }
 }
 
-/// Starts periodic status reporting to a local UI over its status IPC socket.
-///
-/// A local socket rather than a TCP port: it is the only channel that reaches
-/// the desktop app (which binds no HTTP listener), and its `0600` permissions
-/// confine reporting to this user's own UI — a remote UI cannot be targeted at
-/// all. If the socket address is unknown (no readable config), nothing is sent.
-fn spawn_ui_reporter(server: BridgeMcp, ui_status_ipc_url: Option<String>) {
-    let Some(url) = ui_status_ipc_url else {
-        info!("--report-to-ui was set, but no UI address is configured; not reporting");
-        return;
-    };
-
-    info!("reporting MCP status to {url}");
-
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(REPORT_INTERVAL);
-        let mut publisher: Option<Publisher> = None;
-
-        loop {
-            interval.tick().await;
-
-            // Built lazily and retried, so starting the MCP before the UI works.
-            if publisher.is_none() {
-                let endpoint = Endpoint::new(EndpointType::Memory(MemoryConfig::new_with_url(
-                    url.clone(),
-                    Some(1),
-                )));
-                match Publisher::new(endpoint).await {
-                    Ok(p) => publisher = Some(p),
-                    Err(e) => {
-                        tracing::debug!("MCP status reporting: publisher unavailable: {e}");
-                        continue;
-                    }
-                }
-            }
-
-            let report = server.status_report().await;
-            let payload = match serde_json::to_string(&report) {
-                Ok(payload) => payload,
-                Err(e) => {
-                    tracing::debug!("MCP status reporting: serialize failed: {e}");
-                    continue;
-                }
-            };
-
-            // The UI being down must never disturb the MCP server, so a failed
-            // report is dropped and the publisher rebuilt on the next tick.
-            //
-            // The timeout is what makes that true for a UI that is connected but
-            // not draining: the IPC socket buffer is small (8 KiB by default on
-            // macOS), so a report that outgrows it blocks in `send` until the
-            // consumer reads. Without a bound this task would park there forever
-            // and silently stop reporting — a stall is not an `Err`.
-            if let Some(p) = &publisher {
-                match tokio::time::timeout(
-                    REPORT_SEND_TIMEOUT,
-                    p.send(CanonicalMessage::from(payload)),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => {
-                        tracing::debug!("MCP status reporting: send failed: {e}");
-                        publisher = None;
-                    }
-                    Err(_) => {
-                        tracing::debug!(
-                            "MCP status reporting: send stalled for more than {}s; \
-                             dropping this report and reconnecting",
-                            REPORT_SEND_TIMEOUT.as_secs()
-                        );
-                        // Dropping the publisher closes the half-written socket,
-                        // so the next tick starts from a clean frame boundary
-                        // rather than resuming a partial one the UI can't decode.
-                        publisher = None;
-                    }
-                }
-            }
-        }
-    });
+/// `endpoint` is the connector type, never a name: `sanitize_endpoint` would let
+/// a route name through as if it were one. Callers with no type pass `"unknown"`.
+fn status_entity(name: &str, endpoint: &str, snapshot: &ConsumerStatusSnapshot) -> StatusEntity {
+    StatusEntity {
+        id: name.to_string(),
+        label: name.to_string(),
+        endpoint: endpoint.to_string(),
+        summary: StatusSummary::from(snapshot),
+    }
 }
 
 async fn run_stdio(server: BridgeMcp) -> anyhow::Result<()> {
@@ -1146,7 +1161,10 @@ mod tests {
         assert_eq!(resolve(Some(8), Some(2), DEFAULT_CONCURRENCY), 8);
         assert_eq!(resolve(None, Some(2), DEFAULT_CONCURRENCY), 2);
         assert_eq!(resolve(None, Some(1), DEFAULT_CONCURRENCY), 1);
-        assert_eq!(resolve(None, None, DEFAULT_CONCURRENCY), DEFAULT_CONCURRENCY);
+        assert_eq!(
+            resolve(None, None, DEFAULT_CONCURRENCY),
+            DEFAULT_CONCURRENCY
+        );
         assert_eq!(resolve(None, None, DEFAULT_BATCH_SIZE), DEFAULT_BATCH_SIZE);
     }
 }
@@ -1433,7 +1451,7 @@ mod tool_tests {
                     // Fault injection is the only permanent failure reachable
                     // without an external endpoint to break.
                     "output": {
-                        "null": null,
+                        "memory": { "topic": topic("mcp_fail_sink"), "capacity": 1000 },
                         "middlewares": [{ "random_panic": { "mode": "json_format_error" } }],
                     },
                     "allow_fault_injection": true,
@@ -1564,12 +1582,15 @@ mod tool_tests {
             .routes
             .get("reported")
             .expect("the route is reported");
-        assert!(!route.running, "a drained route is not running");
-        assert_eq!(route.outcome, Some(RouteOutcomeSnapshot::Completed));
-        assert_eq!(route.message_sequence, 2);
-        assert_eq!(route.status.target, "reported");
+        assert!(!route.snapshot.running, "a drained route is not running");
+        assert_eq!(
+            route.snapshot.outcome,
+            Some(RouteOutcomeSnapshot::Completed)
+        );
+        assert_eq!(route.snapshot.message_sequence, 2);
+        assert_eq!(route.snapshot.status.target, "reported");
         assert!(
-            route.status.details.is_null(),
+            route.snapshot.status.details.is_null(),
             "config must not be reported"
         );
 

@@ -9,6 +9,7 @@ use mq_bridge_app::encrypted_config::{
     uses_encrypted_config_mode_label,
 };
 use mq_bridge_app::mq_bridge::{CanonicalMessage, Handled};
+use mq_bridge_app::status_registry::InstanceKind;
 use mq_bridge_app::ui_app::{
     ConfigRecoveryResetResponse, ConfigRecoveryStatusResponse, StorageSecurityInfoResponse, UiApp,
     UiAppRuntimeHooks, storage_security_for_cli,
@@ -45,6 +46,12 @@ static EPHEMERAL_MESSAGE_KEY: LazyLock<(String, String)> =
 #[derive(Clone)]
 struct DesktopState {
     app: UiApp,
+}
+
+impl Drop for DesktopState {
+    fn drop(&mut self) {
+        self.app.remove_status_registry_lease();
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -773,6 +780,13 @@ async fn get_runtime_status_request(
 }
 
 #[tauri::command]
+async fn get_peer_status_request(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BridgeResponse, String> {
+    dispatch_ui_request(state, "GET", "/peer-status", "", "").await
+}
+
+#[tauri::command]
 async fn get_metrics_request(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<BridgeResponse, String> {
@@ -817,6 +831,13 @@ async fn dispatch_ui_request(
     message
         .metadata
         .insert("http_path".into(), path.to_string());
+    // Tauri IPC is an in-process, same-user caller and is therefore trusted as
+    // the local loopback equivalent for the read-only peer registry endpoint.
+    if path.eq_ignore_ascii_case("/peer-status") {
+        message
+            .metadata
+            .insert("mqb_peer_loopback".into(), "true".into());
+    }
     if !query.is_empty() {
         message
             .metadata
@@ -948,6 +969,7 @@ fn delete_desktop_secrets_for_metadata(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(feature = "rustls-aws-lc")]
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tauri::Builder::default()
@@ -1036,12 +1058,13 @@ pub fn run() {
                 UiAppRuntimeHooks::default()
                     .with_storage_security_resolver(storage_security_resolver)
                     .with_storage_save_prepare(storage_save_prepare)
+                    .with_instance_kind(InstanceKind::Tauri)
                     .with_config_recovery(config_recovery)
                     .with_config_recovery_reset(Some(config_recovery_reset)),
             );
-            // The UI is served over Tauri IPC, so this socket is the only way a
-            // local MCP server can report its routes to the desktop app.
-            tauri::async_runtime::spawn(ui_app.clone().run_mcp_status_listener());
+            // `setup` runs outside any runtime context, so enter Tauri's before
+            // spawning the heartbeat task.
+            tauri::async_runtime::block_on(async { ui_app.spawn_status_registry_publisher() });
 
             app.manage(DesktopState { app: ui_app });
 
@@ -1061,10 +1084,15 @@ pub fn run() {
             get_messages_request,
             post_publish_request,
             get_runtime_status_request,
+            get_peer_status_request,
             get_metrics_request
         ])
-        .on_window_event(|_, event| {
+        .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                window
+                    .state::<DesktopState>()
+                    .app
+                    .remove_status_registry_lease();
                 tauri::async_runtime::spawn(async {
                     shutdown_routes().await;
                 });

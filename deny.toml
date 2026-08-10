@@ -1,0 +1,60 @@
+# Supply-chain policy for the distributed application.
+#
+# The workspace has three members (core, CLI, and desktop). CI runs cargo-deny
+# against all three roots with --all-features because the shipped full build
+# enables mq-bridge/full and therefore includes every transport dependency.
+
+[advisories]
+version = 2
+# Keep direct workspace maintenance findings actionable. cargo-audit reports
+# transitive maintenance findings too; SECURITY.md records that difference.
+unmaintained = "workspace"
+
+# Advisories are informational in CI because RustSec updates independently of
+# application changes. Every current exception has a reason here; licenses,
+# bans, and sources remain hard-gated.
+ignore = [
+    { id = "RUSTSEC-2026-0104", reason = "The current graph contains rustls-webpki 0.101.7 through the AWS SDK and 0.102.8 through rumqttc. The affected CRL parsing path is not configured by this application: AWS clients are outbound clients and the MQTT path does not supply CRLs. The other rustls-webpki instances in the graph are patched." },
+    { id = "RUSTSEC-2026-0049", reason = "The current graph contains rustls-webpki 0.102.8 through rumqttc and 0.101.7 through the AWS SDK. This finding requires CRL distribution-point processing, but neither the outbound AWS clients nor the MQTT path in this application supplies CRLs. The other rustls-webpki instances are patched." },
+    { id = "RUSTSEC-2026-0098", reason = "The rumqttc path uses patched rustls-webpki for certificate validation, but the shipped mq-bridge/full build also enables AWS, whose legacy rustls 0.21 connector uses rustls-webpki 0.101.7. The AWS path is reachable during ordinary certificate validation; exploitation still requires a name-constrained CA in the trust store to issue outside its constraints. This remains tracked pending the AWS SDK migration off rustls 0.21." },
+    { id = "RUSTSEC-2026-0099", reason = "The rumqttc path uses patched rustls-webpki for certificate validation, but the shipped mq-bridge/full build also enables AWS, whose legacy rustls 0.21 connector uses rustls-webpki 0.101.7. The AWS path is reachable during ordinary certificate validation; exploitation still requires a name-constrained CA in the trust store to issue a certificate asserting an out-of-scope wildcard. This remains tracked pending the AWS SDK migration off rustls 0.21." },
+]
+
+[licenses]
+version = 2
+# Derived from `cargo deny --all-features list` for this application tree.
+# Each listed license is present in the shipped Rust dependency graph; the
+# comments call out the representative crates that make the allowance needed.
+allow = [
+    "MIT",                             # broad tree; also direct app crates
+    "MIT-0",                           # aws-lc-sys, dunce
+    "Apache-2.0",                      # broad tree; also direct app crates
+    "Apache-2.0 WITH LLVM-exception",  # rustix, target-lexicon
+    "BSD-1-Clause",                    # fiat-crypto
+    "BSD-2-Clause",                    # lapin/amq-protocol, async-rs
+    "BSD-3-Clause",                    # tauri/GTK support and redis
+    "ISC",                             # rustls, ring, aws-lc-rs
+    "Zlib",                            # Tauri/objc2 and compression crates
+    "Unicode-3.0",                     # ICU data used by URL/desktop dependencies
+    "CDLA-Permissive-2.0",             # webpki-roots
+    "CC0-1.0",                         # dunce, tiny-keccak
+    "BSL-1.0",                         # ryu, whoami, xxhash-rust
+    "0BSD",                            # adler2
+    "Unlicense",                       # aho-corasick, memchr, win_uds
+    "MPL-2.0",                          # cssparser, selectors, dtoa-short, option-ext
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+# Multiple versions are expected across the broker, crypto, and desktop
+# stacks. Keep them visible without making unrelated upgrades block CI.
+multiple-versions = "warn"
+wildcards = "warn"
+allow = []
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

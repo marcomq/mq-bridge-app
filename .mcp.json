@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "mq-bridge": {
+    "mq-bridge-local": {
       "command": "./target/release/mq-bridge-app",
       "args": ["mcp", "--transport", "stdio"]
     }
