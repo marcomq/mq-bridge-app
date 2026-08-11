@@ -18,7 +18,7 @@
     "dev:backend": "node dev/scripts/dev-backend.mjs",
     "dev:ui": "vite --host 127.0.0.1 --port 39092",
     "typecheck": "tsc --noEmit --pretty false",
-    "check": "npm run check:ui-types && npm run typecheck",
+    "check": "npm run check:ui-types && npm run check:version && npm run typecheck",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:ui": "npm run build:ui && playwright test",
@@ -29,6 +29,8 @@
     "test": "npm run check && npm run test:unit && npm run test:ui",
     "generate:ui-types": "node dev/scripts/generate-ui-types.mjs",
     "check:ui-types": "node dev/scripts/generate-ui-types.mjs --check",
+    "sync:version": "node dev/scripts/sync-version.mjs",
+    "check:version": "node dev/scripts/sync-version.mjs --check",
     "update:ui-vendor": "npm update @awesome.me/webawesome split.js"
   },
   "devDependencies": {
