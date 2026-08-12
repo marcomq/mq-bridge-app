@@ -3814,7 +3814,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e9ec52138abedcc58dc17a7c6c0c00a2bdb4f3427c7f63fa97fd0d859155caf"
 dependencies = [
  "gtk-sys",
- "libloading",
+ "libloading 0.7.4",
  "once_cell",
 ]
 
@@ -3841,6 +3841,16 @@ checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
 dependencies = [
  "cfg-if",
  "winapi",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -4271,9 +4281,7 @@ dependencies = [
 
 [[package]]
 name = "mq-bridge"
-version = "0.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa0d3d322203de13fe5084597581a5985a509c399644e8a6c7d46de7368e03ec"
+version = "0.3.11"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4298,6 +4306,7 @@ dependencies = [
  "hyper-rustls 0.27.9",
  "hyper-util",
  "lapin",
+ "libloading 0.9.0",
  "libmqm-sys",
  "lz4_flex",
  "metrics",
@@ -4852,9 +4861,9 @@ dependencies = [
 
 [[package]]
 name = "omq-proto"
-version = "0.25.0"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "856d18f6b58f39153fcf0b574efe3f04362ff44d3a46829eb984c1f9ef2d121c"
+checksum = "b85c0ad52b171524e3ff1fda6cbd233313fcdda45a89f0f7bcd474175209af2b"
 dependencies = [
  "bytes",
  "patricia_tree",
@@ -4866,9 +4875,9 @@ dependencies = [
 
 [[package]]
 name = "omq-tokio"
-version = "0.20.3"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98aaa33702e7d723de268dd9fe725f93d469afef3f1bedb14cfa7f579f61a7b7"
+checksum = "7b3f7a414fff6f80839400b060e0581901969eda9f8815923912941083006625"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -9529,9 +9538,9 @@ dependencies = [
 
 [[package]]
 name = "yring"
-version = "0.3.12"
+version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "299bddd8a337c49d82ca6d7a505d6f4fa59786af2f1b241992463bdbe0575623"
+checksum = "25fd2678e7a7e5244d2d0afe64e560feb67f35fe7969dca075d2fea133025373"
 dependencies = [
  "loom",
 ]

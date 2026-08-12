@@ -68,8 +68,8 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Run cargo test
-        run: cargo test --all-targets
+      - name: Run Rust unit tests
+        run: cargo test --workspace --lib --bins
 
       - name: Run frontend unit tests
         run: npm run test:unit
@@ -89,6 +89,35 @@ jobs:
             test-results/
             playwright-report/
           if-no-files-found: ignore
+
+  rust-integration:
+    name: Rust integration (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: cli-copy
+            target: cli_copy_test
+          - suite: web-ui
+            target: web_ui_test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev pkg-config zlib1g-dev
+
+      - name: Run integration suite
+        run: cargo test -p mq-bridge-app --test ${{ matrix.target }}
 
   supply-chain:
     name: Supply Chain (${{ matrix.checks }})
