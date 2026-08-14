@@ -1583,6 +1583,13 @@ impl UiApp {
     ) -> std::result::Result<(), UpdateConfigError> {
         tracing::info!("Received new configuration via Web UI. Reloading...");
         new_config.migrate_legacy_routes();
+
+        // Ahead of the validation below: a consumer or route naming a plugin
+        // endpoint fails `check()` while the library is still unregistered.
+        // Re-loading an already-loaded plugin is a no-op, so this only does work
+        // for entries the user just added.
+        crate::plugins::load_plugins(&new_config.plugins)
+            .map_err(|error| UpdateConfigError::Validation(format!("{error:#}")))?;
         let consumers: Vec<crate::config::ConsumerConfig> = new_config
             .consumers
             .iter()

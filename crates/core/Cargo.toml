@@ -18,9 +18,12 @@ path = "src/lib.rs"
 [dependencies]
 # NOTE: this is a local path dep on the sibling ../mq-bridge checkout, so the
 # build only works with that checkout present. Switch to the crates.io line
-# below (or use `cargo --config patch`) before publishing.
-mq-bridge = { version = "0.3.10", features = ["schema"] }
-# mq-bridge = { path = "../../../mq-bridge", version = "0.3.10", features = ["schema"] } # keep for debugging / dev
+# above (or use `cargo --config patch`) before publishing — keep both lines on
+# the same version and feature list so swapping them changes nothing else.
+# `plugin` is not optional: native plugin loading is a runtime setting, so every
+# build must be able to honour a `plugins:` entry. It only adds `libloading`.
+# mq-bridge = { version = "0.4.0", features = ["schema", "plugin"] }
+mq-bridge = { path = "../../../mq-bridge", version = "0.4.0", features = ["schema", "plugin"] } # keep for debugging / dev
 
 anyhow = { workspace = true }
 hex = { workspace = true }

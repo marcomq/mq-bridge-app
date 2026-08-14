@@ -78,6 +78,7 @@ mq-bridge-app mcp install          # register with Claude Code / Claude Desktop 
 - **Multi-protocol bridging** — Kafka, IBM MQ, NATS, AMQP (RabbitMQ), MQTT, AWS SQS, gRPC, ZeroMQ, MongoDB, sqlx (MySQL/MariaDB/PostgreSQL), HTTP, and files. Act as an HTTP server *and* client, with full request-response support.
 - **Middleware chains** — retries, dead-letter queues, deduplication, rate limiting, buffering, transforms, weak-join correlation, and more, wrapping any endpoint.
 - **Built-in web UI** — Svelte-based management for publishers, consumers, routes, runtime status, presets, and imports; the same UI the CLI serves in a browser.
+- **Native plugins** — load an endpoint or middleware this binary never compiled (Pulsar, an in-house transport) from a shared library, via `plugins:` in the config or `--plugin <path>`, and use it by name in routes. Adding one to a running instance needs no restart and no special build: [Native plugins](https://marcomq.github.io/mq-bridge-app/extending/plugins.html).
 - **Observability** — structured JSON logging and a Prometheus metrics endpoint.
 - **Flexible configuration** — hierarchical files (YAML/JSON/TOML) plus environment variables, suited to Container/Kubernetes.
 - **Security & storage** — config security modes (plain / extracted secrets / encrypted config / persistent encrypted history), encryption at rest, and local-first operation.

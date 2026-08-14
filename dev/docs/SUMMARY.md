@@ -84,4 +84,5 @@
 # Extending
 - [Custom endpoints](extending/custom-endpoints.md)
 - [Custom middleware](extending/custom-middleware.md)
+- [Native plugins](extending/plugins.md)
 - [Contributing](extending/contributing.md)

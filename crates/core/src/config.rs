@@ -86,6 +86,10 @@ pub struct AppConfig {
     /// If it matches `ui_addr`, the standalone server is skipped as the UI handles it.
     #[serde(default)]
     pub metrics_addr: String,
+    /// Native plugin libraries to load before starting anything. Each provides
+    /// an endpoint (and possibly a middleware) usable by name in routes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub routes: HashMap<String, RouteConfig>,
     #[serde(default)]

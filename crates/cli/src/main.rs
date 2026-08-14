@@ -63,6 +63,14 @@ struct Args {
     #[arg(long)]
     config_str: Option<String>,
 
+    /// Path to a native plugin library to load before starting (repeatable).
+    ///
+    /// The plugin registers an endpoint — and possibly a middleware — under its
+    /// own name, usable in routes like any built-in one. Also loadable from the
+    /// config file's `plugins:` list, which applies without a restart.
+    #[arg(long = "plugin", value_name = "PATH", global = true)]
+    plugins: Vec<String>,
+
     /// Generate JSON schema to the specified path
     #[arg(long)]
     schema: Option<String>,
@@ -197,6 +205,14 @@ struct CopyArgs {
     batch_size: Option<usize>,
 }
 
+/// Loads `--plugin` libraries. Called per subcommand rather than once up front
+/// so it runs after that command installed its logging — the loader logs what
+/// it registered, and before a subscriber exists those lines go nowhere.
+fn load_cli_plugins(paths: &[String]) -> anyhow::Result<()> {
+    mq_bridge_app::plugins::load_plugins(paths)?;
+    Ok(())
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     // Initialize the default crypto provider for rustls (required for rustls 0.23.0+)
@@ -209,6 +225,7 @@ async fn main() -> anyhow::Result<()> {
     match args.command {
         Some(Command::Copy(copy_args)) => {
             init_copy_logging();
+            load_cli_plugins(&args.plugins)?;
             return run_copy(copy_args).await;
         }
         Some(Command::Mcp(mcp_args)) => {
@@ -235,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
 
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
             init_mcp_logging();
+            load_cli_plugins(&args.plugins)?;
             let workspace_path = config_file_path(args.config.clone());
             return mcp::run(
                 mcp_args.transport,
@@ -276,6 +294,10 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("Failed to load configuration")?;
     init_logging(&config);
+    load_cli_plugins(&args.plugins)?;
+    // Only the entries present at startup: `update_config` re-loads the list
+    // whenever the config is applied, so later additions need no restart.
+    mq_bridge_app::plugins::load_plugins(&config.plugins)?;
     println!(
         r#"
       ┌────── mq-bridge-app ──────┐

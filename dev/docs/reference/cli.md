@@ -28,6 +28,7 @@ mq-bridge-app                      # start empty, define config.yml in the UI
 | `--init-config-str <str>` | Initialize from an inline config string if the main config doesn't exist yet. |
 | `--config-str <str>` | Inline config that overrides the config file. |
 | `--schema <path>` | Write the JSON Schema for `AppConfig` (use `-` for stdout) and exit. |
+| `--plugin <path>` | Load a native endpoint/middleware library before starting. Repeatable, valid on every subcommand, and combines with `plugins:` in the config — see [Native plugins](../extending/plugins.md). |
 
 Config is hierarchical (files + environment variables) — see
 [Configuration grammar](../engine/configuration.md). In config mode the CLI also serves the browser UI
