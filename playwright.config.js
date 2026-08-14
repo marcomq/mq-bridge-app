@@ -18,6 +18,8 @@ module.exports = defineConfig({
       'echo \'ui_addr: "127.0.0.1:39091"\nlog_level: "info"\npublishers: []\nconsumers: []\nroutes: {}\' > /tmp/mqb-playwright-minimal.yml && cargo run -- --config /tmp/mqb-playwright-minimal.yml',
     url: "http://127.0.0.1:39091/health",
     reuseExistingServer: true,
-    timeout: 120_000,
+    // CI pre-builds the binary so this is a no-op link check; the generous
+    // budget is for cold local runs, where a full build takes ~10 min.
+    timeout: 900_000,
   },
 });

@@ -91,9 +91,14 @@ writer committed below that mark was dropped silently.
 ## ZeroMQ peers stopped understanding each other after upgrading
 
 0.4.0 changed the `zeromq` default `format` from `json` to `raw_framed`. A 0.4 peer and a 0.3
-peer no longer interoperate on the same socket unless one of them pins `format: json`. The
-symptom is a peer that receives frames but reads them as garbage, or a payload that arrives as
-JSON text instead of the decoded message.
+peer no longer interoperate on the same socket until they are pinned to the same format, and the
+fix belongs on the **0.4 peer**: set `format: json` there. Setting it on the 0.3 peer changes
+nothing — `json` is already its default, and the 0.4 peer stays on `raw_framed`. (Pinning both to
+`raw_framed` works too, since 0.3 also understands it.) The symptom is a peer that receives frames
+but reads them as garbage, or a payload that arrives as JSON text instead of the decoded message.
+
+`format` does not apply to REQ/REP replies: a REP peer always answers with a JSON array of
+canonical messages and a REQ publisher always decodes one, whatever `format` is set to.
 
 ## SQLx source: "reconnecting forever" or rejects the table
 

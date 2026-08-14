@@ -10,10 +10,14 @@ fn cli() -> Command {
 }
 
 fn copy(from: &str, to: &str) -> Output {
-    cli()
-        .args(["copy", "--from", from, "--to", to, "--drain"])
-        .output()
-        .expect("run CLI copy")
+    copy_with_options(from, to, &[])
+}
+
+fn copy_with_options(from: &str, to: &str, options: &[&str]) -> Output {
+    let mut command = cli();
+    command.args(["copy", "--from", from, "--to", to, "--drain"]);
+    command.args(options);
+    command.output().expect("run CLI copy")
 }
 
 fn assert_success(output: &Output, case: &str) {
@@ -21,6 +25,15 @@ fn assert_success(output: &Output, case: &str) {
         output.status.success(),
         "{case} failed: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_failure_contains(output: &Output, case: &str, expected: &str) {
+    assert!(!output.status.success(), "{case} unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(expected),
+        "{case} did not report {expected:?}: {stderr}"
     );
 }
 
@@ -114,24 +127,162 @@ fn copy_sends_file_payload_to_configured_http_method_and_path() {
 }
 
 #[test]
-fn copy_round_trips_payload_through_compression_middleware() {
+fn compression_middleware_algorithm_matrix_round_trips_payload() {
     let dir = TestDir::new();
-    let source = raw_file_uri(&dir, "compression-source.txt", b"middleware-round-trip");
-    let compressed = dir.path().join("compressed.messages");
-    let restored = dir.path().join("restored.txt");
-    let compressed_uri = format!(
-        "file://{}?format=normal|compression?algorithm=gzip",
-        compressed.display()
-    );
+    for algorithm in ["gzip", "lz4", "zstd"] {
+        let payload = format!("middleware-{algorithm}-round-trip");
+        let source = raw_file_uri(&dir, &format!("{algorithm}-source.txt"), payload.as_bytes());
+        let compressed = dir.path().join(format!("{algorithm}.messages"));
+        let restored = dir.path().join(format!("{algorithm}-restored.txt"));
+        let compressed_uri = format!(
+            "file://{}?format=normal|compression?algorithm={algorithm}",
+            compressed.display()
+        );
 
-    let write = copy(&source, &compressed_uri);
-    assert_success(&write, "compression copy");
+        let write = copy(&source, &compressed_uri);
+        assert_success(&write, &format!("{algorithm} compression"));
 
-    let restored_uri = format!("file://{}?format=raw", restored.display());
-    let read = copy(&compressed_uri, &restored_uri);
-    assert_success(&read, "decompression copy");
+        let restored_uri = format!("file://{}?format=raw", restored.display());
+        let read = copy(&compressed_uri, &restored_uri);
+        assert_success(&read, &format!("{algorithm} decompression"));
+        assert_eq!(
+            read_raw_output(&restored),
+            payload.as_bytes(),
+            "{algorithm}"
+        );
+    }
+}
 
-    assert_eq!(read_raw_output(&restored), b"middleware-round-trip");
+#[test]
+fn file_format_matrix_round_trips_json_payload() {
+    let dir = TestDir::new();
+    let expected = serde_json::json!({"city": "Berlin", "name": "Ada"});
+
+    for format in ["normal", "json", "text", "raw", "csv"] {
+        let source = raw_file_uri(
+            &dir,
+            &format!("{format}-source.json"),
+            br#"{"city":"Berlin","name":"Ada"}"#,
+        );
+        let encoded = dir.path().join(format!("{format}.messages"));
+        let restored = dir.path().join(format!("{format}-restored.json"));
+        let encoded_uri = format!("file://{}?format={format}", encoded.display());
+
+        let write = copy(&source, &encoded_uri);
+        assert_success(&write, &format!("{format} file write"));
+
+        let restored_uri = format!("file://{}?format=raw", restored.display());
+        let read = copy(&encoded_uri, &restored_uri);
+        assert_success(&read, &format!("{format} file read"));
+        let actual: serde_json::Value = serde_json::from_slice(&read_raw_output(&restored))
+            .unwrap_or_else(|error| panic!("{format} output was not JSON: {error}"));
+        assert_eq!(actual, expected, "{format}");
+    }
+}
+
+#[test]
+fn file_at_rest_configuration_matrix_round_trips_payload() {
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+    struct Case {
+        name: String,
+        compression: &'static str,
+        cipher: Option<&'static str>,
+    }
+
+    let mut cases = Vec::new();
+    for compression in ["none", "gzip", "lz4", "zstd"] {
+        for cipher in [None, Some("xchacha20poly1305"), Some("aes256gcm")] {
+            cases.push(Case {
+                name: format!("{compression}-{}", cipher.unwrap_or("plain")),
+                compression,
+                cipher,
+            });
+        }
+    }
+
+    let dir = TestDir::new();
+    for case in cases {
+        let payload = format!("at-rest-{}", case.name);
+        let source = raw_file_uri(
+            &dir,
+            &format!("{}-source.txt", case.name),
+            payload.as_bytes(),
+        );
+        let stored = dir.path().join(format!("{}.messages", case.name));
+        let restored = dir.path().join(format!("{}-restored.txt", case.name));
+        let encryption = case.cipher.map_or_else(String::new, |cipher| {
+            format!("&encryption=%7B%22cipher%22%3A%22{cipher}%22%2C%22key%22%3A%22{KEY}%22%7D")
+        });
+        let stored_uri = format!(
+            "file://{}?format=normal&compression={}{}",
+            stored.display(),
+            case.compression,
+            encryption
+        );
+
+        let write = copy(&source, &stored_uri);
+        assert_success(&write, &format!("{} at-rest write", case.name));
+        if case.cipher.is_some() {
+            assert!(
+                !std::fs::read(&stored)
+                    .expect("read encrypted at-rest payload")
+                    .windows(payload.len())
+                    .any(|window| window == payload.as_bytes()),
+                "{} leaked plaintext",
+                case.name
+            );
+        }
+
+        let restored_uri = format!("file://{}?format=raw", restored.display());
+        let read = copy(&stored_uri, &restored_uri);
+        assert_success(&read, &format!("{} at-rest read", case.name));
+        assert_eq!(
+            read_raw_output(&restored),
+            payload.as_bytes(),
+            "{}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn compression_and_encryption_middleware_composition_matrix_round_trips_payload() {
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let dir = TestDir::new();
+
+    for algorithm in ["gzip", "lz4", "zstd"] {
+        for cipher in ["xchacha20poly1305", "aes256gcm"] {
+            let name = format!("{algorithm}-{cipher}");
+            let payload = format!("composed-{name}");
+            let source = raw_file_uri(&dir, &format!("{name}-source.txt"), payload.as_bytes());
+            let stored = dir.path().join(format!("{name}.messages"));
+            let restored = dir.path().join(format!("{name}-restored.txt"));
+            let stored_base = format!("file://{}?format=normal", stored.display());
+            let write_uri = format!(
+                "{stored_base}|compression?algorithm={algorithm}|encryption?cipher={cipher}&key={KEY}"
+            );
+
+            let write = copy(&source, &write_uri);
+            assert_success(&write, &format!("{name} composed write"));
+            assert!(
+                !std::fs::read(&stored)
+                    .expect("read composed encrypted payload")
+                    .windows(payload.len())
+                    .any(|window| window == payload.as_bytes()),
+                "{name} leaked plaintext"
+            );
+
+            // Endpoint middleware order must be inverted when reading the stored payload.
+            let read_uri = format!(
+                "{stored_base}|encryption?cipher={cipher}&key={KEY}|compression?algorithm={algorithm}"
+            );
+            let restored_uri = format!("file://{}?format=raw", restored.display());
+            let read = copy(&read_uri, &restored_uri);
+            assert_success(&read, &format!("{name} composed read"));
+            assert_eq!(read_raw_output(&restored), payload.as_bytes(), "{name}");
+        }
+    }
 }
 
 #[test]
@@ -276,20 +427,64 @@ fn copy_round_trips_payload_through_encryption_middleware() {
 }
 
 #[test]
-fn transform_middleware_coerces_payload_through_the_cli() {
+fn transform_middleware_configuration_matrix_changes_payloads_through_the_cli() {
     let dir = TestDir::new();
-    let source = raw_file_uri(&dir, "transform-source.json", br#"{"count":"7"}"#);
-    let output_path = dir.path().join("transformed.json");
-    let middleware = concat!(
-        "|transform?schema=%7B%22type%22%3A%22object%22%2C%22properties%22%3A",
-        "%7B%22count%22%3A%7B%22type%22%3A%22integer%22%7D%7D%7D"
-    );
-    let from = format!("{source}{middleware}");
-    let to = format!("file://{}?format=raw", output_path.display());
 
+    let cases = [
+        (
+            "integer",
+            br#"{"value":"7"}"#.as_slice(),
+            "%7B%22type%22%3A%22object%22%2C%22properties%22%3A%7B%22value%22%3A%7B%22type%22%3A%22integer%22%7D%7D%7D",
+            serde_json::json!({"value": 7}),
+        ),
+        (
+            "boolean",
+            br#"{"value":"true"}"#.as_slice(),
+            "%7B%22type%22%3A%22object%22%2C%22properties%22%3A%7B%22value%22%3A%7B%22type%22%3A%22boolean%22%7D%7D%7D",
+            serde_json::json!({"value": true}),
+        ),
+        (
+            "number",
+            br#"{"value":"2.5"}"#.as_slice(),
+            "%7B%22type%22%3A%22object%22%2C%22properties%22%3A%7B%22value%22%3A%7B%22type%22%3A%22number%22%7D%7D%7D",
+            serde_json::json!({"value": 2.5}),
+        ),
+    ];
+
+    for (name, payload, schema, expected) in cases {
+        let source = raw_file_uri(&dir, &format!("transform-{name}.json"), payload);
+        let output_path = dir.path().join(format!("transformed-{name}.json"));
+        let from = format!("{source}|transform?schema={schema}");
+        let to = format!("file://{}?format=raw", output_path.display());
+
+        let result = copy(&from, &to);
+        assert_success(&result, &format!("{name} transform"));
+        let actual: serde_json::Value = serde_json::from_slice(&read_raw_output(output_path))
+            .unwrap_or_else(|error| panic!("{name} transform output was not JSON: {error}"));
+        assert_eq!(actual, expected, "{name}");
+    }
+
+    let csv_source = dir.path().join("transform-source.csv");
+    std::fs::write(&csv_source, b"id,active,name\n7,true,Ada\n").expect("seed CSV source");
+    let csv_schema = concat!(
+        "%7B%22type%22%3A%22object%22%2C%22properties%22%3A",
+        "%7B%22id%22%3A%7B%22type%22%3A%22integer%22%7D%2C",
+        "%22active%22%3A%7B%22type%22%3A%22boolean%22%7D%7D%7D"
+    );
+    let from = format!(
+        "file://{}?format=csv|transform?schema={csv_schema}",
+        csv_source.display()
+    );
+    let output_path = dir.path().join("csv-transformed.json");
+    let to = format!("file://{}?format=raw", output_path.display());
     let result = copy(&from, &to);
-    assert_success(&result, "transform copy");
-    assert_eq!(read_raw_output(output_path), br#"{"count":7}"#);
+    assert_success(&result, "CSV plus transform");
+    let actual: serde_json::Value = serde_json::from_slice(&read_raw_output(output_path))
+        .expect("CSV transform output is JSON");
+    assert_eq!(
+        actual,
+        serde_json::json!({"active": true, "id": 7, "name": "Ada"})
+    );
 }
 
 #[test]
@@ -333,4 +528,69 @@ fn local_endpoint_role_matrix_constructs_and_runs_real_routes() {
     let result = copy(&sink_source, &sink_uri);
     assert_success(&result, "file sink");
     assert_eq!(read_raw_output(sink_file), b"to-file");
+}
+
+#[test]
+fn route_option_matrix_runs_through_the_cli() {
+    let dir = TestDir::new();
+    let cases: &[(&str, &[&str])] = &[
+        ("smallest", &["--batch-size", "1", "--concurrency", "1"]),
+        ("uneven", &["--batch-size", "3", "--concurrency", "2"]),
+        ("large", &["--batch-size", "2048", "--concurrency", "8"]),
+    ];
+
+    for (name, options) in cases {
+        let source = raw_file_uri(&dir, &format!("route-options-{name}.txt"), b"route-options");
+        let result = copy_with_options(&source, "null:", options);
+        assert_success(&result, name);
+    }
+}
+
+#[test]
+fn invalid_cli_configuration_matrix_exits_nonzero_with_context() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "invalid-config-source.txt", b"payload");
+    let cases = [
+        (
+            "unsupported endpoint",
+            "unknown://source",
+            "null:",
+            "unsupported endpoint scheme",
+        ),
+        (
+            "unknown file option",
+            &format!("{source}&does_not_exist=true"),
+            "null:",
+            "unrecognised query param 'does_not_exist'",
+        ),
+        (
+            "unsupported middleware",
+            &format!("{source}|does_not_exist"),
+            "null:",
+            "unsupported middleware 'does_not_exist'",
+        ),
+        (
+            "invalid transform object",
+            &format!("{source}|transform?schema=not-json"),
+            "null:",
+            "expects a JSON literal",
+        ),
+        (
+            "invalid destination",
+            &source,
+            "file://?format=raw",
+            "must include a path",
+        ),
+    ];
+
+    for (name, from, to, expected) in cases {
+        let result = copy(from, to);
+        assert_failure_contains(&result, name, expected);
+    }
+
+    let missing_to = cli()
+        .args(["copy", "--from", "null:", "--drain"])
+        .output()
+        .expect("run CLI with missing --to");
+    assert_failure_contains(&missing_to, "missing --to", "--to");
 }

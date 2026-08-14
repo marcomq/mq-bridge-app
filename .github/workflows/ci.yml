@@ -77,6 +77,14 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
+      # Must match the `cargo run` in playwright.config.js webServer exactly
+      # (default-members = crates/cli). The earlier --workspace test build
+      # unifies features differently, so its artifacts are not reusable here —
+      # without this step the compile happens inside Playwright's startup
+      # timeout and the job fails before any test runs.
+      - name: Build app binary for UI tests
+        run: cargo build --bin mq-bridge-app
+
       - name: Run frontend UI tests
         run: npm run test:ui
 

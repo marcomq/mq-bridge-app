@@ -39,7 +39,6 @@ const patchedCargo = cargo.replace(
   /^(mq_bridge_app = \{ version = ")[^"]+(")/m,
   `$1${version}$2`,
 );
-update(cargoPath, cargo, patchedCargo);
 
 // Patched as text rather than re-serialised, so the hand-written formatting
 // survives. Every "version" in server.json is the app version, and the only
@@ -48,7 +47,6 @@ const serverRaw = readFileSync(serverPath, "utf8");
 const patchedServer = serverRaw
   .replace(/"version": "[^"]+"/g, `"version": "${version}"`)
   .replace(/("identifier": "[^"]*):[^":]*"/g, `$1:${version}"`);
-update(serverPath, serverRaw, patchedServer);
 
 const tauriRaw = readFileSync(tauriPath, "utf8");
 const tauri = JSON.parse(tauriRaw);
@@ -60,6 +58,21 @@ const patchedTauri = tauriRaw.replace(
   /^(\s*"version"\s*:\s*)"[^"]+"/m,
   `$1"${version}"`,
 );
+// The regex matches the first `"version"` line at any nesting depth, which is
+// only the root property while the file keeps its current shape. Re-parse to
+// prove the patch landed there before writing it.
+const repatchedTauri = JSON.parse(patchedTauri);
+if (repatchedTauri.version !== version) {
+  console.error(
+    `Patching crates/desktop/tauri.conf.json did not set the root version to ${version}`,
+  );
+  process.exit(1);
+}
+
+// Nothing is written until every file has parsed and validated, so a bad
+// manifest cannot leave the repo half-synced.
+update(cargoPath, cargo, patchedCargo);
+update(serverPath, serverRaw, patchedServer);
 update(tauriPath, tauriRaw, patchedTauri);
 
 if (drift.length === 0) {

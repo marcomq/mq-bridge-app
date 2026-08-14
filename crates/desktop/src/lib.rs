@@ -1023,6 +1023,13 @@ pub fn run() {
             );
             metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
+            // Plugin endpoints must be registered before the configured routes
+            // are deployed, or a route naming one fails to start. `UiApp` loads
+            // the same list again below, which is a no-op for an already loaded
+            // library.
+            mq_bridge_app::plugins::load_trusted_plugins(&config.plugins, &config.env_vars)
+                .context("Failed to load configured plugins")?;
+
             tauri::async_runtime::block_on(async {
                 deploy_routes(&mut config)
                     .await
