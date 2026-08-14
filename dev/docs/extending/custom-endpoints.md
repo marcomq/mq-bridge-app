@@ -28,8 +28,14 @@ engine's `MessageConsumer` / `MessagePublisher` traits (in `mq_bridge::traits`),
 your endpoint participates in batching, middleware, and ack/nack exactly like a
 built-in one.
 
+Registration is process-global and keyed by name: it must happen before any route that
+names it starts, and registering a name twice is an error rather than a silent
+replacement, so each factory needs its own name. Python and Node.js can register a
+factory directly, with the same semantics — no Rust required.
+
 ## See also
 
 - [`custom` (endpoint) reference](../engine/reference.md#custom-endpoint) — the authoritative field list.
-- [Learn the architecture → Extending mq-bridge](../engine/architecture.md#extending-mq-bridge) — the trait and registration mechanics.
+- [Writing endpoints & middleware](../engine/extending.md) — the trait, registration, and the Python/Node equivalents.
+- [Native plugins](plugins.md) — the same endpoint shipped as a loadable library instead.
 - [Custom middleware](custom-middleware.md) — the middleware equivalent.

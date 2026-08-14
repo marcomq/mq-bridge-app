@@ -32,8 +32,8 @@ mod mcp_install;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// App-level default batch size for headless routes (`copy`, MCP) when the caller
-/// does not specify one. The library's `RouteOptions::default()` stays at 1; this
-/// is the batteries-included value the app applies on top.
+/// does not specify one. The library's `RouteOptions::default()` is 512; this is the
+/// bulk-move value the app applies on top.
 pub(crate) const DEFAULT_BATCH_SIZE: usize = 1024;
 
 /// App-level default route concurrency for headless routes (`copy`, MCP) when the
@@ -715,10 +715,11 @@ fn copy_result(
 /// form wins if both are present); redis is excluded because a redis URL path is
 /// the database number, not the stream.
 ///
-/// MongoDB defaults to a non-destructive source here: when neither `consume` nor
+/// MongoDB is pinned to a non-destructive source here: when neither `consume` nor
 /// the deprecated `change_stream` is given, `consume` is set to `capture_all`
-/// (read existing documents, then watch) rather than the library's destructive
-/// queue-drain `consumer` default. Pass `?consume=consumer` to opt back in.
+/// (read existing documents, then watch), which needs a replica set. Pass
+/// `?consume=snapshot` for a one-shot read of a standalone mongod, or
+/// `?consume=consumer` for the destructive queue-drain mode.
 ///
 /// Escaped mode: pass the full connection string percent-encoded as `?url=...`
 /// to use it verbatim (e.g. `mongodb://_/?url=<encoded>&collection=orders`); its
@@ -1051,12 +1052,12 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
         }
     }
 
-    // Non-destructive default for MongoDB sources: the library defaults `consume`
-    // to the queue-drain `consumer` mode, which claims and *deletes* source
-    // documents. For the CLI/UI we default to `capture_all` (read existing docs,
-    // then watch) so pointing at an existing collection never mutates it. Only
-    // applied when the user gave neither `consume` nor the deprecated
-    // `change_stream`, so any explicit choice still wins.
+    // Non-destructive default for MongoDB sources: `capture_all` (read existing
+    // docs, then watch) so pointing at an existing collection never mutates it.
+    // This matches the library default since 0.4.0 and is pinned here so a future
+    // library change cannot make a CLI/UI source destructive. Only applied when the
+    // user gave neither `consume` nor the deprecated `change_stream`, so any
+    // explicit choice still wins.
     if tag == "mongodb" && !config.contains_key("consume") && !config.contains_key("change_stream")
     {
         config.insert(

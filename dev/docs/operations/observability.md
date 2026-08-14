@@ -40,6 +40,10 @@ Logs are structured JSON, suited to shipping into a log aggregator. Two things t
   [TLS & security hardening](../engine/configuration.md#tls--security-hardening) notes.
 - The MCP server's `stdio` transport owns **stdout** for the protocol, so its logs go to
   **stderr**. In HTTP transport this is not a concern.
+- **At startup each route reports its inferred delivery guarantee** — `effectively-once` or
+  `at-least-once`. It is read off the endpoint configuration, not enforced: the line tells you
+  whether the source's identity and the sink's write add up to an idempotent pipeline. See
+  [Delivery guarantees](../engine/delivery.md).
 
 ## Runtime route status
 

@@ -14,9 +14,10 @@ mdbook serve dev/docs --open     # live-reload preview
 ```
 
 `dev/docs/engine/` and `dev/docs/book/` are build artifacts (git-ignored). The engine
-reference (`REFERENCE.md`, `CONFIGURATION.md`, `ARCHITECTURE.md`) is vendored from the
-sibling `mq-bridge` engine repo by `sync-engine-docs.sh` — **never edit those copies
-here; edit the source in `mq-bridge` and re-run the script.**
+reference (`REFERENCE.md`, `CONFIGURATION.md`, `ARCHITECTURE.md`, `DELIVERY.md`,
+`EXTENDING.md`, `PLUGINS.md`) is vendored from `mq-bridge/docs/` in the sibling engine
+repo by `sync-engine-docs.sh` — **never edit those copies here; edit the source in
+`mq-bridge` and re-run the script.**
 
 ## Key entry points
 
@@ -58,7 +59,7 @@ dev/docs/
 ├── reference/              cli/mcp/bindings/endpoints (hand-written) +
 │   │                       per-connector URL params (generated — do not edit by hand)
 │   └── README.md postgres.md clickhouse.md ...
-├── engine/                 vendored from mq-bridge repo (git-ignored artifact)
+├── engine/                 vendored from mq-bridge/docs/ (git-ignored artifact)
 └── book/                   mdbook output (git-ignored)
 ```
 

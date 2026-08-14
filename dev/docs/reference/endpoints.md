@@ -40,7 +40,7 @@ workers). To get **Subscriber** (pub/sub) behaviour, per-backend config is requi
 | **Kafka** | Omit `group_id` | Emulated (Header) | Eventual (Skip Offset) |
 | **Memory** (in-process) | Set `subscribe_mode: true` | Emulated (Metadata) | **Yes** (Re-queue), by default **disabled** |
 | **Memory** (IPC: `ipc://`, `unix://`, `pipe://`) | Not supported | Not supported | **Yes** (Re-queue), by default **enabled**, consumer-local |
-| **MongoDB** | Set `consume: subscriber` | Emulated (Metadata) | **Yes** (Unlock) |
+| **MongoDB** | Set `consume: capture_new` (replica set) | Emulated (Metadata) | **Yes** (Unlock) |
 | **MQTT** | Set `clean_session: true` | Emulated (Property) | Eventual (Skip Ack) |
 | **NATS** | Set `subscriber_mode: true` | **Native** (Inbox) | **Yes** (JetStream Nak) |
 | **Postgres CDC** | N/A (streams committed changes) | No | **Yes** (confirmed LSN not advanced) |
@@ -71,10 +71,11 @@ Databases have no native pub/sub, so a database source is read one of two ways:
     resumes from the last acknowledged position — at-least-once. Enable with the
     `postgres-cdc` feature; requires `wal_level = logical` and a publication. See the
     [Postgres CDC → JSONL](../tutorials/postgres-cdc.md) tutorial.
-  - **MongoDB** — set `consume: capture_new` to watch an existing collection for changes from
-    now on, or `consume: capture_all` to read existing documents first and then keep capturing
-    (no gap, at-least-once). It emits `insert`/`update`/`replace`/`delete` tagged with
-    `mongodb.operation` and checkpoints under `cursor_id`. Change streams need a replica set.
+  - **MongoDB** — `consume: capture_all` (the default) reads existing documents first and then
+    keeps capturing (no gap, at-least-once); `consume: capture_new` watches an existing
+    collection for changes from now on. Both emit `insert`/`update`/`replace`/`delete` tagged
+    with `mongodb.operation` and checkpoint under `cursor_id`. Change streams need a replica
+    set; without one, use `consume: snapshot` for a one-shot read.
 - **Cursor polling** pages an existing table by a monotonic `cursor_column`
   (`WHERE col > $last ORDER BY col ASC`), persisting the last read value under `cursor_id`.
   Captures **appends only** — updates and deletes are not observed. Available on **SQLx**
@@ -92,18 +93,33 @@ Databases have no native pub/sub, so a database source is read one of two ways:
 
 ### MongoDB consume modes
 
-| `consume` | mechanism | modifies source | ends on drain | use for |
-| :--- | :--- | :--- | :--- | :--- |
-| `consumer` (default) | claim → lock → re-fetch → delete | **yes** | yes | work queues, competing readers |
-| `subscriber` | polls `seq > last_seq`, advancing a cursor | no | yes | ephemeral fan-out |
-| `capture_new` | change stream, new changes only | no | **no** | ongoing CDC |
-| `capture_all` | `_id` snapshot, then change stream | no | standalone only | bulk read / ETL |
+| `consume` | mechanism | modifies source | ends on drain | needs a replica set | use for |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `capture_all` (default) | `_id` snapshot, then change stream | no | yes — when the stream goes quiet | **yes** | bulk read / ETL |
+| `capture_new` | change stream, new changes only | no | no — continuous by nature | **yes** | ongoing CDC |
+| `snapshot` | pages the collection by `_id`, one shot | no | yes | no | reading a standalone `mongod` |
+| `consumer` | claim → lock → re-fetch → delete | **yes** | yes | no | work queues, competing readers |
 
-These are not interchangeable. The default `consumer` buys exclusivity via four round trips
-per batch; where you only need a single-reader bulk read or ETL pass, **use `capture_all`** —
-it is roughly 5x faster (500k docs, standalone MongoDB: `consumer` → `null` 23,667 rows/s vs.
-`capture_all` → jsonl 120,308 rows/s). Note `concurrency` does **not** speed up a MongoDB
-source; batches are fetched serially.
+These are not interchangeable. `consumer` buys exclusivity via four round trips per batch and
+**deletes what it reads**, so it is for work queues, not for reading a collection; where you
+need a single-reader bulk read or ETL pass, the default `capture_all` is roughly 5x faster
+(500k docs: `consumer` → `null` 23,667 rows/s vs. `capture_all` → jsonl 120,308 rows/s). Note
+`concurrency` does **not** speed up a MongoDB source; batches are fetched serially.
+
+Both `capture_*` modes read the oplog and therefore **require a replica set** — a single-node
+one is enough — and refuse to start without one. On a standalone `mongod`, use `snapshot` for a
+one-shot non-destructive read. `snapshot` delivers what exists when the run starts and is not a
+tail: it pages by `_id`, which is assigned client-side and so does not follow commit order, so
+it rejects `cursor_id` rather than resuming above a stored `_id` and silently skipping whatever
+a concurrent writer commits below that mark. Incremental reads need commit order — i.e. the
+oplog, i.e. a replica set.
+
+> **Removed in 0.4.0:** `consume: subscriber`. It polled `seq > last_seq` and advanced its
+> watermark to the highest seq it had seen, so a batch whose seq block was reserved first but
+> committed second was skipped permanently — silent loss, with no error and no gap in the
+> delivery count. Use `capture_new` for ephemeral fan-out (it now reads arbitrary collections,
+> not only documents written by the bridge's own publisher). The deprecated `change_stream:
+> true` boolean resolves to `capture_new`.
 
 ## Cloud object storage (S3 / GCS / Azure)
 

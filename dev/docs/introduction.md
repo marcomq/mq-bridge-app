@@ -43,9 +43,10 @@ route code should still be able to receive a batch, process it, publish it, and 
 
 - **Fast by default.** Every endpoint is optimized around batch-shaped APIs, and the headless
   surfaces ship tuned for throughput: the `copy` CLI and the MCP server default to
-  `batch_size: 1024` and `concurrency: 4`. The low-level library/config primitive defaults to
-  `batch_size: 1`, `concurrency: 1` (opt in per route) so embedded routes stay predictable
-  until you raise them — usually the first knob to reach for when throughput matters.
+  `batch_size: 1024` and `concurrency: 4`. The library/config primitive defaults to
+  `batch_size: 512`, `concurrency: 1`: batches fill opportunistically — a route takes whatever
+  is already queued rather than waiting — so throughput comes for free while parallelism stays
+  a deliberate per-route choice.
 - **Reliability is built in, not bolted on.** Retries, dead-letter queues, deduplication, rate
   limiting, and cookie/session persistence wrap any endpoint. Ack/nack behaviour and retry/DLQ
   handling were designed to work *with* batching, including commit sequencing for

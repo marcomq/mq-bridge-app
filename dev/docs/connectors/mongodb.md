@@ -20,7 +20,7 @@ mq-bridge-app copy --drain \
   --to 'mongodb://localhost?database=app&collection=customers'
 ```
 
-**Non-destructive read of an existing collection (default source behavior):**
+**Non-destructive read of an existing collection (default source behavior — replica set required):**
 
 ```bash
 mq-bridge-app copy --drain \
@@ -30,7 +30,21 @@ mq-bridge-app copy --drain \
 
 By default (no `consume` given), a MongoDB *source* reads existing documents
 then watches for changes (`capture_all`) — pointing at a collection never
-claims/deletes its documents, unlike the library's own `consumer` default.
+claims or deletes its documents. This mode reads the oplog, so it **requires a
+replica set** (a single-node one is enough) and refuses to start without one.
+
+**Read a standalone `mongod` (no replica set), one-shot:**
+
+```bash
+mq-bridge-app copy --drain \
+  --from 'mongodb://localhost?database=app&collection=customers&consume=snapshot' \
+  --to file:///data/customers.jsonl
+```
+
+`snapshot` pages the collection by `_id` and ends the route on drain. It is
+non-destructive and needs no replica set, but it is not a tail and not
+resumable — it delivers what exists when the run starts, and rejects
+`cursor_id`.
 
 **Watch for new documents only (change stream), continuous:**
 
@@ -46,7 +60,7 @@ mq-bridge-app copy \
 |---|---|
 | `database` | **Required.** |
 | `collection` | Collection name. |
-| `consume` | `capture_all` (default via the CLI), `capture_new` (changes only), `consumer` (durable queue, destructive), or `subscriber` (ephemeral). |
+| `consume` | `capture_all` (default — snapshot then change stream, replica set required), `capture_new` (changes only, replica set required), `snapshot` (one-shot read, no replica set), or `consumer` (durable work queue — destructive). |
 | `checkpoint_store` | Where to persist the resume cursor for `capture_new`/`capture_all`. |
 | `username` / `password` | Take precedence over credentials embedded in `url`. |
 

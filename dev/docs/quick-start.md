@@ -88,7 +88,7 @@ Without `--drain`, `copy` runs as a continuous bridge until Ctrl-C — the
 right mode for message brokers (MQTT, Kafka, RabbitMQ) and CDC sources, which
 never "end". With `--drain`, `copy` exits once the source yields an empty
 batch — the right mode for finite sources (a file, or a full-table read from
-a database). `--concurrency` and `--batch_size` tune throughput on both
+a database). `--concurrency` and `--batch-size` tune throughput on both
 modes.
 
 ## Escape hatch: driver options and full connection strings

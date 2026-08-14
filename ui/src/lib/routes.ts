@@ -91,10 +91,10 @@ export function applyEndpointSchemaDefaults(routeSchema: RouteSchema): void {
   if (mongoDbConfigSchema?.properties?.format) {
     mongoDbConfigSchema.properties.format.default = "raw";
   }
-  // Non-destructive default: the library defaults `consume` to the queue-drain
-  // `consumer` mode, which claims and deletes source documents. In the UI we
-  // default to `capture_all` (read existing docs, then watch) so a MongoDB
-  // source never mutates the collection unless the user opts into a queue mode.
+  // Non-destructive default: `capture_all` (read existing docs, then watch) so a
+  // MongoDB source never mutates the collection unless the user opts into a queue
+  // mode. This matches the library default since 0.4.0 and is pinned here so a
+  // future library change cannot make a UI-built source destructive.
   if (mongoDbConfigSchema?.properties?.consume) {
     mongoDbConfigSchema.properties.consume.default = "capture_all";
   }

@@ -72,6 +72,25 @@ must be prefixed with the stream name**: `stream: "orders_stream"` needs a subje
 true`) — pass any placeholder string. See
 [NATS JetStream notes](../engine/configuration.md#nats-jetstream-notes).
 
+## MongoDB source: "capture_all needs a replica set"
+
+Both `capture_*` modes read the oplog, so they need a replica set — a single-node one is
+enough — and refuse to start without one rather than falling back. The removed fallback paged
+by `_id`, which only ever returns documents above its high-water mark, so anything a concurrent
+writer committed below that mark was dropped silently.
+
+- One-shot, non-destructive read of a standalone `mongod`: `consume: snapshot`.
+- Work queue (destructive, competing readers): `consume: consumer`.
+- Turning the standalone into a single-node replica set (`replSet` + `rs.initiate()`) restores
+  `capture_all`, and with it resumable reads.
+
+## ZeroMQ peers stopped understanding each other after upgrading
+
+0.4.0 changed the `zeromq` default `format` from `json` to `raw_framed`. A 0.4 peer and a 0.3
+peer no longer interoperate on the same socket unless one of them pins `format: json`. The
+symptom is a peer that receives frames but reads them as garbage, or a payload that arrives as
+JSON text instead of the decoded message.
+
 ## SQLx source: "reconnecting forever" or rejects the table
 
 An SQLx source with **no** `cursor_column` is a competing-consumers **work queue** and requires

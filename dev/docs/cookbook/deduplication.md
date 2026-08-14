@@ -74,4 +74,5 @@ INSERT INTO orders (id, body, lsn) VALUES (${payload:id}, ${payload:body}, ${met
 > `message_id`/middleware path for those rows.
 
 See the [Postgres CDC → JSONL](../tutorials/postgres-cdc.md) tutorial for the full CDC idempotency
-picture.
+picture, and [Delivery guarantees](../engine/delivery.md) for what identity each source provides
+and which sinks absorb a duplicate write.

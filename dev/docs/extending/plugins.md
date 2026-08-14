@@ -73,5 +73,4 @@ A plugin is native code loaded into this process, with the same privileges — i
 sandboxed. Treat the libraries you list exactly like any other native dependency, and
 note that anyone who can edit the config or reach the UI can name a library to load.
 
-Writing one is covered in
-[mq-bridge's PLUGINS.md](https://github.com/marcomq/mq-bridge/blob/main/docs/PLUGINS.md).
+Writing one is covered in [Writing a plugin](../engine/plugins.md).

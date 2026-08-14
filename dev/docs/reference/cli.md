@@ -61,7 +61,7 @@ mq-bridge-app copy \
 | `--batch-size <N>` | `1024` | Batch size. |
 
 > Note: `copy`'s defaults (`--concurrency 4`, `--batch-size 1024`) are higher than the
-> library's route defaults (`concurrency: 1`, `batch_size: 1`), because `copy` is built for
+> library's route defaults (`concurrency: 1`, `batch_size: 512`), because `copy` is built for
 > bulk throughput. See [Performance tuning](../operations/tuning.md).
 
 ### Resumable copies
@@ -100,9 +100,10 @@ unchanged (e.g. `postgres://…/db?table=src&sslmode=disable`).
   (`nats://localhost:4222/orders` ≡ `?subject=orders`); the query form wins if both are given.
   A `redis` path is the connection's database number, so a redis stream target must use
   `?stream=…`.
-- MongoDB sources are **non-destructive by default**: `copy` defaults `consume` to
-  `capture_all`. Pass `?consume=consumer` to opt into the destructive queue-drain mode
-  (`capture_*` use change streams, which require a replica set).
+- MongoDB sources are **non-destructive by default**: `consume` defaults to `capture_all`,
+  which needs a replica set (a single-node one is enough). On a standalone `mongod` pass
+  `?consume=snapshot` for a one-shot read. `?consume=consumer` opts into the destructive
+  queue-drain mode.
 
 ### Middlewares in the URI
 

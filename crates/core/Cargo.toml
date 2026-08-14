@@ -22,8 +22,8 @@ path = "src/lib.rs"
 # the same version and feature list so swapping them changes nothing else.
 # `plugin` is not optional: native plugin loading is a runtime setting, so every
 # build must be able to honour a `plugins:` entry. It only adds `libloading`.
-# mq-bridge = { version = "0.4.0", features = ["schema", "plugin"] }
-mq-bridge = { path = "../../../mq-bridge", version = "0.4.0", features = ["schema", "plugin"] } # keep for debugging / dev
+mq-bridge = { version = "0.4.0", features = ["schema", "plugin"] }
+# mq-bridge = { path = "../../../mq-bridge", version = "0.4.0", features = ["schema", "plugin"] } # keep for debugging / dev
 
 anyhow = { workspace = true }
 hex = { workspace = true }

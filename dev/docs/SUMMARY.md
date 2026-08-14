@@ -36,6 +36,7 @@
 
 # Reference
 - [Endpoints (concepts)](reference/endpoints.md)
+- [Delivery guarantees](engine/delivery.md)
 - [Connectors](connectors/README.md)
   - [PostgreSQL / MySQL / SQLite](connectors/postgres.md)
   - [ClickHouse](connectors/clickhouse.md)
@@ -84,5 +85,7 @@
 # Extending
 - [Custom endpoints](extending/custom-endpoints.md)
 - [Custom middleware](extending/custom-middleware.md)
+- [Writing endpoints & middleware (Rust/Python/Node)](engine/extending.md)
 - [Native plugins](extending/plugins.md)
+- [Writing a plugin](engine/plugins.md)
 - [Contributing](extending/contributing.md)

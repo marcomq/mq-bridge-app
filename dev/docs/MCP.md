@@ -157,7 +157,7 @@ Alongside `input` and `output`, a route accepts `batch_size`, `concurrency`,
 1. the top-level argument, if given;
 2. otherwise the same key inside `route`, if given;
 3. otherwise the app default — **1024** and **4**, rather than the library's
-   conservative `1`/`1`.
+   `512`/`1`.
 
 Only a value you never wrote is replaced, so an explicit `1` is honoured either
 way. `start_route` echoes the resolved `batch_size`/`concurrency` in its result.

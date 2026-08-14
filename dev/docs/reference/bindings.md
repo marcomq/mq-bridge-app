@@ -34,6 +34,19 @@ design and test a route in the UI, export the JSON/YAML, then load that exact co
 code. See the [Embed the library](../tutorials/embedding.md) tutorial for full examples in each
 language.
 
+## Extending from a binding
+
+Custom endpoints and middleware are not Rust-only. Both bindings expose
+`register_endpoint` / `register_middleware` (`registerEndpoint` / `registerMiddleware` in
+Node), with the same batch, ack and request-reply semantics as a Rust `CustomEndpointFactory`,
+and both can load a compiled plugin — `mq_bridge.load_endpoint_plugin(path)` in Python,
+`loadEndpointPlugin(path)` in Node — so one Rust implementation serves every language.
+Registration is process-global, keyed by name, and must happen before a route that names it
+starts; a duplicate name is an error rather than a silent replacement.
+
+Full examples in [Writing endpoints & middleware](../engine/extending.md) and
+[Writing a plugin](../engine/plugins.md).
+
 ## Rust API surface
 
 The Rust crate exposes the full engine. The main types:

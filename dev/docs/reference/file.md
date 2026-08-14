@@ -16,5 +16,5 @@ Query parameters recognised as config fields for this connector. The object-type
 | `group_id` | string | no | — | The consumer group ID that is used for offset tracking. Should be unique. |
 | `idempotency` | boolean | no | `false` | Write replay-safe source ranges as immutable part files under this directory. Requires Kafka source metadata or postgres_cdc commit LSN plus transaction ordinal metadata. |
 | `mode` | `consume` \| `subscribe` \| `group_subscribe` | no | — |  |
-| `path` | string | yes | — | Path to the file. |
+| `path` | string | yes | — | Path to the file, or to the directory holding the part files when `idempotency` is true. |
 | `read_from_tail` | boolean | no | `false` | If true, starts reading from the end of the file if no offset is stored. If false, starts reading from the beginning. |

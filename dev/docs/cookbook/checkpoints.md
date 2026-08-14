@@ -20,7 +20,7 @@ colliding. `checkpoint_store` may embed credentials and is treated as a secret.
 |---|---|---|
 | **SQLx** (PostgreSQL / MySQL / MariaDB / SQLite) | `cursor_column` + `cursor_id` | Last value of `cursor_column` |
 | **ClickHouse** | `cursor_column` + `cursor_id` + external `checkpoint_store` | Last value of `cursor_column` |
-| **MongoDB** (`consume: capture_new` / `capture_all` / `subscriber`) | `cursor_id` | Last `_id` / change-stream resume token |
+| **MongoDB** (`consume: capture_new` / `capture_all`) | `cursor_id` | Change-stream resume token |
 | **Object store** (`s3://`, `gs://`, `az://`) | `cursor_id` + external `checkpoint_store` | Last fully-acked object key |
 | **Postgres CDC** | (automatic) | Confirmed LSN — the replication **slot** is authoritative; `cursor_id` only adds a local copy |
 
@@ -107,8 +107,11 @@ drains the backlog since last time and exits 0. Without `--drain`, the same comm
 polling for new rows every `polling_interval_ms` (100 ms by default) — or backing off
 exponentially up to `max_polling_interval_ms` while drained, if you set it.
 
-MongoDB `capture_new`/`capture_all` use a change stream and therefore **never** drain; they are
-continuous by nature.
+MongoDB `capture_all` follows a change stream once its initial read is done, so a `--drain` run
+ends when that stream goes quiet rather than at a known end of data. `capture_new` only ever
+emits changes made after it starts and is continuous by nature. For a one-shot read with a real
+end, use `consume: snapshot` — non-destructive, no replica set, and not resumable (it rejects
+`cursor_id`).
 
 An **object-store** source ends a drain run when it reaches the end of the objects it listed,
 which can be before the prefix is exhausted — the checkpoint makes this safe rather than lossy:

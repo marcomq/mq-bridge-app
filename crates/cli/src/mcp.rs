@@ -157,7 +157,7 @@ struct StartRouteArgs {
     #[serde(default)]
     concurrency: Option<usize>,
     /// Batch size. Overrides `batch_size` inside `route` if both are given; if
-    /// neither is given the app default (1024) applies, not the library's 1.
+    /// neither is given the app default (1024) applies, not the library's 512.
     #[serde(default)]
     batch_size: Option<usize>,
     /// Keep the last N messages that flow through this route, readable with
@@ -1248,7 +1248,7 @@ mod tool_tests {
         );
         assert_eq!(started["route"], "drain-lifecycle");
         assert_eq!(started["exit_on_empty"], true);
-        // Neither knob was written, so the app defaults apply, not the library's 1.
+        // Neither knob was written, so the app defaults apply, not the library's.
         assert_eq!(started["concurrency"], crate::DEFAULT_CONCURRENCY);
         assert_eq!(started["batch_size"], crate::DEFAULT_BATCH_SIZE);
 

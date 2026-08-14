@@ -7,6 +7,7 @@ export interface AppConfig {
   logger?: string;
   ui_addr?: string;
   metrics_addr?: string;
+  plugins?: string[];
   routes?: Record<string, RouteConfig>;
   consumers?: ConsumerConfig[];
   publishers?: PublisherClient[];
@@ -370,7 +371,7 @@ export interface MongoDbConfig {
   shared?: boolean | null;
 }
 
-export type MongoConsume = "consumer" | "subscriber" | "capture_new" | "capture_all";
+export type MongoConsume = "consumer" | "snapshot" | "capture_new" | "capture_all";
 
 export type MongoDbFormat = "normal" | "json" | "text" | "raw";
 
@@ -472,7 +473,7 @@ export type ZeroMqSocketType = "push" | "pull" | "pub" | "sub" | "req" | "rep";
 
 export type ZeroMqFormat = "json" | "raw" | "raw_framed";
 
-export type ZeroMqBackend = "zmq" | "omq";
+export type ZeroMqBackend = "zmq" | "omq" | "try_omq";
 
 export interface RedisStreamsConfig {
   url: string;
@@ -494,6 +495,7 @@ export interface RedisStreamsConfig {
 export interface GrpcConfig {
   url: string;
   topic?: string | null;
+  consumer_id?: string | null;
   timeout_ms?: number | null;
   tls?: TlsConfig;
   server_mode?: boolean;
@@ -503,6 +505,12 @@ export interface GrpcConfig {
   http2_keepalive_interval_ms?: number | null;
   http2_keepalive_timeout_ms?: number | null;
   max_decoding_message_size?: number | null;
+  max_encoding_message_size?: number | null;
+  descriptor_set_path?: string | null;
+  service_name?: string | null;
+  method_name?: string | null;
+  request?: unknown;
+  server_streaming?: boolean;
   shared?: boolean | null;
 }
 
