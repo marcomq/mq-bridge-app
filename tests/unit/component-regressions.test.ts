@@ -51,4 +51,23 @@ describe("component regressions", () => {
       'style:display={$publishersPanelState.responseVisible && $publishersPanelState.activeSubtab !== "definition" ? "flex" : "none"}',
     );
   });
+
+  test("captured consumer and publisher JSON bodies expose read-only pretty printing", () => {
+    const payloadDisplay = readFileSync(
+      join(process.cwd(), "ui/src/components/PayloadDisplay.svelte"),
+      "utf8",
+    );
+    const consumersPanel = readFileSync(
+      join(process.cwd(), "ui/src/components/ConsumersPanel.svelte"),
+      "utf8",
+    );
+    const publishersPanel = readFileSync(
+      join(process.cwd(), "ui/src/components/PublishersPanel.svelte"),
+      "utf8",
+    );
+
+    expect(payloadDisplay).toContain('prettyJson && formattedPayload.language === "json"');
+    expect(consumersPanel.match(/showPretty=\{true\}/g)).toHaveLength(2);
+    expect(publishersPanel.match(/showPretty=\{true\}/g)).toHaveLength(1);
+  });
 });

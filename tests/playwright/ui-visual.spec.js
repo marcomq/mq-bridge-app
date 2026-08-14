@@ -141,6 +141,10 @@ test("consumer messages layout with selected message", async ({ page }) => {
   );
   await page.locator("#pub-send").click();
   await expect((await publishResponse).ok()).toBeTruthy();
+  const publisherPretty = page.locator('#pub-actual-payload button[title="Pretty-print JSON content"]');
+  await expect(publisherPretty).toBeVisible();
+  await publisherPretty.click();
+  await expect(page.locator("#pub-actual-payload .cm-content")).toContainText('"ok": true');
 
   await page.goto("/#consumers:0");
   await page.locator("#ctab-msg").click();
@@ -157,6 +161,16 @@ test("consumer messages layout with selected message", async ({ page }) => {
       page.locator("#cons-msg-detail-info"),
     ],
   });
+
+  const requestPretty = page.locator('#cons-msg-payload button[title="Pretty-print JSON content"]');
+  await expect(requestPretty).toBeVisible();
+  await requestPretty.click();
+  await expect(page.locator("#cons-msg-payload .cm-content")).toContainText('"event": "visual-regression"');
+
+  const responsePretty = page.locator('#cons-msg-response button[title="Pretty-print JSON content"]');
+  await expect(responsePretty).toBeVisible();
+  await responsePretty.click();
+  await expect(page.locator("#cons-msg-response .cm-content")).toContainText('"ok": true');
 });
 
 test("settings main layout", async ({ page }) => {

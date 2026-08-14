@@ -779,6 +779,7 @@
                 payload={$publishersPanelState.responsePayload}
                 contentType={$publishersPanelState.responseContentType || ''}
                 readOnly={true}
+                showPretty={true}
               />
             </div>
           </div>

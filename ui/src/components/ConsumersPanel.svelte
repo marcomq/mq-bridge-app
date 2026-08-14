@@ -728,9 +728,10 @@
               <PayloadDisplay
                 id="cons-msg-payload"
                 label="Message Body"
-              payload={$consumersPanelState.detailRequestPayload}
-              contentType={$consumersPanelState.detailRequestContentType || ''}
+                payload={$consumersPanelState.detailRequestPayload}
+                contentType={$consumersPanelState.detailRequestContentType || ''}
                 readOnly={true}
+                showPretty={true}
               />
             {#if $consumersPanelState.hasResponse}
               <wa-details summary="Response Headers" open class="response-meta-block" icon-placement="start" style="margin-top:16px;">
@@ -748,9 +749,10 @@
                 <PayloadDisplay
                   id="cons-msg-response"
                   label="Response Body"
-                payload={$consumersPanelState.detailResponsePayload}
-                contentType={$consumersPanelState.detailResponseContentType || ""}
+                  payload={$consumersPanelState.detailResponsePayload}
+                  contentType={$consumersPanelState.detailResponseContentType || ""}
                   readOnly={true}
+                  showPretty={true}
                 />
               {/if}
             </div>

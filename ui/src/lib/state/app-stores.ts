@@ -22,7 +22,7 @@ export const workspaceSavingStore = writable(false);
 // Shared by the publishers and consumers panels so the dividers keep their position across tab
 // switches. `detailPaneTopPercent` is the height share of the pane above the horizontal divider.
 export const sidebarWidthStore = writable(280);
-export const detailPaneTopPercent = writable(60);
+export const detailPaneTopPercent = writable(40);
 export const MIN_DETAIL_PANE_PERCENT = 20;
 export const MAX_DETAIL_PANE_PERCENT = 80;
 
