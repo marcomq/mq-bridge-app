@@ -52,7 +52,7 @@ mq-bridge-app copy \
 
 > **Wire format changed in 0.4.0.** `format` used to default to `json`; it is now
 > `raw_framed`, which is binary-safe and still carries headers. A 0.4 peer and a 0.3 peer no
-> longer understand each other on the same socket unless one of them sets `format: json`.
+> longer understand each other on the same socket unless one of them uses `format=json` in the URL query.
 > REQ/REP replies are the exception to `format` entirely: a REP peer always answers with a JSON
 > array of canonical messages, and a REQ publisher always decodes one.
 

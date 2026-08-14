@@ -38,6 +38,7 @@ async fn start_test_server(port: u16, config: AppConfig, config_file: &Path) -> 
         web_ui::start_web_server(
             format!("127.0.0.1:{}", port),
             config,
+            Vec::new(),
             handle,
             config_file_path,
         )
@@ -186,6 +187,7 @@ async fn test_web_ui_metrics_endpoint() {
         web_ui::start_web_server(
             format!("127.0.0.1:{}", port),
             AppConfig::default(),
+            Vec::new(),
             handle,
             config_file_path,
         )

@@ -16,6 +16,8 @@ rust-version = "1.94"
 # --features bench` is silently widened back to the full endpoint set. The binary
 # crates re-enable what they need through their own `full` feature.
 mq_bridge_app = { version = "0.3.0", path = "crates/core", package = "mq-bridge-app-core", default-features = false }
+mq-bridge = { version = "0.4.1", default-features = false }
+# mq-bridge = { path = "../../../mq-bridge", version = "0.4.0", features = ["schema", "plugin"] } # keep for debugging / dev
 
 # Shared third-party deps. Members opt in with `{ workspace = true }` and may add
 # extra `features` on top (they are additive) — see e.g. tokio in the CLI crate.

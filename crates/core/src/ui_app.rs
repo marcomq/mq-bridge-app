@@ -168,6 +168,7 @@ impl UiAppRuntimeHooks {
 #[derive(Clone)]
 pub struct UiApp {
     config: Arc<RwLock<AppConfig>>,
+    trusted_plugin_paths: Arc<HashSet<PathBuf>>,
     metrics_handle: PrometheusHandle,
     config_file_path: Arc<String>,
     secret_store: Arc<dyn SecretStore>,
@@ -684,7 +685,7 @@ impl UiApp {
         initial_config: AppConfig,
         metrics_handle: PrometheusHandle,
         config_file_path: String,
-    ) -> Self {
+    ) -> Result<Self> {
         let storage_security = storage_security_for_cli(&initial_config);
         Self::new_internal(
             initial_config,
@@ -693,6 +694,25 @@ impl UiApp {
             Arc::new(EnvFileSecretStore::new(".env")),
             storage_security,
             UiAppRuntimeHooks::for_cli(),
+            &[],
+        )
+    }
+
+    pub fn new_with_startup_plugins(
+        initial_config: AppConfig,
+        metrics_handle: PrometheusHandle,
+        config_file_path: String,
+        startup_plugins: &[String],
+    ) -> Result<Self> {
+        let storage_security = storage_security_for_cli(&initial_config);
+        Self::new_internal(
+            initial_config,
+            metrics_handle,
+            config_file_path,
+            Arc::new(EnvFileSecretStore::new(".env")),
+            storage_security,
+            UiAppRuntimeHooks::for_cli(),
+            startup_plugins,
         )
     }
 
@@ -701,7 +721,7 @@ impl UiApp {
         metrics_handle: PrometheusHandle,
         config_file_path: String,
         secret_store: Arc<dyn SecretStore>,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new_internal(
             initial_config.clone(),
             metrics_handle,
@@ -709,6 +729,7 @@ impl UiApp {
             secret_store,
             storage_security_for_cli(&initial_config),
             UiAppRuntimeHooks::for_cli(),
+            &[],
         )
     }
 
@@ -718,7 +739,7 @@ impl UiApp {
         config_file_path: String,
         secret_store: Arc<dyn SecretStore>,
         storage_security: StorageSecurityInfoResponse,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new_internal(
             initial_config,
             metrics_handle,
@@ -726,6 +747,7 @@ impl UiApp {
             secret_store,
             storage_security,
             UiAppRuntimeHooks::default(),
+            &[],
         )
     }
 
@@ -737,7 +759,7 @@ impl UiApp {
         storage_security: StorageSecurityInfoResponse,
         storage_security_resolver: Arc<StorageSecurityResolver>,
         storage_save_prepare: Arc<StorageSavePrepare>,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new_internal(
             initial_config,
             metrics_handle,
@@ -747,6 +769,7 @@ impl UiApp {
             UiAppRuntimeHooks::default()
                 .with_storage_security_resolver(storage_security_resolver)
                 .with_storage_save_prepare(storage_save_prepare),
+            &[],
         )
     }
 
@@ -757,7 +780,7 @@ impl UiApp {
         secret_store: Arc<dyn SecretStore>,
         storage_security: StorageSecurityInfoResponse,
         runtime_hooks: UiAppRuntimeHooks,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new_internal(
             initial_config,
             metrics_handle,
@@ -765,6 +788,7 @@ impl UiApp {
             secret_store,
             storage_security,
             runtime_hooks,
+            &[],
         )
     }
 
@@ -775,10 +799,27 @@ impl UiApp {
         secret_store: Arc<dyn SecretStore>,
         storage_security: StorageSecurityInfoResponse,
         runtime_hooks: UiAppRuntimeHooks,
-    ) -> Self {
+        startup_plugins: &[String],
+    ) -> Result<Self> {
         initial_config.migrate_legacy_security_mode();
+        let mut trusted_plugin_paths = crate::plugins::load_trusted_plugins(
+            &initial_config.plugins,
+            &initial_config.env_vars,
+        )?
+        .into_iter()
+        .map(|plugin| plugin.path)
+        .collect::<HashSet<_>>();
+        trusted_plugin_paths.extend(
+            crate::plugins::load_trusted_plugins(startup_plugins, &initial_config.env_vars)?
+                .into_iter()
+                .map(|plugin| plugin.path),
+        );
+        initial_config
+            .plugins
+            .extend(startup_plugins.iter().cloned());
         let app = Self {
             config: Arc::new(RwLock::new(initial_config)),
+            trusted_plugin_paths: Arc::new(trusted_plugin_paths),
             metrics_handle,
             config_file_path: Arc::new(config_file_path.clone()),
             secret_store,
@@ -800,7 +841,7 @@ impl UiApp {
 
         app.ensure_throughput_updater();
 
-        app
+        Ok(app)
     }
 
     /// Spawns a background task to periodically update throughput metrics for all active consumers if not already started.
@@ -878,7 +919,7 @@ impl UiApp {
         let result = match (method.as_str(), path) {
             ("GET", "/health") => Ok(Handled::Publish(msg!("OK"))),
             ("GET", "/schema.json") => {
-                let schema = schemars::schema_for!(AppConfig);
+                let schema = crate::config::app_config_schema();
                 self.ok_json(&schema, false)
             }
             ("GET", "/config") => self.ok_json(&self.get_config().await, false),
@@ -1582,14 +1623,22 @@ impl UiApp {
         mut new_config: AppConfig,
     ) -> std::result::Result<(), UpdateConfigError> {
         tracing::info!("Received new configuration via Web UI. Reloading...");
+        let requested_plugin_paths = crate::plugins::canonical_plugin_paths(
+            &new_config.plugins,
+            &new_config.env_vars,
+        )
+        .map_err(|error| {
+            UpdateConfigError::Validation(format!(
+                "{error:#}. Native plugins are startup-only; edit the trusted startup configuration and restart the application to change them"
+            ))
+        })?;
+        if requested_plugin_paths != *self.trusted_plugin_paths {
+            return Err(UpdateConfigError::Validation(
+                "Native plugins are startup-only; edit the trusted startup configuration and restart the application to change them"
+                    .to_string(),
+            ));
+        }
         new_config.migrate_legacy_routes();
-
-        // Ahead of the validation below: a consumer or route naming a plugin
-        // endpoint fails `check()` while the library is still unregistered.
-        // Re-loading an already-loaded plugin is a no-op, so this only does work
-        // for entries the user just added.
-        crate::plugins::load_plugins(&new_config.plugins)
-            .map_err(|error| UpdateConfigError::Validation(format!("{error:#}")))?;
         let consumers: Vec<crate::config::ConsumerConfig> = new_config
             .consumers
             .iter()
@@ -2089,7 +2138,8 @@ mod tests {
                 }
                 Ok(())
             }),
-        );
+        )
+        .unwrap();
 
         let mut next_config = initial_config.clone();
         next_config.config_security = Some(ConfigSecurity {
@@ -2137,7 +2187,8 @@ mod tests {
                         backup_path: "/tmp/mqb-config.yml.recovery.bak".to_string(),
                     })
                 }))),
-        );
+        )
+        .unwrap();
 
         let handled = app.handle_reset_config_recovery().await.unwrap();
         let Handled::Publish(message) = handled else {
@@ -2232,6 +2283,7 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
         )
+        .unwrap()
     }
 
     #[tokio::test]

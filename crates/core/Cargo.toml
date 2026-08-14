@@ -16,14 +16,11 @@ name = "mq_bridge_app"
 path = "src/lib.rs"
 
 [dependencies]
-# NOTE: this is a local path dep on the sibling ../mq-bridge checkout, so the
-# build only works with that checkout present. Switch to the crates.io line
-# above (or use `cargo --config patch`) before publishing — keep both lines on
-# the same version and feature list so swapping them changes nothing else.
 # `plugin` is not optional: native plugin loading is a runtime setting, so every
 # build must be able to honour a `plugins:` entry. It only adds `libloading`.
-mq-bridge = { version = "0.4.0", features = ["schema", "plugin"] }
-# mq-bridge = { path = "../../../mq-bridge", version = "0.4.0", features = ["schema", "plugin"] } # keep for debugging / dev
+mq-bridge = { workspace = true, features = ["schema", "plugin"] }
+# For local engine development, patch the workspace dependency to ../mq-bridge
+# with Cargo's `patch.crates-io` configuration instead of changing this manifest.
 
 anyhow = { workspace = true }
 hex = { workspace = true }
@@ -56,6 +53,9 @@ fast-uuid-v7 = "0.1.8"
 # from a single `cargo install`ed executable. In debug builds it reads the
 # files from disk for live editing; in release builds it embeds them.
 rust-embed = "8.7"
+
+[dev-dependencies]
+mq-bridge = { workspace = true, features = ["test-utils"] }
 
 # Only for `getuid()`, so the status registry can verify it owns its runtime
 # directory. Already in the graph via tokio; std exposes no equivalent.

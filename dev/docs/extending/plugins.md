@@ -32,10 +32,10 @@ routes:
 The `name` is the one the plugin exports, not the file name. A plugin providing a
 middleware registers that under the same name, usable in any `middlewares:` chain.
 
-Adding an entry and saving takes effect immediately — the UI applies the config without
-restarting the process, and the library loads before the new routes are validated.
-Removing an entry does **not** unload it: a loaded library stays registered for the life
-of the process, so dropping a plugin takes a restart.
+Plugins are loaded only from trusted startup configuration. The UI and `POST /config` may
+reorder or repeat the same canonical paths, but cannot add, remove, or retarget a plugin.
+Edit the startup config and restart the process for every plugin change. Loaded native
+libraries remain mapped and registered for the process lifetime; they are never unloaded.
 
 Every build can load plugins; there is no cargo feature to enable.
 
@@ -46,11 +46,11 @@ every subcommand:
 
 ```bash
 mq-bridge-app --plugin ./libmq_bridge_pulsar.so --config config.yml
-mq-bridge-app copy --plugin ./libmq_bridge_pulsar.so --from 'custom://pulsar?...' --to out.jsonl
 ```
 
 It combines with `plugins:` rather than replacing it. Listing the same library both ways
-is harmless — a library already loaded is not loaded twice.
+is harmless — a library already loaded is not loaded twice. The `copy` subcommand accepts
+only its built-in URI schemes; use config mode, as above, for plugin-backed endpoints.
 
 ## Failure modes
 
@@ -64,13 +64,14 @@ once a route asks for something nobody registered:
 | Declares neither an endpoint nor a middleware | rejected |
 | Name already taken by a different factory | rejected — traffic would silently reroute |
 
-At startup a bad path aborts the process. When the config is applied at runtime, it is
-reported as a validation error and the previous config keeps running.
+At startup a bad path aborts the process. A runtime config whose canonical plugin set differs
+from the startup set is rejected before route validation, storage changes, or saving.
 
 ## Security
 
 A plugin is native code loaded into this process, with the same privileges — it is not
-sandboxed. Treat the libraries you list exactly like any other native dependency, and
-note that anyone who can edit the config or reach the UI can name a library to load.
+sandboxed. Treat the startup configuration and CLI flags as trusted inputs, and treat the
+libraries they name exactly like any other native dependency. Runtime config updates cannot
+load a new library.
 
 Writing one is covered in [Writing a plugin](../engine/plugins.md).

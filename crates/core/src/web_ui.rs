@@ -44,12 +44,18 @@ impl WebUiHttpHandler {
 pub async fn start_web_server(
     bind_addr: String,
     initial_config: AppConfig,
+    startup_plugins: Vec<String>,
     metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
     config_file_path: String,
 ) -> Result<(), anyhow::Error> {
     let bind_addr = bind_addr.to_string();
-    let app = UiApp::new(initial_config, metrics_handle, config_file_path)
-        .with_instance_kind(InstanceKind::WebUi);
+    let app = UiApp::new_with_startup_plugins(
+        initial_config,
+        metrics_handle,
+        config_file_path,
+        &startup_plugins,
+    )?
+    .with_instance_kind(InstanceKind::WebUi);
     let _status_guard = WebUiStatusGuard(app.clone());
     app.spawn_status_registry_publisher();
     let bound_to_loopback = bind_addr

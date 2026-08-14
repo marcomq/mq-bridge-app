@@ -209,7 +209,7 @@ struct CopyArgs {
 /// so it runs after that command installed its logging — the loader logs what
 /// it registered, and before a subscriber exists those lines go nowhere.
 fn load_cli_plugins(paths: &[String]) -> anyhow::Result<()> {
-    mq_bridge_app::plugins::load_plugins(paths)?;
+    mq_bridge_app::plugins::load_trusted_plugins(paths, &std::collections::HashMap::new())?;
     Ok(())
 }
 
@@ -266,7 +266,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(schema_path) = args.schema {
-        let schema = schemars::schema_for!(AppConfig);
+        let schema = mq_bridge_app::config::app_config_schema();
         let schema_json =
             serde_json::to_string_pretty(&schema).context("Failed to serialize schema")?;
 
@@ -295,9 +295,7 @@ async fn main() -> anyhow::Result<()> {
     .context("Failed to load configuration")?;
     init_logging(&config);
     load_cli_plugins(&args.plugins)?;
-    // Only the entries present at startup: `update_config` re-loads the list
-    // whenever the config is applied, so later additions need no restart.
-    mq_bridge_app::plugins::load_plugins(&config.plugins)?;
+    mq_bridge_app::plugins::load_trusted_plugins(&config.plugins, &config.env_vars)?;
     println!(
         r#"
       ┌────── mq-bridge-app ──────┐
@@ -394,6 +392,7 @@ async fn main() -> anyhow::Result<()> {
         let web_ui_server = web_ui::start_web_server(
             addr.into(),
             config.clone(),
+            args.plugins.clone(),
             prometheus_handle,
             config_file_path,
         );
@@ -1514,6 +1513,7 @@ mod copy_result_tests {
 #[cfg(test)]
 mod uri_tests {
     use super::endpoint_from_uri;
+    use super::mq_bridge::models::{EndpointType, MongoConsume};
 
     fn config(uri: &str, tag: &str) -> serde_json::Value {
         let ep = endpoint_from_uri(uri).expect("uri should parse");
@@ -1569,6 +1569,35 @@ mod uri_tests {
         );
         assert!(cfg["consume"].is_null());
         assert_eq!(cfg["change_stream"], true);
+        let endpoint = endpoint_from_uri(
+            "mongodb://host/?collection=orders&database=appdb&change_stream=true",
+        )
+        .unwrap();
+        let EndpointType::MongoDb(mongo) = endpoint.endpoint_type else {
+            panic!("expected MongoDB endpoint");
+        };
+        assert_eq!(mongo.resolved_consume(), MongoConsume::CaptureNew);
+
+        let cfg = config(
+            "mongodb://host/?collection=orders&database=appdb&consume=snapshot&change_stream=true",
+            "mongodb",
+        );
+        assert_eq!(cfg["consume"], "snapshot");
+        assert_eq!(cfg["change_stream"], true);
+        let endpoint = endpoint_from_uri(
+            "mongodb://host/?collection=orders&database=appdb&consume=snapshot&change_stream=true",
+        )
+        .unwrap();
+        let EndpointType::MongoDb(mongo) = endpoint.endpoint_type else {
+            panic!("expected MongoDB endpoint");
+        };
+        assert_eq!(mongo.resolved_consume(), MongoConsume::Snapshot);
+
+        let error = endpoint_from_uri(
+            "mongodb://host/?collection=orders&database=appdb&consume=subscriber",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("subscriber"), "{error:#}");
     }
 
     // A redis URL path is the database number, not the stream, so it must remain on

@@ -1,5 +1,5 @@
 use mq_bridge_app::{
-    config::{AppConfig, ConsumerConfig, PublisherClient},
+    config::{ConsumerConfig, PublisherClient},
     ui_app::{
         ConsumerStatusResponse, FeatureAvailabilityResponse, PeerStatusResponse, PublishRequest,
         RuntimeStatusResponse, StorageSecurityInfoResponse,
@@ -9,7 +9,7 @@ use serde_json::json;
 
 fn main() {
     let schemas = json!({
-        "AppConfig": schemars::schema_for!(AppConfig),
+        "AppConfig": mq_bridge_app::config::app_config_schema(),
         "ConsumerConfig": schemars::schema_for!(ConsumerConfig),
         "PublisherClient": schemars::schema_for!(PublisherClient),
         "PublishRequest": schemars::schema_for!(PublishRequest),

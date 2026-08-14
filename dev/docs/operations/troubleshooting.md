@@ -8,10 +8,14 @@ almost always one of the drop/drain behaviours below.
 By design, a message that fails **permanently** (a type/data error the sink rejects, a poison
 payload a handler rejects) is logged at `error` level and **dropped** — the route keeps
 processing the rest of the batch. So a *systematic* failure (e.g. every row hitting a
-column-type mismatch) drains the input while committing nothing and still ends `completed`.
+column-type mismatch) drains the input while delivering nothing to the sink and still ends `completed`.
+The terminal route status is not clean, however: its error reports the number of dropped
+messages and the last rejection cause.
 
 - Watch for a burst of `Dropping message … due to non-retryable error` in the logs — that's the
   signal.
+- Check the route status/error in the UI, CLI, or MCP response for the retained drop count and
+  cause; do not treat `outcome: completed` alone as proof that every message was delivered.
 - Add a [`dlq`](../engine/reference.md#dlq) to capture the failures for inspection/replay.
 - `retry` alone does **not** retain a failed message — pair it with `dlq` (dlq last). See
   [Dead-letter queues](../cookbook/dlq.md).

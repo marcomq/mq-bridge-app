@@ -10,7 +10,7 @@ use anyhow::Result;
 use config::Config;
 use mq_bridge::{
     Route,
-    models::{Endpoint, EndpointType, Middleware, SecretExtractor},
+    models::{Endpoint, EndpointType, Middleware, RouteOptions, SecretExtractor},
 };
 use schemars::JsonSchema;
 use uuid::Uuid;
@@ -108,6 +108,22 @@ pub struct AppConfig {
     /// The default tab to show in the UI upon loading.
     #[serde(default)]
     pub default_tab: String,
+}
+
+/// Generates the application schema with runtime defaults sourced from the
+/// actual mq-bridge model rather than schemars' fallback values.
+pub fn app_config_schema() -> serde_json::Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(AppConfig))
+        .expect("AppConfig schema should serialize");
+    let default = serde_json::Value::from(RouteOptions::default().batch_size);
+    for definition in ["RouteConfig", "ConsumerConfig"] {
+        schema
+            .pointer_mut(&format!("/$defs/{definition}/properties/batch_size"))
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap_or_else(|| panic!("AppConfig schema should contain {definition}.batch_size"))
+            .insert("default".to_string(), default.clone());
+    }
+    schema
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, JsonSchema, Clone, Default)]
@@ -1182,6 +1198,61 @@ publishers:
         assert_eq!(
             config.env_vars.get("baseUrl").map(String::as_str),
             Some("https://api.example.test")
+        );
+    }
+
+    #[test]
+    fn app_schema_uses_runtime_batch_size_default() {
+        let schema = app_config_schema();
+        for definition in ["RouteConfig", "ConsumerConfig"] {
+            let batch_size = schema
+                .pointer(&format!("/$defs/{definition}/properties/batch_size"))
+                .unwrap();
+            assert_eq!(
+                batch_size["default"],
+                mq_bridge::models::RouteOptions::default().batch_size
+            );
+            assert_eq!(batch_size["minimum"], 1);
+        }
+    }
+
+    #[test]
+    fn mongodb_legacy_consume_modes_load_from_yaml() {
+        fn mongo_config(extra: &str) -> std::result::Result<AppConfig, serde_yaml_ng::Error> {
+            serde_yaml_ng::from_str(&format!(
+                r#"
+consumers:
+  - name: mongo
+    endpoint:
+      mongodb:
+        url: mongodb://localhost:27017
+        database: app
+        collection: orders
+{extra}
+"#
+            ))
+        }
+
+        let error = mongo_config("        consume: subscriber").unwrap_err();
+        assert!(error.to_string().contains("subscriber"), "{error}");
+
+        let config = mongo_config("        change_stream: true").unwrap();
+        let EndpointType::MongoDb(mongo) = &config.consumers[0].endpoint.endpoint_type else {
+            panic!("expected MongoDB endpoint");
+        };
+        assert_eq!(
+            mongo.resolved_consume(),
+            mq_bridge::models::MongoConsume::CaptureNew
+        );
+
+        let config =
+            mongo_config("        consume: snapshot\n        change_stream: true").unwrap();
+        let EndpointType::MongoDb(mongo) = &config.consumers[0].endpoint.endpoint_type else {
+            panic!("expected MongoDB endpoint");
+        };
+        assert_eq!(
+            mongo.resolved_consume(),
+            mq_bridge::models::MongoConsume::Snapshot
         );
     }
 

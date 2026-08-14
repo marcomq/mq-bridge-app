@@ -22,34 +22,68 @@
 //!
 //! Plugins must be loaded **before** any route is built, or the endpoint name is
 //! not yet registered and route startup fails with a confusing "unknown
-//! endpoint" error. Adding one to `plugins:` and saving takes effect without a
-//! restart. Removing one does not: a loaded library stays registered for the
-//! life of the process, so dropping a plugin needs a restart.
+//! endpoint" error. Plugins are startup-only: changing the configured set needs
+//! a restart. A loaded library stays registered for the life of the process.
 //!
 //! A plugin is native code with the same privileges as this process. Treat the
 //! libraries you list like any other native dependency.
 
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
 use anyhow::Context;
 
-/// Loads every plugin in `paths`, returning the endpoint names registered.
+fn resolved_plugin_paths(
+    paths: &[String],
+    env_vars: &HashMap<String, String>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            let path = path.trim();
+            (!path.is_empty()).then_some(path)
+        })
+        .map(|path| {
+            let expanded = shellexpand::env_with_context_no_errors(path, |key| {
+                std::env::var(key)
+                    .ok()
+                    .or_else(|| env_vars.get(key).cloned())
+            });
+            std::fs::canonicalize(expanded.as_ref())
+                .with_context(|| format!("failed to resolve plugin `{path}`"))
+        })
+        .collect()
+}
+
+/// Resolves configured plugin paths without loading native code.
+pub fn canonical_plugin_paths(
+    paths: &[String],
+    env_vars: &HashMap<String, String>,
+) -> anyhow::Result<HashSet<PathBuf>> {
+    Ok(resolved_plugin_paths(paths, env_vars)?
+        .into_iter()
+        .collect())
+}
+
+/// Loads every operator-trusted startup plugin in `paths`.
 ///
 /// Loading the same library twice is a no-op, so this is safe to call again
-/// whenever the config is re-applied.
+/// from another startup path.
 ///
 /// A path that fails to load is fatal: continuing would only fail later, when a
 /// route asks for an endpoint nobody registered.
-pub fn load_plugins(paths: &[String]) -> anyhow::Result<Vec<String>> {
-    let mut names = Vec::with_capacity(paths.len());
+pub fn load_trusted_plugins(
+    paths: &[String],
+    env_vars: &HashMap<String, String>,
+) -> anyhow::Result<Vec<mq_bridge::plugin::PluginInfo>> {
+    let paths = resolved_plugin_paths(paths, env_vars)?;
+    let mut plugins = Vec::with_capacity(paths.len());
     for path in paths {
-        let path = path.trim();
-        if path.is_empty() {
-            continue;
-        }
-        let info = mq_bridge::plugin::load_endpoint_plugin(path)
-            .with_context(|| format!("failed to load plugin `{path}`"))?;
-        names.push(info.name);
+        let info = mq_bridge::plugin::load_endpoint_plugin(&path)
+            .with_context(|| format!("failed to load plugin `{}`", path.display()))?;
+        plugins.push(info);
     }
-    Ok(names)
+    Ok(plugins)
 }
 
 #[cfg(test)]
@@ -58,16 +92,38 @@ mod tests {
 
     #[test]
     fn an_empty_list_loads_nothing() {
-        assert!(load_plugins(&[]).unwrap().is_empty());
-        assert!(load_plugins(&["  ".to_string()]).unwrap().is_empty());
+        assert!(
+            load_trusted_plugins(&[], &HashMap::new())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            load_trusted_plugins(&["  ".to_string()], &HashMap::new())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn a_bad_path_names_the_plugin_in_the_error() {
-        let error = load_plugins(&["/nonexistent/libnope.so".to_string()]).unwrap_err();
+        let error = load_trusted_plugins(&["/nonexistent/libnope.so".to_string()], &HashMap::new())
+            .unwrap_err();
         assert!(
             format!("{error:#}").contains("/nonexistent/libnope.so"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn inline_env_vars_expand_before_canonicalization() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let plugin = dir.join("Cargo.toml");
+        let env_vars =
+            HashMap::from([("PLUGIN_DIR".to_string(), dir.to_string_lossy().into_owned())]);
+
+        let paths =
+            canonical_plugin_paths(&["${PLUGIN_DIR}/Cargo.toml".to_string()], &env_vars).unwrap();
+
+        assert_eq!(paths, HashSet::from([plugin.canonicalize().unwrap()]));
     }
 }

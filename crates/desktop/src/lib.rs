@@ -1061,7 +1061,7 @@ pub fn run() {
                     .with_instance_kind(InstanceKind::Tauri)
                     .with_config_recovery(config_recovery)
                     .with_config_recovery_reset(Some(config_recovery_reset)),
-            );
+            )?;
             // `setup` runs outside any runtime context, so enter Tauri's before
             // spawning the heartbeat task.
             tauri::async_runtime::block_on(async { ui_app.spawn_status_registry_publisher() });

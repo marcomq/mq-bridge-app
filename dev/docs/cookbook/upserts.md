@@ -101,7 +101,9 @@ orders_upsert_branch:
 
 `report_outcome` is sink-only and pairs with `id_field`. See also
 [Deduplication](deduplication.md) for the middleware-based complement, the
-[Postgres CDC tutorial](../tutorials/postgres-cdc.md) for CDC-specific idempotency
-(`postgres.lsn` as the version to drop stale replays), and
+[Postgres CDC tutorial](../tutorials/postgres-cdc.md) for CDC-specific idempotency. When the
+same key can change more than once in a transaction, enable `source_metadata: true` and order by
+both `mqb.src.postgres_lsn` and `mqb.src.postgres_ordinal`; an LSN-only version cannot order those
+changes. The linked deduplication guide shows the complete predicate. Also see
 [Delivery guarantees](../engine/delivery.md) for which source/sink pairings add up to
 effectively-once.

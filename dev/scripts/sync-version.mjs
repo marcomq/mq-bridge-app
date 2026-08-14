@@ -2,8 +2,9 @@
 
 // Propagates `[workspace.package] version` from Cargo.toml into the files that
 // cannot inherit it: server.json (scanned by MCP registry bots, so it must be
-// correct in the repo, not just at release time) and the internal path-dependency
-// requirement in Cargo.toml. Run with --check to fail instead of writing.
+// correct in the repo, not just at release time), Tauri's app configuration,
+// and the internal path-dependency requirement in Cargo.toml. Run with --check
+// to fail instead of writing.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -13,6 +14,7 @@ const checkOnly = process.argv.includes("--check");
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const cargoPath = resolve(repoRoot, "Cargo.toml");
 const serverPath = resolve(repoRoot, "server.json");
+const tauriPath = resolve(repoRoot, "crates/desktop/tauri.conf.json");
 
 const cargo = readFileSync(cargoPath, "utf8");
 const version = cargo
@@ -47,6 +49,18 @@ const patchedServer = serverRaw
   .replace(/"version": "[^"]+"/g, `"version": "${version}"`)
   .replace(/("identifier": "[^"]*):[^":]*"/g, `$1:${version}"`);
 update(serverPath, serverRaw, patchedServer);
+
+const tauriRaw = readFileSync(tauriPath, "utf8");
+const tauri = JSON.parse(tauriRaw);
+if (typeof tauri.version !== "string") {
+  console.error("Could not read version from crates/desktop/tauri.conf.json");
+  process.exit(1);
+}
+const patchedTauri = tauriRaw.replace(
+  /^(\s*"version"\s*:\s*)"[^"]+"/m,
+  `$1"${version}"`,
+);
+update(tauriPath, tauriRaw, patchedTauri);
 
 if (drift.length === 0) {
   console.log(`Version ${version} is in sync.`);

@@ -20,7 +20,7 @@ colliding. `checkpoint_store` may embed credentials and is treated as a secret.
 |---|---|---|
 | **SQLx** (PostgreSQL / MySQL / MariaDB / SQLite) | `cursor_column` + `cursor_id` | Last value of `cursor_column` |
 | **ClickHouse** | `cursor_column` + `cursor_id` + external `checkpoint_store` | Last value of `cursor_column` |
-| **MongoDB** (`consume: capture_new` / `capture_all`) | `cursor_id` | Change-stream resume token |
+| **MongoDB** (`consume: capture_new` / `capture_all`) | `cursor_id` | Change-stream resume token. For `capture_all`, only the change-stream phase is checkpointed; the initial snapshot is not resumable. |
 | **Object store** (`s3://`, `gs://`, `az://`) | `cursor_id` + external `checkpoint_store` | Last fully-acked object key |
 | **Postgres CDC** | (automatic) | Confirmed LSN — the replication **slot** is authoritative; `cursor_id` only adds a local copy |
 

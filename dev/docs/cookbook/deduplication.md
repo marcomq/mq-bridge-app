@@ -56,22 +56,24 @@ Full examples in [Upserts & insert-if-absent](upserts.md).
 
 ## Deduplicating CDC replays
 
-A `postgres_cdc` change event's `message_id` is a **stable hash** of `schema.table + key + lsn`,
-so a replayed change deduplicates through the `deduplication` middleware, and the sink's own
-constraint (`id_field` / `ON CONFLICT`) makes the write idempotent. Use `postgres.lsn` as the
-version to drop stale replays:
+A `postgres_cdc` change event's `message_id` is a **stable hash** that includes the table,
+key, operation, commit LSN, and intra-transaction ordinal. Replayed changes therefore deduplicate
+through the `deduplication` middleware while distinct changes in one transaction remain distinct.
+The sink's own constraint (`id_field` / `ON CONFLICT`) still makes the write idempotent.
+
+An LSN-only sink predicate is not enough when one transaction changes the same key more than once:
+those changes share a commit LSN, so the first accepted row can block a later row. Enable
+`source_metadata: true` on the `postgres_cdc` source and order sink versions by the pair
+`(mqb.src.postgres_lsn, mqb.src.postgres_ordinal)` instead. Persist both metadata values and
+compare the pair lexicographically in the upsert predicate:
 
 ```sql
-INSERT INTO orders (id, body, lsn) VALUES (${payload:id}, ${payload:body}, ${metadata:postgres.lsn})
-  ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body, lsn = EXCLUDED.lsn
-  WHERE EXCLUDED.lsn > orders.lsn
+INSERT INTO orders (id, body, lsn, ordinal)
+VALUES (${payload:id}, ${payload:body}, ${metadata:mqb.src.postgres_lsn}, ${metadata:mqb.src.postgres_ordinal})
+ON CONFLICT (id) DO UPDATE
+SET body = EXCLUDED.body, lsn = EXCLUDED.lsn, ordinal = EXCLUDED.ordinal
+WHERE (EXCLUDED.lsn, EXCLUDED.ordinal) > (orders.lsn, orders.ordinal)
 ```
-
-> **Known edge:** if the same primary key changes twice *within one transaction*, both events
-> share that transaction's commit LSN and therefore the same `message_id` — the middleware treats
-> the second as a duplicate and drops it. The sink still converges to the final row, but the
-> intermediate revision is not delivered. If you need every intra-txn revision, don't rely on the
-> `message_id`/middleware path for those rows.
 
 See the [Postgres CDC → JSONL](../tutorials/postgres-cdc.md) tutorial for the full CDC idempotency
 picture, and [Delivery guarantees](../engine/delivery.md) for what identity each source provides

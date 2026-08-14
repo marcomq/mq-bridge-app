@@ -73,7 +73,7 @@ are real RPCs, and unacknowledged messages are retained and redelivered to the s
 | `server_mode` | Start an embedded gRPC server (receive) instead of connecting as a client. |
 | `topic` | Topic / subject used for both subscribe and publish paths. |
 | `timeout_ms` | Client: connection timeout and per-request deadline. Server: per-request deadline. |
-| `consumer_id` | Subscription identity for ACK tracking and redelivery. Defaults to a fresh id per consumer; set it to have unacknowledged messages redelivered after a reconnect. |
+| `consumer_id` | For the built-in `mqbridge.Bridge` protocol, the subscription identity for ACK tracking and redelivery. Defaults to a fresh id per consumer; set it to have unacknowledged messages redelivered after a reconnect. Dynamic services use the remote API's own semantics. |
 | `descriptor_set_path` / `service_name` / `method_name` / `request` / `server_streaming` | Dynamic client mode (above). |
 | `max_decoding_message_size` / `max_encoding_message_size` | Max decoded / encoded message size (decode default 4 MiB, encode unlimited). |
 | `http2_keepalive_interval_ms` / `http2_keepalive_timeout_ms` | HTTP/2 keepalive tuning, both modes. |

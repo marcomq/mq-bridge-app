@@ -58,6 +58,7 @@ describe("routes helpers", () => {
         MongoDbConfig: {
           properties: {
             format: {},
+            consume: {},
           },
         },
       },
@@ -74,6 +75,7 @@ describe("routes helpers", () => {
 
     expect(routeSchema.$defs.FileConfig.properties.format.default).toBe("raw");
     expect(routeSchema.$defs.MongoDbConfig.properties.format.default).toBe("raw");
+    expect(routeSchema.$defs.MongoDbConfig.properties.consume.default).toBe("capture_all");
     expect(routeSchema.properties).toEqual({
       input: { type: "object" },
     });
@@ -155,11 +157,25 @@ describe("routes helpers", () => {
     expect(
       splitRouteFormData("existing_route", {
         name: "   ",
+        input: {
+          mongodb: {
+            url: "mongodb://localhost:27017",
+            consume: "snapshot",
+            change_stream: true,
+          },
+        },
         output: { ref: "out" },
       }),
     ).toEqual({
       nextName: "existing_route",
       routeData: {
+        input: {
+          mongodb: {
+            url: "mongodb://localhost:27017",
+            consume: "snapshot",
+            change_stream: true,
+          },
+        },
         output: { ref: "out" },
       },
     });

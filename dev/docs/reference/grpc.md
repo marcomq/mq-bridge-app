@@ -9,7 +9,7 @@ Query parameters recognised as config fields for this connector. The object-type
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `concurrency_limit_per_connection` | integer | no | `null` | Maximum number of concurrent requests handled per connection. **Server-mode only.** |
-| `consumer_id` | string | no | `null` | Stable subscription identity used for ACK tracking and redelivery. Defaults to a fresh id per consumer; set it to be redelivered unacknowledged messages on reconnect. |
+| `consumer_id` | string | no | `null` | For the built-in `mqbridge.Bridge` protocol, the stable subscription identity used for ACK tracking and redelivery. Defaults to a fresh id per consumer; set it to receive unacknowledged messages again on reconnect. Dynamic services use the remote API's own semantics. |
 | `descriptor_set_path` | string | no | `null` | Compiled protobuf FileDescriptorSet for dynamic client mode. |
 | `http2_keepalive_interval_ms` | integer | no | `null` | HTTP/2 keepalive ping interval in milliseconds. Applies in both modes. Default disabled |
 | `http2_keepalive_timeout_ms` | integer | no | `null` | Timeout for a keepalive ping acknowledgement in milliseconds. Applies in both modes. |
@@ -60,4 +60,3 @@ let tls = TlsConfig {
 | `cert_password` | string | no | — | Password for the private key (if encrypted). |
 | `key_file` | string | no | — | Path to the client private key file (PEM). |
 | `required` | boolean | no | `false` | If true, enable TLS/SSL. |
-

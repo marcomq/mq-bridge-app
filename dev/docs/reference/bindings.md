@@ -44,8 +44,8 @@ and both can load a compiled plugin — `mq_bridge.load_endpoint_plugin(path)` i
 Registration is process-global, keyed by name, and must happen before a route that names it
 starts; a duplicate name is an error rather than a silent replacement.
 
-Full examples in [Writing endpoints & middleware](../engine/extending.md) and
-[Writing a plugin](../engine/plugins.md).
+Full examples in [Custom endpoints](../extending/custom-endpoints.md) and
+[Native plugins](../extending/plugins.md).
 
 ## Rust API surface
 
