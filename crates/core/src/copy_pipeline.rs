@@ -1,7 +1,8 @@
 //! Copy-command conveniences layered over mq-bridge's route abstractions.
 
 use std::any::Any;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
@@ -29,18 +30,42 @@ pub enum ResumeCapability {
     ExternalCheckpoint,
 }
 
+impl ResumeCapability {
+    /// Names the mechanism in logs, so a resumed copy says what it resumed from.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::CursorBased => "cursor",
+            Self::ExternalCheckpoint => "external-checkpoint",
+        }
+    }
+}
+
 /// Compiles and attaches a first-class copy filter to the source endpoint.
 ///
-/// The custom middleware is an implementation detail. Appending it makes it the
-/// innermost consumer wrapper, so it runs immediately after the source and before
-/// URI-configured transform or other processing middleware.
+/// The custom middleware is an implementation detail. Consumer middlewares are
+/// applied in reverse, so the last entry is the innermost wrapper: the filter
+/// runs immediately after the source and before URI-configured transform or
+/// other processing middleware.
 pub fn configure_filter(input: &mut Endpoint, expression: &str) -> anyhow::Result<()> {
     CompiledFilter::new(expression).context("invalid filter expression")?;
     ensure_filter_factory()?;
-    input.middlewares.push(Middleware::Custom {
+    let entry = Middleware::Custom {
         name: FILTER_MIDDLEWARE_NAME.to_string(),
         config: json!({ "expression": expression }),
-    });
+    };
+    // `buffer` is the one middleware the filter must not slip under: it
+    // downcasts its inner consumer against a closed list of cancel-safe sources,
+    // so anything between it and the source fails route startup. Sitting just
+    // outside it keeps the filter ahead of every other middleware.
+    match input
+        .middlewares
+        .iter()
+        .rposition(|middleware| matches!(middleware, Middleware::Buffer(_)))
+    {
+        Some(index) => input.middlewares.insert(index, entry),
+        None => input.middlewares.push(entry),
+    }
     Ok(())
 }
 
@@ -185,32 +210,63 @@ fn checkpoint_identity(
         "destination": output,
         "filter": filter,
     });
-    redact_credentials(&mut definition, None);
+    redact_credentials(&mut definition, None, None);
+    strip_absent_fields(&mut definition, 0);
     let encoded = serde_json::to_vec(&definition)?;
     let digest = Sha256::digest(encoded);
     Ok(format!("copy-{}", hex::encode(&digest[..16])))
 }
 
-fn redact_credentials(value: &mut serde_json::Value, key: Option<&str>) {
+/// Drops absent config fields so the identity survives an mq-bridge upgrade.
+///
+/// Endpoint configs serialize every field, so a release that adds one optional
+/// setting would otherwise change every existing checkpoint id and silently
+/// restart each `--resume` from the beginning. An added `Option` arrives as
+/// `null` and is removed here; a new field with a non-null default still moves
+/// the identity.
+///
+/// Endpoint objects themselves are left alone. Their type is a flattened tag,
+/// and a `null`-valued variant such as `null:` is the only thing naming it.
+fn strip_absent_fields(value: &mut serde_json::Value, depth: usize) {
     match value {
         serde_json::Value::Object(map) => {
-            for (key, value) in map {
-                redact_credentials(value, Some(key));
+            if depth >= 2 && map.values().any(|value| !value.is_null()) {
+                map.retain(|_, value| !value.is_null());
+            }
+            for value in map.values_mut() {
+                strip_absent_fields(value, depth + 1);
             }
         }
         serde_json::Value::Array(values) => {
             for value in values {
-                redact_credentials(value, key);
+                strip_absent_fields(value, depth);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Replaces credential values so rotating a password does not fork the checkpoint.
+///
+/// Not a disclosure control — the result is hashed and never shown. It only
+/// decides which fields may change the identity, which makes over-redaction the
+/// risk worth avoiding: blanking a *semantic* field would let two genuinely
+/// different pipelines share one checkpoint. Names are matched narrowly, and
+/// anything unrecognised keeps contributing to the hash.
+fn redact_credentials(value: &mut serde_json::Value, key: Option<&str>, parent: Option<&str>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (child_key, child) in map {
+                redact_credentials(child, Some(child_key), key);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_credentials(value, key, parent);
             }
         }
         serde_json::Value::String(text) => {
-            let key = key.unwrap_or_default().to_ascii_lowercase();
-            if ["password", "secret", "token", "authorization", "cookie"]
-                .iter()
-                .any(|needle| key.contains(needle))
-                || key == "key"
-                || key.ends_with("_key")
-            {
+            if is_credential(key, parent) {
                 *text = "[redacted]".to_string();
                 return;
             }
@@ -223,6 +279,24 @@ fn redact_credentials(value: &mut serde_json::Value, key: Option<&str>) {
         }
         _ => {}
     }
+}
+
+/// Whether `key` names a credential rather than a pipeline setting.
+///
+/// `key` on its own is ambiguous — key material under `encryption`, a dedup key
+/// *template* under `deduplication` — so the enclosing field decides. Names like
+/// `partition_key`, `metadata_key` and `cookie_metadata_key` are deliberately
+/// excluded: they name a field to read, not a secret.
+fn is_credential(key: Option<&str>, parent: Option<&str>) -> bool {
+    let Some(key) = key.map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    ["password", "passphrase", "secret", "token", "credential"]
+        .iter()
+        .any(|needle| key.contains(needle))
+        || matches!(key.as_str(), "authorization" | "cookie" | "access_key")
+        || (key == "key" && parent == Some("encryption"))
+        || parent == Some("decrypt_keys")
 }
 
 fn ensure_filter_factory() -> anyhow::Result<()> {
@@ -256,6 +330,7 @@ impl CustomMiddlewareFactory for CopyFilterFactory {
         Ok(Box::new(FilterConsumer {
             inner: consumer,
             filter: CompiledFilter::new(expression).context("invalid filter expression")?,
+            deferred: Mutex::new(Vec::new()),
         }))
     }
 }
@@ -263,6 +338,7 @@ impl CustomMiddlewareFactory for CopyFilterFactory {
 struct CompiledFilter {
     tree: Node<DefaultNumericTypes>,
     variables: Vec<String>,
+    warned_absent_field: AtomicBool,
 }
 
 impl CompiledFilter {
@@ -272,9 +348,20 @@ impl CompiledFilter {
             .iter_variable_identifiers()
             .map(str::to_string)
             .collect();
-        Ok(Self { tree, variables })
+        Ok(Self {
+            tree,
+            variables,
+            warned_absent_field: AtomicBool::new(false),
+        })
     }
 
+    /// Whether this message satisfies the expression.
+    ///
+    /// A field that is absent or null means "does not match", the way a SQL
+    /// `WHERE` treats NULL: one heterogeneous document should not end a copy
+    /// that is otherwise running fine. A payload that is not a JSON object is
+    /// still an error, because that means the filter was pointed at data it
+    /// cannot read at all, and silently dropping everything would be worse.
     fn matches(&self, payload: &[u8]) -> anyhow::Result<bool> {
         let document: serde_json::Value = serde_json::from_slice(payload)
             .context("filter requires a structured JSON object payload")?;
@@ -283,9 +370,10 @@ impl CompiledFilter {
             .ok_or_else(|| anyhow!("filter requires a structured JSON object payload"))?;
         let mut context = HashMapContext::<DefaultNumericTypes>::new();
         for variable in &self.variables {
-            let value = object
-                .get(variable)
-                .ok_or_else(|| anyhow!("filter field `{variable}` is missing"))?;
+            let Some(value) = object.get(variable).filter(|value| !value.is_null()) else {
+                self.warn_absent_field(variable);
+                return Ok(false);
+            };
             context
                 .set_value(variable.clone(), expression_value(variable, value)?)
                 .map_err(|error| anyhow!(error))?;
@@ -293,6 +381,14 @@ impl CompiledFilter {
         self.tree
             .eval_boolean_with_context(&context)
             .map_err(|error| anyhow!(error))
+    }
+
+    /// Warns once per copy: a field that is never present drops every message,
+    /// and a typo in the expression should not just look like an empty source.
+    fn warn_absent_field(&self, field: &str) {
+        if !self.warned_absent_field.swap(true, Ordering::Relaxed) {
+            tracing::warn!(field, "filter field is absent or null; those messages are not copied");
+        }
     }
 }
 
@@ -322,6 +418,21 @@ fn expression_value(
 struct FilterConsumer {
     inner: Box<dyn MessageConsumer>,
     filter: CompiledFilter,
+    /// Commits for batches the filter emptied, held back on sources that need
+    /// ordered commits. See [`FilterConsumer::receive_batch`].
+    ///
+    /// Behind a `Mutex` only to stay `Sync`, which `MessageConsumer` requires: a
+    /// boxed `FnOnce` is `Send` but not `Sync`. It is only ever reached through
+    /// `&mut self`, so `get_mut` suffices and nothing ever blocks.
+    deferred: Mutex<Vec<(BatchCommitFunc, usize)>>,
+}
+
+impl FilterConsumer {
+    fn deferred_commits(&mut self) -> &mut Vec<(BatchCommitFunc, usize)> {
+        self.deferred
+            .get_mut()
+            .expect("held commits are only reached through &mut self, never locked")
+    }
 }
 
 #[async_trait]
@@ -334,6 +445,19 @@ impl MessageConsumer for FilterConsumer {
         self.inner.on_disconnect_hook()
     }
 
+    /// Reads until a batch has something to copy, acknowledging what it drops.
+    ///
+    /// A batch the filter empties still has to be acknowledged, but on a
+    /// cumulative-ack source acknowledging it here would jump ahead of batches
+    /// the route is still writing — the route's ordered sequencer only sees the
+    /// commits this method returns — and a crash in that window would lose them.
+    /// So when the source needs ordered commits, the emptied batch's commit is
+    /// held and runs from inside the next retained batch's commit, which the
+    /// sequencer does order. Sources that ack individually have no such coupling
+    /// and are acknowledged straight away.
+    ///
+    /// A drain that ends while commits are still held simply re-reads and
+    /// re-drops those messages next run; nothing reaches the destination twice.
     async fn receive_batch(&mut self, max_messages: usize) -> Result<ReceivedBatch, ConsumerError> {
         loop {
             let batch = self.inner.receive_batch(max_messages).await?;
@@ -355,12 +479,18 @@ impl MessageConsumer for FilterConsumer {
             }
 
             if kept.is_empty() {
-                (batch.commit)(vec![MessageDisposition::Ack; keep_flags.len()])
-                    .await
-                    .map_err(ConsumerError::Connection)?;
+                let dropped = keep_flags.len();
+                if self.inner.commit_requires_order() {
+                    self.deferred_commits().push((batch.commit, dropped));
+                } else {
+                    (batch.commit)(vec![MessageDisposition::Ack; dropped])
+                        .await
+                        .map_err(ConsumerError::Connection)?;
+                }
                 continue;
             }
 
+            let deferred = std::mem::take(self.deferred_commits());
             let expected = kept.len();
             let commit: BatchCommitFunc = Box::new(move |dispositions| {
                 Box::pin(async move {
@@ -369,6 +499,9 @@ impl MessageConsumer for FilterConsumer {
                             "copy filter commit received {} dispositions for {expected} retained messages",
                             dispositions.len()
                         );
+                    }
+                    for (commit, dropped) in deferred {
+                        commit(vec![MessageDisposition::Ack; dropped]).await?;
                     }
                     let mut retained = dispositions.into_iter();
                     let expanded = keep_flags
@@ -416,7 +549,9 @@ impl MessageConsumer for FilterConsumer {
 mod tests {
     use super::*;
     use mq_bridge::CanonicalMessage;
-    use mq_bridge::models::{KafkaConfig, MqttConfig, SqlxConfig};
+    use mq_bridge::models::{
+        BufferMiddleware, KafkaConfig, MetricsMiddleware, MqttConfig, SqlxConfig,
+    };
     use std::sync::Mutex;
 
     fn endpoint(endpoint_type: EndpointType) -> Endpoint {
@@ -435,6 +570,48 @@ mod tests {
         assert!(CompiledFilter::new("(").is_err());
         let filter = CompiledFilter::new("amount > 10").unwrap();
         assert!(filter.matches(b"not json").is_err());
+    }
+
+    // A heterogeneous document must not end an otherwise healthy copy, so an
+    // absent or null field reads as "does not match" the way SQL treats NULL.
+    #[test]
+    fn absent_and_null_fields_do_not_match_and_do_not_fail() {
+        let filter = CompiledFilter::new("amount > 10").unwrap();
+        assert!(!filter.matches(br#"{"country":"DE"}"#).unwrap());
+        assert!(!filter.matches(br#"{"amount":null}"#).unwrap());
+        assert!(filter.matches(br#"{"amount":75}"#).unwrap());
+    }
+
+    // `buffer` refuses anything between itself and the source, so the filter has
+    // to wrap it rather than land underneath it.
+    #[test]
+    fn the_filter_wraps_buffer_rather_than_splitting_it_from_the_source() {
+        let mut input = endpoint(EndpointType::Kafka(KafkaConfig {
+            url: "kafka://localhost:9092".to_string(),
+            topic: Some("orders".to_string()),
+            ..Default::default()
+        }));
+        input.middlewares.push(Middleware::Buffer(BufferMiddleware {
+            max_messages: 100,
+            max_delay_ms: 10,
+        }));
+        configure_filter(&mut input, "amount > 10").unwrap();
+
+        assert!(matches!(input.middlewares[0], Middleware::Custom { .. }));
+        assert!(matches!(input.middlewares[1], Middleware::Buffer(_)));
+    }
+
+    #[test]
+    fn the_filter_is_innermost_without_a_buffer() {
+        let mut input = endpoint(EndpointType::Kafka(KafkaConfig {
+            url: "kafka://localhost:9092".to_string(),
+            topic: Some("orders".to_string()),
+            ..Default::default()
+        }));
+        input.middlewares.push(Middleware::Metrics(MetricsMiddleware {}));
+        configure_filter(&mut input, "amount > 10").unwrap();
+
+        assert!(matches!(input.middlewares[1], Middleware::Custom { .. }));
     }
 
     #[test]
@@ -499,34 +676,113 @@ mod tests {
         assert_ne!(first, changed);
     }
 
-    struct OneBatchConsumer {
-        messages: Option<Vec<CanonicalMessage>>,
-        dispositions: Arc<Mutex<Vec<MessageDisposition>>>,
+    // `partition_key` reads like a credential to a `*_key` rule, but it is
+    // routing: two destinations that differ in it are different pipelines and
+    // must not share a checkpoint.
+    #[test]
+    fn key_named_settings_still_separate_pipelines() {
+        let input = endpoint(EndpointType::Sqlx(SqlxConfig {
+            url: "postgres://alice@localhost/app".to_string(),
+            table: "orders".to_string(),
+            cursor_column: Some("id".to_string()),
+            ..Default::default()
+        }));
+        let sink = |partition_key: &str| {
+            endpoint(EndpointType::Kafka(KafkaConfig {
+                url: "kafka://localhost:9092".to_string(),
+                topic: Some("orders".to_string()),
+                partition_key: Some(partition_key.to_string()),
+                ..Default::default()
+            }))
+        };
+        assert_ne!(
+            checkpoint_identity(&input, &sink("region"), None).unwrap(),
+            checkpoint_identity(&input, &sink("customer"), None).unwrap()
+        );
+    }
+
+    // An mq-bridge release that adds one optional setting must not silently
+    // restart every resumable copy from the beginning.
+    #[test]
+    fn a_newly_added_absent_setting_keeps_the_identity_stable() {
+        let mut definition = json!({
+            "source": { "middlewares": [], "sql": { "url": "postgres://localhost/app" } },
+            "destination": { "middlewares": [], "null": null },
+            "filter": null,
+        });
+        let mut upgraded = json!({
+            "source": {
+                "middlewares": [],
+                "sql": { "url": "postgres://localhost/app", "a_new_setting": null }
+            },
+            "destination": { "middlewares": [], "null": null },
+            "filter": null,
+        });
+        strip_absent_fields(&mut definition, 0);
+        strip_absent_fields(&mut upgraded, 0);
+        assert_eq!(definition, upgraded);
+        // The endpoint's own type tag is null-valued and must survive.
+        assert!(definition["destination"].get("null").is_some());
+    }
+
+    /// Serves scripted batches and records each commit in the order it ran, so
+    /// tests can assert *when* a batch was acknowledged, not just how.
+    struct ScriptedConsumer {
+        batches: std::collections::VecDeque<Vec<CanonicalMessage>>,
+        commits: Arc<Mutex<Vec<Vec<MessageDisposition>>>>,
+        ordered: bool,
+    }
+
+    impl ScriptedConsumer {
+        fn new(
+            batches: impl IntoIterator<Item = Vec<CanonicalMessage>>,
+            ordered: bool,
+        ) -> (Self, Arc<Mutex<Vec<Vec<MessageDisposition>>>>) {
+            let commits = Arc::new(Mutex::new(Vec::new()));
+            let consumer = Self {
+                batches: batches.into_iter().collect(),
+                commits: Arc::clone(&commits),
+                ordered,
+            };
+            (consumer, commits)
+        }
     }
 
     #[async_trait]
-    impl MessageConsumer for OneBatchConsumer {
+    impl MessageConsumer for ScriptedConsumer {
         async fn receive_batch(
             &mut self,
             _max_messages: usize,
         ) -> Result<ReceivedBatch, ConsumerError> {
-            let Some(messages) = self.messages.take() else {
+            let Some(messages) = self.batches.pop_front() else {
                 return Ok(ReceivedBatch::empty());
             };
-            let dispositions = Arc::clone(&self.dispositions);
+            let commits = Arc::clone(&self.commits);
             Ok(ReceivedBatch {
                 messages,
                 commit: Box::new(move |result| {
                     Box::pin(async move {
-                        *dispositions.lock().unwrap() = result;
+                        commits.lock().unwrap().push(result);
                         Ok(())
                     })
                 }),
             })
         }
 
+        fn commit_requires_order(&self) -> bool {
+            self.ordered
+        }
+
         fn as_any(&self) -> &dyn Any {
             self
+        }
+    }
+
+    fn filter_consumer(inner: ScriptedConsumer, expression: &str) -> FilterConsumer {
+        FilterConsumer {
+            inner: Box::new(inner),
+            filter: CompiledFilter::new(expression).unwrap(),
+            deferred: Mutex::new(Vec::new()),
         }
     }
 
@@ -536,52 +792,65 @@ mod tests {
 
     #[tokio::test]
     async fn filtered_messages_ack_and_retained_failures_do_not_advance_past_the_gap() {
-        let dispositions = Arc::new(Mutex::new(Vec::new()));
-        let inner = OneBatchConsumer {
-            messages: Some(vec![message(100), message(1), message(200)]),
-            dispositions: Arc::clone(&dispositions),
-        };
-        let mut consumer = FilterConsumer {
-            inner: Box::new(inner),
-            filter: CompiledFilter::new("amount > 10").unwrap(),
-        };
+        let (inner, commits) =
+            ScriptedConsumer::new([vec![message(100), message(1), message(200)]], true);
+        let mut consumer = filter_consumer(inner, "amount > 10");
 
         let batch = consumer.receive_batch(10).await.unwrap();
         assert_eq!(batch.messages.len(), 2);
         (batch.commit)(vec![MessageDisposition::Nack, MessageDisposition::Ack])
             .await
             .unwrap();
+        let commits = commits.lock().unwrap();
         assert!(matches!(
-            dispositions.lock().unwrap()[0],
-            MessageDisposition::Nack
-        ));
-        assert!(matches!(
-            dispositions.lock().unwrap()[1],
-            MessageDisposition::Ack
-        ));
-        assert!(matches!(
-            dispositions.lock().unwrap()[2],
-            MessageDisposition::Ack
+            commits[0][..],
+            [
+                MessageDisposition::Nack,
+                MessageDisposition::Ack,
+                MessageDisposition::Ack
+            ]
         ));
     }
 
+    // The whole point of holding the commit back: on a cumulative-ack source it
+    // must not run until the route's sequencer says so, or it acks past batches
+    // that are still being written.
     #[tokio::test]
-    async fn fully_filtered_batch_is_successfully_acknowledged() {
-        let dispositions = Arc::new(Mutex::new(Vec::new()));
-        let inner = OneBatchConsumer {
-            messages: Some(vec![message(1)]),
-            dispositions: Arc::clone(&dispositions),
-        };
-        let mut consumer = FilterConsumer {
-            inner: Box::new(inner),
-            filter: CompiledFilter::new("amount > 10").unwrap(),
-        };
+    async fn an_emptied_batch_commits_with_the_next_retained_batch_when_order_matters() {
+        let (inner, commits) = ScriptedConsumer::new([vec![message(1)], vec![message(100)]], true);
+        let mut consumer = filter_consumer(inner, "amount > 10");
+
+        let batch = consumer.receive_batch(10).await.unwrap();
+        assert_eq!(batch.messages.len(), 1);
+        assert!(
+            commits.lock().unwrap().is_empty(),
+            "the emptied batch must not be acknowledged before the route commits"
+        );
+
+        (batch.commit)(vec![MessageDisposition::Ack]).await.unwrap();
+        let commits = commits.lock().unwrap();
+        assert_eq!(commits.len(), 2, "both batches acknowledge, in order");
+        assert!(matches!(commits[0][..], [MessageDisposition::Ack]));
+        assert!(matches!(commits[1][..], [MessageDisposition::Ack]));
+    }
+
+    #[tokio::test]
+    async fn an_emptied_batch_is_acknowledged_at_once_when_order_does_not_matter() {
+        let (inner, commits) = ScriptedConsumer::new([vec![message(1)], vec![message(100)]], false);
+        let mut consumer = filter_consumer(inner, "amount > 10");
+
+        let batch = consumer.receive_batch(10).await.unwrap();
+        assert_eq!(batch.messages.len(), 1);
+        assert_eq!(commits.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_drained_source_is_reported_empty_even_with_commits_still_held() {
+        let (inner, commits) = ScriptedConsumer::new([vec![message(1)]], true);
+        let mut consumer = filter_consumer(inner, "amount > 10");
 
         let empty = consumer.receive_batch(10).await.unwrap();
-        assert!(empty.messages.is_empty());
-        assert!(matches!(
-            dispositions.lock().unwrap()[0],
-            MessageDisposition::Ack
-        ));
+        assert!(empty.messages.is_empty(), "the drain signal reaches the route");
+        assert!(commits.lock().unwrap().is_empty());
     }
 }

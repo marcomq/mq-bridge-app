@@ -662,9 +662,15 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     let (from, to) = copy_endpoints(&args)?;
     let mut input = endpoint_from_uri(from).context("invalid copy source endpoint")?;
     let output = endpoint_from_uri(to).context("invalid copy destination endpoint")?;
-    if args.resume {
-        copy_pipeline::configure_resume(&mut input, &output, args.filter.as_deref())?;
-    }
+    let resume = if args.resume {
+        Some(copy_pipeline::configure_resume(
+            &mut input,
+            &output,
+            args.filter.as_deref(),
+        )?)
+    } else {
+        None
+    };
     if let Some(expression) = &args.filter {
         copy_pipeline::configure_filter(&mut input, expression)?;
     }
@@ -696,7 +702,9 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
         from = %from,
         to = %to,
         filtered = args.filter.is_some(),
-        resume = args.resume,
+        // Names the mechanism, not just the flag: which one the source picked
+        // is what tells you where a restart will actually pick up from.
+        resume = resume.map_or("off", copy_pipeline::ResumeCapability::as_str),
         drain = args.drain,
         "copy route started"
     );
