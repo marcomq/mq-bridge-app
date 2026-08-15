@@ -5,7 +5,7 @@
 
 use mq_bridge_app::{
     config::{AppConfig, config_file_path, load_config},
-    mq_bridge,
+    copy_pipeline, mq_bridge,
     status_registry::{
         InstanceKind, StatusEntity, StatusLease, StatusRoute, StatusSnapshot, StatusSummary,
         endpoint_type_label,
@@ -44,6 +44,18 @@ pub(crate) const DEFAULT_CONCURRENCY: usize = 4;
 /// exposes completion as a poll, not a notification; see [`run_copy`].
 const COPY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Address the web UI falls back to when the config names none. Only ever
+/// applied after an explicit `--ui` or a `y` from [`ui_prompt`].
+const DEFAULT_UI_ADDR: &str = "0.0.0.0:9091";
+
+/// Address the Prometheus endpoint falls back to when the config names none.
+///
+/// Loopback, not `0.0.0.0`: metrics are read-only but still describe the routes
+/// and endpoints in use, and a bare run on a laptop should not publish that to
+/// the local network. Deployments that scrape from another host set the address
+/// explicitly — the Docker image does exactly that in its `CMD`.
+const DEFAULT_METRICS_ADDR: &str = "127.0.0.1:9090";
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -74,6 +86,32 @@ struct Args {
     /// Generate JSON schema to the specified path
     #[arg(long)]
     schema: Option<String>,
+
+    /// Start the web UI on the default port without asking.
+    ///
+    /// Only relevant when no config file sets `ui_addr`: that case asks for
+    /// confirmation on a terminal and starts nothing anywhere else, so an
+    /// unattended run never opens the port by itself.
+    #[arg(long)]
+    ui: bool,
+
+    /// Never start the web UI, and do not ask.
+    #[arg(long, conflicts_with = "ui")]
+    no_ui: bool,
+
+    /// Serve the Prometheus endpoint on ADDR (default `127.0.0.1:9090`).
+    ///
+    /// Overrides `metrics_addr` from the config. Use `0.0.0.0:<port>` to allow
+    /// scraping from another host.
+    #[arg(long, value_name = "ADDR", conflicts_with = "no_metrics")]
+    metrics_addr: Option<String>,
+
+    /// Do not serve the Prometheus endpoint on its own port.
+    ///
+    /// Metrics are still collected, and still reachable at `/metrics` on the
+    /// web UI when that is running.
+    #[arg(long)]
+    no_metrics: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -183,13 +221,35 @@ struct CopyArgs {
     /// `...?table=src|retry?max_attempts=5|metrics`. Middleware params are that
     /// middleware's config fields. A literal `|` inside the URI must be written
     /// as `%7C`.
-    #[arg(long)]
-    from: String,
+    #[arg(long, value_name = "SOURCE", conflicts_with = "source")]
+    from: Option<String>,
 
     /// Destination endpoint URI (same URI and middleware forms as `--from`), e.g.
     /// `postgres://user:pass@host/db?table=dst&insert_query=<url-encoded SQL>`.
+    #[arg(long, value_name = "TARGET", conflicts_with = "target")]
+    to: Option<String>,
+
+    /// Source endpoint URI in the positional `copy SOURCE TARGET` form.
+    #[arg(value_name = "SOURCE", index = 1, conflicts_with = "from")]
+    source: Option<String>,
+
+    /// Destination endpoint URI in the positional `copy SOURCE TARGET` form.
+    #[arg(value_name = "TARGET", index = 2, conflicts_with = "to")]
+    target: Option<String>,
+
+    /// Only copy messages for which EXPR evaluates to true.
+    ///
+    /// Expressions address top-level JSON fields directly, for example
+    /// `amount > 100` or `country == "DE" && amount >= 50`.
+    #[arg(long, value_name = "EXPR")]
+    filter: Option<String>,
+
+    /// Resume from the last successfully processed position.
+    ///
+    /// The source's native cursor, offset, slot, or checkpoint mechanism is used.
+    /// Fails before starting when the source cannot resume safely.
     #[arg(long)]
-    to: String,
+    resume: bool,
 
     /// Exit once the source yields an empty batch (drain-then-exit). Without it,
     /// `copy` keeps running like a continuous bridge until Ctrl-C.
@@ -203,6 +263,38 @@ struct CopyArgs {
     /// Batch size (defaults to 1024).
     #[arg(long)]
     batch_size: Option<usize>,
+}
+
+/// Whether this config has nothing to run, and so exists only to be filled in.
+///
+/// Deliberately checks both collections: a bridge configured purely with
+/// `routes:` has no `consumers`, and treating that as unconfigured would stop a
+/// real deployment at the UI prompt.
+fn nothing_to_run(config: &AppConfig) -> bool {
+    config.consumers.is_empty() && config.routes.is_empty()
+}
+
+/// Asks whether to open the web UI on `addr`, defaulting to no.
+///
+/// Only a terminal is asked. An unattended run — a shell script, a service
+/// unit, CI — answers nothing, and the safe reading of silence is to leave the
+/// port closed rather than expose a control surface nobody meant to start.
+fn ui_prompt(addr: &str) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+
+    let mut stdin = std::io::stdin().lock();
+    if !stdin.is_terminal() {
+        println!("      Web UI not started (pass --ui to start it on {addr})");
+        return false;
+    }
+    print!("      Start the web UI on {addr}? [y/N] ");
+    // The prompt has no trailing newline, so it sits in the line buffer until flushed.
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if stdin.read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Loads `--plugin` libraries. Called per subcommand rather than once up front
@@ -306,13 +398,27 @@ async fn main() -> anyhow::Result<()> {
     // When no persisted config file exists (common in http/no-tauri dev mode), ensure
     // UI + metrics are reachable with sane defaults.
     let has_persisted_config = std::path::Path::new(&config_file_path).exists();
-    if !has_persisted_config || config.consumers.is_empty() {
-        if config.metrics_addr.is_empty() {
-            config.metrics_addr = "0.0.0.0:9090".to_string();
-        }
-        if config.ui_addr.is_empty() {
-            config.ui_addr = "0.0.0.0:9091".to_string();
-        }
+    let unconfigured = !has_persisted_config || config.consumers.is_empty();
+    if let Some(addr) = args.metrics_addr {
+        config.metrics_addr = addr;
+    } else if args.no_metrics {
+        config.metrics_addr = String::new();
+    } else if unconfigured && config.metrics_addr.is_empty() {
+        config.metrics_addr = DEFAULT_METRICS_ADDR.to_string();
+    }
+    // The UI is a control surface, so its port is the one address never opened
+    // implicitly: a `ui_addr` in the config counts as consent, an accidental
+    // bare run does not. `--ui` opts in even when a config leaves the address
+    // empty; otherwise the previously automatic default has to be confirmed.
+    //
+    // The prompt is offered only when there is nothing to run, which is the
+    // "start empty and build a config in the UI" case. A config that defines
+    // routes or consumers is a deployment: it must never stop at a question.
+    if config.ui_addr.is_empty()
+        && !args.no_ui
+        && (args.ui || (nothing_to_run(&config) && ui_prompt(DEFAULT_UI_ADDR)))
+    {
+        config.ui_addr = DEFAULT_UI_ADDR.to_string();
     }
 
     let mut prom_addr = None;
@@ -553,8 +659,15 @@ fn route_entity(name: &str, config: &AppConfig) -> StatusRoute {
 async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     use mq_bridge::models::{Route, RouteOptions};
 
-    let input = endpoint_from_uri(&args.from).context("invalid --from endpoint")?;
-    let output = endpoint_from_uri(&args.to).context("invalid --to endpoint")?;
+    let (from, to) = copy_endpoints(&args)?;
+    let mut input = endpoint_from_uri(from).context("invalid copy source endpoint")?;
+    let output = endpoint_from_uri(to).context("invalid copy destination endpoint")?;
+    if args.resume {
+        copy_pipeline::configure_resume(&mut input, &output, args.filter.as_deref())?;
+    }
+    if let Some(expression) = &args.filter {
+        copy_pipeline::configure_filter(&mut input, expression)?;
+    }
     let input_endpoint_label = endpoint_type_label(&input.endpoint_type);
     let output_endpoint_label = endpoint_type_label(&output.endpoint_type);
     let options = RouteOptions {
@@ -580,8 +693,10 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     );
 
     info!(
-        from = %args.from,
-        to = %args.to,
+        from = %from,
+        to = %to,
+        filtered = args.filter.is_some(),
+        resume = args.resume,
         drain = args.drain,
         "copy route started"
     );
@@ -629,6 +744,28 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     drop(copy_status);
 
     result
+}
+
+fn copy_endpoints(args: &CopyArgs) -> anyhow::Result<(&str, &str)> {
+    match (
+        args.from.as_deref(),
+        args.to.as_deref(),
+        args.source.as_deref(),
+        args.target.as_deref(),
+    ) {
+        (Some(from), Some(to), None, None) => Ok((from, to)),
+        (None, None, Some(source), Some(target)) => Ok((source, target)),
+        (None, None, None, None) => anyhow::bail!(
+            "copy requires SOURCE and TARGET, either positionally or with --from and --to"
+        ),
+        (Some(_), None, None, None) | (None, Some(_), None, None) => {
+            anyhow::bail!("copy requires both --from and --to")
+        }
+        (None, None, Some(_), None) | (None, None, None, Some(_)) => {
+            anyhow::bail!("copy positional syntax requires both SOURCE and TARGET")
+        }
+        _ => anyhow::bail!("do not mix positional SOURCE/TARGET with --from/--to"),
+    }
 }
 
 fn copy_status_lease(
@@ -1429,6 +1566,46 @@ async fn platform_specific_shutdown() {
 }
 
 #[cfg(test)]
+mod ui_flag_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn the_ui_is_opt_in() {
+        let bare = Args::try_parse_from(["mqb"]).expect("arguments should parse");
+        assert!(!bare.ui && !bare.no_ui);
+        assert!(Args::try_parse_from(["mqb", "--ui"]).unwrap().ui);
+        assert!(Args::try_parse_from(["mqb", "--no-ui"]).unwrap().no_ui);
+    }
+
+    // Opting in and out at once has no sensible reading, so it is rejected
+    // rather than silently resolved one way.
+    #[test]
+    fn ui_and_no_ui_cannot_be_combined() {
+        assert!(Args::try_parse_from(["mqb", "--ui", "--no-ui"]).is_err());
+    }
+
+    // A routes-only bridge has no consumers, and must not be mistaken for an
+    // empty config — that would stop a deployment at an interactive prompt.
+    #[test]
+    fn a_routes_only_config_counts_as_configured() {
+        assert!(nothing_to_run(&AppConfig::default()));
+
+        let config: AppConfig = serde_json::from_value(serde_json::json!({
+            "routes": {
+                "file_to_file": {
+                    "input": { "file": { "path": "input.log" } },
+                    "output": { "file": { "path": "output.log" } }
+                }
+            }
+        }))
+        .expect("a minimal routes-only config should deserialize");
+        assert!(config.consumers.is_empty());
+        assert!(!nothing_to_run(&config));
+    }
+}
+
+#[cfg(test)]
 mod report_to_ui_flag_tests {
     use super::*;
     use clap::Parser;
@@ -1446,31 +1623,15 @@ mod report_to_ui_flag_tests {
     // flag asks for what is now the default rather than inverting it.
     #[test]
     fn the_bare_legacy_flag_is_a_no_op() {
-        assert!(reporting_enabled(&["mq-bridge-app", "mcp"]));
-        assert!(reporting_enabled(&[
-            "mq-bridge-app",
-            "mcp",
-            "--report-to-ui"
-        ]));
-        assert!(reporting_enabled(&[
-            "mq-bridge-app",
-            "mcp",
-            "--report-to-ui=true"
-        ]));
+        assert!(reporting_enabled(&["mqb", "mcp"]));
+        assert!(reporting_enabled(&["mqb", "mcp", "--report-to-ui"]));
+        assert!(reporting_enabled(&["mqb", "mcp", "--report-to-ui=true"]));
     }
 
     #[test]
     fn both_disable_spellings_turn_reporting_off() {
-        assert!(!reporting_enabled(&[
-            "mq-bridge-app",
-            "mcp",
-            "--report-to-ui=false"
-        ]));
-        assert!(!reporting_enabled(&[
-            "mq-bridge-app",
-            "mcp",
-            "--no-report-to-ui"
-        ]));
+        assert!(!reporting_enabled(&["mqb", "mcp", "--report-to-ui=false"]));
+        assert!(!reporting_enabled(&["mqb", "mcp", "--no-report-to-ui"]));
     }
 }
 

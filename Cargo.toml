@@ -22,6 +22,8 @@ mq-bridge = { version = "0.4.1", default-features = false }
 # Shared third-party deps. Members opt in with `{ workspace = true }` and may add
 # extra `features` on top (they are additive) — see e.g. tokio in the CLI crate.
 anyhow = "1.0.104"
+async-trait = "0.1.89"
+evalexpr = "13.1.0"
 hex = "0.4.3"
 metrics = "0.24.6"
 # `default-features = false` drops the unused `push-gateway` feature, which pulls

@@ -1,24 +1,24 @@
 # CLI commands
 
-`mq-bridge-app` is a single headless binary with three modes: **config mode** (the default —
+`mqb` is a single headless binary with three modes: **config mode** (the default —
 run a long-lived bridge, optionally serving the browser UI), the **`copy`** subcommand (an
 ad-hoc one-route job), and the **`mcp`** subcommand (expose the bridge as MCP tools).
 
 ```text
-mq-bridge-app [OPTIONS]            # config mode
-mq-bridge-app copy [COPY OPTIONS]  # one-route ad-hoc job
-mq-bridge-app mcp  [MCP OPTIONS]   # MCP server
+mqb [OPTIONS]                          # config mode
+mqb copy SOURCE TARGET [COPY OPTIONS]  # one-route ad-hoc job
+mqb mcp  [MCP OPTIONS]                 # MCP server
 ```
 
 ## Config mode (default)
 
 Run with no subcommand to load a config and run a bridge; with no config at all it starts
-empty and serves the UI so you can build one interactively.
+empty and offers to serve the UI so you can build one interactively.
 
 ```bash
-mq-bridge-app --config config.yml
-mq-bridge-app --config config.yml --init-config dev/config/file-to-http.yml
-mq-bridge-app                      # start empty, define config.yml in the UI
+mqb --config config.yml
+mqb --config config.yml --init-config dev/config/file-to-http.yml
+mqb --ui                           # start empty, define config.yml in the UI
 ```
 
 | Option | Meaning |
@@ -27,12 +27,54 @@ mq-bridge-app                      # start empty, define config.yml in the UI
 | `-i, --init-config <path>` | Initialize from a template file only if the main config doesn't exist yet. |
 | `--init-config-str <str>` | Initialize from an inline config string if the main config doesn't exist yet. |
 | `--config-str <str>` | Inline config that overrides the config file. |
+| `--ui` | Serve the browser UI on the default port without asking — see [Starting the web UI](#starting-the-web-ui). |
+| `--no-ui` | Never serve the browser UI, and don't ask. |
+| `--metrics-addr <addr>` | Serve the Prometheus endpoint on `addr` (default `127.0.0.1:9090`), overriding `metrics_addr` from the config. |
+| `--no-metrics` | Don't serve the Prometheus endpoint on its own port. |
 | `--schema <path>` | Write the JSON Schema for `AppConfig` (use `-` for stdout) and exit. |
 | `--plugin <path>` | Load a native endpoint/middleware library before starting. Repeatable, valid on every subcommand, and combines with `plugins:` in the config — see [Native plugins](../extending/plugins.md). |
 
 Config is hierarchical (files + environment variables) — see
-[Configuration grammar](../engine/configuration.md). In config mode the CLI also serves the browser UI
-(the same UI as the desktop app) on the configured port.
+[Configuration grammar](../engine/configuration.md).
+
+### Starting the web UI
+
+The UI is a control surface, so its port is never opened implicitly. What happens
+in config mode depends on where the address comes from:
+
+| Situation | Result |
+|---|---|
+| `ui_addr` set in the config | Served on that address — configuring it *is* the consent |
+| No `ui_addr`, `--ui` passed | Served on `0.0.0.0:9091` |
+| No `ui_addr`, `--no-ui` passed | Not served, no prompt |
+| No `ui_addr`, interactive terminal | Asks `Start the web UI on 0.0.0.0:9091? [y/N]` — anything but `y`/`yes` declines |
+| No `ui_addr`, no terminal (script, service, CI) | **Not served.** Pass `--ui` to opt in |
+
+The last row is the important one: a run started by a script or a service unit
+never puts the UI on the network by accident. Nothing about the bridge itself is
+gated — configured routes run either way.
+
+In a container the calculation is reversed, because nothing is reachable until
+you publish it. The Docker image's `CMD` therefore asks for the UI on your
+behalf — see [Ports in containers](../operations/deploying.md#ports-in-containers).
+
+### The metrics endpoint
+
+Metrics are always collected, and always available at `/metrics` on the web UI
+when it runs. Separately, config mode serves a standalone Prometheus endpoint on
+**`127.0.0.1:9090`** by default.
+
+It defaults to loopback rather than `0.0.0.0` because, while the endpoint is
+read-only, it still describes the routes and endpoint types in use — a bare run
+on a workstation shouldn't publish that to the local network. Scraping from
+another host is an explicit choice:
+
+```bash
+mqb --config config.yml --metrics-addr 0.0.0.0:9090   # scrapeable
+mqb --config config.yml --no-metrics                  # no separate port at all
+```
+
+`metrics_addr` in the config does the same thing; the flag overrides it.
 
 ## `copy` — ad-hoc one-route job
 
@@ -41,21 +83,23 @@ selects the endpoint and query parameters set its config.
 
 ```bash
 # DB → DB, drain the source table then exit (exit code 0 on success)
-mq-bridge-app copy \
-  --from 'postgres://user:pass@localhost/db?table=src' \
-  --to   'postgres://user:pass@localhost/db?table=dst' \
+mqb copy \
+  'postgres://user:pass@localhost/db?table=src' \
+  'postgres://user:pass@localhost/db?table=dst' \
   --drain
 
 # Queue → DB as a continuous bridge (runs until Ctrl-C; omit --drain)
-mq-bridge-app copy \
+mqb copy \
   --from 'nats://localhost:4222?subject=orders' \
   --to   'postgres://user:pass@localhost/db?table=orders'
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--from <uri>` | required | Source endpoint URI, optionally followed by `\|`-separated middlewares. |
-| `--to <uri>` | required | Destination endpoint URI (same forms as `--from`). |
+| `SOURCE TARGET` | required | Positional source and destination endpoint URIs. |
+| `--from <uri> --to <uri>` | — | Backward-compatible alternative to the positional form. |
+| `--filter <expr>` | off | Retain messages for which the expression is true. Top-level JSON scalar fields are variables. |
+| `--resume` | off | Configure the source's safe native resume mechanism, or fail before route startup. |
 | `--drain` | off | Exit once the source yields an empty batch. Without it, `copy` runs as a continuous bridge until Ctrl-C. |
 | `--concurrency <N>` | `4` | Route concurrency. |
 | `--batch-size <N>` | `1024` | Batch size. |
@@ -66,21 +110,48 @@ mq-bridge-app copy \
 
 ### Resumable copies
 
-By default a `copy` re-reads the whole source every run. Add `cursor_column` (SQL) or
-`consume=capture_all` (MongoDB) plus a `cursor_id` on `--from` and the position is persisted, so
-each run copies only what is new — a `copy … --drain` on a timer becomes an incremental sync:
+By default a bounded `copy` re-reads the whole source every run. `--resume` derives a stable
+state identity from the credential-redacted source, destination, and filter, then maps it to
+the source's existing mechanism. Changing any of those pipeline semantics starts new state;
+rotating a password does not.
 
 ```bash
-mq-bridge-app copy \
-  --from 'postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_sync' \
-  --to   'file:///data/orders.jsonl' \
+mqb copy \
+  'postgres://user:pass@localhost/app?table=orders&cursor_column=id' \
+  'file:///data/orders.jsonl' \
+  --resume \
   --drain
 ```
 
-Without `cursor_id` nothing is persisted. `checkpoint_store` chooses where the position lives
-(source DB by default; `file://`, `postgres://`, `mongodb://`, `s3://` otherwise) and must be
-percent-encoded inside the URI. Full details, guarantees and gotchas:
+Currently supported mappings are Kafka consumer groups, MongoDB `capture_all`/`capture_new`
+cursors, persistent Postgres CDC slots, SQL cursor readers with an explicit monotonic
+`cursor_column`, and ClickHouse/object-store cursor readers with their required explicit
+external `checkpoint_store`. Explicit `group_id`, `cursor_id`, `slot_name`, and
+`checkpoint_store` URI settings remain advanced overrides.
+
+File offsets are deliberately not accepted yet because partial batch failure can advance the
+current file offset past a failed record. NATS is also rejected because its generated durable
+consumer name cannot currently include the destination and filter. Other non-replayable sources,
+including MQTT, fail early instead of silently ignoring `--resume`. Full checkpoint details:
 [Checkpoints & resumable copies](../cookbook/checkpoints.md).
+
+### Filtering
+
+`--filter` is evaluated by mq-bridge after the source read and before URI-configured transform
+middleware. It is not translated to SQL or MongoDB, so connector-native predicates remain a
+separate optimization and keep their existing behavior.
+
+```bash
+mqb copy \
+  'kafka://localhost:9092?topic=orders' \
+  'postgres://localhost/app?table=orders' \
+  --filter 'country == "DE" && amount >= 50' \
+  --resume
+```
+
+A true result continues to the destination. A false result is an intentional successful drop
+and advances the source acknowledgement/checkpoint. Invalid expressions, non-object JSON,
+missing fields, and referenced array/object fields are errors rather than silent mismatches.
 
 ### URI grammar
 
@@ -111,7 +182,7 @@ Append `|`-separated middlewares to either URI to wrap that endpoint. They apply
 written, and each takes its own config struct's fields as query params:
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres://user:pass@localhost/db?table=src|retry?max_attempts=5&initial_interval_ms=200' \
   --to   'kafka://broker:9092?topic=orders|buffer?max_messages=500&max_delay_ms=50|metrics' \
   --drain
@@ -143,7 +214,7 @@ on the connection URL, so driver options just work — including object-typed fi
 If you already have a complete connection string, pass it verbatim with `?url=<url-encoded>`:
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'mongodb://_/?url=mongodb%3A%2F%2Fuser%3Apass%40host%2Fdb%3Ftls%3Dtrue&collection=orders' \
   --to null:
 ```
@@ -154,8 +225,8 @@ commands.
 ## `mcp` — MCP server
 
 ```bash
-mq-bridge-app mcp                                    # stdio (local clients)
-mq-bridge-app mcp --transport http --bind 127.0.0.1:9092   # streamable HTTP
+mqb mcp                                    # stdio (local clients)
+mqb mcp --transport http --bind 127.0.0.1:9092   # streamable HTTP
 ```
 
 | Flag | Default | Meaning |
@@ -169,11 +240,11 @@ mq-bridge-app mcp --transport http --bind 127.0.0.1:9092   # streamable HTTP
 Register the running binary with local MCP clients so you don't write the config by hand:
 
 ```bash
-mq-bridge-app mcp install                         # every detected client
-mq-bridge-app mcp install --client cursor --local  # one client, project-scoped
-mq-bridge-app mcp install --report-to-ui           # bake --report-to-ui into the entry
-mq-bridge-app mcp status
-mq-bridge-app mcp uninstall
+mqb mcp install                         # every detected client
+mqb mcp install --client cursor --local  # one client, project-scoped
+mqb mcp install --report-to-ui           # bake --report-to-ui into the entry
+mqb mcp status
+mqb mcp uninstall
 ```
 
 | Subcommand | Flags | Purpose |

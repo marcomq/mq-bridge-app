@@ -31,7 +31,7 @@ webhook_to_mongo:
 Run it in config mode:
 
 ```bash
-mq-bridge-app --config mq-bridge.yaml
+mqb --config mq-bridge.yaml
 ```
 
 Then POST to it:

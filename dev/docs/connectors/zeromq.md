@@ -19,7 +19,7 @@ of a socket pair; the other connects.
 **Pull from a PUSH producer and write to a file, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'zeromq://tcp://127.0.0.1:5555?socket_type=pull&bind=true' \
   --to file:///data/events.jsonl?format=json
 ```
@@ -27,7 +27,7 @@ mq-bridge-app copy \
 **Publish a Kafka topic to a PUB socket, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from kafka://kafka.local:9092?topic=events \
   --to 'zeromq://tcp://0.0.0.0:5556?socket_type=pub&bind=true'
 ```
@@ -35,7 +35,7 @@ mq-bridge-app copy \
 **Subscribe to a topic on a remote PUB socket, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'zeromq://tcp://feed.local:5556?socket_type=sub&topic=orders' \
   --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```

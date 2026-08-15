@@ -6,7 +6,7 @@ it whole; it is *not* a folder of this repo):
 
 | Install | Command | What it is |
 | --- | --- | --- |
-| CLI / MCP server (**formula**) | `brew install marcomq/tap/mq-bridge-app` | Headless binary — the `mq-bridge-app` command, same asset `cargo binstall` uses |
+| CLI / MCP server (**formula**) | `brew install marcomq/tap/mq-bridge-app` | Headless binary, installed as both `mq-bridge-app` and the short `mqb`, same asset `cargo binstall` uses |
 | Desktop UI (**cask**) | `brew install --cask marcomq/tap/mq-bridge` | The Tauri `.app`, dragged into `/Applications` |
 
 The tap repo is the **only** home for the formula and cask. This repo holds no
@@ -63,7 +63,7 @@ Verify:
 
 ```bash
 brew install marcomq/tap/mq-bridge-app        # CLI formula
-mq-bridge-app --version
+mqb --version
 brew test marcomq/tap/mq-bridge-app           # runs the formula's test block
 brew install --cask marcomq/tap/mq-bridge      # desktop UI cask
 ```

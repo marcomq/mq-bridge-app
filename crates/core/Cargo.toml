@@ -23,6 +23,8 @@ mq-bridge = { workspace = true, features = ["schema", "plugin"] }
 # with Cargo's `patch.crates-io` configuration instead of changing this manifest.
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+evalexpr = { workspace = true }
 hex = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }

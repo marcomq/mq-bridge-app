@@ -1,4 +1,4 @@
-//  mq-bridge-app — MCP server mode (`mq-bridge-app mcp`).
+//  mq-bridge-app — MCP server mode (`mqb mcp`).
 //
 //  A lean, protocol-agnostic MCP server built directly on the `mq_bridge`
 //  library. Unlike a fixed-config server, every tool takes the source/target

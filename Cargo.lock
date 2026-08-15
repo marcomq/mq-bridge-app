@@ -2252,6 +2252,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "evalexpr"
+version = "13.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25929004897f2bbab309121a60400d36992f6d911d09baa6c172f6cc55706601"
+
+[[package]]
 name = "event-listener"
 version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4386,10 +4392,12 @@ version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-trait",
  "base64 0.23.1",
  "chrono",
  "config",
  "dotenvy",
+ "evalexpr",
  "fast-uuid-v7",
  "futures",
  "hex",

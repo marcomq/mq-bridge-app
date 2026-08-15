@@ -18,7 +18,7 @@ is an explicit alias. If `stream` is omitted it defaults to the route name.
 **Load a CSV file into a stream, one-shot:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from file:///data/events.csv?format=csv \
   --to redis://localhost:6379?stream=events
 ```
@@ -26,7 +26,7 @@ mq-bridge-app copy --drain \
 **Consume with a durable group into ClickHouse, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'redis://localhost:6379?stream=events&group=analytics&consumer_name=w1' \
   --to 'clickhouse://localhost:8123?table=events&database=analytics'
 ```
@@ -37,7 +37,7 @@ are re-delivered via `XAUTOCLAIM`.
 **Ephemeral tail of new messages (no group, no acks), continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'redis://localhost:6379?stream=events&subscriber_mode=true' \
   --to kafka://kafka.local:9092?topic=events
 ```

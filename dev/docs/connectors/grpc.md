@@ -22,7 +22,7 @@ bind address (e.g. `grpc://0.0.0.0:50051`).
 **Forward a Kafka topic to a remote gRPC service, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from kafka://kafka.local:9092?topic=orders \
   --to grpc://orders-svc.local:50051?topic=orders
 ```
@@ -30,7 +30,7 @@ mq-bridge-app copy \
 **Run an embedded gRPC server that ingests into Postgres, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'grpc://0.0.0.0:50051?server_mode=true&topic=orders' \
   --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```

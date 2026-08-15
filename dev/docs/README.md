@@ -28,13 +28,13 @@ repo by `sync-engine-docs.sh` — **never edit those copies here; edit the sourc
   practical examples, and a link to the full option list.
 - **[URL Parameter Reference](./reference/)** — every connector's recognised
   query parameters (name, type, default, required, description),
-  auto-generated from the JSON Schemas `mq-bridge-app copy` uses to parse
+  auto-generated from the JSON Schemas `mqb copy` uses to parse
   `--from`/`--to`. Regenerate with:
 
   ```bash
   cargo run -p mq-bridge-app --example gen_url_docs
   ```
-- **[MCP Server](./MCP.md)** — `mq-bridge-app mcp`: running the bridge as an
+- **[MCP Server](./MCP.md)** — `mqb mcp`: running the bridge as an
   MCP server, registering it with a client via `mcp install`, its five tools,
   endpoint/message shapes, and examples.
 

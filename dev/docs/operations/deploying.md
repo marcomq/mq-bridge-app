@@ -18,13 +18,51 @@ templates baked into the image at `/config`:
 ```bash
 touch input.log
 docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app \
-  ghcr.io/marcomq/mq-bridge-app:latest --init-config=/config/file-to-http.yml
+  ghcr.io/marcomq/mq-bridge-app:latest --ui --init-config=/config/file-to-http.yml
 ```
 
 - The default `latest` image is a plain multi-arch image for `amd64` and `arm64`.
 - **IBM MQ** support is published separately as the `latest-ibm-mq` / `ibm-mq` tags, `amd64`
   only (no redistributable arm64 client yet). Start it with `--platform=linux/amd64`, or build
   yourself with `cargo build --release --features=ibm-mq`.
+
+### Ports in containers
+
+On a host, the UI is [never opened implicitly](../reference/cli.md#starting-the-web-ui) and
+metrics bind loopback. In a container those defaults would be wrong for the opposite reason —
+nothing is reachable until you publish it — so the image's `CMD` is `--ui --metrics-addr
+0.0.0.0:9090`. The container boundary is the gate: without `-p` (or a Kubernetes Service),
+neither port leaves the container.
+
+Docker replaces `CMD` **wholesale** as soon as you pass any argument of your own. That is what
+keeps the headless modes headless:
+
+The two settings are carried differently, and that difference is the whole design:
+
+| | Carried by | Survives an `args:` / command override? |
+|---|---|---|
+| Metrics on `0.0.0.0:9090` | `ENV MQB__METRICS_ADDR` | **Yes** |
+| Web UI | `CMD ["--ui"]` | No |
+
+Metrics live in `ENV` because a Kubernetes pod almost always sets `args:`, which replaces
+`CMD` wholesale. Had the bind address ridden along in `CMD`, every such pod would silently
+fall back to the host default of `127.0.0.1:9090` and go unscrapeable. As an environment
+variable it survives any command-line override, and a pod that wants something else just
+sets `MQB__METRICS_ADDR` (or `metrics_addr` in its ConfigMap).
+
+The UI stays in `CMD` precisely *because* it is dropped on override — that is what keeps the
+headless modes headless:
+
+| Invocation | Result |
+|---|---|
+| `docker run image` | Config mode, UI + metrics served |
+| `docker run image copy …` / `mcp …` | `CMD` dropped — headless, as those modes always are |
+| `docker run image --config /app/x.yml` | `CMD` dropped — **add `--ui` if you want the UI** |
+| Kubernetes with `args: […]` | No UI; metrics still served |
+| Kubernetes with no `args` | UI + metrics served, reachable only via a Service |
+
+The second `docker run` example above passes `--init-config`, which is why it also passes
+`--ui`.
 
 To build the image from source, see
 [`BUILD.md`](https://github.com/marcomq/mq-bridge-app/blob/main/dev/docs/BUILD.md).
@@ -49,11 +87,14 @@ config.
 | You want… | Run it as… |
 |---|---|
 | A one-shot batch move (finite source), exit 0 on success | `copy … --drain` (see [Quick start](../quick-start.md)) |
-| A long-lived bridge with one or more routes | config mode: `mq-bridge-app --config config.yml` |
+| A long-lived bridge with one or more routes | config mode: `mqb --config config.yml` |
 | The bridge driven by an LLM agent | [`mcp` mode](../MCP.md) |
 
-In config mode the CLI also serves the browser UI on the configured port. If you don't want the
-UI exposed in production, front it appropriately or run only the routes you need.
+In config mode the CLI can also serve the browser UI on the configured port, but never
+implicitly: it needs `ui_addr` in the config or an explicit `--ui`. An unattended start — a
+service unit, a container, a script — is headless unless you asked for the UI, so production
+deployments opt in rather than opt out. Where you do serve it, front it appropriately.
+See [Starting the web UI](../reference/cli.md#starting-the-web-ui).
 
 ## Security checklist for production
 

@@ -45,7 +45,7 @@ Every build can load plugins; there is no cargo feature to enable.
 every subcommand:
 
 ```bash
-mq-bridge-app --plugin ./libmq_bridge_pulsar.so --config config.yml
+mqb --plugin ./libmq_bridge_pulsar.so --config config.yml
 ```
 
 It combines with `plugins:` rather than replacing it. Listing the same library both ways

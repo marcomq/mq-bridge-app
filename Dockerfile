@@ -135,7 +135,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     CARGO_PROFILE_RELEASE_LTO=thin \
     CMAKE_BUILD_PARALLEL_LEVEL=1 \
     cargo build -vv --target "$RUST_TARGET" --profile release-with-lto $CARGO_FEATURES --jobs 1 -p mq-bridge-app && \
-    cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app
+    cp target/$RUST_TARGET/release-with-lto/mq-bridge-app mq-bridge-app && \
+    cp target/$RUST_TARGET/release-with-lto/mqb mqb
 
 # Identify and copy only the necessary MQ libraries for the final stage
 RUN mkdir /mq-libs && \
@@ -159,6 +160,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot AS final
 LABEL io.modelcontextprotocol.server.name="io.github.marcomq/mq-bridge-app"
 
 COPY --from=builder /usr/src/mq-bridge-app/mq-bridge-app /usr/local/bin/mq-bridge-app
+COPY --from=builder /usr/src/mq-bridge-app/mqb /usr/local/bin/mqb
 COPY --from=builder --chown=nonroot:nonroot /app_placeholder /app
 COPY --from=builder --chown=nonroot:nonroot /usr/src/mq-bridge-app/input.log /app/input.log
 COPY --from=builder --chown=nonroot:nonroot /usr/src/mq-bridge-app/error.log /app/error.log
@@ -178,3 +180,19 @@ EXPOSE 9090
 EXPOSE 9091
 
 ENTRYPOINT ["/usr/local/bin/mq-bridge-app"]
+
+# Metrics bind every interface in here, unlike the loopback default on a host:
+# inside a container that is what makes them scrapeable at all, and the container
+# boundary is the real gate — nothing is reachable without `-p` or a Service.
+#
+# This is ENV rather than part of CMD on purpose. A Kubernetes pod almost always
+# sets `args:`, which replaces CMD wholesale; ENV survives that, so metrics keep
+# working no matter how the command line is overridden.
+ENV MQB__METRICS_ADDR=0.0.0.0:9090
+
+# Default arguments for a bare `docker run <image>`, serving the UI that a host
+# run would stop and ask about. Docker drops CMD as soon as the caller passes
+# any argument of its own, which is exactly what keeps `docker run <image> copy …`
+# and `… mcp …` headless. Anything passing its own arguments and still wanting
+# the UI asks for it, e.g. `--ui --config /app/x.yml`.
+CMD ["--ui"]

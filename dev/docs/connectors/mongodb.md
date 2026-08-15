@@ -15,7 +15,7 @@ mongodb://[user:pass@]host[:port]?database=<db>&collection=<name>
 **Load a CSV file into a collection, one-shot:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from file:///data/customers.csv?format=csv \
   --to 'mongodb://localhost?database=app&collection=customers'
 ```
@@ -23,7 +23,7 @@ mq-bridge-app copy --drain \
 **Non-destructive read of an existing collection (default source behavior — replica set required):**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from 'mongodb://localhost?database=app&collection=customers' \
   --to 'postgres://user:pass@localhost/app?table=customers&auto_create_table=true'
 ```
@@ -36,7 +36,7 @@ replica set** (a single-node one is enough) and refuses to start without one.
 **Read a standalone `mongod` (no replica set), one-shot:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from 'mongodb://localhost?database=app&collection=customers&consume=snapshot' \
   --to file:///data/customers.jsonl
 ```
@@ -49,7 +49,7 @@ resumable — it delivers what exists when the run starts, and rejects
 **Watch for new documents only (change stream), continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'mongodb://localhost?database=app&collection=orders&consume=capture_new' \
   --to kafka://kafka.local:9092?topic=orders
 ```

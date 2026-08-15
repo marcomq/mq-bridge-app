@@ -10,14 +10,36 @@ description = "A message queue bridge application written in Rust, designed to c
 readme = "../../README.md"
 keywords = ["messaging", "kafka", "nats", "amqp", "cqrs"]
 categories = ["asynchronous", "network-programming"]
+# With two [[bin]] targets, a bare `cargo run` is ambiguous. This crate is the
+# workspace's default member, so that would break `cargo run -- --config …`,
+# which playwright.config.js uses to start the app for the UI tests.
+default-run = "mq-bridge-app"
 
+# The real binary keeps the package name. `cargo install` and the MCP registry's
+# cargo package type both invoke a crate by its own name and cannot be told a
+# different one, and MCP client configs store an absolute path — so making this
+# the crate name is what keeps all three correct without a shim in the way.
 [[bin]]
 name = "mq-bridge-app"
 path = "src/main.rs"
 
+# `mqb` is the short command the docs promote — a launcher that forwards here,
+# not a second copy of the app. It depends only on `std` (~0.4 MB stripped), and
+# is a real binary rather than a symlink so that `cargo install`, which only
+# installs binaries a package builds, hands it to Rust users too.
+# `mq-bridge` is deliberately not used: the desktop bundle's .deb/.rpm already
+# installs /usr/bin/mq-bridge. See src/bin/compat.rs.
+[[bin]]
+name = "mqb"
+path = "src/bin/compat.rs"
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/{ version }/mq-bridge-cli-{ target }{ archive-suffix }"
-bin-dir = "mq-bridge-cli{ binary-ext }"
+# `bin-dir` is resolved once per [[bin]] target, so it must use `{ bin }` rather
+# than a fixed name — otherwise both targets resolve to the same file in the
+# archive and `mqb` would be installed as a second copy of the real binary
+# instead of the launcher. The release tarball has both at its root.
+bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
@@ -44,7 +66,7 @@ url = { workspace = true }
 
 clap = { version = "4.6.5", features = ["derive"] }
 
-# MCP server mode (`mq-bridge-app mcp`). Streamable-HTTP is served over hyper (no axum).
+# MCP server mode (`mqb mcp`). Streamable-HTTP is served over hyper (no axum).
 rmcp = { version = "3.1.0", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio", "service"] }

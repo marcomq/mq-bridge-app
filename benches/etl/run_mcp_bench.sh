@@ -7,7 +7,7 @@
 #   LATENCY_CALLS=1000 ./run_mcp_bench.sh   # tighter latency tail
 #
 # The measuring is all in mcp_bench.py, which is a real MCP client over stdio: it
-# spawns `mq-bridge-app mcp` and speaks JSON-RPC to it the way Claude Code does.
+# spawns `mqb mcp` and speaks JSON-RPC to it the way Claude Code does.
 # Nothing here reaches into the process, so the numbers include the full
 # interface cost an agent actually pays.
 #

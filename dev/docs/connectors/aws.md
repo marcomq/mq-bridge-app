@@ -20,7 +20,7 @@ testing.
 **Drain an SQS queue into a file, one-shot:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from 'aws://?queue_url=https://sqs.us-east-1.amazonaws.com/1234/orders&region=us-east-1' \
   --to file:///data/orders.jsonl?format=json
 ```
@@ -28,7 +28,7 @@ mq-bridge-app copy --drain \
 **Publish a Postgres table to an SNS topic, one-shot:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
   --to 'aws://?topic_arn=arn:aws:sns:us-east-1:1234:orders&region=us-east-1'
 ```
@@ -36,7 +36,7 @@ mq-bridge-app copy --drain \
 **LocalStack, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'aws://?queue_url=http://localhost:4566/000000000000/orders&region=us-east-1&endpoint_url=http://localhost:4566&access_key=test&secret_key=test' \
   --to null:
 ```

@@ -20,7 +20,7 @@ channel) are always required; supply `queue` **or** `topic`.
 **Drain a queue into a file, one-shot:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from 'ibmmq://mq.local(1414)?queue_manager=QM1&channel=DEV.APP.SVRCONN&queue=DEV.QUEUE.1&username=app&password=<password>' \
   --to file:///data/mq.jsonl?format=json
 ```
@@ -32,7 +32,7 @@ of the URL by interpolating an environment variable instead — see
 **Bridge a queue into Kafka, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'ibmmq://mq.local(1414)?queue_manager=QM1&channel=DEV.APP.SVRCONN&queue=DEV.QUEUE.1' \
   --to kafka://kafka.local:9092?topic=mq-events
 ```
@@ -40,7 +40,7 @@ mq-bridge-app copy \
 **Subscribe to a topic (pub/sub), continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'ibmmq://mq.local(1414)?queue_manager=QM1&channel=DEV.APP.SVRCONN&topic=orders/new' \
   --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```

@@ -62,7 +62,7 @@ the CLI they are just query parameters on `--from`:
 ```bash
 # Incremental table → table sync. Re-run it as often as you like: each run copies
 # only rows whose `id` is greater than the last successfully written row.
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_sync' \
   --to   'clickhouse://localhost:8123?table=orders&database=analytics' \
   --drain
@@ -70,7 +70,7 @@ mq-bridge-app copy \
 
 ```bash
 # Read-only source: keep the cursor next to the job instead of in the source DB.
-mq-bridge-app copy \
+mqb copy \
   --from 'mysql://ro_user:pass@reporting/app?table=events&cursor_column=event_id&cursor_id=events_export&checkpoint_store=file%3A%2F%2F%2Fvar%2Flib%2Fmqb%2Fcursors.json' \
   --to   'file:///data/events.jsonl' \
   --drain
@@ -78,7 +78,7 @@ mq-bridge-app copy \
 
 ```bash
 # MongoDB bulk read that survives a restart mid-copy.
-mq-bridge-app copy \
+mqb copy \
   --from 'mongodb://localhost:27017/app?collection=orders&consume=capture_all&cursor_id=orders_dump' \
   --to   'file:///data/orders.jsonl'
 ```

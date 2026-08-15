@@ -20,6 +20,13 @@ fn copy_with_options(from: &str, to: &str, options: &[&str]) -> Output {
     command.output().expect("run CLI copy")
 }
 
+fn copy_positional(from: &str, to: &str, options: &[&str]) -> Output {
+    let mut command = cli();
+    command.args(["copy", from, to, "--drain"]);
+    command.args(options);
+    command.output().expect("run positional CLI copy")
+}
+
 fn assert_success(output: &Output, case: &str) {
     assert!(
         output.status.success(),
@@ -485,6 +492,61 @@ fn transform_middleware_configuration_matrix_changes_payloads_through_the_cli() 
         actual,
         serde_json::json!({"active": true, "id": 7, "name": "Ada"})
     );
+}
+
+#[test]
+fn copy_filter_keeps_matching_json_and_drops_non_matching_json() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(
+        &dir,
+        "filter-source.jsonl",
+        br#"{"amount":25,"status":"new"}
+{"amount":125,"status":"paid"}
+"#,
+    );
+    let output_path = dir.path().join("filtered.jsonl");
+    let destination = format!("file://{}?format=raw", output_path.display());
+
+    let result = copy_with_options(&source, &destination, &["--filter", "amount > 100"]);
+    assert_success(&result, "copy filter");
+    let rows = String::from_utf8(read_raw_output(output_path)).expect("filtered output is UTF-8");
+    assert_eq!(rows, r#"{"amount":125,"status":"paid"}"#);
+}
+
+#[test]
+fn copy_filter_reports_invalid_expressions_before_starting() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "invalid-filter.json", br#"{"amount":125}"#);
+    let result = copy_with_options(&source, "null:", &["--filter", "("]);
+    assert_failure_contains(&result, "invalid filter", "invalid filter expression");
+}
+
+#[test]
+fn copy_resume_rejects_unsupported_source_before_connecting() {
+    let mut command = cli();
+    let result = command
+        .args([
+            "copy",
+            "mqtt://localhost:1883/orders",
+            "null:",
+            "--resume",
+            "--drain",
+        ])
+        .output()
+        .expect("run unsupported resume copy");
+    assert_failure_contains(
+        &result,
+        "unsupported resume source",
+        "source `mqtt` does not support resumable copy",
+    );
+}
+
+#[test]
+fn positional_copy_syntax_remains_equivalent_to_named_flags() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "positional-source.txt", b"positional");
+    let result = copy_positional(&source, "null:", &[]);
+    assert_success(&result, "positional copy");
 }
 
 #[test]

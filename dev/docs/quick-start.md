@@ -1,12 +1,13 @@
 # Quick Start
 
-`mq-bridge-app copy` moves data between two endpoints described as URIs. The scheme
-picks the connector; `?query=params` configure it.
+`mqb copy SOURCE TARGET` moves data between two endpoints described as
+URIs. The scheme picks the connector; `?query=params` configure it. The existing
+`--from SOURCE --to TARGET` form is equivalent and remains supported.
 
 ```bash
-mq-bridge-app copy \
-  --from postgres://localhost/app?table=users \
-  --to 'clickhouse://localhost:8123?table=users&database=analytics'
+mqb copy \
+  'postgres://localhost/app?table=users' \
+  'clickhouse://localhost:8123?table=users&database=analytics'
 ```
 
 This copies every row currently in `app.users` (PostgreSQL) into
@@ -15,7 +16,24 @@ destination. Add `--drain` to exit once the source is empty instead of
 running as a continuous bridge (see
 [Continuous vs. one-shot](#continuous-vs-one-shot) below).
 
-The five sections below are complete, working commands. Each links to the
+The common copy controls are deliberately small:
+
+```text
+mqb copy SOURCE TARGET [--filter EXPR] [--resume] [--drain]
+```
+
+`--filter` evaluates a readable expression against each top-level JSON payload,
+for example `amount > 100` or `status == "paid"`. A false result intentionally
+drops and acknowledges the message; malformed JSON, missing fields, and invalid
+expressions are errors. It is an in-process filter and is not translated into a
+database query.
+
+`--resume` asks the source to use its native durable position and fails before
+the route starts when that is not safe. The generated state identity includes
+the credential-redacted source, destination, and filter, so changing pipeline
+semantics starts a new checkpoint while rotating a password does not.
+
+The examples below are complete, working commands. Each links to the
 full [connector page](./connectors/) for that endpoint, which lists every
 available option; the [generated URL reference](./reference/) is the
 authoritative source for every parameter's type, default, and description.
@@ -23,20 +41,36 @@ authoritative source for every parameter's type, default, and description.
 ## PostgreSQL → ClickHouse
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
   --to 'clickhouse://localhost:8123?table=orders&database=analytics'
 ```
 
 Reads all rows from the `orders` table and bulk-inserts them into ClickHouse's
-HTTP interface. Add `&cursor_column=id&cursor_id=orders_sync` on `--from` to
-make this resumable instead of a one-shot batch. See
+HTTP interface. For a resumable non-destructive scan, add
+`&cursor_column=id` on `--from` and pass `--resume`; the CLI supplies the stable
+cursor id and the SQL source stores the checkpoint in its own database. An
+explicit `cursor_id` or `checkpoint_store` in the URI still takes precedence. See
 [PostgreSQL](./connectors/postgres.md) and [ClickHouse](./connectors/clickhouse.md).
+
+## Filtered, resumable Kafka copy
+
+```bash
+mqb copy \
+  'kafka://localhost:9092?topic=orders' \
+  'postgres://localhost/app?table=orders' \
+  --filter 'status == "paid"' \
+  --resume
+```
+
+The generated Kafka consumer group is stable for this source, destination, and
+filter. Kafka offsets advance only after the destination succeeds, or after a
+message is intentionally filtered out.
 
 ## PostgreSQL CDC → PostgreSQL
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
   --to 'postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true'
 ```
@@ -49,7 +83,7 @@ stream, so this command doesn't drain — run it as a long-lived process). See
 ## MQTT → Kafka
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from mqtt://broker.local:1883?topic=sensors/+/temperature \
   --to kafka://kafka.local:9092?topic=sensor-readings
 ```
@@ -61,7 +95,7 @@ message to a Kafka topic, continuously. See [MQTT](./connectors/mqtt.md) and
 ## RabbitMQ → HTTP
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from rabbitmq://guest:guest@localhost:5672/%2f?queue=orders \
   --to http://internal-api.local/ingest?method=POST
 ```
@@ -73,7 +107,7 @@ endpoint, continuously. See [RabbitMQ](./connectors/rabbitmq.md) and
 ## File (CSV) → MongoDB
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from file:///data/customers.csv?format=csv \
   --to 'mongodb://localhost?database=app&collection=customers'
 ```
@@ -104,7 +138,7 @@ mis-parsed as config), skip decomposition entirely and pass it verbatim with
 `?url=<url-encoded string>`:
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'mongodb://_/?url=mongodb%3A%2F%2Fuser%3Apass%40host%2Fdb%3Ftls%3Dtrue&collection=orders' \
   --to null:
 ```

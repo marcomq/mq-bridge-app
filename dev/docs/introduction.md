@@ -24,7 +24,7 @@ At its core is a zero-config `copy` command that moves data between databases, q
 files in a single line of bash — no YAML, no pipeline definition, no code:
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres://user:pass@localhost/db?table=src&sslmode=disable' \
   --to   'file://out.jsonl?format=raw' \
   --drain
