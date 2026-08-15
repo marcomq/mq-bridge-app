@@ -2,11 +2,16 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
+
+const dialogMocks = vi.hoisted(() => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => dialogMocks);
+
 import { getAppState } from "../../ui/src/lib/app-shell";
 import {
   addPublisherAction,
   addPublisherMetadataRow,
   beautifyPublisherPayloadAction,
+  browsePublisherFilePath,
   clearActivePublisherHistory,
   cloneCurrentPublisherAction,
   copyCurrentPublisherAction,
@@ -145,12 +150,16 @@ describe("initPublishers", () => {
     (window as any)._mqb_last_publisher_tab = undefined;
     (window as any)._mqb_storage_security = undefined;
     (window as any)._mqb_storage_cache = undefined;
+    delete (window as any).__MQB_DESKTOP__;
+    dialogMocks.open.mockReset();
+    dialogMocks.save.mockReset();
     mountPublishersDom();
     installPublisherWindowStubs();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    delete (window as any).__MQB_DESKTOP__;
     restoreBaseWindowStubs();
   });
 
@@ -172,6 +181,51 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).endpointType).toBe("HTTP");
     expect(get(publishersPanelState).urlField.value).toBe("https://example.test/orders");
     expect(get(publishersPanelState).hasPublishers).toBe(true);
+  });
+
+  // A file publisher edits its path in the request bar (the definition form hides it), so
+  // the desktop picker has to be offered there or it is unreachable.
+  test("offers a save-file picker for desktop file publishers", async () => {
+    (window as any).__MQB_DESKTOP__ = true;
+    dialogMocks.save.mockResolvedValueOnce("/tmp/out.jsonl");
+    const config = {
+      publishers: [{ name: "dump", endpoint: { file: { path: "/tmp/old.jsonl" } } }],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(config, { properties: { publishers: { items: {} } } });
+
+    expect(get(publishersPanelState).urlField.browse).toBe(true);
+
+    await browsePublisherFilePath();
+
+    expect(dialogMocks.save).toHaveBeenCalledWith({ defaultPath: "/tmp/old.jsonl" });
+    expect(config.publishers[0].endpoint.file.path).toBe("/tmp/out.jsonl");
+    expect(get(publishersPanelState).urlField.value).toBe("/tmp/out.jsonl");
+  });
+
+  test("hides the file picker outside the desktop app and for other endpoint types", () => {
+    initPublishers(
+      {
+        publishers: [{ name: "dump", endpoint: { file: { path: "/tmp/old.jsonl" } } }],
+        routes: {},
+        consumers: [],
+      },
+      { properties: { publishers: { items: {} } } },
+    );
+    expect(get(publishersPanelState).urlField.browse).toBe(false);
+
+    (window as any).__MQB_DESKTOP__ = true;
+    initPublishers(
+      {
+        publishers: [{ name: "orders", endpoint: { kafka: { url: "localhost:9092", topic: "events" } } }],
+        routes: {},
+        consumers: [],
+      },
+      { properties: { publishers: { items: {} } } },
+    );
+    expect(get(publishersPanelState).urlField.browse).toBe(false);
   });
 
   test("shows empty state when there are no publishers", () => {

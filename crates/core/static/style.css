@@ -958,6 +958,49 @@ button.content-tab:focus-visible {
     background: color-mix(in srgb, var(--bg-input) 78%, #fff 22%);
 }
 
+/* A JSON field whose content did not parse. Without this the rejection is invisible and
+   the field silently keeps its previous value. */
+.field-input.mqb-json-invalid,
+.field-input.mqb-json-invalid:focus {
+    border-color: rgba(247, 129, 102, 0.72);
+    box-shadow: 0 0 0 3px rgba(247, 129, 102, 0.18);
+}
+
+.mqb-json-error:not(:empty) {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--accent-kafka);
+}
+
+.mqb-file-path-control {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    width: 100%;
+}
+
+.mqb-file-path-control .field-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.mqb-file-path-browse {
+    flex: 0 0 auto;
+}
+
+/* `.request-field` stacks label over input, so the picker needs its own row. */
+.request-field-row {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+}
+
+.request-field-row .request-field-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 select.field-input {
     cursor: pointer;
     min-height: 35px;

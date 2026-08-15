@@ -25,6 +25,21 @@ function cloneSchema<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+// Untitled branches leave the mapping rule picker labelled by derived type names; say what the
+// two forms of a rule actually are. Transform's free-form `schema` gets its editor from a custom
+// renderer instead: it has no `type` here, and a non-standard one would fail the form library's
+// AJV validation of the whole schema.
+export function nameMappingRuleBranches(itemSchema: MutableSchema): void {
+  const branches = itemSchema.$defs?.MappingRule?.anyOf;
+  if (!Array.isArray(branches)) return;
+
+  for (const branch of branches as MutableSchema[]) {
+    if (!branch || typeof branch !== "object" || branch.title) continue;
+    if (branch.type === "string") branch.title = "Source path";
+    else if (branch.$ref?.endsWith("/DetailedMappingRule")) branch.title = "Path with default";
+  }
+}
+
 export function resolveRootArrayItemSchema(rootSchema: RootSchema, propertyName: string): MutableSchema {
   const itemSchema = cloneSchema(rootSchema.properties?.[propertyName]?.items || {});
   const rootDefs = cloneSchema(rootSchema.$defs || {});

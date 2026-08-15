@@ -18,7 +18,9 @@
   }: Props = $props();
 </script>
 
-<div class="response-header-row mqb-header-row mqb-additional-property-row">
+<!-- `js-ap-row` / `js-ap-value-wrapper` are the form library's hooks: without them its
+     delegated Delete handler finds no row and a key rename never remaps the value's path. -->
+<div class="response-header-row mqb-header-row mqb-additional-property-row js-ap-row">
   <input
     id={inputId}
     type="text"
@@ -28,7 +30,7 @@
     data-original-key={value}
   />
 
-  <div class="mqb-additional-property-value">
+  <div class="mqb-additional-property-value js-ap-value-wrapper">
     <MountedNode node={valueContent} />
   </div>
 

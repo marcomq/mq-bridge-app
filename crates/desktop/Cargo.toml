@@ -36,6 +36,7 @@ uuid = { workspace = true }
 
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
 getrandom = "0.4.3"
 
 [build-dependencies]

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { forceRefOnlyEndpoints } from "../../ui/src/lib/schema-utils";
+import { forceRefOnlyEndpoints, nameMappingRuleBranches } from "../../ui/src/lib/schema-utils";
 
 describe("schema-utils", () => {
   test("forces nested endpoint schemas to ref-only configs", () => {
@@ -83,5 +83,42 @@ describe("schema-utils", () => {
       $ref: "#/$defs/RefConfig",
       type: "object",
     });
+  });
+
+  test("names the two mapping rule branches", () => {
+    const schema: any = {
+      $defs: {
+        MappingRule: {
+          anyOf: [{ type: "string" }, { $ref: "#/$defs/DetailedMappingRule" }],
+        },
+      },
+    };
+
+    nameMappingRuleBranches(schema);
+
+    expect(schema.$defs.MappingRule.anyOf[0].title).toBe("Source path");
+    expect(schema.$defs.MappingRule.anyOf[1].title).toBe("Path with default");
+    // A non-standard `type` here would fail the form library's AJV validation of the schema.
+    expect(schema.$defs.MappingRule.anyOf[0].type).toBe("string");
+  });
+
+  test("keeps existing branch titles and tolerates a missing mapping rule", () => {
+    const emptySchema: any = {};
+    expect(() => nameMappingRuleBranches(emptySchema)).not.toThrow();
+    expect(emptySchema).toEqual({});
+
+    const schema: any = {
+      $defs: {
+        MappingRule: { anyOf: [{ type: "string", title: "Kept" }, { type: "number" }] },
+      },
+    };
+
+    nameMappingRuleBranches(schema);
+    const once = JSON.parse(JSON.stringify(schema));
+    nameMappingRuleBranches(schema);
+
+    expect(schema).toEqual(once);
+    expect(schema.$defs.MappingRule.anyOf[0].title).toBe("Kept");
+    expect(schema.$defs.MappingRule.anyOf[1]).not.toHaveProperty("title");
   });
 });

@@ -12,6 +12,7 @@ import PasswordField from "./PasswordField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
 import { appShell } from "../app-shell";
+import { pickFilePath } from "../desktop-file-dialog";
 import { BASIC_ENDPOINT_FIELDS, collectPublisherIdSuggestions } from "../endpoint-metadata";
 import {
   createTypeSelectArrayRenderer,
@@ -310,6 +311,43 @@ if (baseRenderBoolean) {
   };
 }
 
+function addDesktopFilePicker(
+  renderedField: HTMLElement,
+  input: HTMLInputElement,
+  formMode: unknown,
+) {
+  const parent = input.parentNode;
+  if (!parent) return;
+
+  const control = document.createElement("div");
+  control.className = "mqb-file-path-control";
+  parent.insertBefore(control, input);
+  control.appendChild(input);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "wa-native-button wa-native-button--neutral mqb-file-path-browse";
+  button.textContent = "Browse…";
+  button.title = formMode === "consumer" ? "Select an input file" : "Select an output file";
+  button.setAttribute("aria-label", button.title);
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const selected = await pickFilePath(formMode === "consumer" ? "open" : "save", input.value);
+      if (selected === null) return;
+
+      input.value = selected;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+    } finally {
+      button.disabled = false;
+    }
+  });
+  control.appendChild(button);
+
+  renderedField.classList.add("mqb-file-path-field");
+}
+
 domRenderer.renderFieldWrapper = (
   node: SchemaNode,
   elementId: string,
@@ -373,7 +411,7 @@ domRenderer.renderFieldWrapper = (
     });
   }
 
-  return renderSvelteNode(FormField, {
+  const renderedField = renderSvelteNode(FormField, {
     label: formatLabel(node, elementId),
     description: formatDescription(node, elementId),
     labelFor: input instanceof HTMLElement ? input.id : undefined,
@@ -381,6 +419,16 @@ domRenderer.renderFieldWrapper = (
     wrapperClass: wrapperClass || "",
     required: Boolean(node.required),
   });
+
+  if (
+    appShell.isDesktop()
+    && input instanceof HTMLInputElement
+    && node["mqb-file-path"] === true
+  ) {
+    addDesktopFilePicker(renderedField, input, (window as any)._mqb_form_mode);
+  }
+
+  return renderedField;
 };
 
 if (forms.domRenderer && forms.domRenderer !== domRenderer) {
@@ -697,6 +745,9 @@ const createEndpointRenderer = (type: string) => ({
 
     const basicFields = BASIC_ENDPOINT_FIELDS[type] || [];
     const allProperties = node.properties || {};
+    if (type === "file" && allProperties.path) {
+      allProperties.path["mqb-file-path"] = true;
+    }
     const visibleProperties: Record<string, SchemaNode> = {};
     const hiddenProperties: Record<string, SchemaNode> = {};
 
@@ -933,6 +984,65 @@ const endpointRenderer = {
   },
 };
 
+// Transform's inline schema is a free-form JSON document, so it has no `type` in the config
+// schema and the library would render a text input and store whatever was typed as a string -
+// which the engine then refuses to start with ("schema must be a JSON object"). Edit it as JSON
+// and only ever write a parsed object.
+const transformSchemaRenderer = {
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    const store = context.store;
+    const storePath = toStorePath(dataPath);
+    const current = store.getPath(storePath);
+
+    const textarea = document.createElement("textarea");
+    textarea.className = rendererConfig.classes.input;
+    textarea.id = elementId;
+    textarea.rows = 10;
+    textarea.spellcheck = false;
+    textarea.style.fontFamily = "monospace";
+    textarea.placeholder = '{ "type": "object", "properties": { … } }';
+    textarea.value = current === undefined ? "" : JSON.stringify(current, null, 2);
+
+    const message = document.createElement("div");
+    message.className = "mqb-json-error";
+
+    const commit = () => {
+      const raw = textarea.value.trim();
+      let error = "";
+
+      if (raw === "") {
+        store.removePath ? store.removePath(storePath) : store.setPath(storePath, undefined);
+      } else {
+        try {
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            error = "The schema must be a JSON object.";
+          } else {
+            store.setPath(storePath, parsed);
+          }
+        } catch (parseError) {
+          error = `Invalid JSON: ${(parseError as Error).message}`;
+        }
+      }
+
+      message.textContent = error;
+      textarea.classList.toggle("mqb-json-invalid", Boolean(error));
+    };
+
+    // The library collects field values by element id through delegated listeners on the form
+    // container; left to bubble, they would store the raw text alongside the parsed value.
+    textarea.addEventListener("input", (event) => event.stopPropagation());
+    textarea.addEventListener("change", (event) => {
+      event.stopPropagation();
+      commit();
+    });
+
+    const field = domRenderer.renderFieldWrapper(node, elementId, textarea) as HTMLElement;
+    field.appendChild(message);
+    return field;
+  },
+};
+
 const CUSTOM_RENDERERS: Record<string, unknown> = {
   root: rootRenderer,
   AppConfig: rootRenderer,
@@ -947,6 +1057,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,
+  "transform.schema": transformSchemaRenderer,
   "root.endpoint": renderObject,
   "output.mode": { render: () => document.createDocumentFragment() },
   value: {

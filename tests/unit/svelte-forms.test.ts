@@ -6,6 +6,9 @@ import { flushSync, mount, unmount } from "../../node_modules/svelte/src/index-c
 import CollapsibleFields from "../../ui/src/lib/forms/CollapsibleFields.svelte";
 import OptionalSectionField from "../../ui/src/lib/forms/OptionalSectionField.svelte";
 import HeadersEditor from "../../ui/src/lib/forms/HeadersEditor.svelte";
+import AdditionalPropertyRow from "../../ui/src/lib/forms/AdditionalPropertyRow.svelte";
+import GenericAdditionalPropertyRow from "../../ui/src/lib/forms/GenericAdditionalPropertyRow.svelte";
+import { rendererConfig } from "vanilla-schema-forms";
 
 function mountComponent<Props extends Record<string, unknown>>(component: any, props: Props) {
   const target = document.createElement("div");
@@ -161,6 +164,30 @@ describe("svelte form components", () => {
     const inputs = target.querySelectorAll("input");
     expect((inputs[0] as HTMLInputElement).placeholder).toBe("Variable name");
     expect((inputs[1] as HTMLInputElement).placeholder).toBe("Value");
+    unmount(instance);
+  });
+
+  // The library's Delete handler is delegated: it walks up from the button to the row
+  // trigger class, so a row missing it silently ignores every click.
+  test.each([
+    ["GenericAdditionalPropertyRow", GenericAdditionalPropertyRow],
+    ["AdditionalPropertyRow", AdditionalPropertyRow],
+  ])("%s carries the form library's row hooks", (_name, component) => {
+    const { triggers } = rendererConfig as { triggers: Record<string, string> };
+    const { target, instance } = mountComponent(component, {
+      inputId: "endpoint.file.decrypt_keys.__ap_0_key",
+      value: "old-key",
+      valueContent: createTextNode("Value", "ap-value"),
+      removeClassName: `danger ${triggers.removeAdditionalProperty}`,
+    });
+
+    const row = target.querySelector(`.${triggers.additionalPropertyRow}`);
+    expect(row).not.toBeNull();
+
+    const remove = target.querySelector(`.${triggers.removeAdditionalProperty}`) as HTMLElement | null;
+    expect(remove?.closest(`.${triggers.additionalPropertyRow}`)).toBe(row);
+    expect(row?.querySelector(`.${triggers.additionalPropertyKey}`)).not.toBeNull();
+    expect(row?.querySelector(`.${triggers.apValueWrapper}`)?.querySelector(".ap-value")).not.toBeNull();
     unmount(instance);
   });
 });

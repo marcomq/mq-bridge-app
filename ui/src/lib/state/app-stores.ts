@@ -132,6 +132,8 @@ export interface PublisherRequestFieldState {
   placeholder: string;
   value: string;
   visible: boolean;
+  /** Desktop only: offer a native file picker beside the input. */
+  browse?: boolean;
 }
 
 export interface PublisherHeaderRow {

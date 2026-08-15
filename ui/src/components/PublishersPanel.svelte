@@ -25,6 +25,7 @@
     addPublisherAction,
     addPublisherMetadataRow,
     beautifyPublisherPayloadAction,
+    browsePublisherFilePath,
     clearActivePublisherHistory,
     cloneCurrentPublisherAction,
     copyPublisherResponse,
@@ -472,13 +473,25 @@
           </div>
           <div class="request-field request-field--wide" id="pub-url-wrap" style:display={$publishersPanelState.urlField.visible ? "flex" : "none"}>
             <span class="request-field-label" id="pub-url-label">{$publishersPanelState.urlField.label}</span>
-            <input
-              class="url-input request-field-input"
-              id="pub-url"
-              value={$publishersPanelState.urlField.value}
-              placeholder={$publishersPanelState.urlField.placeholder}
-              oninput={(event) => updatePublisherRequestField("pub-url", (event.currentTarget as HTMLInputElement).value)}
-            />
+            <div class="request-field-row">
+              <input
+                class="url-input request-field-input"
+                id="pub-url"
+                value={$publishersPanelState.urlField.value}
+                placeholder={$publishersPanelState.urlField.placeholder}
+                oninput={(event) => updatePublisherRequestField("pub-url", (event.currentTarget as HTMLInputElement).value)}
+              />
+              {#if $publishersPanelState.urlField.browse}
+                <button
+                  type="button"
+                  id="pub-url-browse"
+                  class="wa-native-button wa-native-button--neutral mqb-file-path-browse"
+                  title="Select an output file"
+                  aria-label="Select an output file"
+                  onclick={() => void browsePublisherFilePath()}
+                >Browse…</button>
+              {/if}
+            </div>
           </div>
           <wa-button variant="brand" id="pub-send" role="button" tabindex="0" onclick={sendPublisherAction}
             onkeydown={(event: KeyboardEvent) => handleActionKey(event, () => void sendPublisherAction())}>Send</wa-button

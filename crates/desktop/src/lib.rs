@@ -973,6 +973,7 @@ pub fn run() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config_path = desktop_config_path(app)?;
             let metadata_path = desktop_secret_metadata_path(&config_path);

@@ -2,6 +2,13 @@
 
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
+const dialogMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+  save: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => dialogMocks);
+
 type SchemaNode = Record<string, any>;
 
 function getPathValue(root: any, path: Array<string | number>) {
@@ -153,11 +160,12 @@ function createFakeForms() {
   return forms;
 }
 
-async function loadCustomForm() {
+async function loadCustomForm(desktop = false) {
   vi.resetModules();
   document.body.innerHTML = "";
   const forms = createFakeForms();
   (window as any).VanillaSchemaForms = forms;
+  (window as any).__MQB_DESKTOP__ = desktop;
   (window as any)._mqb_form_mode = "publisher";
   (window as any).appConfig = { publishers: [{ name: "pub-a" }, { name: "pub-b" }] };
 
@@ -466,6 +474,8 @@ describe("custom form runtime", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    dialogMocks.open.mockReset();
+    dialogMocks.save.mockReset();
   });
 
   test("renders generic checkboxes with the app layout and writes changes back to the store", async () => {
@@ -644,5 +654,119 @@ describe("custom form runtime", () => {
     toggle?.click();
     expect(passwordInput?.type).toBe("password");
     expect(toggle?.textContent).toBe("Show");
+  });
+
+  test("adds a save-file picker to desktop publisher file paths", async () => {
+    const forms = await loadCustomForm(true);
+    dialogMocks.save.mockResolvedValueOnce("/tmp/output.jsonl");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "Publishers.endpoint.file.path";
+
+    const rendered = forms.domRenderer.renderFieldWrapper(
+      { type: "string", title: "Path", "mqb-file-path": true },
+      input.id,
+      input,
+      "",
+    ) as HTMLElement;
+    document.body.appendChild(rendered);
+
+    const browse = rendered.querySelector(".mqb-file-path-browse") as HTMLButtonElement | null;
+    expect(browse?.textContent).toBe("Browse…");
+    browse?.click();
+    await vi.waitFor(() => expect(input.value).toBe("/tmp/output.jsonl"));
+    expect(dialogMocks.save).toHaveBeenCalledWith({ defaultPath: undefined });
+    expect(dialogMocks.open).not.toHaveBeenCalled();
+  });
+
+  test("adds an open-file picker to desktop consumer file paths only", async () => {
+    const forms = await loadCustomForm(true);
+    (window as any)._mqb_form_mode = "consumer";
+    dialogMocks.open.mockResolvedValueOnce("/tmp/input.jsonl");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "Consumers.endpoint.file.path";
+
+    const rendered = forms.domRenderer.renderFieldWrapper(
+      { type: "string", title: "Path", "mqb-file-path": true },
+      input.id,
+      input,
+      "",
+    ) as HTMLElement;
+    document.body.appendChild(rendered);
+
+    (rendered.querySelector(".mqb-file-path-browse") as HTMLButtonElement | null)?.click();
+    await vi.waitFor(() => expect(input.value).toBe("/tmp/input.jsonl"));
+    expect(dialogMocks.open).toHaveBeenCalledWith({
+      multiple: false,
+      directory: false,
+      defaultPath: undefined,
+    });
+
+    const webForms = await loadCustomForm(false);
+    const webInput = document.createElement("input");
+    webInput.type = "text";
+    webInput.id = "Consumers.endpoint.file.path";
+    const webRendered = webForms.domRenderer.renderFieldWrapper(
+      { type: "string", title: "Path", "mqb-file-path": true },
+      webInput.id,
+      webInput,
+      "",
+    ) as HTMLElement;
+    expect(webRendered.querySelector(".mqb-file-path-browse")).toBeNull();
+  });
+
+  test("edits a transform schema as JSON and only stores parsed objects", async () => {
+    const forms = await loadCustomForm();
+    const renderTransformSchema = forms.customRenderers["transform.schema"].render as Function;
+    const store = createStore({
+      middlewares: [{ transform: { schema: { type: "object" } } }],
+    });
+    forms.__activeStore = store;
+    const dataPath = ["root", "middlewares", 0, "transform", "schema"];
+    const schemaPath = ["middlewares", 0, "transform", "schema"];
+
+    const element = renderTransformSchema(
+      { title: "Schema", description: "Inline JSON Schema subset." },
+      "",
+      "root.middlewares.0.transform.schema",
+      dataPath,
+      { store },
+    ) as HTMLElement;
+    document.body.appendChild(element);
+
+    const textarea = element.querySelector("textarea") as HTMLTextAreaElement;
+    expect(textarea.value).toBe(JSON.stringify({ type: "object" }, null, 2));
+
+    textarea.value = '{"type":"object","properties":{"id":{"type":"integer"}}}';
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(store.getPath(schemaPath)).toEqual({
+      type: "object",
+      properties: { id: { type: "integer" } },
+    });
+    expect(element.querySelector(".mqb-json-error")?.textContent).toBe("");
+
+    // A schema the engine would reject is refused here instead of being saved.
+    textarea.value = "{ not json";
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(store.getPath(schemaPath)).toEqual({
+      type: "object",
+      properties: { id: { type: "integer" } },
+    });
+    expect(textarea.classList.contains("mqb-json-invalid")).toBe(true);
+    expect(element.querySelector(".mqb-json-error")?.textContent).toContain("Invalid JSON");
+
+    textarea.value = '"a string schema"';
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(store.getPath(schemaPath)).toEqual({
+      type: "object",
+      properties: { id: { type: "integer" } },
+    });
+    expect(element.querySelector(".mqb-json-error")?.textContent).toBe("The schema must be a JSON object.");
+
+    textarea.value = "  ";
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(store.getPath(schemaPath)).toBeUndefined();
+    expect(textarea.classList.contains("mqb-json-invalid")).toBe(false);
   });
 });
