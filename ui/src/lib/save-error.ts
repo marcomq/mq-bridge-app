@@ -83,6 +83,44 @@ function valueAtPath(root: unknown, segments: readonly string[]): unknown {
   }, root);
 }
 
+// Property-name sets of every schema definition that requires a given field, so a block
+// that simply has no such field of its own (a `retry` middleware, say) is not blamed for
+// a missing `key`. Empty until the schema is registered, which only turns the filter off.
+let requiredFieldOwners = new Map<string, Array<Set<string>>>();
+
+export function registerConfigSchema(schema: unknown): void {
+  const owners = new Map<string, Array<Set<string>>>();
+  const definitions = (schema as { $defs?: Record<string, unknown> } | null)?.$defs || {};
+
+  for (const definition of Object.values(definitions)) {
+    const { required, properties } = (definition || {}) as {
+      required?: unknown;
+      properties?: Record<string, unknown>;
+    };
+    if (!Array.isArray(required) || !properties) continue;
+
+    const propertyNames = new Set(Object.keys(properties));
+    for (const field of required) {
+      const entries = owners.get(String(field)) || [];
+      entries.push(propertyNames);
+      owners.set(String(field), entries);
+    }
+  }
+
+  requiredFieldOwners = owners;
+}
+
+/** Could this block be one of the schema definitions that requires `field`? */
+function couldRequireField(record: Record<string, unknown>, field: string): boolean {
+  const owners = requiredFieldOwners.get(field);
+  if (!owners) return requiredFieldOwners.size === 0;
+
+  const keys = Object.keys(record);
+  // An empty block fits every definition, so it is evidence for none of them.
+  if (keys.length === 0) return false;
+  return owners.some((propertyNames) => keys.every((key) => propertyNames.has(key)));
+}
+
 /**
  * serde reports a missing field wherever it finished reading the buffered value —
  * for an endpoint that is the whole endpoint object. Narrow it down to the deepest
@@ -100,7 +138,7 @@ function deepestPathsMissingField(root: unknown, field: string, limit = 2): stri
     if (value === null || typeof value !== "object") return;
 
     const record = value as Record<string, unknown>;
-    if (!(field in record)) {
+    if (!(field in record) && couldRequireField(record, field)) {
       if (path.length > deepest) {
         deepest = path.length;
         found.length = 0;

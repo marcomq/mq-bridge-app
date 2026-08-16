@@ -14,6 +14,7 @@ declare module "vanilla-schema-forms" {
   export const createTypeSelectArrayRenderer: (...args: unknown[]) => Renderer;
   export const formatWebAwesomeLabel: (...args: unknown[]) => string;
   export const hydrateNodeWithData: (...args: unknown[]) => void;
+  export const toStorePath: (dataPath: Array<string | number>) => Array<string | number>;
   export const rendererConfig: JsonObject;
   export const createOptionalRenderer: (...args: unknown[]) => Renderer;
   export const createForm: (schema: unknown, data?: unknown, options?: JsonObject) => FormApi;

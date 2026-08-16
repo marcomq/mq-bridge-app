@@ -73,6 +73,38 @@ export function normalizeMiddlewares(
   });
 }
 
+// The schema form seeds every defaulted field as soon as it renders, so a file or
+// object_store endpoint the user never encrypted still carries `cipher` and `key_id`.
+// `encryption` is optional, but once present the backend demands its `key` and rejects
+// the save, so drop the block again while it holds nothing the user chose.
+const SEEDED_ENCRYPTION_DEFAULTS: Record<string, unknown> = {
+  cipher: "xchacha20poly1305",
+  key_id: "default",
+};
+
+function isUnsetEncryption(encryption: unknown): boolean {
+  if (!encryption || typeof encryption !== "object" || Array.isArray(encryption)) {
+    return false;
+  }
+
+  return Object.entries(encryption as EndpointRecord).every(([field, value]) => {
+    if (value === null || value === "") return true;
+    if (typeof value === "object") return Object.keys(value as object).length === 0;
+    return SEEDED_ENCRYPTION_DEFAULTS[field] === value;
+  });
+}
+
+function dropUnsetEncryption(endpointConfig: unknown): void {
+  if (!endpointConfig || typeof endpointConfig !== "object" || Array.isArray(endpointConfig)) {
+    return;
+  }
+
+  const config = endpointConfig as EndpointRecord;
+  if ("encryption" in config && isUnsetEncryption(config.encryption)) {
+    delete config.encryption;
+  }
+}
+
 export function ensureEndpointDefaults(
   endpoint: unknown,
   recurse: (endpoint: unknown) => EndpointRecord,
@@ -119,6 +151,7 @@ export function ensureEndpointDefaults(
           : "";
   }
 
+  dropUnsetEncryption(normalized[endpointType]);
   normalized.middlewares = normalizeMiddlewares(normalized.middlewares, recurse);
   return normalized;
 }

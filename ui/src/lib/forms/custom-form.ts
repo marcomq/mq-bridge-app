@@ -26,6 +26,7 @@ import {
   setConfig,
   setCustomRenderers,
   setI18n,
+  toStorePath,
 } from "vanilla-schema-forms";
 import * as VanillaSchemaForms from "vanilla-schema-forms";
 
@@ -629,12 +630,6 @@ const basicAuthRenderer = {
   },
 };
 
-// Data paths handed to renderers are prefixed with the form root key, which is not
-// part of the store state. A single-segment path is the root node itself.
-function toStorePath(dataPath: Array<string | number>): Array<string | number> {
-  return dataPath.length > 1 ? dataPath.slice(1) : dataPath;
-}
-
 // Both custom headers and env vars are a sorted key/value map edited through HeadersEditor;
 // they differ only in labels, so share one renderer factory.
 const createKeyValueRenderer = (editorProps: (node: SchemaNode) => Record<string, unknown>) => ({
@@ -879,35 +874,18 @@ const middlewaresRenderer = {
     const toggleButton = element.querySelector(`.${rendererConfig.triggers.arrayTypeToggle}`) as HTMLElement | null;
     const typeSelect = element.querySelector(`.${rendererConfig.triggers.arrayTypeSelect}`) as HTMLSelectElement | null;
 
+    // The library only makes the picker its own trigger where select.showPicker() is missing
+    // (WebKit, so Safari and Tauri); elsewhere it keeps an "Add Middleware" button that reveals
+    // the select. Apply the same shape everywhere so desktop and browser look alike. Removing
+    // the button is what keeps the picker visible: the library hides it again only when there
+    // is a button to swap back to.
     if (toggleButton && typeSelect) {
-      // The library reveals the type picker behind an "Add Middleware" button and opens it via
-      // select.showPicker(), which WebKit (Safari, Tauri) does not implement: the first click only
-      // swapped the button for the select, and a click elsewhere hid it again. Show the picker
-      // itself as the button instead, so a single native click opens it in every engine.
-      const addLabel = toggleButton.textContent || "Add Middleware";
-      toggleButton.remove();
-
       const placeholder = typeSelect.querySelector("option[value='']");
-      if (placeholder) placeholder.textContent = addLabel;
+      if (placeholder) placeholder.textContent = toggleButton.textContent || "Add Middleware";
 
+      toggleButton.remove();
       addClassTokens(typeSelect, rendererConfig.classes.buttonPrimary);
-      // Only forces the select's display style — named for what it does, and
-      // guarded so it doesn't write (and re-trigger the observer) redundantly.
-      const forceSelectVisible = () => {
-        if (typeSelect.style.display !== "inline-block") {
-          typeSelect.style.display = "inline-block";
-        }
-      };
-      forceSelectVisible();
-
-      // The library hides the picker again after a type is chosen (and on focusout); keep it
-      // visible so further middlewares can be added without re-rendering the form. The observer
-      // targets a node inside the freshly rendered subtree and forms a cycle with it, so both are
-      // collected together when the next render drops that subtree (RendererContext is a plain bag
-      // with no teardown hook to disconnect through explicitly).
-      new MutationObserver(() => {
-        if (typeSelect.style.display === "none") forceSelectVisible();
-      }).observe(typeSelect, { attributes: true, attributeFilter: ["style"] });
+      typeSelect.style.display = "inline-block";
     }
 
     return element;

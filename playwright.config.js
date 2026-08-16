@@ -3,7 +3,8 @@ const { defineConfig } = require("@playwright/test");
 module.exports = defineConfig({
   testDir: "./tests/playwright",
   timeout: 30_000,
-  maxFailures: 1,
+  // No maxFailures: when the UI is broken the point is to see every failure in
+  // one run, not to stop at the first one.
   workers: 1, // Required because tests modify shared global /config state
   expect: {
     timeout: 5_000,

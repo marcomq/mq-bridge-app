@@ -20,6 +20,7 @@ import { initConsumers, restoreConsumerStateFromView } from "./lib/consumers-vie
 import { initPublishers, restorePublisherStateFromView } from "./lib/publishers-view";
 import { EMPTY_RUNTIME_STATUS, createRuntimeStatusPoller, type MainTab } from "./lib/runtime-status";
 import { nextHashForTab, pickDefaultTab, resolveTabFromHash } from "./lib/routing";
+import { registerConfigSchema } from "./lib/save-error";
 import { extractSettingsConfig, initSettings } from "./lib/settings";
 import {
   appShell,
@@ -401,6 +402,7 @@ export async function bootstrapApp() {
   delete config.routes;
   appShell.setConfig(config);
   appShell.setSchema(schema);
+  registerConfigSchema(schema);
   registerEndpointKindsFromSchema(schema);
   const state = getAppState();
   state.storage_security = storageSecurity;

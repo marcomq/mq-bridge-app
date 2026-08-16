@@ -573,7 +573,7 @@ describe("custom form runtime", () => {
       },
       "",
       "root.env_vars",
-      ["env_vars"],
+      ["root", "env_vars"],
       { store },
     ) as HTMLElement;
 

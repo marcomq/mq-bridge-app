@@ -1,5 +1,22 @@
-import { describe, expect, test } from "vitest";
-import { explainConfigSaveError, jsonPathAtOffset } from "../../ui/src/lib/save-error";
+import { afterEach, describe, expect, test } from "vitest";
+import { explainConfigSaveError, jsonPathAtOffset, registerConfigSchema } from "../../ui/src/lib/save-error";
+
+// The parts of the backend schema the location filter reads.
+const SCHEMA = {
+  $defs: {
+    EncryptionConfig: {
+      properties: { cipher: {}, key_id: {}, key: {}, decrypt_keys: {} },
+      required: ["key"],
+    },
+    RetryMiddleware: {
+      properties: { max_attempts: {}, initial_interval_ms: {}, max_interval_ms: {}, multiplier: {} },
+    },
+    DeduplicationMiddleware: {
+      properties: { store: {}, sled_path: {}, ttl_seconds: {}, key: {} },
+      required: ["ttl_seconds"],
+    },
+  },
+};
 
 // Mirrors what the backend rejects: a file endpoint whose at-rest encryption block
 // was filled in except for the required `key`.
@@ -88,6 +105,40 @@ describe("explainConfigSaveError", () => {
   test("passes through when the body is not the JSON that was rejected", () => {
     expect(explainConfigSaveError("Json deserialize error: missing field `key` at line 1 column 12", "not json")).toBe(
       "Json deserialize error: missing field `key` at line 1 column 12",
+    );
+  });
+});
+
+describe("explainConfigSaveError with the schema registered", () => {
+  afterEach(() => registerConfigSchema(null));
+
+  // A retry middleware has no `key` of its own and sits deeper than the encryption
+  // block, so without the schema it was blamed for the encryption block's error.
+  const body = JSON.stringify({
+    publishers: [
+      {
+        name: "file-out",
+        endpoint: {
+          file: { path: "/tmp/out.jsonl", encryption: { cipher: "xchacha20poly1305", key_id: "default" } },
+          middlewares: [{ retry: { max_attempts: 3 } }],
+        },
+      },
+    ],
+  });
+  // serde stops on the brace that closes the buffered endpoint, one past the `]` of `middlewares`.
+  const message = `Json deserialize error: missing field \`key\` at line 1 column ${body.indexOf("]}") + 2}`;
+
+  test("skips blocks that cannot own the missing field", () => {
+    registerConfigSchema(SCHEMA);
+
+    expect(explainConfigSaveError(message, body)).toBe(
+      "publisher “file-out” › endpoint › file › encryption: missing field `key`",
+    );
+  });
+
+  test("blames the deepest block without the schema", () => {
+    expect(explainConfigSaveError(message, body)).toBe(
+      "publisher “file-out” › endpoint › middlewares[0] › retry: missing field `key`",
     );
   });
 });
