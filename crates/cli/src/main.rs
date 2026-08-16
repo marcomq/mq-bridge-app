@@ -87,6 +87,13 @@ struct Args {
     #[arg(long)]
     schema: Option<String>,
 
+    /// When to colorize log output: `auto` (default), `always` or `never`.
+    ///
+    /// `auto` colors a terminal but writes plain text to a pipe or file, so a
+    /// redirected log does not collect escape sequences. Also honors `NO_COLOR`.
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t = ColorChoice::Auto, global = true)]
+    color: ColorChoice,
+
     /// Start the web UI on the default port without asking.
     ///
     /// Only relevant when no config file sets `ui_addr`: that case asks for
@@ -115,6 +122,34 @@ struct Args {
 
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum ColorChoice {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl ColorChoice {
+    /// Whether to emit SGR escapes, given whether the log writer is a terminal
+    /// and whether the environment asked for no color.
+    ///
+    /// `NO_COLOR` applies only under `auto`: an explicit `--color always` is a
+    /// direct instruction and outranks the environment.
+    fn enabled(self, writer_is_terminal: bool, no_color: bool) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Never => false,
+            Self::Auto => writer_is_terminal && !no_color,
+        }
+    }
+}
+
+/// `NO_COLOR` (https://no-color.org): set to any non-empty value.
+fn no_color_requested() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
 }
 
 #[derive(Subcommand, Debug)]
@@ -316,7 +351,7 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Some(Command::Copy(copy_args)) => {
-            init_copy_logging();
+            init_copy_logging(args.color);
             load_cli_plugins(&args.plugins)?;
             return run_copy(copy_args).await;
         }
@@ -343,7 +378,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
-            init_mcp_logging();
+            init_mcp_logging(args.color);
             load_cli_plugins(&args.plugins)?;
             let workspace_path = config_file_path(args.config.clone());
             return mcp::run(
@@ -385,7 +420,7 @@ async fn main() -> anyhow::Result<()> {
         args.config_str,
     )
     .context("Failed to load configuration")?;
-    init_logging(&config);
+    init_logging(&config, args.color);
     load_cli_plugins(&args.plugins)?;
     mq_bridge_app::plugins::load_trusted_plugins(&config.plugins, &config.env_vars)?;
     println!(
@@ -660,8 +695,13 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     use mq_bridge::models::{Route, RouteOptions};
 
     let (from, to) = copy_endpoints(&args)?;
-    let mut input = endpoint_from_uri(from).context("invalid copy source endpoint")?;
-    let output = endpoint_from_uri(to).context("invalid copy destination endpoint")?;
+    // Expanded here rather than by the shell, so a single-quoted URI can name a
+    // credential without it ever appearing in the history or in `argv`.
+    let from = copy_pipeline::expand_uri_variables(from).context("invalid copy source endpoint")?;
+    let to =
+        copy_pipeline::expand_uri_variables(to).context("invalid copy destination endpoint")?;
+    let mut input = endpoint_from_uri(&from).context("invalid copy source endpoint")?;
+    let output = endpoint_from_uri(&to).context("invalid copy destination endpoint")?;
     let resume = if args.resume {
         Some(copy_pipeline::configure_resume(
             &mut input,
@@ -671,6 +711,8 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     } else {
         None
     };
+    // Before the filter, so the tally counts what was copied, not what was read.
+    let copied = copy_pipeline::configure_counter(&mut input)?;
     if let Some(expression) = &args.filter {
         copy_pipeline::configure_filter(&mut input, expression)?;
     }
@@ -685,6 +727,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 
     let route = Route::new(input, output).with_options(options);
     let run_id = format!("copy-{}", uuid::Uuid::new_v4());
+    let started = std::time::Instant::now();
     let handle = Arc::new(
         route
             .run(&run_id)
@@ -699,8 +742,9 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     );
 
     info!(
-        from = %from,
-        to = %to,
+        // Redacted: this line is the one that reaches journald, Docker logs and CI.
+        from = %copy_pipeline::redact_uri(&from),
+        to = %copy_pipeline::redact_uri(&to),
         filtered = args.filter.is_some(),
         // Names the mechanism, not just the flag: which one the source picked
         // is what tells you where a restart will actually pick up from.
@@ -738,7 +782,11 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             handle.stop().await;
         }
 
-        copy_result(outcome, handle.status().error)
+        copy_result(
+            outcome,
+            handle.status().error,
+            &throughput(&copied, started),
+        )
     } else {
         // Continuous bridge: run until Ctrl-C, then stop gracefully.
         tokio::signal::ctrl_c()
@@ -746,6 +794,13 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             .context("failed to listen for Ctrl+C")?;
         info!("Ctrl+C received; stopping copy");
         handle.stop().await;
+        let moved = throughput(&copied, started);
+        info!(
+            rows = moved.rows,
+            elapsed_s = moved.elapsed_s,
+            rows_per_second = moved.rows_per_second,
+            "copy stopped"
+        );
         Ok(())
     };
 
@@ -824,22 +879,61 @@ fn copy_status_lease(
     )
 }
 
+/// What a finished copy moved, as reported on the last line of the run.
+struct Throughput {
+    rows: u64,
+    elapsed_s: f64,
+    rows_per_second: f64,
+}
+
+/// Rates a finished copy. A run too short to time is reported as no rate rather
+/// than a number divided by an elapsed time that rounds to zero.
+///
+/// Both figures are rounded: full `f64` precision here reads as noise, and the
+/// elapsed time includes connection setup, so the rate is an approximation of a
+/// whole run rather than a benchmark of the transfer.
+fn throughput(copied: &std::sync::atomic::AtomicU64, started: std::time::Instant) -> Throughput {
+    let rows = copied.load(std::sync::atomic::Ordering::Relaxed);
+    let elapsed_s = started.elapsed().as_secs_f64();
+    let rows_per_second = if elapsed_s > 0.0 {
+        rows as f64 / elapsed_s
+    } else {
+        0.0
+    };
+    Throughput {
+        rows,
+        elapsed_s: (elapsed_s * 1000.0).round() / 1000.0,
+        rows_per_second: rows_per_second.round(),
+    }
+}
+
 /// Maps a finished `copy --drain` route to the process result: a route killed by a
 /// permanent error must not exit 0, or a cron/timer job reports success while having
 /// copied nothing. `None` means Ctrl-C interrupted the wait.
 fn copy_result(
     outcome: Option<mq_bridge::route::RouteOutcome>,
     error: Option<String>,
+    moved: &Throughput,
 ) -> anyhow::Result<()> {
     use mq_bridge::route::RouteOutcome;
 
     match outcome {
         Some(RouteOutcome::Failed) => {
             let cause = error.unwrap_or_else(|| "no error reported".to_string());
-            anyhow::bail!("copy failed: {cause}");
+            anyhow::bail!("copy failed after {} rows: {cause}", moved.rows);
         }
-        Some(RouteOutcome::Stopped) => info!("copy stopped before the source drained"),
-        Some(RouteOutcome::Completed) => info!("copy completed; source drained"),
+        Some(RouteOutcome::Stopped) => info!(
+            rows = moved.rows,
+            elapsed_s = moved.elapsed_s,
+            rows_per_second = moved.rows_per_second,
+            "copy stopped before the source drained"
+        ),
+        Some(RouteOutcome::Completed) => info!(
+            rows = moved.rows,
+            elapsed_s = moved.elapsed_s,
+            rows_per_second = moved.rows_per_second,
+            "copy completed; source drained"
+        ),
         None => {}
     }
     Ok(())
@@ -1490,27 +1584,35 @@ fn coerce_scalar(s: String, ty: FieldType) -> serde_json::Value {
 }
 
 /// Minimal logging setup for the headless `copy` subcommand (no AppConfig).
-fn init_copy_logging() {
+fn init_copy_logging(color: ColorChoice) {
+    use std::io::IsTerminal;
+
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
+        .with_ansi(color.enabled(std::io::stdout().is_terminal(), no_color_requested()))
         .try_init();
 }
 
 /// Logging for the `mcp` subcommand. Writes to **stderr** because the `stdio`
 /// transport uses stdout as the MCP (JSON-RPC) channel — logging there would
 /// corrupt the protocol stream.
-fn init_mcp_logging() {
+fn init_mcp_logging(color: ColorChoice) {
+    use std::io::IsTerminal;
+
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
         .with_writer(std::io::stderr)
+        .with_ansi(color.enabled(std::io::stderr().is_terminal(), no_color_requested()))
         .try_init();
 }
 
-fn init_logging(config: &AppConfig) {
+fn init_logging(config: &AppConfig, color: ColorChoice) {
+    use std::io::IsTerminal;
+
     // --- 1. Initialize Logging ---
     // If the TOKIO_CONSOLE env var is set, initialize the console subscriber.
     // This is an exclusive choice, as the console subscriber is a logging layer.
@@ -1526,7 +1628,8 @@ fn init_logging(config: &AppConfig) {
     let logger = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_span_events(FmtSpan::CLOSE) // Log entry and exit of spans
-        .with_target(true);
+        .with_target(true)
+        .with_ansi(color.enabled(std::io::stdout().is_terminal(), no_color_requested()));
     match config.logger.as_str() {
         "json" => {
             logger.json().init();
@@ -1645,8 +1748,29 @@ mod report_to_ui_flag_tests {
 
 #[cfg(test)]
 mod copy_result_tests {
-    use super::copy_result;
     use super::mq_bridge::route::RouteOutcome;
+    use super::{ColorChoice, Throughput, copy_result};
+
+    // Piping a run into a log file must not fill it with escape sequences, but a
+    // terminal keeps its color, and an explicit `always` overrides both signals.
+    #[test]
+    fn color_follows_the_writer_unless_told_otherwise() {
+        assert!(ColorChoice::Auto.enabled(true, false));
+        assert!(!ColorChoice::Auto.enabled(false, false));
+
+        // NO_COLOR only speaks for `auto`.
+        assert!(!ColorChoice::Auto.enabled(true, true));
+        assert!(ColorChoice::Always.enabled(false, true));
+        assert!(!ColorChoice::Never.enabled(true, false));
+    }
+
+    fn moved(rows: u64) -> Throughput {
+        Throughput {
+            rows,
+            elapsed_s: 1.0,
+            rows_per_second: rows as f64,
+        }
+    }
 
     /// A route killed by a permanent error ends its task exactly like a real drain
     /// does, so `copy --drain` used to exit 0 and log "source drained" after copying
@@ -1656,6 +1780,7 @@ mod copy_result_tests {
         let err = copy_result(
             Some(RouteOutcome::Failed),
             Some("Any driver does not support MySql type Timestamp".to_string()),
+            &moved(0),
         )
         .expect_err("a failed route must not report success");
         assert!(
@@ -1667,15 +1792,15 @@ mod copy_result_tests {
 
     #[test]
     fn failed_outcome_without_a_recorded_error_still_fails() {
-        assert!(copy_result(Some(RouteOutcome::Failed), None).is_err());
+        assert!(copy_result(Some(RouteOutcome::Failed), None, &moved(0)).is_err());
     }
 
     #[test]
     fn drained_and_stopped_and_interrupted_succeed() {
-        assert!(copy_result(Some(RouteOutcome::Completed), None).is_ok());
-        assert!(copy_result(Some(RouteOutcome::Stopped), None).is_ok());
+        assert!(copy_result(Some(RouteOutcome::Completed), None, &moved(7)).is_ok());
+        assert!(copy_result(Some(RouteOutcome::Stopped), None, &moved(7)).is_ok());
         // Ctrl-C before the route finished.
-        assert!(copy_result(None, None).is_ok());
+        assert!(copy_result(None, None, &moved(0)).is_ok());
     }
 }
 

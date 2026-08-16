@@ -25,7 +25,7 @@ At its core is a zero-config `copy` command that moves data between databases, q
 
 ```bash
 mqb copy \
-  'postgres://user:pass@localhost/db?table=src&sslmode=disable' \
+  'postgres://${PGUSER}:${PGPASSWORD}localhost/db?table=src&sslmode=disable' \
   'file://out.jsonl?format=raw' \
   --filter 'amount > 100' \
   --drain

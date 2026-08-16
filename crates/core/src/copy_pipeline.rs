@@ -1,7 +1,8 @@
 //! Copy-command conveniences layered over mq-bridge's route abstractions.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, anyhow, bail};
@@ -20,6 +21,19 @@ use zen_expression::{Expression, Variable, compile_expression};
 
 const FILTER_MIDDLEWARE_NAME: &str = "__mq_bridge_app_copy_filter_v1";
 static FILTER_FACTORY_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
+
+const COUNTER_MIDDLEWARE_NAME: &str = "__mq_bridge_app_copy_counter_v1";
+static COUNTER_FACTORY_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
+
+/// Tallies handed out by [`configure_counter`], looked up by the token its
+/// middleware config carries. A factory is built from JSON by name, so a token
+/// is the only way to reach the `Arc` the caller is holding.
+static COPY_COUNTERS: OnceLock<Mutex<HashMap<u64, Arc<AtomicU64>>>> = OnceLock::new();
+static NEXT_COUNTER_TOKEN: AtomicU64 = AtomicU64::new(0);
+
+fn copy_counters() -> &'static Mutex<HashMap<u64, Arc<AtomicU64>>> {
+    COPY_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// The native mechanism used to resume a copy source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,10 +67,42 @@ pub fn configure_filter(input: &mut Endpoint, expression: &str) -> anyhow::Resul
         name: FILTER_MIDDLEWARE_NAME.to_string(),
         config: json!({ "expression": expression }),
     };
-    // `buffer` is the one middleware the filter must not slip under: it
-    // downcasts its inner consumer against a closed list of cancel-safe sources,
-    // so anything between it and the source fails route startup. Sitting just
-    // outside it keeps the filter ahead of every other middleware.
+    insert_before_buffer(input, entry);
+    Ok(())
+}
+
+/// Attaches the copy row counter to the source and returns the shared tally.
+///
+/// Call before [`configure_filter`]: consumer middlewares are applied in
+/// reverse, so the later entry ends up innermost, and the count then reflects
+/// what survived the filter rather than everything the source produced.
+///
+/// Counts messages as the route receives them. A source that redelivers after a
+/// failed batch therefore counts those messages twice — the tally describes work
+/// done, and only equals the destination's row count on a clean run.
+pub fn configure_counter(input: &mut Endpoint) -> anyhow::Result<Arc<AtomicU64>> {
+    ensure_counter_factory()?;
+    let counter = Arc::new(AtomicU64::new(0));
+    let token = NEXT_COUNTER_TOKEN.fetch_add(1, Ordering::Relaxed);
+    copy_counters()
+        .lock()
+        .map_err(|_| anyhow!("copy counter registry is poisoned"))?
+        .insert(token, Arc::clone(&counter));
+    insert_before_buffer(
+        input,
+        Middleware::Custom {
+            name: COUNTER_MIDDLEWARE_NAME.to_string(),
+            config: json!({ "token": token }),
+        },
+    );
+    Ok(counter)
+}
+
+/// `buffer` is the one middleware a copy wrapper must not slip under: it
+/// downcasts its inner consumer against a closed list of cancel-safe sources, so
+/// anything between it and the source fails route startup. Sitting just outside
+/// it keeps these wrappers ahead of every other middleware.
+fn insert_before_buffer(input: &mut Endpoint, entry: Middleware) {
     match input
         .middlewares
         .iter()
@@ -65,7 +111,6 @@ pub fn configure_filter(input: &mut Endpoint, expression: &str) -> anyhow::Resul
         Some(index) => input.middlewares.insert(index, entry),
         None => input.middlewares.push(entry),
     }
-    Ok(())
 }
 
 /// Configures the source's existing durable resume mechanism and returns its kind.
@@ -280,6 +325,105 @@ fn redact_credentials(value: &mut serde_json::Value, key: Option<&str>, parent: 
     }
 }
 
+/// Expands `${VAR}` and `$VAR` in a copy URI from the environment.
+///
+/// This is what keeps a password out of both the shell history and `argv`:
+/// single-quoted, `postgres://${PGUSER}:${PGPASSWORD}@host/db` never carries the
+/// secret on the command line, where any user on the box could read it from
+/// `/proc/<pid>/cmdline`. Config files already expand the same way.
+///
+/// An undefined variable is an error rather than a literal — the config path
+/// tolerates those, but here a typo would otherwise be sent as the password and
+/// fail as an authentication error somewhere far from its cause. A literal `$`
+/// in a URI must be written `%24`.
+pub fn expand_uri_variables(uri: &str) -> anyhow::Result<String> {
+    let mut missing = Vec::new();
+    let expanded = shellexpand::env_with_context_no_errors(uri, |key| {
+        std::env::var(key).ok().or_else(|| {
+            missing.push(key.to_string());
+            Some(String::new())
+        })
+    })
+    .into_owned();
+
+    if !missing.is_empty() {
+        bail!(
+            "undefined environment variable `{}` in endpoint URI (write a literal `$` as `%24`)",
+            missing.join("`, `")
+        );
+    }
+    Ok(expanded)
+}
+
+/// Replaces the credentials in a copy URI with `***` so it can be logged.
+///
+/// Unlike [`redact_credentials`], this one *is* a disclosure control: it feeds
+/// the line naming the route, which lands in journald, Docker logs, CI output
+/// and any terminal recording. Over-redaction is the safe failure here — the
+/// opposite of the checkpoint-identity trade-off, where blanking a semantic
+/// field would silently merge two pipelines.
+///
+/// Middleware segments carry secrets of their own (`|encryption?key=…`), so each
+/// `|`-separated segment is redacted with its own name standing in as the parent
+/// that decides whether a bare `key` is key material. A literal `|` inside a URI
+/// has to be written `%7C`, so splitting on it is safe.
+pub fn redact_uri(uri: &str) -> String {
+    uri.split('|')
+        .map(redact_uri_segment)
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn redact_uri_segment(segment: &str) -> String {
+    let (head, query) = match segment.split_once('?') {
+        Some((head, query)) => (head, Some(query)),
+        None => (segment, None),
+    };
+    let mut redacted = redact_uri_password(head);
+    if let Some(query) = query {
+        // A segment with no scheme is a middleware, and its name is what tells a
+        // bare `key` apart from a partition key.
+        let parent = (!head.contains("://")).then_some(head);
+        redacted.push('?');
+        redacted.push_str(&redact_query_credentials(query, parent));
+    }
+    redacted
+}
+
+/// Blanks the password in a `scheme://user:password@host` authority.
+fn redact_uri_password(head: &str) -> String {
+    let Some(scheme_end) = head.find("://") else {
+        return head.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = head[authority_start..]
+        .find(['/', '#'])
+        .map_or(head.len(), |offset| authority_start + offset);
+    let authority = &head[authority_start..authority_end];
+    let Some(at) = authority.rfind('@') else {
+        return head.to_string();
+    };
+    let Some((user, _password)) = authority[..at].split_once(':') else {
+        return head.to_string();
+    };
+    format!(
+        "{}{user}:***{}",
+        &head[..authority_start],
+        &head[authority_start + at..]
+    )
+}
+
+fn redact_query_credentials(query: &str, parent: Option<&str>) -> String {
+    query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if is_credential(Some(key), parent) => format!("{key}=***"),
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 /// Whether `key` names a credential rather than a pipeline setting.
 ///
 /// `key` on its own is ambiguous — key material under `encryption`, a dedup key
@@ -309,6 +453,90 @@ fn ensure_filter_factory() -> anyhow::Result<()> {
         })
         .clone()
         .map_err(anyhow::Error::msg)
+}
+
+fn ensure_counter_factory() -> anyhow::Result<()> {
+    COUNTER_FACTORY_REGISTRATION
+        .get_or_init(|| {
+            mq_bridge::extensions::register_middleware_factory(
+                COUNTER_MIDDLEWARE_NAME,
+                Arc::new(CopyCounterFactory),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(anyhow::Error::msg)
+}
+
+#[derive(Debug)]
+struct CopyCounterFactory;
+
+#[async_trait]
+impl CustomMiddlewareFactory for CopyCounterFactory {
+    async fn apply_consumer(
+        &self,
+        consumer: Box<dyn MessageConsumer>,
+        _route_name: &str,
+        config: &serde_json::Value,
+    ) -> anyhow::Result<Box<dyn MessageConsumer>> {
+        let token = config
+            .get("token")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| anyhow!("copy counter requires a token"))?;
+        let counter = copy_counters()
+            .lock()
+            .map_err(|_| anyhow!("copy counter registry is poisoned"))?
+            .get(&token)
+            .map(Arc::clone)
+            .ok_or_else(|| anyhow!("copy counter {token} is not registered"))?;
+        Ok(Box::new(CountingConsumer {
+            inner: consumer,
+            counter,
+        }))
+    }
+}
+
+struct CountingConsumer {
+    inner: Box<dyn MessageConsumer>,
+    counter: Arc<AtomicU64>,
+}
+
+#[async_trait]
+impl MessageConsumer for CountingConsumer {
+    fn on_connect_hook(&self) -> Option<BoxFuture<'_, anyhow::Result<()>>> {
+        self.inner.on_connect_hook()
+    }
+
+    fn on_disconnect_hook(&self) -> Option<BoxFuture<'_, anyhow::Result<()>>> {
+        self.inner.on_disconnect_hook()
+    }
+
+    async fn receive_batch(&mut self, max_messages: usize) -> Result<ReceivedBatch, ConsumerError> {
+        let batch = self.inner.receive_batch(max_messages).await?;
+        self.counter
+            .fetch_add(batch.messages.len() as u64, Ordering::Relaxed);
+        Ok(batch)
+    }
+
+    fn set_exit_on_empty(&mut self, exit_on_empty: bool) {
+        self.inner.set_exit_on_empty(exit_on_empty);
+    }
+
+    fn commit_requires_order(&self) -> bool {
+        self.inner.commit_requires_order()
+    }
+
+    async fn status(&self) -> EndpointStatus {
+        self.inner.status().await
+    }
+
+    async fn close(&mut self) -> anyhow::Result<()> {
+        self.inner.close().await
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -366,6 +594,7 @@ impl CompiledFilter {
         let object = document
             .as_object()
             .ok_or_else(|| anyhow!("filter requires a structured JSON object payload"))?;
+        let mut text_fields = Vec::new();
         for variable in &self.variables {
             let Some(value) = object.get(variable).filter(|value| !value.is_null()) else {
                 self.warn_absent_field(variable);
@@ -376,11 +605,14 @@ impl CompiledFilter {
                     "filter field `{variable}` is an array or object; only top-level scalar fields are supported"
                 );
             }
+            if value.is_string() {
+                text_fields.push(variable.as_str());
+            }
         }
         match self
             .expression
             .evaluate(Variable::from(&document))
-            .map_err(|error| anyhow!(error.to_string()))?
+            .map_err(|error| text_typed_field_error(&error.to_string(), &text_fields))?
         {
             Variable::Bool(value) => Ok(value),
             _ => bail!("filter expression did not evaluate to a boolean"),
@@ -397,6 +629,23 @@ impl CompiledFilter {
             );
         }
     }
+}
+
+/// Turns the engine's opcode-level type error into one naming the field and the fix.
+///
+/// Sources that type every column as text — CSV, and most key-value stores —
+/// make `amount > 100` compare a string against a number, which the expression
+/// VM reports only as `Opcode Compare: Unsupported type`. That names neither the
+/// column nor `number()`, so the copy looks broken rather than under-specified.
+fn text_typed_field_error(error: &str, text_fields: &[&str]) -> anyhow::Error {
+    let Some(first) = text_fields.first() else {
+        return anyhow!(error.to_string());
+    };
+    let fields = text_fields.join("`, `");
+    anyhow!(
+        "{error}; filter field `{fields}` holds text, not a number \
+         (this source types every field as text) — compare it as `number({first})`"
+    )
 }
 
 fn referenced_variables(expression: &Expression<Standard>) -> Vec<String> {
@@ -612,6 +861,64 @@ mod tests {
         assert!(CompiledFilter::new("(").is_err());
         let filter = CompiledFilter::new("amount > 10").unwrap();
         assert!(filter.matches(b"not json").is_err());
+    }
+
+    // A text-typed source (CSV and friends) compared against a number fails in
+    // the expression VM, which names only an opcode. The copy is unusable either
+    // way; the error has to name the field and the cast that fixes it.
+    #[test]
+    fn comparing_a_text_typed_field_to_a_number_explains_the_cast() {
+        let filter = CompiledFilter::new("amount > 100").unwrap();
+        let error = filter
+            .matches(br#"{"amount":"125","country":"US"}"#)
+            .expect_err("a text field compared to a number cannot evaluate")
+            .to_string();
+        assert!(error.contains("`amount`"), "{error}");
+        assert!(error.contains("number(amount)"), "{error}");
+
+        // The same expression over a genuinely numeric source is untouched.
+        assert!(filter.matches(br#"{"amount":125}"#).unwrap());
+    }
+
+    // The route-start log reaches journald, Docker logs and CI output, so the
+    // URI it names must not carry the password that was typed on the command line.
+    #[test]
+    fn logged_uris_drop_passwords_but_keep_the_pipeline_settings() {
+        assert_eq!(
+            redact_uri(
+                "postgres://alice:hunter2@db.internal:5432/shop?table=orders&sslmode=require"
+            ),
+            "postgres://alice:***@db.internal:5432/shop?table=orders&sslmode=require"
+        );
+
+        // Middleware secrets travel in the query string, and `key` is only key
+        // material because the segment it sits in is `encryption`.
+        assert_eq!(
+            redact_uri(
+                "file:///tmp/out.messages?format=normal|encryption?cipher=aes256gcm&key=AAAA"
+            ),
+            "file:///tmp/out.messages?format=normal|encryption?cipher=aes256gcm&key=***"
+        );
+
+        // A partition key names a field to read, not a secret.
+        assert_eq!(
+            redact_uri("kafka://broker:9092?topic=orders&partition_key=id"),
+            "kafka://broker:9092?topic=orders&partition_key=id"
+        );
+
+        // Nothing to redact must survive untouched, credential-free URIs included.
+        assert_eq!(redact_uri("null:"), "null:");
+        assert_eq!(
+            redact_uri("nats://host:4222?subject=orders"),
+            "nats://host:4222?subject=orders"
+        );
+    }
+
+    #[test]
+    fn casting_a_text_typed_field_compares_numerically() {
+        let filter = CompiledFilter::new("number(amount) > 100").unwrap();
+        assert!(filter.matches(br#"{"amount":"125"}"#).unwrap());
+        assert!(!filter.matches(br#"{"amount":"25"}"#).unwrap());
     }
 
     // A heterogeneous document must not end an otherwise healthy copy, so an

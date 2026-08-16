@@ -513,6 +513,110 @@ fn copy_filter_keeps_matching_json_and_drops_non_matching_json() {
     assert_eq!(rows, r#"{"amount":125,"status":"paid"}"#);
 }
 
+/// The route-start log names both endpoints, and lands wherever the process's
+/// output goes. A password typed on the command line must not travel with it.
+#[test]
+fn endpoint_passwords_never_reach_the_log() {
+    const PASSWORD: &str = "hunter2-should-never-be-logged";
+
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "redaction-source.txt", b"payload");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP fixture");
+    let address = listener.local_addr().expect("fixture address");
+
+    let fixture = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept CLI request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set fixture timeout");
+        let mut buffer = [0_u8; 4096];
+        let _ = stream.read(&mut buffer);
+        let _ = stream.write_all(
+            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+    });
+
+    let result = copy(
+        &source,
+        &format!("http://alice:{PASSWORD}@{address}/ingest"),
+    );
+    assert_success(&result, "copy to a password-protected endpoint");
+    fixture.join().expect("join HTTP fixture");
+
+    let logged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        !logged.contains(PASSWORD),
+        "password reached the log: {logged}"
+    );
+    assert!(
+        logged.contains("alice:***@"),
+        "expected a redacted URI: {logged}"
+    );
+}
+
+/// Credentials belong in the environment, not in `argv` where `/proc` exposes
+/// them. A single-quoted URI naming `${VAR}` has to be expanded by the CLI.
+#[test]
+fn endpoint_uris_expand_environment_variables() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "expansion-source.txt", b"expanded");
+    let output_path = dir.path().join("expanded.txt");
+
+    let mut command = cli();
+    let result = command
+        .args([
+            "copy",
+            &source,
+            &format!(
+                "file://{}?format=${{MQ_TEST_FORMAT}}",
+                output_path.display()
+            ),
+            "--drain",
+        ])
+        .env("MQ_TEST_FORMAT", "raw")
+        .output()
+        .expect("run CLI copy with an environment variable in the URI");
+
+    assert_success(&result, "URI environment expansion");
+    assert_eq!(read_raw_output(output_path), b"expanded");
+}
+
+/// A mistyped variable must not be passed through as a literal: sent as a
+/// password it would fail later as an authentication error, far from its cause.
+#[test]
+fn undefined_uri_variables_fail_before_connecting() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "undefined-var-source.txt", b"payload");
+
+    let mut command = cli();
+    let result = command
+        .args(["copy", &source, "file:///tmp/${MQ_TEST_NOT_SET}", "--drain"])
+        .env_remove("MQ_TEST_NOT_SET")
+        .output()
+        .expect("run CLI copy with an undefined variable");
+
+    assert_failure_contains(&result, "undefined variable", "MQ_TEST_NOT_SET");
+}
+
+#[test]
+fn copy_filter_on_a_text_typed_source_names_the_numeric_cast() {
+    let dir = TestDir::new();
+    let source_path = dir.path().join("text-typed.csv");
+    std::fs::write(&source_path, b"id,amount\n1,125\n").expect("seed CSV source");
+
+    let result = copy_with_options(
+        &format!("file://{}?format=csv", source_path.display()),
+        "null:",
+        &["--filter", "amount > 100"],
+    );
+
+    assert_failure_contains(&result, "text-typed filter", "number(amount)");
+}
+
 #[test]
 fn copy_filter_reports_invalid_expressions_before_starting() {
     let dir = TestDir::new();
@@ -538,6 +642,50 @@ fn copy_resume_rejects_unsupported_source_before_connecting() {
         &result,
         "unsupported resume source",
         "source `mqtt` does not support resumable copy",
+    );
+}
+
+/// The documented one-line `copy SOURCE TARGET --filter ... --drain` example:
+/// a CSV file becomes filtered JSONL, header names becoming JSON keys.
+#[test]
+fn documented_csv_to_jsonl_filter_one_liner_runs_end_to_end() {
+    let dir = TestDir::new();
+    let source_path = dir.path().join("orders.csv");
+    std::fs::write(
+        &source_path,
+        b"id,country,amount\n1,DE,25\n2,US,125\n3,US,300\n",
+    )
+    .expect("seed CSV source");
+    let output_path = dir.path().join("orders.jsonl");
+
+    let result = copy_positional(
+        &format!("file://{}?format=csv", source_path.display()),
+        &format!("file://{}?format=raw", output_path.display()),
+        &["--filter", r#"country == "US""#],
+    );
+
+    assert_success(&result, "CSV to JSONL one-liner");
+    // The run reports what it moved: the count is taken after the filter, so it
+    // matches the rows on disk rather than the rows read. `copy` logs to stdout.
+    // Piped output carries no SGR escapes, so the fields match as written.
+    let report = String::from_utf8_lossy(&result.stdout);
+    assert!(report.contains("rows=2"), "missing row count: {report}");
+    assert!(
+        report.contains("rows_per_second="),
+        "missing rate: {report}"
+    );
+
+    let rows: Vec<serde_json::Value> = String::from_utf8(read_raw_output(output_path))
+        .expect("JSONL output is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each output line is JSON"))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            serde_json::json!({"id": "2", "country": "US", "amount": "125"}),
+            serde_json::json!({"id": "3", "country": "US", "amount": "300"}),
+        ]
     );
 }
 
