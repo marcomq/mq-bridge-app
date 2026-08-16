@@ -107,4 +107,9 @@ redis-streams = ["mq_bridge_app/redis-streams"]
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "net", "time"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
+# Only to create the table the `--resume` test reads: the copy CLI can populate a
+# SQL table (`auto_create_table`) but not define one whose columns the cursor
+# reader can decode. Same version and a subset of the features mq-bridge already
+# builds, so it costs no extra compilation under the default feature set.
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite"] }

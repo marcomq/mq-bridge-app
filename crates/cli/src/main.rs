@@ -302,7 +302,7 @@ struct CopyArgs {
     batch_size: Option<usize>,
 
     /// Log what the copy is doing: endpoints, connections, shutdown. Without it
-    /// only errors are logged.
+    /// only warnings and errors are logged.
     ///
     /// The `copied …` summary prints either way — it goes to stdout directly
     /// rather than through the logger. `RUST_LOG` still wins when set.
@@ -705,6 +705,7 @@ fn route_entity(name: &str, config: &AppConfig) -> StatusRoute {
 /// exits once the source is empty; otherwise it runs until Ctrl-C.
 async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     use mq_bridge::models::{Route, RouteOptions};
+    use mq_bridge::route::RouteOutcome;
 
     let (from, to) = copy_endpoints(&args)?;
     // Expanded here rather than by the shell, so a single-quoted URI can name a
@@ -812,8 +813,15 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             .context("failed to listen for Ctrl+C")?;
         info!("Ctrl+C received; stopping copy");
         handle.stop().await;
-        throughput(&copied, &read, started).report("stopped after copying");
-        Ok(())
+        // Through the same reporting as the drained branch: a bridge that dropped
+        // rows did not run clean either, and a supervisor restarting it needs to
+        // hear that from the exit status. `stop` resolves the outcome, so the
+        // fallback only guards against the summary going missing.
+        copy_result(
+            handle.outcome().or(Some(RouteOutcome::Stopped)),
+            handle.status().error,
+            &throughput(&copied, &read, started),
+        )
     };
 
     drop(copy_status);
@@ -984,9 +992,17 @@ fn throughput(
     }
 }
 
-/// Maps a finished `copy --drain` route to the process result: a route killed by a
+/// Maps a finished `copy` route to the process result: a route killed by a
 /// permanent error must not exit 0, or a cron/timer job reports success while having
 /// copied nothing. `None` means Ctrl-C interrupted the wait.
+///
+/// A route that reached its end can *also* have thrown data away, and that case
+/// does not arrive as `Failed`: a sink that rejects a message permanently with no
+/// `dlq` middleware to catch it drops the message and the route keeps going, by
+/// design — one poison message must not wedge a bridge. mq-bridge tallies those
+/// drops and publishes them as the route's error when it ends, precisely so the
+/// caller can tell a clean run from a lossy one. Rows that were dropped never
+/// reached the destination, so that has to reach the exit status too.
 fn copy_result(
     outcome: Option<mq_bridge::route::RouteOutcome>,
     error: Option<String>,
@@ -994,14 +1010,30 @@ fn copy_result(
 ) -> anyhow::Result<()> {
     use mq_bridge::route::RouteOutcome;
 
+    if matches!(outcome, Some(RouteOutcome::Failed)) {
+        let cause = error.unwrap_or_else(|| "no error reported".to_string());
+        anyhow::bail!("copy failed after {} rows: {cause}", moved.rows_display());
+    }
+    // Reported for a run that ended any other way, so the count above it is the
+    // rows the copy *read*, not the rows that arrived — the cause says how many
+    // did not. A route that merely recovered from a transient fault can leave a
+    // cause behind too; erring towards a non-zero exit is the safe direction when
+    // the alternative is calling a lossy copy a success.
+    if let Some(cause) = error {
+        anyhow::bail!(
+            "copy did not deliver every row it read ({}): {cause}",
+            moved.rows_display()
+        );
+    }
+
     match outcome {
-        Some(RouteOutcome::Failed) => {
-            let cause = error.unwrap_or_else(|| "no error reported".to_string());
-            anyhow::bail!("copy failed after {} rows: {cause}", moved.rows_display());
-        }
         Some(RouteOutcome::Stopped) => moved.report("stopped after copying"),
         Some(RouteOutcome::Completed) => moved.report("copied"),
-        None => {}
+        // Ctrl-C before the drain finished: the rows already copied are the
+        // answer, reported the way the continuous branch reports a Ctrl-C.
+        None => moved.report("stopped after copying"),
+        // Already returned above.
+        Some(RouteOutcome::Failed) => {}
     }
     Ok(())
 }
@@ -1653,8 +1685,9 @@ fn coerce_scalar(s: String, ty: FieldType) -> serde_json::Value {
 /// Minimal logging setup for the headless `copy` subcommand (no AppConfig).
 ///
 /// A one-shot `copy` answers with its summary line, not with a log, so the
-/// default is `error` — anything the logger emits below that is chatter about a
-/// command the user is watching run. `--verbose` restores the detail.
+/// default is `warn` — only warnings and errors get through, because anything
+/// below that is chatter about a command the user is watching run. `--verbose`
+/// restores the detail.
 fn init_copy_logging(color: ColorChoice, verbose: bool) {
     use std::io::IsTerminal;
 
@@ -1905,6 +1938,29 @@ mod copy_result_tests {
         assert!(copy_result(Some(RouteOutcome::Stopped), None, &moved(7)).is_ok());
         // Ctrl-C before the route finished.
         assert!(copy_result(None, None, &moved(0)).is_ok());
+    }
+
+    /// A sink that permanently rejects a message drops it and the route runs on to
+    /// a normal end — by design, so one poison message cannot wedge a bridge. The
+    /// rows are gone, so the copy is not a success: pointing a `sql` sink at a
+    /// misspelled table used to log a `Dropping message` line per row and then
+    /// print `copied 3 rows` and exit 0, which no scheduled job would ever notice.
+    #[test]
+    fn a_route_that_dropped_rows_is_not_a_successful_copy() {
+        let dropped = Some(
+            "dropped 3 message(s): sink rejected them permanently and no dlq middleware \
+             is configured: no such table: orders"
+                .to_string(),
+        );
+
+        for outcome in [RouteOutcome::Completed, RouteOutcome::Stopped] {
+            let err = copy_result(Some(outcome), dropped.clone(), &moved(3))
+                .expect_err("a lossy copy must not report success");
+            assert!(
+                err.to_string().contains("no such table: orders"),
+                "the drop cause must reach the exit status, got: {err}"
+            );
+        }
     }
 }
 

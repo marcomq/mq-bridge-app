@@ -583,11 +583,12 @@ impl CompiledFilter {
 
     /// Whether this message satisfies the expression.
     ///
-    /// A field that is absent or null means "does not match", the way a SQL
-    /// `WHERE` treats NULL: one heterogeneous document should not end a copy
-    /// that is otherwise running fine. A payload that is not a JSON object is
-    /// still an error, because that means the filter was pointed at data it
-    /// cannot read at all, and silently dropping everything would be worse.
+    /// A field that is absent, null, or not a scalar means "does not match",
+    /// the way a SQL `WHERE` treats NULL: one heterogeneous document should not
+    /// end a copy that is otherwise running fine. A payload that is not a JSON
+    /// object is still an error, because that means the filter was pointed at
+    /// data it cannot read at all, and silently dropping everything would be
+    /// worse.
     fn matches(&self, payload: &[u8]) -> anyhow::Result<bool> {
         let document: serde_json::Value = serde_json::from_slice(payload)
             .context("filter requires a structured JSON object payload")?;
@@ -596,15 +597,13 @@ impl CompiledFilter {
             .ok_or_else(|| anyhow!("filter requires a structured JSON object payload"))?;
         let mut text_fields = Vec::new();
         for variable in &self.variables {
-            let Some(value) = object.get(variable).filter(|value| !value.is_null()) else {
-                self.warn_absent_field(variable);
+            let Some(value) = object
+                .get(variable)
+                .filter(|value| !value.is_null() && !value.is_array() && !value.is_object())
+            else {
+                self.warn_unusable_field(variable);
                 return Ok(false);
             };
-            if value.is_array() || value.is_object() {
-                bail!(
-                    "filter field `{variable}` is an array or object; only top-level scalar fields are supported"
-                );
-            }
             if value.is_string() {
                 text_fields.push(variable.as_str());
             }
@@ -619,13 +618,13 @@ impl CompiledFilter {
         }
     }
 
-    /// Warns once per copy: a field that is never present drops every message,
+    /// Warns once per copy: a field that is never usable drops every message,
     /// and a typo in the expression should not just look like an empty source.
-    fn warn_absent_field(&self, field: &str) {
+    fn warn_unusable_field(&self, field: &str) {
         if !self.warned_absent_field.swap(true, Ordering::Relaxed) {
             tracing::warn!(
                 field,
-                "filter field is absent or null; those messages are not copied"
+                "filter field is absent, null, or not a scalar; those messages are not copied"
             );
         }
     }
@@ -953,13 +952,16 @@ mod tests {
         assert!(!filter.matches(br#"{"amount":"25"}"#).unwrap());
     }
 
-    // A heterogeneous document must not end an otherwise healthy copy, so an
-    // absent or null field reads as "does not match" the way SQL treats NULL.
+    // A heterogeneous document must not end an otherwise healthy copy, so a
+    // field that is absent, null, or not a scalar reads as "does not match" the
+    // way SQL treats NULL.
     #[test]
     fn absent_and_null_fields_do_not_match_and_do_not_fail() {
         let filter = CompiledFilter::new("amount > 10").unwrap();
         assert!(!filter.matches(br#"{"country":"DE"}"#).unwrap());
         assert!(!filter.matches(br#"{"amount":null}"#).unwrap());
+        assert!(!filter.matches(br#"{"amount":[1,2]}"#).unwrap());
+        assert!(!filter.matches(br#"{"amount":{"eur":75}}"#).unwrap());
         assert!(filter.matches(br#"{"amount":75}"#).unwrap());
     }
 
