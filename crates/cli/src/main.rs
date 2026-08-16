@@ -2423,6 +2423,25 @@ mod uri_tests {
         assert_eq!(cfg["topic"], "orders");
     }
 
+    // The documented lake-export target. `format` decides whether rows are written
+    // as themselves or wrapped in a stringified envelope, so it has to survive the
+    // URI rather than falling back to the sink's `normal` default; `extension` and
+    // `compression` ride alongside it as scalar config fields.
+    #[test]
+    fn object_store_target_carries_format_extension_and_compression() {
+        let cfg = config(
+            "s3://lake/orders?format=raw&extension=jsonl.zst&compression=zstd",
+            "object_store",
+        );
+        assert_eq!(cfg["url"], "s3://lake/orders");
+        assert_eq!(cfg["format"], "raw");
+        assert_eq!(cfg["compression"], "zstd");
+        // Spelled out including the compression suffix on purpose: overriding
+        // `extension` replaces the derived name wholesale, so `extension=jsonl`
+        // beside `compression=zstd` would name a zstd object `.jsonl`.
+        assert_eq!(cfg["extension"], "jsonl.zst");
+    }
+
     // `ibmmq://` is reformatted to the driver's `host(port)` connection string;
     // `queue_manager` and `channel` are required scalar config fields.
     #[test]

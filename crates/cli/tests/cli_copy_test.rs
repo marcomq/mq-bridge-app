@@ -737,6 +737,70 @@ fn the_summary_survives_the_default_error_level_and_verbose_adds_the_chatter() {
     );
 }
 
+/// A target left without a `format` writes `normal`, which wraps each row in an
+/// envelope **and** stringifies the payload — so the file holds escaped JSON
+/// inside a JSON string rather than the rows. Only `raw` writes the rows as they
+/// are, which is what an export to a lake or a downstream reader wants.
+///
+/// Pinned through the `file` sink deliberately: `ObjectStoreConfig::format` is the
+/// same `FileFormat` with the same encoder, so this covers the `s3://` target too
+/// without needing a bucket to test against.
+#[test]
+fn the_target_format_decides_whether_rows_are_wrapped_or_written_as_they_are() {
+    let dir = TestDir::new();
+    let source_path = dir.path().join("rows.csv");
+    std::fs::write(&source_path, b"id,name\n1,ada\n").expect("seed CSV source");
+    let source = format!("file://{}?format=csv", source_path.display());
+
+    let written = |name: &str, encoding: &str| -> serde_json::Value {
+        let path = dir.path().join(name);
+        let target = match encoding {
+            "" => format!("file://{}", path.display()),
+            other => format!("file://{}?format={other}", path.display()),
+        };
+        let result = copy_positional(&source, &target, &[]);
+        assert_success(&result, &format!("copy to a {encoding:?} target"));
+        let body = String::from_utf8(read_raw_output(&path)).expect("output is UTF-8");
+        serde_json::from_str(body.lines().next().expect("one row written"))
+            .expect("each output line is JSON")
+    };
+
+    let row = serde_json::json!({"id": "1", "name": "ada"});
+
+    // The default is `normal`, and both double-encode: `payload` is a *string*.
+    for encoding in ["", "normal"] {
+        let name = format!(
+            "{}.out",
+            if encoding.is_empty() {
+                "default"
+            } else {
+                encoding
+            }
+        );
+        let out = written(&name, encoding);
+        assert!(
+            out["payload"].is_string(),
+            "{encoding:?} should stringify the payload: {out}"
+        );
+        let inner: serde_json::Value = serde_json::from_str(out["payload"].as_str().unwrap())
+            .expect("the stringified payload is itself JSON");
+        assert_eq!(inner, row, "{encoding:?}");
+    }
+
+    // `json` keeps the envelope but nests the payload properly.
+    let wrapped = written("json.out", "json");
+    assert_eq!(wrapped["payload"], row);
+    assert!(wrapped["message_id"].is_string());
+
+    // `raw` writes the row and nothing around it.
+    let bare = written("raw.out", "raw");
+    assert_eq!(bare, row);
+    assert!(
+        bare.get("message_id").is_none() && bare.get("payload").is_none(),
+        "raw must not wrap the row: {bare}"
+    );
+}
+
 #[test]
 fn positional_copy_syntax_remains_equivalent_to_named_flags() {
     let dir = TestDir::new();
