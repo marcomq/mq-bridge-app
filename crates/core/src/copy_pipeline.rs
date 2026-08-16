@@ -6,10 +6,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
-use evalexpr::{
-    ContextWithMutableVariables, DefaultNumericTypes, HashMapContext, Node, Value,
-    build_operator_tree,
-};
 use mq_bridge::ReceivedBatch;
 use mq_bridge::models::{Endpoint, EndpointType, FileConsumerMode, Middleware, MongoConsume};
 use mq_bridge::traits::{
@@ -18,6 +14,9 @@ use mq_bridge::traits::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use zen_expression::compiler::{FetchFastTarget, Opcode};
+use zen_expression::expression::Standard;
+use zen_expression::{Expression, Variable, compile_expression};
 
 const FILTER_MIDDLEWARE_NAME: &str = "__mq_bridge_app_copy_filter_v1";
 static FILTER_FACTORY_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
@@ -336,20 +335,19 @@ impl CustomMiddlewareFactory for CopyFilterFactory {
 }
 
 struct CompiledFilter {
-    tree: Node<DefaultNumericTypes>,
+    expression: Expression<Standard>,
     variables: Vec<String>,
     warned_absent_field: AtomicBool,
 }
 
 impl CompiledFilter {
     fn new(expression: &str) -> anyhow::Result<Self> {
-        let tree = build_operator_tree::<DefaultNumericTypes>(expression)?;
-        let variables = tree
-            .iter_variable_identifiers()
-            .map(str::to_string)
-            .collect();
+        let expression = normalize_filter_expression(expression);
+        let expression =
+            compile_expression(&expression).map_err(|error| anyhow!(error.to_string()))?;
+        let variables = referenced_variables(&expression);
         Ok(Self {
-            tree,
+            expression,
             variables,
             warned_absent_field: AtomicBool::new(false),
         })
@@ -368,19 +366,25 @@ impl CompiledFilter {
         let object = document
             .as_object()
             .ok_or_else(|| anyhow!("filter requires a structured JSON object payload"))?;
-        let mut context = HashMapContext::<DefaultNumericTypes>::new();
         for variable in &self.variables {
             let Some(value) = object.get(variable).filter(|value| !value.is_null()) else {
                 self.warn_absent_field(variable);
                 return Ok(false);
             };
-            context
-                .set_value(variable.clone(), expression_value(variable, value)?)
-                .map_err(|error| anyhow!(error))?;
+            if value.is_array() || value.is_object() {
+                bail!(
+                    "filter field `{variable}` is an array or object; only top-level scalar fields are supported"
+                );
+            }
         }
-        self.tree
-            .eval_boolean_with_context(&context)
-            .map_err(|error| anyhow!(error))
+        match self
+            .expression
+            .evaluate(Variable::from(&document))
+            .map_err(|error| anyhow!(error.to_string()))?
+        {
+            Variable::Bool(value) => Ok(value),
+            _ => bail!("filter expression did not evaluate to a boolean"),
+        }
     }
 
     /// Warns once per copy: a field that is never present drops every message,
@@ -395,27 +399,55 @@ impl CompiledFilter {
     }
 }
 
-fn expression_value(
-    field: &str,
-    value: &serde_json::Value,
-) -> anyhow::Result<Value<DefaultNumericTypes>> {
-    match value {
-        serde_json::Value::Null => Ok(Value::from(())),
-        serde_json::Value::Bool(value) => Ok(Value::from(*value)),
-        serde_json::Value::String(value) => Ok(Value::from(value.clone())),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                Ok(Value::from_int(value))
-            } else if let Some(value) = value.as_f64() {
-                Ok(Value::from_float(value))
-            } else {
-                bail!("filter field `{field}` is outside the supported numeric range")
-            }
+fn referenced_variables(expression: &Expression<Standard>) -> Vec<String> {
+    let mut variables = Vec::new();
+    for opcode in expression.bytecode().iter() {
+        let variable = match opcode {
+            Opcode::FetchEnv(name) => Some(name.as_ref()),
+            Opcode::FetchFast(path) => path.iter().find_map(|target| match target {
+                FetchFastTarget::String(name) => Some(name.as_ref()),
+                _ => None,
+            }),
+            _ => None,
+        };
+        if let Some(variable) = variable.filter(|name| !variables.iter().any(|item| item == name)) {
+            variables.push(variable.to_string());
         }
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => bail!(
-            "filter field `{field}` is an array or object; only top-level scalar fields are supported"
-        ),
     }
+    variables
+}
+
+fn normalize_filter_expression(expression: &str) -> String {
+    let mut normalized = String::with_capacity(expression.len());
+    let mut chars = expression.chars().peekable();
+    let mut quote = None;
+    let mut escaped = false;
+
+    while let Some(character) = chars.next() {
+        if let Some(delimiter) = quote {
+            normalized.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '\'' | '"' => {
+                quote = Some(character);
+                normalized.push(character);
+            }
+            '&' if chars.next_if_eq(&'&').is_some() => normalized.push_str(" and "),
+            '|' if chars.next_if_eq(&'|').is_some() => normalized.push_str(" or "),
+            _ => normalized.push(character),
+        }
+    }
+
+    normalized
 }
 
 struct FilterConsumer {
@@ -566,6 +598,13 @@ mod tests {
         let filter = CompiledFilter::new(r#"country == "DE" && amount >= 50"#).unwrap();
         assert!(filter.matches(br#"{"country":"DE","amount":75}"#).unwrap());
         assert!(!filter.matches(br#"{"country":"US","amount":75}"#).unwrap());
+    }
+
+    #[test]
+    fn logical_operators_inside_strings_are_not_rewritten() {
+        let filter = CompiledFilter::new(r#"label == "A&&B" || label == "C""#).unwrap();
+        assert!(filter.matches(br#"{"label":"A&&B"}"#).unwrap());
+        assert!(filter.matches(br#"{"label":"C"}"#).unwrap());
     }
 
     #[test]
