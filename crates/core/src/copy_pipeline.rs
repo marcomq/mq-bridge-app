@@ -633,18 +633,25 @@ impl CompiledFilter {
 
 /// Turns the engine's opcode-level type error into one naming the field and the fix.
 ///
-/// Sources that type every column as text — CSV, and most key-value stores —
-/// make `amount > 100` compare a string against a number, which the expression
-/// VM reports only as `Opcode Compare: Unsupported type`. That names neither the
-/// column nor `number()`, so the copy looks broken rather than under-specified.
+/// A text-typed column makes `amount > 100` compare a string against a number,
+/// which the expression VM reports only as `Opcode Compare: Unsupported type`.
+/// That names neither the column nor `number()`, so the copy looks broken rather
+/// than under-specified.
+///
+/// Which columns arrive as text depends on the source, so the hint names both
+/// shapes rather than asserting one: CSV and most key-value stores type
+/// everything as text, while a SQL source types most columns natively and
+/// delivers only `numeric`/`timestamptz` as strings. Claiming the whole source is
+/// text sends a Postgres user off casting columns that need no cast.
 fn text_typed_field_error(error: &str, text_fields: &[&str]) -> anyhow::Error {
     let Some(first) = text_fields.first() else {
         return anyhow!(error.to_string());
     };
     let fields = text_fields.join("`, `");
     anyhow!(
-        "{error}; filter field `{fields}` holds text, not a number \
-         (this source types every field as text) — compare it as `number({first})`"
+        "{error}; filter field `{fields}` holds text, not a number — compare it as \
+         `number({first})` (CSV types every field as text; SQL sources deliver \
+         numeric and timestamp columns as strings)"
     )
 }
 

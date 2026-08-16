@@ -300,6 +300,14 @@ struct CopyArgs {
     /// Batch size (defaults to 1024).
     #[arg(long)]
     batch_size: Option<usize>,
+
+    /// Log what the copy is doing: endpoints, connections, shutdown. Without it
+    /// only errors are logged.
+    ///
+    /// The `copied …` summary prints either way — it goes to stdout directly
+    /// rather than through the logger. `RUST_LOG` still wins when set.
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 /// Whether this config has nothing to run, and so exists only to be filled in.
@@ -353,7 +361,7 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Some(Command::Copy(copy_args)) => {
-            init_copy_logging(args.color);
+            init_copy_logging(args.color, copy_args.verbose);
             load_cli_plugins(&args.plugins)?;
             return run_copy(copy_args).await;
         }
@@ -715,11 +723,17 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     } else {
         None
     };
-    // Before the filter, so the tally counts what was copied, not what was read.
+    // Consumer middlewares apply outermost-first, so this one — added before the
+    // filter — sees only the messages the filter kept: what was copied.
     let copied = copy_pipeline::configure_counter(&mut input)?;
     if let Some(expression) = &args.filter {
         copy_pipeline::configure_filter(&mut input, expression)?;
     }
+    // Added after the filter, so it sits closer to the source and tallies what was
+    // read. The rate is derived from this: a selective filter reduces what lands at
+    // the destination without making the copy any slower, and rating the surviving
+    // rows against the time spent reading every row reports that as a slowdown.
+    let read = copy_pipeline::configure_counter(&mut input)?;
     let input_endpoint_label = endpoint_type_label(&input.endpoint_type);
     let output_endpoint_label = endpoint_type_label(&output.endpoint_type);
     let options = RouteOptions {
@@ -789,7 +803,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
         copy_result(
             outcome,
             handle.status().error,
-            &throughput(&copied, started),
+            &throughput(&copied, &read, started),
         )
     } else {
         // Continuous bridge: run until Ctrl-C, then stop gracefully.
@@ -798,13 +812,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             .context("failed to listen for Ctrl+C")?;
         info!("Ctrl+C received; stopping copy");
         handle.stop().await;
-        let moved = throughput(&copied, started);
-        info!(
-            rows = moved.rows,
-            elapsed_s = moved.elapsed_s,
-            rows_per_second = moved.rows_per_second,
-            "copy stopped"
-        );
+        throughput(&copied, &read, started).report("stopped after copying");
         Ok(())
     };
 
@@ -885,29 +893,94 @@ fn copy_status_lease(
 
 /// What a finished copy moved, as reported on the last line of the run.
 struct Throughput {
+    /// Messages that reached the destination — what a filter left behind.
     rows: u64,
+    /// Messages taken off the source, filtered or not. The rate is derived from
+    /// this, since the elapsed time covers reading all of them.
+    read: u64,
     elapsed_s: f64,
-    rows_per_second: f64,
+    rows_per_second: u64,
+}
+
+impl Throughput {
+    /// `copied 333_495 of 1_000_000 rows` when a filter dropped some, plain
+    /// `copied 1_000_000 rows` when nothing was dropped.
+    fn rows_display(&self) -> String {
+        if self.read > self.rows {
+            format!("{} of {} rows", grouped(self.rows), grouped(self.read))
+        } else {
+            format!("{} rows", grouped(self.rows))
+        }
+    }
+
+    /// Sub-second runs read as milliseconds: `0.07s` hides whether a copy took
+    /// 65 ms or 5 ms, and `0.00s` looks like a broken measurement.
+    fn elapsed_display(&self) -> String {
+        if self.elapsed_s < 1.0 {
+            format!("{:.0}ms", self.elapsed_s * 1000.0)
+        } else {
+            format!("{:.2}s", self.elapsed_s)
+        }
+    }
+
+    fn rate_display(&self) -> String {
+        grouped(self.rows_per_second)
+    }
+
+    /// The one line every `copy` prints, whatever the log level. Written to stdout
+    /// directly rather than through `tracing`, so silencing the bridge's logging
+    /// never silences the answer the user ran the command for.
+    fn report(&self, verb: &str) {
+        println!(
+            "{verb} {} in {} ({} rows/s)",
+            self.rows_display(),
+            self.elapsed_display(),
+            self.rate_display()
+        );
+    }
+}
+
+/// Groups digits in threes so a rate stays legible at a glance: `703871` reads as
+/// `703_871`.
+///
+/// Underscore rather than a comma, which half the world reads as a decimal point,
+/// or a thin space, which would split the field for anything parsing this line on
+/// whitespace.
+fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.char_indices() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push('_');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// Rates a finished copy. A run too short to time is reported as no rate rather
 /// than a number divided by an elapsed time that rounds to zero.
 ///
-/// Both figures are rounded: full `f64` precision here reads as noise, and the
-/// elapsed time includes connection setup, so the rate is an approximation of a
-/// whole run rather than a benchmark of the transfer.
-fn throughput(copied: &std::sync::atomic::AtomicU64, started: std::time::Instant) -> Throughput {
+/// The rate is rounded to whole rows: the elapsed time includes connection setup,
+/// so it approximates a whole run rather than benchmarking the transfer.
+fn throughput(
+    copied: &std::sync::atomic::AtomicU64,
+    read: &std::sync::atomic::AtomicU64,
+    started: std::time::Instant,
+) -> Throughput {
     let rows = copied.load(std::sync::atomic::Ordering::Relaxed);
+    let read = read.load(std::sync::atomic::Ordering::Relaxed);
     let elapsed_s = started.elapsed().as_secs_f64();
     let rows_per_second = if elapsed_s > 0.0 {
-        rows as f64 / elapsed_s
+        (read as f64 / elapsed_s).round() as u64
     } else {
-        0.0
+        0
     };
     Throughput {
         rows,
-        elapsed_s: (elapsed_s * 1000.0).round() / 1000.0,
-        rows_per_second: rows_per_second.round(),
+        read,
+        elapsed_s,
+        rows_per_second,
     }
 }
 
@@ -924,20 +997,10 @@ fn copy_result(
     match outcome {
         Some(RouteOutcome::Failed) => {
             let cause = error.unwrap_or_else(|| "no error reported".to_string());
-            anyhow::bail!("copy failed after {} rows: {cause}", moved.rows);
+            anyhow::bail!("copy failed after {} rows: {cause}", moved.rows_display());
         }
-        Some(RouteOutcome::Stopped) => info!(
-            rows = moved.rows,
-            elapsed_s = moved.elapsed_s,
-            rows_per_second = moved.rows_per_second,
-            "copy stopped before the source drained"
-        ),
-        Some(RouteOutcome::Completed) => info!(
-            rows = moved.rows,
-            elapsed_s = moved.elapsed_s,
-            rows_per_second = moved.rows_per_second,
-            "copy completed; source drained"
-        ),
+        Some(RouteOutcome::Stopped) => moved.report("stopped after copying"),
+        Some(RouteOutcome::Completed) => moved.report("copied"),
         None => {}
     }
     Ok(())
@@ -1588,10 +1651,15 @@ fn coerce_scalar(s: String, ty: FieldType) -> serde_json::Value {
 }
 
 /// Minimal logging setup for the headless `copy` subcommand (no AppConfig).
-fn init_copy_logging(color: ColorChoice) {
+///
+/// A one-shot `copy` answers with its summary line, not with a log, so the
+/// default is `error` — anything the logger emits below that is chatter about a
+/// command the user is watching run. `--verbose` restores the detail.
+fn init_copy_logging(color: ColorChoice, verbose: bool) {
     use std::io::IsTerminal;
 
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let default = if verbose { "info" } else { "warn" };
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
@@ -1771,9 +1839,41 @@ mod copy_result_tests {
     fn moved(rows: u64) -> Throughput {
         Throughput {
             rows,
+            read: rows,
             elapsed_s: 1.0,
-            rows_per_second: rows as f64,
+            rows_per_second: rows,
         }
+    }
+
+    /// A bare `703871` is the number a reader has to count digits on; the summary
+    /// line is the one piece of `copy` output that gets read by a human every run.
+    #[test]
+    fn large_counts_are_grouped_and_short_runs_read_in_milliseconds() {
+        assert_eq!(moved(703_871).rate_display(), "703_871");
+        assert_eq!(moved(1_167_428).rows_display(), "1_167_428 rows");
+        assert_eq!(moved(0).rows_display(), "0 rows");
+        assert_eq!(moved(999).rows_display(), "999 rows");
+
+        let mut brief = moved(2);
+        brief.elapsed_s = 0.0654;
+        assert_eq!(brief.elapsed_display(), "65ms");
+        assert_eq!(moved(2).elapsed_display(), "1.00s");
+    }
+
+    /// A selective filter must not read as a slowdown: it reduces what lands at the
+    /// destination while the copy still reads — and is timed against — every row.
+    #[test]
+    fn a_filtered_run_reports_both_counts_and_rates_the_rows_it_read() {
+        let filtered = Throughput {
+            rows: 333_495,
+            read: 1_000_000,
+            elapsed_s: 1.05,
+            rows_per_second: 952_380,
+        };
+        assert_eq!(filtered.rows_display(), "333_495 of 1_000_000 rows");
+        assert_eq!(filtered.rate_display(), "952_380");
+        // Nothing dropped: no second number to explain.
+        assert_eq!(moved(1_000).rows_display(), "1_000 rows");
     }
 
     /// A route killed by a permanent error ends its task exactly like a real drain

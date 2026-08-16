@@ -536,9 +536,12 @@ fn endpoint_passwords_never_reach_the_log() {
         );
     });
 
-    let result = copy(
+    // `--verbose`: the endpoint line only exists above the default `error` level,
+    // and it is the line the redaction has to survive.
+    let result = copy_with_options(
         &source,
         &format!("http://alice:{PASSWORD}@{address}/ingest"),
+        &["--verbose"],
     );
     assert_success(&result, "copy to a password-protected endpoint");
     fixture.join().expect("join HTTP fixture");
@@ -665,15 +668,15 @@ fn documented_csv_to_jsonl_filter_one_liner_runs_end_to_end() {
     );
 
     assert_success(&result, "CSV to JSONL one-liner");
-    // The run reports what it moved: the count is taken after the filter, so it
-    // matches the rows on disk rather than the rows read. `copy` logs to stdout.
-    // Piped output carries no SGR escapes, so the fields match as written.
+    // The summary names both counts: 2 rows reached the destination, but all 3 were
+    // read and timed, so the rate must not be charged for the row the filter
+    // dropped. Printed to stdout outside the logger, so it survives any log level.
     let report = String::from_utf8_lossy(&result.stdout);
-    assert!(report.contains("rows=2"), "missing row count: {report}");
     assert!(
-        report.contains("rows_per_second="),
-        "missing rate: {report}"
+        report.contains("copied 2 of 3 rows"),
+        "missing both counts: {report}"
     );
+    assert!(report.contains("rows/s"), "missing rate: {report}");
 
     let rows: Vec<serde_json::Value> = String::from_utf8(read_raw_output(output_path))
         .expect("JSONL output is UTF-8")
@@ -686,6 +689,51 @@ fn documented_csv_to_jsonl_filter_one_liner_runs_end_to_end() {
             serde_json::json!({"id": "2", "country": "US", "amount": "125"}),
             serde_json::json!({"id": "3", "country": "US", "amount": "300"}),
         ]
+    );
+}
+
+/// A one-shot `copy` answers with one line. The bridge's connection chatter is
+/// logged only under `--verbose`, but the summary survives either way because it
+/// bypasses the logger entirely.
+#[test]
+fn the_summary_survives_the_default_error_level_and_verbose_adds_the_chatter() {
+    let dir = TestDir::new();
+    let source_path = dir.path().join("orders.csv");
+    std::fs::write(&source_path, b"id,amount\n1,25\n2,125\n").expect("seed CSV source");
+    let source = format!("file://{}?format=csv", source_path.display());
+
+    let quiet = copy_positional(
+        &source,
+        &format!(
+            "file://{}?format=raw",
+            dir.path().join("quiet.jsonl").display()
+        ),
+        &[],
+    );
+    assert_success(&quiet, "default copy");
+    let report = String::from_utf8_lossy(&quiet.stdout).to_string();
+    assert!(
+        report.contains("copied 2 rows"),
+        "the summary must print at the default level: {report}"
+    );
+    assert!(
+        !report.contains("File sink opened") && !report.contains("copy route started"),
+        "the default level must drop the connection chatter: {report}"
+    );
+
+    let loud = copy_positional(
+        &source,
+        &format!(
+            "file://{}?format=raw",
+            dir.path().join("loud.jsonl").display()
+        ),
+        &["--verbose"],
+    );
+    assert_success(&loud, "verbose copy");
+    let loud_report = String::from_utf8_lossy(&loud.stdout).to_string();
+    assert!(
+        loud_report.contains("File sink opened") && loud_report.contains("copied 2 rows"),
+        "verbose must add the chatter and keep the summary: {loud_report}"
     );
 }
 
