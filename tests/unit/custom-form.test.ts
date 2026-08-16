@@ -727,7 +727,7 @@ describe("custom form runtime", () => {
     expect(browse?.textContent).toBe("Browse…");
     browse?.click();
     await vi.waitFor(() => expect(input.value).toBe("/tmp/output.jsonl"));
-    expect(dialogMocks.save).toHaveBeenCalledWith({ defaultPath: undefined });
+    expect(dialogMocks.save).toHaveBeenCalledWith({ defaultPath: "messages.jsonl" });
     expect(dialogMocks.open).not.toHaveBeenCalled();
   });
 
@@ -820,5 +820,69 @@ describe("custom form runtime", () => {
     textarea.dispatchEvent(new Event("change", { bubbles: true }));
     expect(store.getPath(schemaPath)).toBeUndefined();
     expect(textarea.classList.contains("mqb-json-invalid")).toBe(false);
+  });
+
+  test("stores new transform mappings and displays them after re-render", async () => {
+    const forms = await loadCustomForm();
+    const renderTransformMapping = forms.customRenderers["transform.mapping"].render as Function;
+    const store = createStore({ middlewares: [{ transform: { mapping: {} } }] });
+    const node = { type: "object", title: "Mapping", description: "Output field to source path." };
+    const args = [
+      node,
+      "",
+      "root.middlewares.0.transform.mapping",
+      ["root", "middlewares", 0, "transform", "mapping"],
+      { store },
+    ] as const;
+
+    const element = renderTransformMapping(...args) as HTMLElement;
+    expect(element.querySelector("select")).toBeNull();
+    const addButton = Array.from(element.querySelectorAll("button"))
+      .find((button) => button.textContent === "Add Mapping") as HTMLButtonElement;
+    addButton.click();
+
+    const keyInput = element.querySelector(".cons-response-header-key") as HTMLInputElement;
+    const pathInput = element.querySelector(".cons-response-header-value") as HTMLInputElement;
+    expect(keyInput.placeholder).toBe("Output field");
+    expect(pathInput.placeholder).toBe("Source path");
+    triggerTextInput(keyInput, "firstName");
+    triggerTextInput(pathInput, "$.first_name");
+
+    expect(store.getPath(["middlewares", 0, "transform", "mapping"])).toEqual({
+      firstName: "$.first_name",
+    });
+
+    const rerendered = renderTransformMapping(...args) as HTMLElement;
+    expect((rerendered.querySelector(".cons-response-header-key") as HTMLInputElement).value).toBe("firstName");
+    expect((rerendered.querySelector(".cons-response-header-value") as HTMLInputElement).value).toBe("$.first_name");
+  });
+
+  test("keeps advanced transform mapping options when editing their path", async () => {
+    const forms = await loadCustomForm();
+    const renderTransformMapping = forms.customRenderers["transform.mapping"].render as Function;
+    const store = createStore({
+      transform: {
+        mapping: {
+          userId: { path: "$.user.id", default: null, required: true },
+        },
+      },
+    });
+
+    const element = renderTransformMapping(
+      { type: "object", title: "Mapping" },
+      "",
+      "root.transform.mapping",
+      ["root", "transform", "mapping"],
+      { store },
+    ) as HTMLElement;
+    const pathInput = element.querySelector(".cons-response-header-value") as HTMLInputElement;
+    expect(pathInput.value).toBe("$.user.id");
+    triggerTextInput(pathInput, "$.account.id");
+
+    expect(store.getPath(["transform", "mapping", "userId"])).toEqual({
+      path: "$.account.id",
+      default: null,
+      required: true,
+    });
   });
 });

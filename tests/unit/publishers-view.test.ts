@@ -205,6 +205,21 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).urlField.value).toBe("/tmp/out.jsonl");
   });
 
+  test("defaults an empty save-file path to messages.jsonl", async () => {
+    (window as any).__MQB_DESKTOP__ = true;
+    dialogMocks.save.mockResolvedValueOnce(null);
+    const config = {
+      publishers: [{ name: "dump", endpoint: { file: { path: "" } } }],
+      routes: {},
+      consumers: [],
+    };
+
+    initPublishers(config, { properties: { publishers: { items: {} } } });
+    await browsePublisherFilePath();
+
+    expect(dialogMocks.save).toHaveBeenCalledWith({ defaultPath: "messages.jsonl" });
+  });
+
   test("hides the file picker outside the desktop app and for other endpoint types", () => {
     initPublishers(
       {
@@ -264,6 +279,7 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).methodValue).toBe("POST");
     expect(get(publishersPanelState).urlField.value).toBe("http://localhost:8080");
     expect(get(publishersPanelState).activeSubtab).toBe("definition");
+    expect(config.publishers[0].endpoint.middlewares).toEqual([]);
   });
 
   test("creates new static publishers on definition and saves scalar endpoint values", async () => {
@@ -580,11 +596,7 @@ describe("initPublishers", () => {
           name: "renamed_http",
           endpoint: {
             http: { url: "http://localhost:8080", path: "/", method: "POST", custom_headers: {} },
-            middlewares: [
-              {
-                retry: {},
-              },
-            ],
+            middlewares: [],
           },
           comment: "",
           payload: "{}",

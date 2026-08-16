@@ -606,7 +606,7 @@ function createDefaultPublisherEndpoint(endpointType: string): Record<string, un
   if (endpointType === "static") {
     endpoint.static = "";
   }
-  endpoint.middlewares = endpointType === "static" ? [] : [{ retry: {} }];
+  endpoint.middlewares = [];
   return endpoint;
 }
 
@@ -615,7 +615,7 @@ function normalizePublisher(input: PublisherConfig): PublisherConfig {
   next.id = String(next.id || "").trim() || createLocalEntityId("publisher");
   next.name = String(next.name || "");
   next.comment = String(next.comment || "");
-  next.endpoint = normalizePublisherEndpoint(next.endpoint);
+  next.endpoint = normalizeEndpoint(next.endpoint);
   next.payload = String((next as any).payload || "{}");
   next.headers = Array.isArray(next.headers) ? next.headers.map((row) => ({
     key: String(row.key || ""),
@@ -1328,21 +1328,6 @@ async function flushPendingFormDraft() {
     const existingDraft = formDrafts.get(idx) || currentPublisher() || {};
     formDrafts.set(idx, { ...deepClone(existingDraft as PublisherConfig), name: nameInput.value } as PublisherConfig);
   }
-}
-
-function normalizePublisherEndpoint(endpoint: unknown) {
-  const normalized = normalizeEndpoint(endpoint);
-  const endpointType = getEndpointType(normalized);
-  if (endpointType === "static" || endpointType === "ref") {
-    // Structural endpoints get no default middleware, but keep the ones the user configured:
-    // clearing them here made every edit normalize straight back to the saved value, so the
-    // publisher never became dirty and the middleware was gone again after a reload.
-    return normalized;
-  }
-  if (!Array.isArray(normalized.middlewares) || normalized.middlewares.length === 0) {
-    normalized.middlewares = [{ retry: {} }];
-  }
-  return normalized;
 }
 
 function composeHttpRequestUrl(endpointConfig: Record<string, unknown>) {

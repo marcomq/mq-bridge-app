@@ -1070,6 +1070,53 @@ const transformSchemaRenderer = {
   },
 };
 
+const transformMappingRenderer = {
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    const storePath = toStorePath(dataPath);
+    const currentValue = storePath.length > 0 && context.store.getPath(storePath);
+    const mapping = currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)
+      ? currentValue as Record<string, unknown>
+      : {};
+    const rows = Object.entries(mapping)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => ({
+        key,
+        value: typeof value === "string"
+          ? value
+          : String((value as Record<string, unknown> | null)?.path ?? ""),
+      }));
+
+    return renderSvelteNode(HeadersEditor, {
+      title: "Mapping",
+      sectionLabel: "",
+      description: formatDescription(node, elementId),
+      rows,
+      keyPlaceholder: "Output field",
+      valuePlaceholder: "Source path",
+      addLabel: "Add Mapping",
+      emptyLabel: "No mappings defined.",
+      deleteLabel: "Delete",
+      onChange: (nextRows: Array<{ key: string; value: string }>) => {
+        const nextMapping = Object.fromEntries(
+          nextRows
+            .filter((row) => row.key.trim().length > 0)
+            .map((row) => {
+              const key = row.key.trim();
+              const previous = mapping[key];
+              return [
+                key,
+                previous && typeof previous === "object" && !Array.isArray(previous)
+                  ? { ...previous, path: row.value }
+                  : row.value,
+              ];
+            }),
+        );
+        context.store.setPath(storePath, nextMapping);
+      },
+    });
+  },
+};
+
 const CUSTOM_RENDERERS: Record<string, unknown> = {
   root: rootRenderer,
   AppConfig: rootRenderer,
@@ -1084,6 +1131,7 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,
+  "transform.mapping": transformMappingRenderer,
   "transform.schema": transformSchemaRenderer,
   "root.endpoint": renderObject,
   "output.mode": { render: () => document.createDocumentFragment() },
