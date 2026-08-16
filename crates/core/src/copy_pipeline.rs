@@ -387,7 +387,10 @@ impl CompiledFilter {
     /// and a typo in the expression should not just look like an empty source.
     fn warn_absent_field(&self, field: &str) {
         if !self.warned_absent_field.swap(true, Ordering::Relaxed) {
-            tracing::warn!(field, "filter field is absent or null; those messages are not copied");
+            tracing::warn!(
+                field,
+                "filter field is absent or null; those messages are not copied"
+            );
         }
     }
 }
@@ -608,7 +611,9 @@ mod tests {
             topic: Some("orders".to_string()),
             ..Default::default()
         }));
-        input.middlewares.push(Middleware::Metrics(MetricsMiddleware {}));
+        input
+            .middlewares
+            .push(Middleware::Metrics(MetricsMiddleware {}));
         configure_filter(&mut input, "amount > 10").unwrap();
 
         assert!(matches!(input.middlewares[1], Middleware::Custom { .. }));
@@ -850,7 +855,10 @@ mod tests {
         let mut consumer = filter_consumer(inner, "amount > 10");
 
         let empty = consumer.receive_batch(10).await.unwrap();
-        assert!(empty.messages.is_empty(), "the drain signal reaches the route");
+        assert!(
+            empty.messages.is_empty(),
+            "the drain signal reaches the route"
+        );
         assert!(commits.lock().unwrap().is_empty());
     }
 }
