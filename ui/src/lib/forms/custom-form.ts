@@ -676,9 +676,55 @@ const envVarsRenderer = createKeyValueRenderer(() => ({
   deleteLabel: "Delete",
 }));
 
+// Tuning knobs shared by consumers and routes. Only `batch_size` is worth surfacing
+// by default; the rest are rarely touched and otherwise crowd out the endpoint itself.
+const ADVANCED_ROUTE_OPTION_FIELDS = [
+  "concurrency",
+  "commit_concurrency_limit",
+  "startup_timeout_ms",
+  "reconnect_interval_ms",
+  "empty_batch_delay_ms",
+  "allow_fault_injection",
+  "exit_on_empty",
+];
+
+function renderObjectWithAdvancedFields(
+  context: RendererContext,
+  node: SchemaNode,
+  elementId: string,
+  dataPath: Array<string | number>,
+  advancedFields: readonly string[],
+): Node {
+  const properties = node.properties || {};
+  const advancedKeys = advancedFields.filter((key) => key in properties);
+  if (advancedKeys.length === 0) {
+    return asNode(renderObject(context, node, elementId, false, dataPath));
+  }
+
+  const visibleProperties = { ...properties };
+  const advancedProperties: Record<string, SchemaNode> = {};
+  for (const key of advancedKeys) {
+    advancedProperties[key] = properties[key];
+    delete visibleProperties[key];
+  }
+
+  return renderSvelteNode(CollapsibleFields, {
+    visibleContent: asNode(
+      renderObject(context, { ...node, properties: visibleProperties }, elementId, false, dataPath),
+    ),
+    hiddenContent: createWrappedContainer(
+      renderPropertiesCompat(context, advancedProperties, elementId, dataPath),
+      "mqb-form-block",
+    ),
+    toggleLabel: "Show advanced options",
+  });
+}
+
 const routeObjectRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) =>
-    withFormattedDescription(node, elementId, () => renderObject(context, node, elementId, false, dataPath)),
+    withFormattedDescription(node, elementId, () =>
+      renderObjectWithAdvancedFields(context, node, elementId, dataPath, ADVANCED_ROUTE_OPTION_FIELDS),
+    ),
 };
 
 const routesRenderer = {
@@ -814,7 +860,10 @@ const createScalarEndpointRenderer = (
 const rootRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) =>
     withFormattedDescription(node, elementId, () =>
-      createWrappedContainer(asNode(renderObject(context, node, elementId, false, dataPath)), "mqb-form-block"),
+      createWrappedContainer(
+        renderObjectWithAdvancedFields(context, node, elementId, dataPath, ADVANCED_ROUTE_OPTION_FIELDS),
+        "mqb-form-block",
+      ),
     ),
 };
 

@@ -100,7 +100,8 @@ function createFakeForms() {
     })),
     hydrateNodeWithData: (node: SchemaNode) => node,
     renderNode: () => document.createElement("div"),
-    renderObject: (_context: any, _node: SchemaNode, _elementId: string, _isHeadless: boolean, dataPath: Array<string | number>) => {
+    renderObject: (_context: any, node: SchemaNode, _elementId: string, _isHeadless: boolean, dataPath: Array<string | number>) => {
+      forms.__lastRenderObjectNode = node;
       const output = document.createElement("div");
       output.dataset.path = dataPath.join(".");
       return output;
@@ -168,6 +169,13 @@ async function loadCustomForm(desktop = false) {
   (window as any).__MQB_DESKTOP__ = desktop;
   (window as any)._mqb_form_mode = "publisher";
   (window as any).appConfig = { publishers: [{ name: "pub-a" }, { name: "pub-b" }] };
+
+  // custom-form imports renderObject from the package rather than the window global,
+  // so route it through the fake too and keep the rest of the library intact.
+  vi.doMock("vanilla-schema-forms", async () => {
+    const actual = await vi.importActual<Record<string, any>>("vanilla-schema-forms");
+    return { ...actual, renderObject: (...args: any[]) => forms.renderObject(...args) };
+  });
 
   vi.doMock("../../ui/src/lib/forms/render-svelte", () => ({
     renderSvelteNode: (_component: unknown, props: Record<string, any>) => {
@@ -501,6 +509,50 @@ describe("custom form runtime", () => {
 
     triggerCheckboxChange(checkbox as HTMLInputElement, true);
     expect(store.getPath(["tls", "accept_invalid_certs"])).toBe(true);
+  });
+
+  test("keeps batch size visible and hides the other route tuning knobs behind the advanced toggle", async () => {
+    const forms = await loadCustomForm();
+    const renderRoot = forms.customRenderers.root.render as Function;
+    const store = createStore({ name: "kafka-in", batch_size: 64, empty_batch_delay_ms: 50 });
+    forms.__activeStore = store;
+
+    const consumerNode = {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        endpoint: { type: "object" },
+        batch_size: { type: "integer" },
+        concurrency: { type: "integer" },
+        commit_concurrency_limit: { type: "integer" },
+        startup_timeout_ms: { type: "integer" },
+        reconnect_interval_ms: { type: "integer" },
+        empty_batch_delay_ms: { type: "integer" },
+        allow_fault_injection: { type: "boolean" },
+        exit_on_empty: { type: "boolean" },
+      },
+    };
+
+    const element = renderRoot(consumerNode, "", "root", [], { store, data: store.data }) as HTMLElement;
+    document.body.appendChild(element);
+
+    expect(Object.keys(forms.__lastRenderObjectNode.properties)).toEqual(["name", "endpoint", "batch_size"]);
+    expect(consumerNode.properties.empty_batch_delay_ms).toBeDefined();
+    expect(element.querySelector(".mqb-form-advanced-block")).toBeNull();
+
+    const toggle = element.querySelector(".mqb-form-toggle") as HTMLButtonElement | null;
+    expect(toggle?.textContent).toBe("Show advanced options");
+    toggle?.click();
+
+    const advanced = element.querySelector(".mqb-form-advanced-block") as HTMLElement | null;
+    expect(advanced).not.toBeNull();
+    expect(advanced?.querySelector("#root\\.batch_size")).toBeNull();
+
+    const delayInput = advanced?.querySelector("#root\\.empty_batch_delay_ms") as HTMLInputElement | null;
+    expect(delayInput?.value).toBe("50");
+
+    triggerTextInput(delayInput as HTMLInputElement, "250");
+    expect(store.getPath(["empty_batch_delay_ms"])).toBe("250");
   });
 
   test("renders env vars as environment variables without advanced toggle", async () => {

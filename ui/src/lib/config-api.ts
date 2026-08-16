@@ -1,3 +1,5 @@
+import { explainConfigSaveError } from "./save-error";
+
 async function readResponseError(response: Response, fallbackLabel: string): Promise<Error> {
   const body = await response.text().catch(() => "");
   const detail = body || response.statusText || `${fallbackLabel} failed with status ${response.status}`;
@@ -26,13 +28,15 @@ export async function fetchConfigRecoveryFromServer<T>(fetchImpl: typeof fetch):
 }
 
 export async function postConfig(fetchImpl: typeof fetch, config: unknown): Promise<void> {
+  const body = JSON.stringify(config);
   const response = await fetchImpl("/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(config),
+    body,
   });
   if (!response.ok) {
-    throw await readResponseError(response, "Posting config");
+    const error = await readResponseError(response, "Posting config");
+    throw new Error(explainConfigSaveError(error.message, body));
   }
 }
 
