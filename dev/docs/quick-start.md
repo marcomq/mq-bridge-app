@@ -42,7 +42,7 @@ authoritative source for every parameter's type, default, and description.
 
 ```bash
 mqb copy --drain \
-  --from postgres://user:pass@localhost/app?table=orders \
+  --from 'postgres://user:pass@localhost/app?table=orders' \
   --to 'clickhouse://localhost:8123?table=orders&database=analytics'
 ```
 

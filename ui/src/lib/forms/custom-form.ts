@@ -1081,6 +1081,7 @@ const transformMappingRenderer = {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => ({
         key,
+        originalKey: key,
         value: typeof value === "string"
           ? value
           : String((value as Record<string, unknown> | null)?.path ?? ""),
@@ -1096,13 +1097,15 @@ const transformMappingRenderer = {
       addLabel: "Add Mapping",
       emptyLabel: "No mappings defined.",
       deleteLabel: "Delete",
-      onChange: (nextRows: Array<{ key: string; value: string }>) => {
+      onChange: (nextRows: Array<{ key: string; originalKey?: string; value: string }>) => {
         const nextMapping = Object.fromEntries(
           nextRows
             .filter((row) => row.key.trim().length > 0)
             .map((row) => {
               const key = row.key.trim();
-              const previous = mapping[key];
+              // Renaming a row keeps its `default`/`required` siblings, which a
+              // lookup by the new key would silently drop.
+              const previous = mapping[row.originalKey ?? key];
               return [
                 key,
                 previous && typeof previous === "object" && !Array.isArray(previous)

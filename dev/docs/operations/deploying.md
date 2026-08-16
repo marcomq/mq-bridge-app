@@ -30,9 +30,10 @@ docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app \
 
 On a host, the UI is [never opened implicitly](../reference/cli.md#starting-the-web-ui) and
 metrics bind loopback. In a container those defaults would be wrong for the opposite reason —
-nothing is reachable until you publish it — so the image's `CMD` is `--ui --metrics-addr
-0.0.0.0:9090`. The container boundary is the gate: without `-p` (or a Kubernetes Service),
-neither port leaves the container.
+nothing is reachable until you publish it — so the image's `CMD` is `--ui`, and metrics bind
+`0.0.0.0:9090` through `ENV MQB__METRICS_ADDR` rather than the command line: a Kubernetes pod
+that sets `args:` replaces `CMD` wholesale, and the environment survives that. The container
+boundary is the gate: without `-p` (or a Kubernetes Service), neither port leaves the container.
 
 Docker replaces `CMD` **wholesale** as soon as you pass any argument of your own. That is what
 keeps the headless modes headless:

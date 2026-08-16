@@ -182,6 +182,23 @@ function describeLocation(segments: readonly string[], config: unknown): string 
 }
 
 /**
+ * serde counts the column in UTF-8 bytes; JS indexes strings in UTF-16 units. One
+ * emoji or accented character anywhere earlier in the payload would otherwise skew
+ * the offset and name the wrong field.
+ */
+function utf16IndexForByteOffset(json: string, byteOffset: number): number {
+  if (byteOffset <= 0) return 0;
+  let bytes = 0;
+  let index = 0;
+  while (index < json.length && bytes < byteOffset) {
+    const codePoint = json.codePointAt(index) as number;
+    bytes += codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
+    index += codePoint > 0xffff ? 2 : 1;
+  }
+  return index;
+}
+
+/**
  * Rewrite a failed `POST /config` response into a message that names the offending
  * field. Anything that is not a located serde error is passed through untouched.
  */
@@ -198,7 +215,7 @@ export function explainConfigSaveError(rawMessage: string, body: string): string
   }
 
   const detail = message.replace(LOCATION_PATTERN, "").replace(DESERIALIZE_PREFIX_PATTERN, "").trim();
-  const segments = jsonPathAtOffset(body, Number(location[2]) - 1);
+  const segments = jsonPathAtOffset(body, utf16IndexForByteOffset(body, Number(location[2]) - 1));
   const missingField = detail.match(MISSING_FIELD_PATTERN);
 
   const paths = missingField

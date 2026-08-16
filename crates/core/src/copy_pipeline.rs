@@ -1,7 +1,7 @@
 //! Copy-command conveniences layered over mq-bridge's route abstractions.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -557,7 +557,7 @@ impl CustomMiddlewareFactory for CopyFilterFactory {
         Ok(Box::new(FilterConsumer {
             inner: consumer,
             filter: CompiledFilter::new(expression).context("invalid filter expression")?,
-            deferred: Mutex::new(Vec::new()),
+            deferred: Mutex::new(VecDeque::new()),
         }))
     }
 }
@@ -699,23 +699,46 @@ fn normalize_filter_expression(expression: &str) -> String {
     normalized
 }
 
+/// How many emptied-batch commits may be held before the oldest are released.
+///
+/// A filter that matches nothing for a long stretch would otherwise hold one
+/// commit per batch read, for the whole read. See [`FilterConsumer::deferred`].
+const MAX_DEFERRED_COMMITS: usize = 1024;
+
 struct FilterConsumer {
     inner: Box<dyn MessageConsumer>,
     filter: CompiledFilter,
     /// Commits for batches the filter emptied, held back on sources that need
     /// ordered commits. See [`FilterConsumer::receive_batch`].
     ///
+    /// Bounded at [`MAX_DEFERRED_COMMITS`], dropping the oldest. Releasing a
+    /// held commit without running it is the same at-least-once outcome as
+    /// ending a drain with commits still held — those messages are re-read and
+    /// re-dropped — which is why the bound costs correctness nothing. Keeping
+    /// the newest is what makes it cheap: on a cumulative-ack source that commit
+    /// subsumes every one released before it.
+    ///
     /// Behind a `Mutex` only to stay `Sync`, which `MessageConsumer` requires: a
     /// boxed `FnOnce` is `Send` but not `Sync`. It is only ever reached through
     /// `&mut self`, so `get_mut` suffices and nothing ever blocks.
-    deferred: Mutex<Vec<(BatchCommitFunc, usize)>>,
+    deferred: Mutex<VecDeque<(BatchCommitFunc, usize)>>,
 }
 
 impl FilterConsumer {
-    fn deferred_commits(&mut self) -> &mut Vec<(BatchCommitFunc, usize)> {
+    fn deferred_commits(&mut self) -> &mut VecDeque<(BatchCommitFunc, usize)> {
         self.deferred
             .get_mut()
             .expect("held commits are only reached through &mut self, never locked")
+    }
+
+    /// Holds `commit` for the next retained batch, releasing the oldest held
+    /// commit first once the queue is full.
+    fn defer_commit(&mut self, commit: BatchCommitFunc, dropped: usize) {
+        let deferred = self.deferred_commits();
+        if deferred.len() >= MAX_DEFERRED_COMMITS {
+            deferred.pop_front();
+        }
+        deferred.push_back((commit, dropped));
     }
 }
 
@@ -742,6 +765,8 @@ impl MessageConsumer for FilterConsumer {
     ///
     /// A drain that ends while commits are still held simply re-reads and
     /// re-drops those messages next run; nothing reaches the destination twice.
+    /// The same is true of a commit released to keep the held queue bounded —
+    /// see [`FilterConsumer::deferred`].
     async fn receive_batch(&mut self, max_messages: usize) -> Result<ReceivedBatch, ConsumerError> {
         loop {
             let batch = self.inner.receive_batch(max_messages).await?;
@@ -765,7 +790,7 @@ impl MessageConsumer for FilterConsumer {
             if kept.is_empty() {
                 let dropped = keep_flags.len();
                 if self.inner.commit_requires_order() {
-                    self.deferred_commits().push((batch.commit, dropped));
+                    self.defer_commit(batch.commit, dropped);
                 } else {
                     (batch.commit)(vec![MessageDisposition::Ack; dropped])
                         .await
@@ -1133,7 +1158,7 @@ mod tests {
         FilterConsumer {
             inner: Box::new(inner),
             filter: CompiledFilter::new(expression).unwrap(),
-            deferred: Mutex::new(Vec::new()),
+            deferred: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -1193,6 +1218,31 @@ mod tests {
         let batch = consumer.receive_batch(10).await.unwrap();
         assert_eq!(batch.messages.len(), 1);
         assert_eq!(commits.lock().unwrap().len(), 1);
+    }
+
+    // A filter that matches nothing for long enough would otherwise hold one
+    // commit per batch for the whole read. Releasing the oldest costs only a
+    // re-read of messages the filter drops anyway.
+    #[tokio::test]
+    async fn a_long_filtered_out_stretch_holds_a_bounded_number_of_commits() {
+        let overshoot = 50;
+        let dropped = (0..MAX_DEFERRED_COMMITS + overshoot).map(|_| vec![message(1)]);
+        let (inner, commits) = ScriptedConsumer::new(dropped.chain([vec![message(100)]]), true);
+        let mut consumer = filter_consumer(inner, "amount > 10");
+
+        let batch = consumer.receive_batch(10).await.unwrap();
+        assert_eq!(batch.messages.len(), 1);
+        assert!(
+            commits.lock().unwrap().is_empty(),
+            "nothing is acknowledged before the route commits"
+        );
+
+        (batch.commit)(vec![MessageDisposition::Ack]).await.unwrap();
+        assert_eq!(
+            commits.lock().unwrap().len(),
+            MAX_DEFERRED_COMMITS + 1,
+            "the {overshoot} commits past the cap were released, not held"
+        );
     }
 
     #[tokio::test]

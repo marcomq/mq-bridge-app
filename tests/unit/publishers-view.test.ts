@@ -194,7 +194,7 @@ describe("initPublishers", () => {
       consumers: [],
     };
 
-    initPublishers(config, { properties: { publishers: { items: {} } } });
+    await initPublishers(config, { properties: { publishers: { items: {} } } });
 
     expect(get(publishersPanelState).urlField.browse).toBe(true);
 
@@ -214,14 +214,14 @@ describe("initPublishers", () => {
       consumers: [],
     };
 
-    initPublishers(config, { properties: { publishers: { items: {} } } });
+    await initPublishers(config, { properties: { publishers: { items: {} } } });
     await browsePublisherFilePath();
 
     expect(dialogMocks.save).toHaveBeenCalledWith({ defaultPath: "messages.jsonl" });
   });
 
-  test("hides the file picker outside the desktop app and for other endpoint types", () => {
-    initPublishers(
+  test("hides the file picker outside the desktop app and for other endpoint types", async () => {
+    await initPublishers(
       {
         publishers: [{ name: "dump", endpoint: { file: { path: "/tmp/old.jsonl" } } }],
         routes: {},
@@ -232,7 +232,7 @@ describe("initPublishers", () => {
     expect(get(publishersPanelState).urlField.browse).toBe(false);
 
     (window as any).__MQB_DESKTOP__ = true;
-    initPublishers(
+    await initPublishers(
       {
         publishers: [{ name: "orders", endpoint: { kafka: { url: "localhost:9092", topic: "events" } } }],
         routes: {},

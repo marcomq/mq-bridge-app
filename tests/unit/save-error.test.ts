@@ -96,6 +96,23 @@ describe("explainConfigSaveError", () => {
     ).toBe("consumer 1 › endpoint › file: missing field `key`");
   });
 
+  // serde counts bytes, the body is indexed in UTF-16 units: a multi-byte name
+  // earlier in the payload used to shift the path onto a neighbouring block.
+  test("locates the field past a multi-byte character earlier in the body", () => {
+    const name = "café 🚚🚚🚚🚚🚚";
+    const body = JSON.stringify({
+      consumers: [
+        { name, endpoint: { file: { path: "/tmp/a", encryption: { cipher: "aes256gcm" } } } },
+        { name: "second", endpoint: { file: { path: "/tmp/b" } } },
+      ],
+    });
+    const column = new TextEncoder().encode(body.slice(0, body.indexOf("}}}") + 1)).length;
+
+    expect(
+      explainConfigSaveError(`Json deserialize error: missing field \`key\` at line 1 column ${column}`, body),
+    ).toBe(`consumer “${name}” › endpoint › file › encryption: missing field \`key\``);
+  });
+
   test("passes through errors that carry no position", () => {
     expect(explainConfigSaveError("Config is locked by another instance", BODY)).toBe(
       "Config is locked by another instance",

@@ -22,7 +22,7 @@ serves in a browser — only the packaging differs.
 
 The UI is generated **dynamically from the Rust configuration structures**: the backend uses
 `schemars` to produce a JSON Schema for the `AppConfig` struct (exposed at `/schema.json`, also
-`mqb --schema`), and the frontend renders a complete config form from that schema. So
+`mqb --schema <path>`), and the frontend renders a complete config form from that schema. So
 when a new middleware or option is added to the engine, the schema updates automatically and
 the UI reflects it with no frontend change.
 

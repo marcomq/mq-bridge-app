@@ -1,5 +1,7 @@
 <script lang="ts">
-  type HeaderItem = { key: string; value: string };
+  // `updateRow` spreads the row, so callers may hang extra fields (e.g. the key a
+  // row started with) off it and get them back unchanged through `onChange`.
+  type HeaderItem = { key: string; value: string; [extra: string]: unknown };
 
   interface Props {
     title?: string;

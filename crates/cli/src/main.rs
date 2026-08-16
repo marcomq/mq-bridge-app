@@ -79,7 +79,9 @@ struct Args {
     ///
     /// The plugin registers an endpoint — and possibly a middleware — under its
     /// own name, usable in routes like any built-in one. Also loadable from the
-    /// config file's `plugins:` list, which applies without a restart.
+    /// config file's `plugins:` list. Either way the paths are read only at
+    /// startup: changing them needs a restart, and the UI rejects a config that
+    /// asks for a different set.
     #[arg(long = "plugin", value_name = "PATH", global = true)]
     plugins: Vec<String>,
 
@@ -444,13 +446,15 @@ async fn main() -> anyhow::Result<()> {
     // The UI is a control surface, so its port is the one address never opened
     // implicitly: a `ui_addr` in the config counts as consent, an accidental
     // bare run does not. `--ui` opts in even when a config leaves the address
-    // empty; otherwise the previously automatic default has to be confirmed.
+    // empty; `--no-ui` withdraws that consent even when the config gives one;
+    // otherwise the previously automatic default has to be confirmed.
     //
     // The prompt is offered only when there is nothing to run, which is the
     // "start empty and build a config in the UI" case. A config that defines
     // routes or consumers is a deployment: it must never stop at a question.
-    if config.ui_addr.is_empty()
-        && !args.no_ui
+    if args.no_ui {
+        config.ui_addr = String::new();
+    } else if config.ui_addr.is_empty()
         && (args.ui || (nothing_to_run(&config) && ui_prompt(DEFAULT_UI_ADDR)))
     {
         config.ui_addr = DEFAULT_UI_ADDR.to_string();
