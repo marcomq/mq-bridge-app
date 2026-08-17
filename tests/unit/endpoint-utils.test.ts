@@ -80,4 +80,38 @@ describe("endpoint-utils", () => {
     });
     expect(normalizedRef).toEqual({ ref: "publisher.orders", middlewares: [] });
   });
+
+  test("drops an encryption block that only holds the form's seeded defaults", () => {
+    const normalized = ensureEndpointDefaults(
+      {
+        file: {
+          path: "/tmp/out.jsonl",
+          encryption: { cipher: "xchacha20poly1305", key_id: "default" },
+        },
+      },
+      ensureRefOnlyEndpointDefaults,
+    );
+
+    expect(normalized.file).toEqual({ path: "/tmp/out.jsonl" });
+  });
+
+  test("keeps an encryption block the user configured", () => {
+    const withKey = ensureEndpointDefaults(
+      { file: { path: "/tmp/out.jsonl", encryption: { cipher: "aes256gcm", key: "c2VjcmV0" } } },
+      ensureRefOnlyEndpointDefaults,
+    );
+    const withCustomKeyId = ensureEndpointDefaults(
+      { file: { path: "/tmp/out.jsonl", encryption: { key_id: "rotated" } } },
+      ensureRefOnlyEndpointDefaults,
+    );
+
+    expect(withKey.file).toEqual({
+      path: "/tmp/out.jsonl",
+      encryption: { cipher: "aes256gcm", key: "c2VjcmV0" },
+    });
+    expect(withCustomKeyId.file).toEqual({
+      path: "/tmp/out.jsonl",
+      encryption: { key_id: "rotated" },
+    });
+  });
 });

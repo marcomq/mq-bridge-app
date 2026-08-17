@@ -5,7 +5,7 @@
 </p>
 <p style="margin-top:-12px" align="center"><em>data movement as a tool call</em></p>
 
-`mq-bridge-app mcp` runs the bridge as a [Model Context Protocol](https://modelcontextprotocol.io)
+`mqb mcp` runs the bridge as a [Model Context Protocol](https://modelcontextprotocol.io)
 server, so an agent can move data between **any two supported endpoints** — 15+
 connectors covering databases, queues, brokers, HTTP, and files — from natural
 language.
@@ -24,7 +24,7 @@ engine moves the bytes. Moving a 116.3 MiB dataset costs three tool calls and
 | **Transports** | `stdio`, streamable HTTP | |
 | **Tools** | 8 | [see below](#tools) |
 | **Connectors** | 15+ | [see below](#endpoints) |
-| **Install** | `mq-bridge-app mcp install` | Docker / cargo / Homebrew / binaries — [Installation](INSTALL.md) |
+| **Install** | `mqb mcp install` | Docker / cargo / Homebrew / binaries — [Installation](INSTALL.md) |
 
 ## Quick start
 
@@ -33,7 +33,7 @@ engine moves the bytes. Moving a 116.3 MiB dataset costs three tool calls and
 brew install marcomq/tap/mq-bridge-app
 
 # 2. register it with every MCP client detected on this machine
-mq-bridge-app mcp install
+mqb mcp install
 
 # 3. restart the client fully — reopening a tab is not enough
 ```
@@ -47,10 +47,10 @@ Then ask the agent for the job in words:
 
 ```bash
 # stdio — for local clients (Claude Code, Claude Desktop, Cursor)
-mq-bridge-app mcp
+mqb mcp
 
 # streamable HTTP — for remote/shared clients
-mq-bridge-app mcp --transport http --bind 127.0.0.1:9092
+mqb mcp --transport http --bind 127.0.0.1:9092
 ```
 
 | Flag | Default | Meaning |
@@ -157,7 +157,7 @@ Alongside `input` and `output`, a route accepts `batch_size`, `concurrency`,
 1. the top-level argument, if given;
 2. otherwise the same key inside `route`, if given;
 3. otherwise the app default — **1024** and **4**, rather than the library's
-   conservative `1`/`1`.
+   `512`/`1`.
 
 Only a value you never wrote is replaced, so an explicit `1` is honoured either
 way. `start_route` echoes the resolved `batch_size`/`concurrency` in its result.
@@ -302,13 +302,13 @@ release binary each register themselves correctly.
 
 ```bash
 # every client detected on this machine
-mq-bridge-app mcp install
+mqb mcp install
 
 # a single client, project-scoped rather than global
-mq-bridge-app mcp install --client cursor --local
+mqb mcp install --client cursor --local
 
 # bake --report-to-ui into the registered command
-mq-bridge-app mcp install --report-to-ui
+mqb mcp install --report-to-ui
 ```
 
 | Command | Purpose |
@@ -385,7 +385,7 @@ This originates in the upstream `mq-bridge` crate, not in the MCP layer.
 `mcp install` and the registry solve different problems, and neither needs the
 other:
 
-| | `mq-bridge-app mcp install` | MCP Registry |
+| | `mqb mcp install` | MCP Registry |
 | --- | --- | --- |
 | For | Someone who already has the binary | Someone who has not heard of it yet |
 | Does | Writes the client config directly | Publishes discovery metadata only |

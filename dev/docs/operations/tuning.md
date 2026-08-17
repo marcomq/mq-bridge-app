@@ -7,14 +7,15 @@ does, when raising it helps, and when it hurts.
 ## Philosophy: fast by default, safe knobs
 
 The engine is optimized around **batch-shaped APIs** on every endpoint, even when the backend
-only has a single-message primitive. The headless surfaces ship tuned for throughput; the
-low-level engine primitive stays conservative so embedded routes are predictable and easy to
-reason about. Tuning is opt-in: you raise a knob deliberately for a specific workload.
+only has a single-message primitive. Batching costs nothing when there is nothing to batch: a
+route waits for one message and then takes whatever else is already queued, so a busy pipeline
+fills large batches while an idle one still ships each message as it arrives. Parallelism is
+the knob that stays opt-in.
 
 Two different starting points are worth knowing:
 
-- **Library / config-mode routes** default to `batch_size: 1`, `concurrency: 1` — the engine
-  primitive default, so an embedded route does nothing surprising until you opt in.
+- **Library / config-mode routes** default to `batch_size: 512`, `concurrency: 1` — the engine
+  primitive default.
 - **The `copy` CLI and the MCP server** default to `batch_size: 1024`, `concurrency: 4`
   (`--batch-size` / `--concurrency` on `copy`), because they exist for bulk moves. The
   benchmark numbers below use `copy`.
@@ -29,7 +30,7 @@ statement prep, file syscalls) across many rows.
 
 | Field | Default (library) | Default (`copy`) |
 |---|---|---|
-| `batch_size` | `1` | `1024` |
+| `batch_size` | `512` | `1024` |
 
 **When bigger helps:** row-oriented and high-latency sinks — SQL `INSERT`, HTTP POST, object
 storage, ClickHouse. These pay a fixed cost per call, so moving from 1 to 128–1024 rows per
@@ -38,13 +39,16 @@ thousand single-row inserts.
 
 **When bigger hurts:**
 
-- **Latency.** A larger batch means the first message waits longer before the batch flushes and
-  ships. For a low-latency bridge, keep it small — or use a [`buffer`](../engine/reference.md#buffer)
-  middleware with a `max_delay_ms` bound so a partial batch still flushes on a timer.
-- **Memory.** The whole batch is held in memory (and, over IPC, written as one frame — frames
-  over 100 MB are rejected). Very large batches of large payloads raise peak RSS.
+- **Memory.** Nothing caps a batch by bytes — only by message count. The whole batch is held in
+  memory (and, over IPC, written as one frame — frames over 100 MB are rejected), so on a route
+  carrying MB-scale payloads the limit is set by payload size and `batch_size` has to come down.
 - **Redelivery granularity.** A nack redelivers at batch granularity on some transports, so a
-  big batch means more replayed work after a failure.
+  big batch means more replayed work after a failure — and a batch that fails as a whole takes
+  more healthy messages down with it.
+- **Latency under load.** A route never waits to fill a batch, so an idle bridge is unaffected.
+  Once the source is faster than the sink, though, a message queued behind a large in-flight
+  batch waits for that batch to ship. Where that matters, keep `batch_size` small — or use a
+  [`buffer`](../engine/reference.md#buffer) middleware with a `max_delay_ms` bound.
 
 ### Choosing `batch_size`
 

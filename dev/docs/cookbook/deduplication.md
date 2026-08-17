@@ -56,22 +56,45 @@ Full examples in [Upserts & insert-if-absent](upserts.md).
 
 ## Deduplicating CDC replays
 
-A `postgres_cdc` change event's `message_id` is a **stable hash** of `schema.table + key + lsn`,
-so a replayed change deduplicates through the `deduplication` middleware, and the sink's own
-constraint (`id_field` / `ON CONFLICT`) makes the write idempotent. Use `postgres.lsn` as the
-version to drop stale replays:
+A `postgres_cdc` change event's `message_id` is a **stable hash** that includes the table,
+key, operation, commit LSN, and intra-transaction ordinal. Replayed changes therefore deduplicate
+through the `deduplication` middleware while distinct changes in one transaction remain distinct —
+but only within that middleware's reach: a replay arriving more than `ttl_seconds` after the
+original is no longer remembered, and a local `sled` store only remembers what *this* route
+instance saw. The sink's own constraint (`id_field` / `ON CONFLICT`) is the durable guarantee;
+the middleware only saves the sink the write.
+
+An LSN-only sink predicate is not enough when one transaction changes the same key more than once:
+those changes share a commit LSN, so the first accepted row can block a later row. Enable
+`source_metadata: true` on the `postgres_cdc` source and order sink versions by the pair
+`(mqb.src.postgres_lsn, mqb.src.postgres_ordinal)` instead. Persist both metadata values and
+compare the pair lexicographically in the upsert predicate:
+
+Both columns must be **typed and `NOT NULL`**. `lsn` as `text` sorts `0/9…` above `0/16…`, which
+is backwards, and a `NULL` on either side makes the whole `WHERE` predicate `NULL`, so the update
+is skipped and the row silently stops advancing:
 
 ```sql
-INSERT INTO orders (id, body, lsn) VALUES (${payload:id}, ${payload:body}, ${metadata:postgres.lsn})
-  ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body, lsn = EXCLUDED.lsn
-  WHERE EXCLUDED.lsn > orders.lsn
+ALTER TABLE orders
+  ADD COLUMN lsn pg_lsn NOT NULL DEFAULT '0/0',
+  ADD COLUMN ordinal bigint NOT NULL DEFAULT 0;
 ```
 
-> **Known edge:** if the same primary key changes twice *within one transaction*, both events
-> share that transaction's commit LSN and therefore the same `message_id` — the middleware treats
-> the second as a duplicate and drops it. The sink still converges to the final row, but the
-> intermediate revision is not delivered. If you need every intra-txn revision, don't rely on the
-> `message_id`/middleware path for those rows.
+On a table that already has these columns as `text` or as nullable, backfill before switching the
+predicate on — `UPDATE orders SET lsn = '0/0' WHERE lsn IS NULL` (same for `ordinal`), then
+`ALTER COLUMN … TYPE pg_lsn USING lsn::pg_lsn` and `SET NOT NULL`. A `'0/0'` floor means the first
+change event for each existing row wins, which is what a re-snapshot should do.
+
+```sql
+INSERT INTO orders (id, body, lsn, ordinal)
+VALUES (${payload:id}, ${payload:body}, ${metadata:mqb.src.postgres_lsn}::pg_lsn, ${metadata:mqb.src.postgres_ordinal}::bigint)
+ON CONFLICT (id) DO UPDATE
+SET body = EXCLUDED.body, lsn = EXCLUDED.lsn, ordinal = EXCLUDED.ordinal
+WHERE (EXCLUDED.lsn, EXCLUDED.ordinal) > (orders.lsn, orders.ordinal)
+```
+
+The row comparison decides on `lsn` and only consults `ordinal` when the two LSNs are equal.
 
 See the [Postgres CDC → JSONL](../tutorials/postgres-cdc.md) tutorial for the full CDC idempotency
-picture.
+picture, and [Delivery guarantees](../engine/delivery.md) for what identity each source provides
+and which sinks absorb a duplicate write.

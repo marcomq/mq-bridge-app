@@ -13,7 +13,11 @@ install path for the form you need. To compile any of them yourself, see
 
 ## CLI / server
 
-The CLI (`mq-bridge-app`) is a single headless binary.
+The CLI is a single headless binary, installed under two names: `mq-bridge-app`
+and the short **`mqb`**, which is what the docs use and what you'll normally
+type. `mqb` is a small launcher that hands straight over to the real binary, so
+the two are interchangeable — existing scripts and MCP registrations keep
+working untouched.
 
 ### Homebrew (macOS, Linux) — recommended
 
@@ -64,7 +68,7 @@ To read+tail from `input.log` and forward its content, mount the working directo
 ```bash
 touch input.log
 docker run --rm --name mq-bridge -p 9091:9091 -v "$(pwd)":/app \
-  ghcr.io/marcomq/mq-bridge-app:latest --init-config=/config/file-to-http.yml
+  ghcr.io/marcomq/mq-bridge-app:latest --ui --init-config=/config/file-to-http.yml
 ```
 
 > [!NOTE]

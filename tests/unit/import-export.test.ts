@@ -200,6 +200,32 @@ describe("import-export", () => {
     expect(payload.config.env_vars).toEqual({ baseUrl: "https://api.local" });
   });
 
+  test("preserves MongoDB consume compatibility fields in consumer exports", () => {
+    const payload = buildConsumerConfigExport({
+      name: "mongo_in",
+      endpoint: {
+        mongodb: {
+          url: "mongodb://localhost:27017",
+          database: "app",
+          collection: "orders",
+          consume: "snapshot",
+          change_stream: true,
+        },
+      },
+      output: { mode: "none" },
+    });
+
+    expect(payload.config.consumers[0].endpoint).toEqual({
+      mongodb: {
+        url: "mongodb://localhost:27017",
+        database: "app",
+        collection: "orders",
+        consume: "snapshot",
+        change_stream: true,
+      },
+    });
+  });
+
   test("builds one publisher as an importable config payload", () => {
     window.appConfig.env_vars = { baseUrl: "https://api.local" };
     appShell.setConfig(window.appConfig);

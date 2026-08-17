@@ -40,7 +40,7 @@ ipc_ingest:
 ```
 
 ```bash
-mq-bridge-app --config ipc_ingest.yaml
+mqb --config ipc_ingest.yaml
 ```
 
 The named form is used rather than an explicit path so no privileged directory has to exist

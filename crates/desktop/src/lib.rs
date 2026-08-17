@@ -973,6 +973,7 @@ pub fn run() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config_path = desktop_config_path(app)?;
             let metadata_path = desktop_secret_metadata_path(&config_path);
@@ -1023,6 +1024,13 @@ pub fn run() {
             );
             metrics::gauge!("mq_bridge_app_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
+            // Plugin endpoints must be registered before the configured routes
+            // are deployed, or a route naming one fails to start. `UiApp` loads
+            // the same list again below, which is a no-op for an already loaded
+            // library.
+            mq_bridge_app::plugins::load_trusted_plugins(&config.plugins, &config.env_vars)
+                .context("Failed to load configured plugins")?;
+
             tauri::async_runtime::block_on(async {
                 deploy_routes(&mut config)
                     .await
@@ -1061,7 +1069,7 @@ pub fn run() {
                     .with_instance_kind(InstanceKind::Tauri)
                     .with_config_recovery(config_recovery)
                     .with_config_recovery_reset(Some(config_recovery_reset)),
-            );
+            )?;
             // `setup` runs outside any runtime context, so enter Tauri's before
             // spawning the heartbeat task.
             tauri::async_runtime::block_on(async { ui_app.spawn_status_registry_publisher() });

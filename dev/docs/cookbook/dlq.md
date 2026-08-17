@@ -61,9 +61,11 @@ output:
   kafka: { topic: "users", url: "localhost:9092" }
 ```
 
-## No DLQ? Watch the logs
+## No DLQ? Watch status and logs
 
 Without a `dlq`, a *systematic* failure (e.g. every row hitting a column-type mismatch) drains
-the input while committing nothing and still ends `completed`. The signal is a burst of
-`Dropping message … due to non-retryable error` in the logs. See
+the input while delivering nothing to the sink and still ends `completed`. Route status retains the drop
+count and last rejection cause, and the logs contain a burst of
+`Dropping message … due to non-retryable error`. Do not use the outcome alone as a delivery
+check. See
 [Troubleshooting](../operations/troubleshooting.md#messages-disappear-and-the-route-still-ends-completed).

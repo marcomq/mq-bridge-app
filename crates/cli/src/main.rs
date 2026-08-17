@@ -5,7 +5,7 @@
 
 use mq_bridge_app::{
     config::{AppConfig, config_file_path, load_config},
-    mq_bridge,
+    copy_pipeline, mq_bridge,
     status_registry::{
         InstanceKind, StatusEntity, StatusLease, StatusRoute, StatusSnapshot, StatusSummary,
         endpoint_type_label,
@@ -32,8 +32,8 @@ mod mcp_install;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// App-level default batch size for headless routes (`copy`, MCP) when the caller
-/// does not specify one. The library's `RouteOptions::default()` stays at 1; this
-/// is the batteries-included value the app applies on top.
+/// does not specify one. The library's `RouteOptions::default()` is 512; this is the
+/// bulk-move value the app applies on top.
 pub(crate) const DEFAULT_BATCH_SIZE: usize = 1024;
 
 /// App-level default route concurrency for headless routes (`copy`, MCP) when the
@@ -43,6 +43,18 @@ pub(crate) const DEFAULT_CONCURRENCY: usize = 4;
 /// How often `copy --drain` checks whether the route task has ended. The engine
 /// exposes completion as a poll, not a notification; see [`run_copy`].
 const COPY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Address the web UI falls back to when the config names none. Only ever
+/// applied after an explicit `--ui` or a `y` from [`ui_prompt`].
+const DEFAULT_UI_ADDR: &str = "0.0.0.0:9091";
+
+/// Address the Prometheus endpoint falls back to when the config names none.
+///
+/// Loopback, not `0.0.0.0`: metrics are read-only but still describe the routes
+/// and endpoints in use, and a bare run on a laptop should not publish that to
+/// the local network. Deployments that scrape from another host set the address
+/// explicitly — the Docker image does exactly that in its `CMD`.
+const DEFAULT_METRICS_ADDR: &str = "127.0.0.1:9090";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -63,12 +75,83 @@ struct Args {
     #[arg(long)]
     config_str: Option<String>,
 
+    /// Path to a native plugin library to load before starting (repeatable).
+    ///
+    /// The plugin registers an endpoint — and possibly a middleware — under its
+    /// own name, usable in routes like any built-in one. Also loadable from the
+    /// config file's `plugins:` list. Either way the paths are read only at
+    /// startup: changing them needs a restart, and the UI rejects a config that
+    /// asks for a different set.
+    #[arg(long = "plugin", value_name = "PATH", global = true)]
+    plugins: Vec<String>,
+
     /// Generate JSON schema to the specified path
     #[arg(long)]
     schema: Option<String>,
 
+    /// When to colorize log output: `auto` (default), `always` or `never`.
+    ///
+    /// `auto` colors a terminal but writes plain text to a pipe or file, so a
+    /// redirected log does not collect escape sequences. Also honors `NO_COLOR`.
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t = ColorChoice::Auto, global = true)]
+    color: ColorChoice,
+
+    /// Start the web UI on the default port without asking.
+    ///
+    /// Only relevant when no config file sets `ui_addr`: that case asks for
+    /// confirmation on a terminal and starts nothing anywhere else, so an
+    /// unattended run never opens the port by itself.
+    #[arg(long)]
+    ui: bool,
+
+    /// Never start the web UI, and do not ask.
+    #[arg(long, conflicts_with = "ui")]
+    no_ui: bool,
+
+    /// Serve the Prometheus endpoint on ADDR (default `127.0.0.1:9090`).
+    ///
+    /// Overrides `metrics_addr` from the config. Use `0.0.0.0:<port>` to allow
+    /// scraping from another host.
+    #[arg(long, value_name = "ADDR", conflicts_with = "no_metrics")]
+    metrics_addr: Option<String>,
+
+    /// Do not serve the Prometheus endpoint on its own port.
+    ///
+    /// Metrics are still collected, and still reachable at `/metrics` on the
+    /// web UI when that is running.
+    #[arg(long)]
+    no_metrics: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum ColorChoice {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl ColorChoice {
+    /// Whether to emit SGR escapes, given whether the log writer is a terminal
+    /// and whether the environment asked for no color.
+    ///
+    /// `NO_COLOR` applies only under `auto`: an explicit `--color always` is a
+    /// direct instruction and outranks the environment.
+    fn enabled(self, writer_is_terminal: bool, no_color: bool) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Never => false,
+            Self::Auto => writer_is_terminal && !no_color,
+        }
+    }
+}
+
+/// `NO_COLOR` (https://no-color.org): set to any non-empty value.
+fn no_color_requested() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
 }
 
 #[derive(Subcommand, Debug)]
@@ -175,13 +258,35 @@ struct CopyArgs {
     /// `...?table=src|retry?max_attempts=5|metrics`. Middleware params are that
     /// middleware's config fields. A literal `|` inside the URI must be written
     /// as `%7C`.
-    #[arg(long)]
-    from: String,
+    #[arg(long, value_name = "SOURCE", conflicts_with = "source")]
+    from: Option<String>,
 
     /// Destination endpoint URI (same URI and middleware forms as `--from`), e.g.
     /// `postgres://user:pass@host/db?table=dst&insert_query=<url-encoded SQL>`.
+    #[arg(long, value_name = "TARGET", conflicts_with = "target")]
+    to: Option<String>,
+
+    /// Source endpoint URI in the positional `copy SOURCE TARGET` form.
+    #[arg(value_name = "SOURCE", index = 1, conflicts_with = "from")]
+    source: Option<String>,
+
+    /// Destination endpoint URI in the positional `copy SOURCE TARGET` form.
+    #[arg(value_name = "TARGET", index = 2, conflicts_with = "to")]
+    target: Option<String>,
+
+    /// Only copy messages for which EXPR evaluates to true.
+    ///
+    /// Expressions address top-level JSON fields directly, for example
+    /// `amount > 100` or `country == "DE" && amount >= 50`.
+    #[arg(long, value_name = "EXPR")]
+    filter: Option<String>,
+
+    /// Resume from the last successfully processed position.
+    ///
+    /// The source's native cursor, offset, slot, or checkpoint mechanism is used.
+    /// Fails before starting when the source cannot resume safely.
     #[arg(long)]
-    to: String,
+    resume: bool,
 
     /// Exit once the source yields an empty batch (drain-then-exit). Without it,
     /// `copy` keeps running like a continuous bridge until Ctrl-C.
@@ -195,6 +300,54 @@ struct CopyArgs {
     /// Batch size (defaults to 1024).
     #[arg(long)]
     batch_size: Option<usize>,
+
+    /// Log what the copy is doing: endpoints, connections, shutdown. Without it
+    /// only warnings and errors are logged.
+    ///
+    /// The `copied …` summary prints either way — it goes to stdout directly
+    /// rather than through the logger. `RUST_LOG` still wins when set.
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+/// Whether this config has nothing to run, and so exists only to be filled in.
+///
+/// Deliberately checks both collections: a bridge configured purely with
+/// `routes:` has no `consumers`, and treating that as unconfigured would stop a
+/// real deployment at the UI prompt.
+fn nothing_to_run(config: &AppConfig) -> bool {
+    config.consumers.is_empty() && config.routes.is_empty()
+}
+
+/// Asks whether to open the web UI on `addr`, defaulting to no.
+///
+/// Only a terminal is asked. An unattended run — a shell script, a service
+/// unit, CI — answers nothing, and the safe reading of silence is to leave the
+/// port closed rather than expose a control surface nobody meant to start.
+fn ui_prompt(addr: &str) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+
+    let mut stdin = std::io::stdin().lock();
+    if !stdin.is_terminal() {
+        println!("      Web UI not started (pass --ui to start it on {addr})");
+        return false;
+    }
+    print!("      Start the web UI on {addr}? [y/N] ");
+    // The prompt has no trailing newline, so it sits in the line buffer until flushed.
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if stdin.read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Loads `--plugin` libraries. Called per subcommand rather than once up front
+/// so it runs after that command installed its logging — the loader logs what
+/// it registered, and before a subscriber exists those lines go nowhere.
+fn load_cli_plugins(paths: &[String]) -> anyhow::Result<()> {
+    mq_bridge_app::plugins::load_trusted_plugins(paths, &std::collections::HashMap::new())?;
+    Ok(())
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -208,7 +361,8 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Some(Command::Copy(copy_args)) => {
-            init_copy_logging();
+            init_copy_logging(args.color, copy_args.verbose);
+            load_cli_plugins(&args.plugins)?;
             return run_copy(copy_args).await;
         }
         Some(Command::Mcp(mcp_args)) => {
@@ -234,7 +388,8 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // stdio transport uses stdout as the MCP channel, so logs must go to stderr.
-            init_mcp_logging();
+            init_mcp_logging(args.color);
+            load_cli_plugins(&args.plugins)?;
             let workspace_path = config_file_path(args.config.clone());
             return mcp::run(
                 mcp_args.transport,
@@ -248,7 +403,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(schema_path) = args.schema {
-        let schema = schemars::schema_for!(AppConfig);
+        let schema = mq_bridge_app::config::app_config_schema();
         let schema_json =
             serde_json::to_string_pretty(&schema).context("Failed to serialize schema")?;
 
@@ -275,7 +430,9 @@ async fn main() -> anyhow::Result<()> {
         args.config_str,
     )
     .context("Failed to load configuration")?;
-    init_logging(&config);
+    init_logging(&config, args.color);
+    load_cli_plugins(&args.plugins)?;
+    mq_bridge_app::plugins::load_trusted_plugins(&config.plugins, &config.env_vars)?;
     println!(
         r#"
       ┌────── mq-bridge-app ──────┐
@@ -286,13 +443,29 @@ async fn main() -> anyhow::Result<()> {
     // When no persisted config file exists (common in http/no-tauri dev mode), ensure
     // UI + metrics are reachable with sane defaults.
     let has_persisted_config = std::path::Path::new(&config_file_path).exists();
-    if !has_persisted_config || config.consumers.is_empty() {
-        if config.metrics_addr.is_empty() {
-            config.metrics_addr = "0.0.0.0:9090".to_string();
-        }
-        if config.ui_addr.is_empty() {
-            config.ui_addr = "0.0.0.0:9091".to_string();
-        }
+    let unconfigured = !has_persisted_config || config.consumers.is_empty();
+    if let Some(addr) = args.metrics_addr {
+        config.metrics_addr = addr;
+    } else if args.no_metrics {
+        config.metrics_addr = String::new();
+    } else if unconfigured && config.metrics_addr.is_empty() {
+        config.metrics_addr = DEFAULT_METRICS_ADDR.to_string();
+    }
+    // The UI is a control surface, so its port is the one address never opened
+    // implicitly: a `ui_addr` in the config counts as consent, an accidental
+    // bare run does not. `--ui` opts in even when a config leaves the address
+    // empty; `--no-ui` withdraws that consent even when the config gives one;
+    // otherwise the previously automatic default has to be confirmed.
+    //
+    // The prompt is offered only when there is nothing to run, which is the
+    // "start empty and build a config in the UI" case. A config that defines
+    // routes or consumers is a deployment: it must never stop at a question.
+    if args.no_ui {
+        config.ui_addr = String::new();
+    } else if config.ui_addr.is_empty()
+        && (args.ui || (nothing_to_run(&config) && ui_prompt(DEFAULT_UI_ADDR)))
+    {
+        config.ui_addr = DEFAULT_UI_ADDR.to_string();
     }
 
     let mut prom_addr = None;
@@ -372,6 +545,7 @@ async fn main() -> anyhow::Result<()> {
         let web_ui_server = web_ui::start_web_server(
             addr.into(),
             config.clone(),
+            args.plugins.clone(),
             prometheus_handle,
             config_file_path,
         );
@@ -531,9 +705,36 @@ fn route_entity(name: &str, config: &AppConfig) -> StatusRoute {
 /// exits once the source is empty; otherwise it runs until Ctrl-C.
 async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     use mq_bridge::models::{Route, RouteOptions};
+    use mq_bridge::route::RouteOutcome;
 
-    let input = endpoint_from_uri(&args.from).context("invalid --from endpoint")?;
-    let output = endpoint_from_uri(&args.to).context("invalid --to endpoint")?;
+    let (from, to) = copy_endpoints(&args)?;
+    // Expanded here rather than by the shell, so a single-quoted URI can name a
+    // credential without it ever appearing in the history or in `argv`.
+    let from = copy_pipeline::expand_uri_variables(from).context("invalid copy source endpoint")?;
+    let to =
+        copy_pipeline::expand_uri_variables(to).context("invalid copy destination endpoint")?;
+    let mut input = endpoint_from_uri(&from).context("invalid copy source endpoint")?;
+    let output = endpoint_from_uri(&to).context("invalid copy destination endpoint")?;
+    let resume = if args.resume {
+        Some(copy_pipeline::configure_resume(
+            &mut input,
+            &output,
+            args.filter.as_deref(),
+        )?)
+    } else {
+        None
+    };
+    // Consumer middlewares apply outermost-first, so this one — added before the
+    // filter — sees only the messages the filter kept: what was copied.
+    let copied = copy_pipeline::configure_counter(&mut input)?;
+    if let Some(expression) = &args.filter {
+        copy_pipeline::configure_filter(&mut input, expression)?;
+    }
+    // Added after the filter, so it sits closer to the source and tallies what was
+    // read. The rate is derived from this: a selective filter reduces what lands at
+    // the destination without making the copy any slower, and rating the surviving
+    // rows against the time spent reading every row reports that as a slowdown.
+    let read = copy_pipeline::configure_counter(&mut input)?;
     let input_endpoint_label = endpoint_type_label(&input.endpoint_type);
     let output_endpoint_label = endpoint_type_label(&output.endpoint_type);
     let options = RouteOptions {
@@ -545,6 +746,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
 
     let route = Route::new(input, output).with_options(options);
     let run_id = format!("copy-{}", uuid::Uuid::new_v4());
+    let started = std::time::Instant::now();
     let handle = Arc::new(
         route
             .run(&run_id)
@@ -559,8 +761,13 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     );
 
     info!(
-        from = %args.from,
-        to = %args.to,
+        // Redacted: this line is the one that reaches journald, Docker logs and CI.
+        from = %copy_pipeline::redact_uri(&from),
+        to = %copy_pipeline::redact_uri(&to),
+        filtered = args.filter.is_some(),
+        // Names the mechanism, not just the flag: which one the source picked
+        // is what tells you where a restart will actually pick up from.
+        resume = resume.map_or("off", copy_pipeline::ResumeCapability::as_str),
         drain = args.drain,
         "copy route started"
     );
@@ -594,7 +801,11 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             handle.stop().await;
         }
 
-        copy_result(outcome, handle.status().error)
+        copy_result(
+            outcome,
+            handle.status().error,
+            &throughput(&copied, &read, started),
+        )
     } else {
         // Continuous bridge: run until Ctrl-C, then stop gracefully.
         tokio::signal::ctrl_c()
@@ -602,12 +813,42 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
             .context("failed to listen for Ctrl+C")?;
         info!("Ctrl+C received; stopping copy");
         handle.stop().await;
-        Ok(())
+        // Through the same reporting as the drained branch: a bridge that dropped
+        // rows did not run clean either, and a supervisor restarting it needs to
+        // hear that from the exit status. `stop` resolves the outcome, so the
+        // fallback only guards against the summary going missing.
+        copy_result(
+            handle.outcome().or(Some(RouteOutcome::Stopped)),
+            handle.status().error,
+            &throughput(&copied, &read, started),
+        )
     };
 
     drop(copy_status);
 
     result
+}
+
+fn copy_endpoints(args: &CopyArgs) -> anyhow::Result<(&str, &str)> {
+    match (
+        args.from.as_deref(),
+        args.to.as_deref(),
+        args.source.as_deref(),
+        args.target.as_deref(),
+    ) {
+        (Some(from), Some(to), None, None) => Ok((from, to)),
+        (None, None, Some(source), Some(target)) => Ok((source, target)),
+        (None, None, None, None) => anyhow::bail!(
+            "copy requires SOURCE and TARGET, either positionally or with --from and --to"
+        ),
+        (Some(_), None, None, None) | (None, Some(_), None, None) => {
+            anyhow::bail!("copy requires both --from and --to")
+        }
+        (None, None, Some(_), None) | (None, None, None, Some(_)) => {
+            anyhow::bail!("copy positional syntax requires both SOURCE and TARGET")
+        }
+        _ => anyhow::bail!("do not mix positional SOURCE/TARGET with --from/--to"),
+    }
 }
 
 fn copy_status_lease(
@@ -658,23 +899,141 @@ fn copy_status_lease(
     )
 }
 
-/// Maps a finished `copy --drain` route to the process result: a route killed by a
+/// What a finished copy moved, as reported on the last line of the run.
+struct Throughput {
+    /// Messages that reached the destination — what a filter left behind.
+    rows: u64,
+    /// Messages taken off the source, filtered or not. The rate is derived from
+    /// this, since the elapsed time covers reading all of them.
+    read: u64,
+    elapsed_s: f64,
+    rows_per_second: u64,
+}
+
+impl Throughput {
+    /// `copied 333_495 of 1_000_000 rows` when a filter dropped some, plain
+    /// `copied 1_000_000 rows` when nothing was dropped.
+    fn rows_display(&self) -> String {
+        if self.read > self.rows {
+            format!("{} of {} rows", grouped(self.rows), grouped(self.read))
+        } else {
+            format!("{} rows", grouped(self.rows))
+        }
+    }
+
+    /// Sub-second runs read as milliseconds: `0.07s` hides whether a copy took
+    /// 65 ms or 5 ms, and `0.00s` looks like a broken measurement.
+    fn elapsed_display(&self) -> String {
+        if self.elapsed_s < 1.0 {
+            format!("{:.0}ms", self.elapsed_s * 1000.0)
+        } else {
+            format!("{:.2}s", self.elapsed_s)
+        }
+    }
+
+    fn rate_display(&self) -> String {
+        grouped(self.rows_per_second)
+    }
+
+    /// The one line every `copy` prints, whatever the log level. Written to stdout
+    /// directly rather than through `tracing`, so silencing the bridge's logging
+    /// never silences the answer the user ran the command for.
+    fn report(&self, verb: &str) {
+        println!(
+            "{verb} {} in {} ({} rows/s)",
+            self.rows_display(),
+            self.elapsed_display(),
+            self.rate_display()
+        );
+    }
+}
+
+/// Groups digits in threes so a rate stays legible at a glance: `703871` reads as
+/// `703_871`.
+///
+/// Underscore rather than a comma, which half the world reads as a decimal point,
+/// or a thin space, which would split the field for anything parsing this line on
+/// whitespace.
+fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.char_indices() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push('_');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// Rates a finished copy. A run too short to time is reported as no rate rather
+/// than a number divided by an elapsed time that rounds to zero.
+///
+/// The rate is rounded to whole rows: the elapsed time includes connection setup,
+/// so it approximates a whole run rather than benchmarking the transfer.
+fn throughput(
+    copied: &std::sync::atomic::AtomicU64,
+    read: &std::sync::atomic::AtomicU64,
+    started: std::time::Instant,
+) -> Throughput {
+    let rows = copied.load(std::sync::atomic::Ordering::Relaxed);
+    let read = read.load(std::sync::atomic::Ordering::Relaxed);
+    let elapsed_s = started.elapsed().as_secs_f64();
+    let rows_per_second = if elapsed_s > 0.0 {
+        (read as f64 / elapsed_s).round() as u64
+    } else {
+        0
+    };
+    Throughput {
+        rows,
+        read,
+        elapsed_s,
+        rows_per_second,
+    }
+}
+
+/// Maps a finished `copy` route to the process result: a route killed by a
 /// permanent error must not exit 0, or a cron/timer job reports success while having
 /// copied nothing. `None` means Ctrl-C interrupted the wait.
+///
+/// A route that reached its end can *also* have thrown data away, and that case
+/// does not arrive as `Failed`: a sink that rejects a message permanently with no
+/// `dlq` middleware to catch it drops the message and the route keeps going, by
+/// design — one poison message must not wedge a bridge. mq-bridge tallies those
+/// drops and publishes them as the route's error when it ends, precisely so the
+/// caller can tell a clean run from a lossy one. Rows that were dropped never
+/// reached the destination, so that has to reach the exit status too.
 fn copy_result(
     outcome: Option<mq_bridge::route::RouteOutcome>,
     error: Option<String>,
+    moved: &Throughput,
 ) -> anyhow::Result<()> {
     use mq_bridge::route::RouteOutcome;
 
+    if matches!(outcome, Some(RouteOutcome::Failed)) {
+        let cause = error.unwrap_or_else(|| "no error reported".to_string());
+        anyhow::bail!("copy failed after {} rows: {cause}", moved.rows_display());
+    }
+    // Reported for a run that ended any other way, so the count above it is the
+    // rows the copy *read*, not the rows that arrived — the cause says how many
+    // did not. A route that merely recovered from a transient fault can leave a
+    // cause behind too; erring towards a non-zero exit is the safe direction when
+    // the alternative is calling a lossy copy a success.
+    if let Some(cause) = error {
+        anyhow::bail!(
+            "copy did not deliver every row it read ({}): {cause}",
+            moved.rows_display()
+        );
+    }
+
     match outcome {
-        Some(RouteOutcome::Failed) => {
-            let cause = error.unwrap_or_else(|| "no error reported".to_string());
-            anyhow::bail!("copy failed: {cause}");
-        }
-        Some(RouteOutcome::Stopped) => info!("copy stopped before the source drained"),
-        Some(RouteOutcome::Completed) => info!("copy completed; source drained"),
-        None => {}
+        Some(RouteOutcome::Stopped) => moved.report("stopped after copying"),
+        Some(RouteOutcome::Completed) => moved.report("copied"),
+        // Ctrl-C before the drain finished: the rows already copied are the
+        // answer, reported the way the continuous branch reports a Ctrl-C.
+        None => moved.report("stopped after copying"),
+        // Already returned above.
+        Some(RouteOutcome::Failed) => {}
     }
     Ok(())
 }
@@ -693,10 +1052,11 @@ fn copy_result(
 /// form wins if both are present); redis is excluded because a redis URL path is
 /// the database number, not the stream.
 ///
-/// MongoDB defaults to a non-destructive source here: when neither `consume` nor
+/// MongoDB is pinned to a non-destructive source here: when neither `consume` nor
 /// the deprecated `change_stream` is given, `consume` is set to `capture_all`
-/// (read existing documents, then watch) rather than the library's destructive
-/// queue-drain `consumer` default. Pass `?consume=consumer` to opt back in.
+/// (read existing documents, then watch), which needs a replica set. Pass
+/// `?consume=snapshot` for a one-shot read of a standalone mongod, or
+/// `?consume=consumer` for the destructive queue-drain mode.
 ///
 /// Escaped mode: pass the full connection string percent-encoded as `?url=...`
 /// to use it verbatim (e.g. `mongodb://_/?url=<encoded>&collection=orders`); its
@@ -1029,12 +1389,12 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
         }
     }
 
-    // Non-destructive default for MongoDB sources: the library defaults `consume`
-    // to the queue-drain `consumer` mode, which claims and *deletes* source
-    // documents. For the CLI/UI we default to `capture_all` (read existing docs,
-    // then watch) so pointing at an existing collection never mutates it. Only
-    // applied when the user gave neither `consume` nor the deprecated
-    // `change_stream`, so any explicit choice still wins.
+    // Non-destructive default for MongoDB sources: `capture_all` (read existing
+    // docs, then watch) so pointing at an existing collection never mutates it.
+    // This matches the library default since 0.4.0 and is pinned here so a future
+    // library change cannot make a CLI/UI source destructive. Only applied when the
+    // user gave neither `consume` nor the deprecated `change_stream`, so any
+    // explicit choice still wins.
     if tag == "mongodb" && !config.contains_key("consume") && !config.contains_key("change_stream")
     {
         config.insert(
@@ -1323,27 +1683,41 @@ fn coerce_scalar(s: String, ty: FieldType) -> serde_json::Value {
 }
 
 /// Minimal logging setup for the headless `copy` subcommand (no AppConfig).
-fn init_copy_logging() {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+///
+/// A one-shot `copy` answers with its summary line, not with a log, so the
+/// default is `warn` — only warnings and errors get through, because anything
+/// below that is chatter about a command the user is watching run. `--verbose`
+/// restores the detail.
+fn init_copy_logging(color: ColorChoice, verbose: bool) {
+    use std::io::IsTerminal;
+
+    let default = if verbose { "info" } else { "warn" };
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
+        .with_ansi(color.enabled(std::io::stdout().is_terminal(), no_color_requested()))
         .try_init();
 }
 
 /// Logging for the `mcp` subcommand. Writes to **stderr** because the `stdio`
 /// transport uses stdout as the MCP (JSON-RPC) channel — logging there would
 /// corrupt the protocol stream.
-fn init_mcp_logging() {
+fn init_mcp_logging(color: ColorChoice) {
+    use std::io::IsTerminal;
+
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
         .with_writer(std::io::stderr)
+        .with_ansi(color.enabled(std::io::stderr().is_terminal(), no_color_requested()))
         .try_init();
 }
 
-fn init_logging(config: &AppConfig) {
+fn init_logging(config: &AppConfig, color: ColorChoice) {
+    use std::io::IsTerminal;
+
     // --- 1. Initialize Logging ---
     // If the TOKIO_CONSOLE env var is set, initialize the console subscriber.
     // This is an exclusive choice, as the console subscriber is a logging layer.
@@ -1359,7 +1733,8 @@ fn init_logging(config: &AppConfig) {
     let logger = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_span_events(FmtSpan::CLOSE) // Log entry and exit of spans
-        .with_target(true);
+        .with_target(true)
+        .with_ansi(color.enabled(std::io::stdout().is_terminal(), no_color_requested()));
     match config.logger.as_str() {
         "json" => {
             logger.json().init();
@@ -1407,6 +1782,46 @@ async fn platform_specific_shutdown() {
 }
 
 #[cfg(test)]
+mod ui_flag_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn the_ui_is_opt_in() {
+        let bare = Args::try_parse_from(["mqb"]).expect("arguments should parse");
+        assert!(!bare.ui && !bare.no_ui);
+        assert!(Args::try_parse_from(["mqb", "--ui"]).unwrap().ui);
+        assert!(Args::try_parse_from(["mqb", "--no-ui"]).unwrap().no_ui);
+    }
+
+    // Opting in and out at once has no sensible reading, so it is rejected
+    // rather than silently resolved one way.
+    #[test]
+    fn ui_and_no_ui_cannot_be_combined() {
+        assert!(Args::try_parse_from(["mqb", "--ui", "--no-ui"]).is_err());
+    }
+
+    // A routes-only bridge has no consumers, and must not be mistaken for an
+    // empty config — that would stop a deployment at an interactive prompt.
+    #[test]
+    fn a_routes_only_config_counts_as_configured() {
+        assert!(nothing_to_run(&AppConfig::default()));
+
+        let config: AppConfig = serde_json::from_value(serde_json::json!({
+            "routes": {
+                "file_to_file": {
+                    "input": { "file": { "path": "input.log" } },
+                    "output": { "file": { "path": "output.log" } }
+                }
+            }
+        }))
+        .expect("a minimal routes-only config should deserialize");
+        assert!(config.consumers.is_empty());
+        assert!(!nothing_to_run(&config));
+    }
+}
+
+#[cfg(test)]
 mod report_to_ui_flag_tests {
     use super::*;
     use clap::Parser;
@@ -1424,38 +1839,75 @@ mod report_to_ui_flag_tests {
     // flag asks for what is now the default rather than inverting it.
     #[test]
     fn the_bare_legacy_flag_is_a_no_op() {
-        assert!(reporting_enabled(&["mq-bridge-app", "mcp"]));
-        assert!(reporting_enabled(&[
-            "mq-bridge-app",
-            "mcp",
-            "--report-to-ui"
-        ]));
-        assert!(reporting_enabled(&[
-            "mq-bridge-app",
-            "mcp",
-            "--report-to-ui=true"
-        ]));
+        assert!(reporting_enabled(&["mqb", "mcp"]));
+        assert!(reporting_enabled(&["mqb", "mcp", "--report-to-ui"]));
+        assert!(reporting_enabled(&["mqb", "mcp", "--report-to-ui=true"]));
     }
 
     #[test]
     fn both_disable_spellings_turn_reporting_off() {
-        assert!(!reporting_enabled(&[
-            "mq-bridge-app",
-            "mcp",
-            "--report-to-ui=false"
-        ]));
-        assert!(!reporting_enabled(&[
-            "mq-bridge-app",
-            "mcp",
-            "--no-report-to-ui"
-        ]));
+        assert!(!reporting_enabled(&["mqb", "mcp", "--report-to-ui=false"]));
+        assert!(!reporting_enabled(&["mqb", "mcp", "--no-report-to-ui"]));
     }
 }
 
 #[cfg(test)]
 mod copy_result_tests {
-    use super::copy_result;
     use super::mq_bridge::route::RouteOutcome;
+    use super::{ColorChoice, Throughput, copy_result};
+
+    // Piping a run into a log file must not fill it with escape sequences, but a
+    // terminal keeps its color, and an explicit `always` overrides both signals.
+    #[test]
+    fn color_follows_the_writer_unless_told_otherwise() {
+        assert!(ColorChoice::Auto.enabled(true, false));
+        assert!(!ColorChoice::Auto.enabled(false, false));
+
+        // NO_COLOR only speaks for `auto`.
+        assert!(!ColorChoice::Auto.enabled(true, true));
+        assert!(ColorChoice::Always.enabled(false, true));
+        assert!(!ColorChoice::Never.enabled(true, false));
+    }
+
+    fn moved(rows: u64) -> Throughput {
+        Throughput {
+            rows,
+            read: rows,
+            elapsed_s: 1.0,
+            rows_per_second: rows,
+        }
+    }
+
+    /// A bare `703871` is the number a reader has to count digits on; the summary
+    /// line is the one piece of `copy` output that gets read by a human every run.
+    #[test]
+    fn large_counts_are_grouped_and_short_runs_read_in_milliseconds() {
+        assert_eq!(moved(703_871).rate_display(), "703_871");
+        assert_eq!(moved(1_167_428).rows_display(), "1_167_428 rows");
+        assert_eq!(moved(0).rows_display(), "0 rows");
+        assert_eq!(moved(999).rows_display(), "999 rows");
+
+        let mut brief = moved(2);
+        brief.elapsed_s = 0.0654;
+        assert_eq!(brief.elapsed_display(), "65ms");
+        assert_eq!(moved(2).elapsed_display(), "1.00s");
+    }
+
+    /// A selective filter must not read as a slowdown: it reduces what lands at the
+    /// destination while the copy still reads — and is timed against — every row.
+    #[test]
+    fn a_filtered_run_reports_both_counts_and_rates_the_rows_it_read() {
+        let filtered = Throughput {
+            rows: 333_495,
+            read: 1_000_000,
+            elapsed_s: 1.05,
+            rows_per_second: 952_380,
+        };
+        assert_eq!(filtered.rows_display(), "333_495 of 1_000_000 rows");
+        assert_eq!(filtered.rate_display(), "952_380");
+        // Nothing dropped: no second number to explain.
+        assert_eq!(moved(1_000).rows_display(), "1_000 rows");
+    }
 
     /// A route killed by a permanent error ends its task exactly like a real drain
     /// does, so `copy --drain` used to exit 0 and log "source drained" after copying
@@ -1465,6 +1917,7 @@ mod copy_result_tests {
         let err = copy_result(
             Some(RouteOutcome::Failed),
             Some("Any driver does not support MySql type Timestamp".to_string()),
+            &moved(0),
         )
         .expect_err("a failed route must not report success");
         assert!(
@@ -1476,21 +1929,45 @@ mod copy_result_tests {
 
     #[test]
     fn failed_outcome_without_a_recorded_error_still_fails() {
-        assert!(copy_result(Some(RouteOutcome::Failed), None).is_err());
+        assert!(copy_result(Some(RouteOutcome::Failed), None, &moved(0)).is_err());
     }
 
     #[test]
     fn drained_and_stopped_and_interrupted_succeed() {
-        assert!(copy_result(Some(RouteOutcome::Completed), None).is_ok());
-        assert!(copy_result(Some(RouteOutcome::Stopped), None).is_ok());
+        assert!(copy_result(Some(RouteOutcome::Completed), None, &moved(7)).is_ok());
+        assert!(copy_result(Some(RouteOutcome::Stopped), None, &moved(7)).is_ok());
         // Ctrl-C before the route finished.
-        assert!(copy_result(None, None).is_ok());
+        assert!(copy_result(None, None, &moved(0)).is_ok());
+    }
+
+    /// A sink that permanently rejects a message drops it and the route runs on to
+    /// a normal end — by design, so one poison message cannot wedge a bridge. The
+    /// rows are gone, so the copy is not a success: pointing a `sql` sink at a
+    /// misspelled table used to log a `Dropping message` line per row and then
+    /// print `copied 3 rows` and exit 0, which no scheduled job would ever notice.
+    #[test]
+    fn a_route_that_dropped_rows_is_not_a_successful_copy() {
+        let dropped = Some(
+            "dropped 3 message(s): sink rejected them permanently and no dlq middleware \
+             is configured: no such table: orders"
+                .to_string(),
+        );
+
+        for outcome in [RouteOutcome::Completed, RouteOutcome::Stopped] {
+            let err = copy_result(Some(outcome), dropped.clone(), &moved(3))
+                .expect_err("a lossy copy must not report success");
+            assert!(
+                err.to_string().contains("no such table: orders"),
+                "the drop cause must reach the exit status, got: {err}"
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod uri_tests {
     use super::endpoint_from_uri;
+    use super::mq_bridge::models::{EndpointType, MongoConsume};
 
     fn config(uri: &str, tag: &str) -> serde_json::Value {
         let ep = endpoint_from_uri(uri).expect("uri should parse");
@@ -1546,6 +2023,35 @@ mod uri_tests {
         );
         assert!(cfg["consume"].is_null());
         assert_eq!(cfg["change_stream"], true);
+        let endpoint = endpoint_from_uri(
+            "mongodb://host/?collection=orders&database=appdb&change_stream=true",
+        )
+        .unwrap();
+        let EndpointType::MongoDb(mongo) = endpoint.endpoint_type else {
+            panic!("expected MongoDB endpoint");
+        };
+        assert_eq!(mongo.resolved_consume(), MongoConsume::CaptureNew);
+
+        let cfg = config(
+            "mongodb://host/?collection=orders&database=appdb&consume=snapshot&change_stream=true",
+            "mongodb",
+        );
+        assert_eq!(cfg["consume"], "snapshot");
+        assert_eq!(cfg["change_stream"], true);
+        let endpoint = endpoint_from_uri(
+            "mongodb://host/?collection=orders&database=appdb&consume=snapshot&change_stream=true",
+        )
+        .unwrap();
+        let EndpointType::MongoDb(mongo) = endpoint.endpoint_type else {
+            panic!("expected MongoDB endpoint");
+        };
+        assert_eq!(mongo.resolved_consume(), MongoConsume::Snapshot);
+
+        let error = endpoint_from_uri(
+            "mongodb://host/?collection=orders&database=appdb&consume=subscriber",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("subscriber"), "{error:#}");
     }
 
     // A redis URL path is the database number, not the stream, so it must remain on
@@ -1971,6 +2477,25 @@ mod uri_tests {
         let cfg = config("grpc://localhost:50051?topic=orders", "grpc");
         assert_eq!(cfg["url"], "http://localhost:50051");
         assert_eq!(cfg["topic"], "orders");
+    }
+
+    // The documented lake-export target. `format` decides whether rows are written
+    // as themselves or wrapped in a stringified envelope, so it has to survive the
+    // URI rather than falling back to the sink's `normal` default; `extension` and
+    // `compression` ride alongside it as scalar config fields.
+    #[test]
+    fn object_store_target_carries_format_extension_and_compression() {
+        let cfg = config(
+            "s3://lake/orders?format=raw&extension=jsonl.zst&compression=zstd",
+            "object_store",
+        );
+        assert_eq!(cfg["url"], "s3://lake/orders");
+        assert_eq!(cfg["format"], "raw");
+        assert_eq!(cfg["compression"], "zstd");
+        // Spelled out including the compression suffix on purpose: overriding
+        // `extension` replaces the derived name wholesale, so `extension=jsonl`
+        // beside `compression=zstd` would name a zstd object `.jsonl`.
+        assert_eq!(cfg["extension"], "jsonl.zst");
     }
 
     // `ibmmq://` is reformatted to the driver's `host(port)` connection string;

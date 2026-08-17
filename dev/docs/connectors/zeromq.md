@@ -19,7 +19,7 @@ of a socket pair; the other connects.
 **Pull from a PUSH producer and write to a file, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'zeromq://tcp://127.0.0.1:5555?socket_type=pull&bind=true' \
   --to file:///data/events.jsonl?format=json
 ```
@@ -27,7 +27,7 @@ mq-bridge-app copy \
 **Publish a Kafka topic to a PUB socket, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from kafka://kafka.local:9092?topic=events \
   --to 'zeromq://tcp://0.0.0.0:5556?socket_type=pub&bind=true'
 ```
@@ -35,7 +35,7 @@ mq-bridge-app copy \
 **Subscribe to a topic on a remote PUB socket, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'zeromq://tcp://feed.local:5556?socket_type=sub&topic=orders' \
   --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
@@ -47,7 +47,18 @@ mq-bridge-app copy \
 | `socket_type` | `push`, `pull`, `pub`, `sub`, `req`, or `rep`. |
 | `bind` | Bind to the address instead of connecting (default `false`). |
 | `topic` | Consumer-only: topic filter for `sub` sockets. |
-| `format` | Wire format: `json` (default, wraps the message), `raw` (payload bytes), `raw_framed` (raw + JSON metadata frame). |
-| `backend` | `zmq` (default) or `omq` (PoC, PUSH/PULL + PUB/SUB only; needs the `zeromq-omq` feature). |
+| `format` | Wire format: `raw_framed` (default — payload bytes with a JSON metadata frame in front), `raw` (payload bytes only, no metadata), `json` (wraps the whole message). |
+| `backend` | `try_omq` (default — use `omq` when the `zeromq-omq` feature is compiled in, else `zmq`), or `zmq` / `omq` to require that backend. |
+
+> **Wire format changed in 0.4.0.** `format` used to default to `json`; it is now
+> `raw_framed`, which is binary-safe and still carries headers. A 0.4 peer and a 0.3 peer no
+> longer understand each other on the same socket unless one of them uses `format=json` in the URL query.
+> REQ/REP replies are the exception to `format` entirely: a REP peer always answers with a JSON
+> array of canonical messages, and a REQ publisher always decodes one.
+
+Both backends cover the whole socket set, REQ/REP included. `backend: omq` is the faster path
+when the `zeromq-omq` feature is compiled in; naming `omq` or `zmq` explicitly makes that
+backend a hard requirement rather than a preference. On `omq`, backpressure is applied by the
+socket's high-water mark and `internal_buffer_size` is ignored.
 
 Full field list: [reference/zeromq.md](../reference/zeromq.md).

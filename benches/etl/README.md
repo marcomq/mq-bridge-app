@@ -245,7 +245,7 @@ benches/etl/run_throughput.sh          # -> benches/etl/results/throughput.csv
 The single underlying command (what a user would type) is:
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres://testuser:testpass@localhost:5432/testdb?table=src_256&cursor_column=id&sslmode=disable' \
   --to   'postgres://testuser:testpass@localhost:5432/testdb?table=dst_256&auto_create_table=true&sslmode=disable' \
   --drain --batch-size 128 --concurrency 4
@@ -336,7 +336,7 @@ benches/etl/run_meltano_bench.sh   # both sides -> results/meltano_pg_to_jsonl.c
 ```
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres://testuser:testpass@localhost:5432/testdb?table=bench&cursor_column=id&sslmode=disable' \
   --to   'file:///tmp/mqb_bench_out.jsonl?format=raw' \
   --drain --batch-size 1024 --concurrency 1
@@ -399,13 +399,13 @@ output endpoint:
 
 ```bash
 # untyped — every field stays the string the CSV reader produced
-mq-bridge-app copy \
+mqb copy \
   --from 'file:///…/benches/etl/data/bench.csv?format=csv' \
   --to   'file:///tmp/mqb_csv_out.jsonl?format=raw' \
   --drain --batch-size 1024 --concurrency 1
 
 # typed — reproduces Sling's typing, and is what §5's Sling ratio compares
-mq-bridge-app copy \
+mqb copy \
   --from 'file:///…/benches/etl/data/bench.csv?format=csv' \
   --to   'file:///tmp/mqb_csv_out.jsonl?format=raw|transform?schema_file=…/schemas/bench.json' \
   --drain --batch-size 1024 --concurrency 1
@@ -514,7 +514,7 @@ some columns, so it is not a copy of `bench.json`) and a re-run.
 Every scenario above drives the engine from a CLI or a YAML config. This one
 drives it the way an **LLM agent** does: through the MCP server, over its real
 stdio transport. [`mcp_bench.py`](mcp_bench.py) is a genuine MCP client — it spawns
-`mq-bridge-app mcp --transport stdio` and speaks JSON-RPC to it exactly as Claude
+`mqb mcp --transport stdio` and speaks JSON-RPC to it exactly as Claude
 Code would, so the numbers include the framing, serialization and process-boundary
 cost an agent actually pays. Nothing reaches into the process.
 

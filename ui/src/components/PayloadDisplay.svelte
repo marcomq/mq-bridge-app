@@ -10,6 +10,7 @@
     payload = "",
     contentType = "",
     readOnly = true,
+    showPretty = false,
     label = "",
     onChange = (_value: string) => {},
     extra,
@@ -18,6 +19,7 @@
     payload?: string | Uint8Array | null;
     contentType?: string;
     readOnly?: boolean;
+    showPretty?: boolean;
     label?: string;
     onChange?: (value: string) => void;
     extra?: Snippet;
@@ -28,6 +30,7 @@
   let showLineEndings = $state(false);
   let wrapLines = $state(true);
   let isFocused = $state(false);
+  let prettyJson = $state(false);
 
   // Simple XML beautifier as a fallback since the core formatter doesn't seem to handle it yet
   function beautifyXml(xml: string) {
@@ -85,6 +88,13 @@
   // New state to hold user's raw hex input when actively editing
   let userHexInput: string | null = $state(null);
   let isEditingHex = $state(false);
+  let displayedPayload = $derived.by(() => {
+    if (isEditingHex && userHexInput !== null) return userHexInput;
+    if ((prettyJson && formattedPayload.language === "json") || currentViewMode === "hex") {
+      return formattedPayload.formatted;
+    }
+    return typeof payload === "string" ? payload : payload ? new TextDecoder().decode(payload) : "";
+  });
 
   function handleEditorChange(newValue: string) {
     if (readOnly) return;
@@ -141,8 +151,16 @@
     userHexInput = null;
   }
 
+  function handlePrettyJson() {
+    currentViewMode = "json";
+    prettyJson = true;
+    isEditingHex = false;
+    userHexInput = null;
+  }
+
   function setViewMode(mode: PayloadViewMode) {
     currentViewMode = mode;
+    prettyJson = false;
     isEditingHex = false;
     userHexInput = null;
   }
@@ -207,6 +225,11 @@
       </label>
 
       <div class="toolbar-divider"></div>
+      {#if showPretty && formattedPayload.language === 'json'}
+        <button class="toolbar-btn" type="button" onclick={handlePrettyJson} title="Pretty-print JSON content">
+          Pretty
+        </button>
+      {/if}
       {#if !readOnly && (formattedPayload.language?.includes('json') || formattedPayload.language?.includes('xml'))}
         <button class="toolbar-btn" type="button" onclick={handleBeautify} title="Format JSON/XML content">
           Beautify
@@ -230,15 +253,7 @@
   <div class="payload-content">
     <CodeEditor
       id={id ? `${id}-editor` : ""}
-      value={
-        isEditingHex && userHexInput !== null 
-          ? userHexInput 
-          : (currentViewMode === 'hex' 
-              ? formattedPayload.formatted 
-              : (typeof payload === 'string' 
-                  ? payload 
-                  : (payload ? new TextDecoder().decode(payload) : "")))
-      }
+      value={displayedPayload}
       language={currentViewMode === 'auto' ? 'json-auto' : 
                 (currentViewMode === 'hex' ? 'text' : currentViewMode)}
       useLinter={currentViewMode === 'json' || currentViewMode === 'xml'}

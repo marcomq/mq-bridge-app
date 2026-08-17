@@ -8,10 +8,14 @@ almost always one of the drop/drain behaviours below.
 By design, a message that fails **permanently** (a type/data error the sink rejects, a poison
 payload a handler rejects) is logged at `error` level and **dropped** — the route keeps
 processing the rest of the batch. So a *systematic* failure (e.g. every row hitting a
-column-type mismatch) drains the input while committing nothing and still ends `completed`.
+column-type mismatch) drains the input while delivering nothing to the sink and still ends `completed`.
+The terminal route status is not clean, however: its error reports the number of dropped
+messages and the last rejection cause.
 
 - Watch for a burst of `Dropping message … due to non-retryable error` in the logs — that's the
   signal.
+- Check the route status/error in the UI, CLI, or MCP response for the retained drop count and
+  cause; do not treat `outcome: completed` alone as proof that every message was delivered.
 - Add a [`dlq`](../engine/reference.md#dlq) to capture the failures for inspection/replay.
 - `retry` alone does **not** retain a failed message — pair it with `dlq` (dlq last). See
   [Dead-letter queues](../cookbook/dlq.md).
@@ -71,6 +75,30 @@ must be prefixed with the stream name**: `stream: "orders_stream"` needs a subje
 `orders_stream.foo`. Also, `stream` is **required even in Core NATS mode** (`no_jetstream:
 true`) — pass any placeholder string. See
 [NATS JetStream notes](../engine/configuration.md#nats-jetstream-notes).
+
+## MongoDB source: "capture_all needs a replica set"
+
+Both `capture_*` modes read the oplog, so they need a replica set — a single-node one is
+enough — and refuse to start without one rather than falling back. The removed fallback paged
+by `_id`, which only ever returns documents above its high-water mark, so anything a concurrent
+writer committed below that mark was dropped silently.
+
+- One-shot, non-destructive read of a standalone `mongod`: `consume: snapshot`.
+- Work queue (destructive, competing readers): `consume: consumer`.
+- Turning the standalone into a single-node replica set (`replSet` + `rs.initiate()`) restores
+  `capture_all`, and with it resumable reads.
+
+## ZeroMQ peers stopped understanding each other after upgrading
+
+0.4.0 changed the `zeromq` default `format` from `json` to `raw_framed`. A 0.4 peer and a 0.3
+peer no longer interoperate on the same socket until they are pinned to the same format, and the
+fix belongs on the **0.4 peer**: set `format: json` there. Setting it on the 0.3 peer changes
+nothing — `json` is already its default, and the 0.4 peer stays on `raw_framed`. (Pinning both to
+`raw_framed` works too, since 0.3 also understands it.) The symptom is a peer that receives frames
+but reads them as garbage, or a payload that arrives as JSON text instead of the decoded message.
+
+`format` does not apply to REQ/REP replies: a REP peer always answers with a JSON array of
+canonical messages and a REQ publisher always decodes one, whatever `format` is set to.
 
 ## SQLx source: "reconnecting forever" or rejects the table
 

@@ -19,7 +19,7 @@ not a separate query param).
 **Consume a RabbitMQ queue and POST each message to an API, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from rabbitmq://guest:guest@localhost:5672/%2f?queue=orders \
   --to http://internal-api.local/ingest?method=POST
 ```
@@ -27,7 +27,7 @@ mq-bridge-app copy \
 **Run an HTTP listener as the source (webhook receiver), continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from http://0.0.0.0:8080?method=POST \
   --to kafka://kafka.local:9092?topic=webhooks
 ```
@@ -35,7 +35,7 @@ mq-bridge-app copy \
 **Non-blocking publisher (don't wait for the downstream response):**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from file:///data/events.jsonl?format=json \
   --to 'https://api.example.com/ingest?method=POST&request_timeout_ms=5000'
 ```

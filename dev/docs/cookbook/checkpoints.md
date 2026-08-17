@@ -20,7 +20,7 @@ colliding. `checkpoint_store` may embed credentials and is treated as a secret.
 |---|---|---|
 | **SQLx** (PostgreSQL / MySQL / MariaDB / SQLite) | `cursor_column` + `cursor_id` | Last value of `cursor_column` |
 | **ClickHouse** | `cursor_column` + `cursor_id` + external `checkpoint_store` | Last value of `cursor_column` |
-| **MongoDB** (`consume: capture_new` / `capture_all` / `subscriber`) | `cursor_id` | Last `_id` / change-stream resume token |
+| **MongoDB** (`consume: capture_new` / `capture_all`) | `cursor_id` | Change-stream resume token. For `capture_all`, only the change-stream phase is checkpointed; the initial snapshot is not resumable. |
 | **Object store** (`s3://`, `gs://`, `az://`) | `cursor_id` + external `checkpoint_store` | Last fully-acked object key |
 | **Postgres CDC** | (automatic) | Confirmed LSN — the replication **slot** is authoritative; `cursor_id` only adds a local copy |
 
@@ -62,7 +62,7 @@ the CLI they are just query parameters on `--from`:
 ```bash
 # Incremental table → table sync. Re-run it as often as you like: each run copies
 # only rows whose `id` is greater than the last successfully written row.
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_sync' \
   --to   'clickhouse://localhost:8123?table=orders&database=analytics' \
   --drain
@@ -70,7 +70,7 @@ mq-bridge-app copy \
 
 ```bash
 # Read-only source: keep the cursor next to the job instead of in the source DB.
-mq-bridge-app copy \
+mqb copy \
   --from 'mysql://ro_user:pass@reporting/app?table=events&cursor_column=event_id&cursor_id=events_export&checkpoint_store=file%3A%2F%2F%2Fvar%2Flib%2Fmqb%2Fcursors.json' \
   --to   'file:///data/events.jsonl' \
   --drain
@@ -78,7 +78,7 @@ mq-bridge-app copy \
 
 ```bash
 # MongoDB bulk read that survives a restart mid-copy.
-mq-bridge-app copy \
+mqb copy \
   --from 'mongodb://localhost:27017/app?collection=orders&consume=capture_all&cursor_id=orders_dump' \
   --to   'file:///data/orders.jsonl'
 ```
@@ -107,8 +107,11 @@ drains the backlog since last time and exits 0. Without `--drain`, the same comm
 polling for new rows every `polling_interval_ms` (100 ms by default) — or backing off
 exponentially up to `max_polling_interval_ms` while drained, if you set it.
 
-MongoDB `capture_new`/`capture_all` use a change stream and therefore **never** drain; they are
-continuous by nature.
+MongoDB `capture_all` follows a change stream once its initial read is done, so a `--drain` run
+ends when that stream goes quiet rather than at a known end of data. `capture_new` only ever
+emits changes made after it starts and is continuous by nature. For a one-shot read with a real
+end, use `consume: snapshot` — non-destructive, no replica set, and not resumable (it rejects
+`cursor_id`).
 
 An **object-store** source ends a drain run when it reaches the end of the objects it listed,
 which can be before the prefix is exhausted — the checkpoint makes this safe rather than lossy:

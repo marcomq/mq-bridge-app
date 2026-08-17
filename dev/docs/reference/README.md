@@ -2,7 +2,7 @@
 
 # URL Parameter Reference
 
-Auto-generated from the same JSON Schemas `mq-bridge-app copy` uses to parse `--from`/`--to` query parameters (see `crates/cli/src/main.rs::endpoint_from_uri`). For workflow examples, see the [connector pages](../connectors/).
+Auto-generated from the same JSON Schemas `mqb copy` uses to parse `--from`/`--to` query parameters (see `crates/cli/src/main.rs::endpoint_from_uri`). For workflow examples, see the [connector pages](../connectors/).
 
 - [PostgreSQL / MySQL / MariaDB / SQLite](./postgres.md) — schemes: `postgres://`, `postgresql://`, `mysql://`, `mariadb://`, `sqlite://`
 - [PostgreSQL CDC (logical replication)](./postgres-cdc.md) — schemes: `postgres-cdc://`, `pgcdc://`

@@ -31,8 +31,13 @@ you only implement the side you need. The consumer and publisher sides are separ
 because middleware wraps a `MessageConsumer` on the way in and a `MessagePublisher` on
 the way out; wrap order matters (see the architecture doc).
 
+Registration is process-global and keyed by name: it must happen before any route that
+names it starts, and registering a name twice is an error rather than a silent
+replacement. Python and Node.js can register a middleware directly, with the same
+semantics — no Rust required.
+
 ## See also
 
 - [`custom` (middleware) reference](../engine/reference.md#custom-middleware) — the authoritative field list.
-- [Learn the architecture → Extending mq-bridge](../engine/architecture.md#extending-mq-bridge) — traits, registration, and wrap order.
+- [Writing endpoints & middleware](../engine/extending.md) — traits, registration, wrap order, and the Python/Node equivalents.
 - [Custom endpoints](custom-endpoints.md) — the endpoint equivalent.

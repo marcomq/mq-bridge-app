@@ -36,7 +36,7 @@
     <button type="button" class={removeClassName}>Remove Route</button>
   </div>
 
-  <div class="ap-row-body mqb-ap-row-body">
+  <div class="ap-row-body mqb-ap-row-body js-ap-value-wrapper">
     <MountedNode node={valueContent} />
   </div>
 </div>

@@ -24,13 +24,18 @@ Supported integration types include **Kafka**, **RabbitMQ (AMQP)**, **NATS**, **
 At its core is a zero-config `copy` command that moves data between databases, queues, and files in a single line of bash — no YAML, no pipeline definition, no code:
 
 ```bash
-mq-bridge-app copy \
-  --from 'postgres://user:pass@localhost/db?table=src&sslmode=disable' \
-  --to   'file://out.jsonl?format=raw' \
+mqb copy \
+  'postgres://${PGUSER}:${PGPASSWORD}@localhost/db?table=src&sslmode=disable' \
+  'file://out.jsonl?format=raw' \
+  --filter 'amount > 100' \
   --drain
 ```
 
 The **scheme selects the endpoint** and **query parameters configure it**, so any source→sink pair (Postgres, MySQL, MariaDB, SQLite, NATS, Redis, MongoDB, files, …) is just one URL each. And it's quick.
+
+Use `--resume` when the source has a safe native position (for example a Kafka
+consumer group, MongoDB change-stream cursor, Postgres CDC slot, or an explicitly
+configured SQL cursor). The legacy `--from ... --to ...` spelling remains supported.
 
 → [Quick start](https://marcomq.github.io/mq-bridge-app/quick-start.html) · [Connectors](https://marcomq.github.io/mq-bridge-app/connectors/index.html) · [Performance tuning](https://marcomq.github.io/mq-bridge-app/operations/tuning.html)
 
@@ -41,7 +46,7 @@ Test connections and dial in a route in the Postman-inspired UI, export the JSON
 | Form | What it is | Quick install |
 | --- | --- | --- |
 | **Desktop app (UI)** | The visual workbench — build/test routes, run request/response traffic, inspect message history | `brew install --cask marcomq/tap/mq-bridge` |
-| **CLI / server** | Headless binary: a one-line `copy`, a drain-then-exit batch job, or a long-lived bridge (also serves the same UI in a browser) | `brew install marcomq/tap/mq-bridge-app` |
+| **CLI / server** | Headless binary: a one-line `copy`, a drain-then-exit batch job, or a long-lived bridge (can also serve the same UI in a browser) | `brew install marcomq/tap/mq-bridge-app` |
 | **Library** | The engine embedded in your own code — native **Rust**, **Python**, or **Node.js** bindings | `cargo add` / `pip` / `npm` |
 
 ![mq-bridge UI - publishers](dev/images/Screen1.jpg)
@@ -66,7 +71,7 @@ On **Windows**, install the CLI with `cargo binstall mq-bridge-app`, or download
 The same binary is an MCP server, so an agent can move data without the rows passing through its context:
 
 ```bash
-mq-bridge-app mcp install          # register with Claude Code / Claude Desktop / Cursor
+mqb mcp install          # register with Claude Code / Claude Desktop / Cursor
 ```
 
 - MCP Registry name: `mcp-name: io.github.marcomq/mq-bridge-app`
@@ -78,6 +83,7 @@ mq-bridge-app mcp install          # register with Claude Code / Claude Desktop 
 - **Multi-protocol bridging** — Kafka, IBM MQ, NATS, AMQP (RabbitMQ), MQTT, AWS SQS, gRPC, ZeroMQ, MongoDB, sqlx (MySQL/MariaDB/PostgreSQL), HTTP, and files. Act as an HTTP server *and* client, with full request-response support.
 - **Middleware chains** — retries, dead-letter queues, deduplication, rate limiting, buffering, transforms, weak-join correlation, and more, wrapping any endpoint.
 - **Built-in web UI** — Svelte-based management for publishers, consumers, routes, runtime status, presets, and imports; the same UI the CLI serves in a browser.
+- **Native plugins** — load an endpoint or middleware this binary never compiled (Pulsar, an in-house transport) from a shared library, via `plugins:` in the config or `--plugin <path>`, and use it by name in routes. No special build needed; plugin paths are read only at startup, so adding one means editing the trusted startup configuration and restarting: [Native plugins](https://marcomq.github.io/mq-bridge-app/extending/plugins.html).
 - **Observability** — structured JSON logging and a Prometheus metrics endpoint.
 - **Flexible configuration** — hierarchical files (YAML/JSON/TOML) plus environment variables, suited to Container/Kubernetes.
 - **Security & storage** — config security modes (plain / extracted secrets / encrypted config / persistent encrypted history), encryption at rest, and local-first operation.

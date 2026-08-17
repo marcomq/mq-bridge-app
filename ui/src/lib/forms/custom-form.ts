@@ -12,6 +12,7 @@ import PasswordField from "./PasswordField.svelte";
 import ScalarEndpointInput from "./ScalarEndpointInput.svelte";
 import { renderSvelteNode } from "./render-svelte";
 import { appShell } from "../app-shell";
+import { pickFilePath } from "../desktop-file-dialog";
 import { BASIC_ENDPOINT_FIELDS, collectPublisherIdSuggestions } from "../endpoint-metadata";
 import {
   createTypeSelectArrayRenderer,
@@ -25,6 +26,7 @@ import {
   setConfig,
   setCustomRenderers,
   setI18n,
+  toStorePath,
 } from "vanilla-schema-forms";
 import * as VanillaSchemaForms from "vanilla-schema-forms";
 
@@ -310,6 +312,43 @@ if (baseRenderBoolean) {
   };
 }
 
+function addDesktopFilePicker(
+  renderedField: HTMLElement,
+  input: HTMLInputElement,
+  formMode: unknown,
+) {
+  const parent = input.parentNode;
+  if (!parent) return;
+
+  const control = document.createElement("div");
+  control.className = "mqb-file-path-control";
+  parent.insertBefore(control, input);
+  control.appendChild(input);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "wa-native-button wa-native-button--neutral mqb-file-path-browse";
+  button.textContent = "Browse…";
+  button.title = formMode === "consumer" ? "Select an input file" : "Select an output file";
+  button.setAttribute("aria-label", button.title);
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const selected = await pickFilePath(formMode === "consumer" ? "open" : "save", input.value);
+      if (selected === null) return;
+
+      input.value = selected;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+    } finally {
+      button.disabled = false;
+    }
+  });
+  control.appendChild(button);
+
+  renderedField.classList.add("mqb-file-path-field");
+}
+
 domRenderer.renderFieldWrapper = (
   node: SchemaNode,
   elementId: string,
@@ -373,7 +412,7 @@ domRenderer.renderFieldWrapper = (
     });
   }
 
-  return renderSvelteNode(FormField, {
+  const renderedField = renderSvelteNode(FormField, {
     label: formatLabel(node, elementId),
     description: formatDescription(node, elementId),
     labelFor: input instanceof HTMLElement ? input.id : undefined,
@@ -381,6 +420,16 @@ domRenderer.renderFieldWrapper = (
     wrapperClass: wrapperClass || "",
     required: Boolean(node.required),
   });
+
+  if (
+    appShell.isDesktop()
+    && input instanceof HTMLInputElement
+    && node["mqb-file-path"] === true
+  ) {
+    addDesktopFilePicker(renderedField, input, (window as any)._mqb_form_mode);
+  }
+
+  return renderedField;
 };
 
 if (forms.domRenderer && forms.domRenderer !== domRenderer) {
@@ -581,12 +630,6 @@ const basicAuthRenderer = {
   },
 };
 
-// Data paths handed to renderers are prefixed with the form root key, which is not
-// part of the store state. A single-segment path is the root node itself.
-function toStorePath(dataPath: Array<string | number>): Array<string | number> {
-  return dataPath.length > 1 ? dataPath.slice(1) : dataPath;
-}
-
 // Both custom headers and env vars are a sorted key/value map edited through HeadersEditor;
 // they differ only in labels, so share one renderer factory.
 const createKeyValueRenderer = (editorProps: (node: SchemaNode) => Record<string, unknown>) => ({
@@ -628,9 +671,55 @@ const envVarsRenderer = createKeyValueRenderer(() => ({
   deleteLabel: "Delete",
 }));
 
+// Tuning knobs shared by consumers and routes. Only `batch_size` is worth surfacing
+// by default; the rest are rarely touched and otherwise crowd out the endpoint itself.
+const ADVANCED_ROUTE_OPTION_FIELDS = [
+  "concurrency",
+  "commit_concurrency_limit",
+  "startup_timeout_ms",
+  "reconnect_interval_ms",
+  "empty_batch_delay_ms",
+  "allow_fault_injection",
+  "exit_on_empty",
+];
+
+function renderObjectWithAdvancedFields(
+  context: RendererContext,
+  node: SchemaNode,
+  elementId: string,
+  dataPath: Array<string | number>,
+  advancedFields: readonly string[],
+): Node {
+  const properties = node.properties || {};
+  const advancedKeys = advancedFields.filter((key) => key in properties);
+  if (advancedKeys.length === 0) {
+    return asNode(renderObject(context, node, elementId, false, dataPath));
+  }
+
+  const visibleProperties = { ...properties };
+  const advancedProperties: Record<string, SchemaNode> = {};
+  for (const key of advancedKeys) {
+    advancedProperties[key] = properties[key];
+    delete visibleProperties[key];
+  }
+
+  return renderSvelteNode(CollapsibleFields, {
+    visibleContent: asNode(
+      renderObject(context, { ...node, properties: visibleProperties }, elementId, false, dataPath),
+    ),
+    hiddenContent: createWrappedContainer(
+      renderPropertiesCompat(context, advancedProperties, elementId, dataPath),
+      "mqb-form-block",
+    ),
+    toggleLabel: "Show advanced options",
+  });
+}
+
 const routeObjectRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) =>
-    withFormattedDescription(node, elementId, () => renderObject(context, node, elementId, false, dataPath)),
+    withFormattedDescription(node, elementId, () =>
+      renderObjectWithAdvancedFields(context, node, elementId, dataPath, ADVANCED_ROUTE_OPTION_FIELDS),
+    ),
 };
 
 const routesRenderer = {
@@ -697,6 +786,9 @@ const createEndpointRenderer = (type: string) => ({
 
     const basicFields = BASIC_ENDPOINT_FIELDS[type] || [];
     const allProperties = node.properties || {};
+    if (type === "file" && allProperties.path) {
+      allProperties.path["mqb-file-path"] = true;
+    }
     const visibleProperties: Record<string, SchemaNode> = {};
     const hiddenProperties: Record<string, SchemaNode> = {};
 
@@ -763,7 +855,10 @@ const createScalarEndpointRenderer = (
 const rootRenderer = {
   render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) =>
     withFormattedDescription(node, elementId, () =>
-      createWrappedContainer(asNode(renderObject(context, node, elementId, false, dataPath)), "mqb-form-block"),
+      createWrappedContainer(
+        renderObjectWithAdvancedFields(context, node, elementId, dataPath, ADVANCED_ROUTE_OPTION_FIELDS),
+        "mqb-form-block",
+      ),
     ),
 };
 
@@ -779,35 +874,18 @@ const middlewaresRenderer = {
     const toggleButton = element.querySelector(`.${rendererConfig.triggers.arrayTypeToggle}`) as HTMLElement | null;
     const typeSelect = element.querySelector(`.${rendererConfig.triggers.arrayTypeSelect}`) as HTMLSelectElement | null;
 
+    // The library only makes the picker its own trigger where select.showPicker() is missing
+    // (WebKit, so Safari and Tauri); elsewhere it keeps an "Add Middleware" button that reveals
+    // the select. Apply the same shape everywhere so desktop and browser look alike. Removing
+    // the button is what keeps the picker visible: the library hides it again only when there
+    // is a button to swap back to.
     if (toggleButton && typeSelect) {
-      // The library reveals the type picker behind an "Add Middleware" button and opens it via
-      // select.showPicker(), which WebKit (Safari, Tauri) does not implement: the first click only
-      // swapped the button for the select, and a click elsewhere hid it again. Show the picker
-      // itself as the button instead, so a single native click opens it in every engine.
-      const addLabel = toggleButton.textContent || "Add Middleware";
-      toggleButton.remove();
-
       const placeholder = typeSelect.querySelector("option[value='']");
-      if (placeholder) placeholder.textContent = addLabel;
+      if (placeholder) placeholder.textContent = toggleButton.textContent || "Add Middleware";
 
+      toggleButton.remove();
       addClassTokens(typeSelect, rendererConfig.classes.buttonPrimary);
-      // Only forces the select's display style — named for what it does, and
-      // guarded so it doesn't write (and re-trigger the observer) redundantly.
-      const forceSelectVisible = () => {
-        if (typeSelect.style.display !== "inline-block") {
-          typeSelect.style.display = "inline-block";
-        }
-      };
-      forceSelectVisible();
-
-      // The library hides the picker again after a type is chosen (and on focusout); keep it
-      // visible so further middlewares can be added without re-rendering the form. The observer
-      // targets a node inside the freshly rendered subtree and forms a cycle with it, so both are
-      // collected together when the next render drops that subtree (RendererContext is a plain bag
-      // with no teardown hook to disconnect through explicitly).
-      new MutationObserver(() => {
-        if (typeSelect.style.display === "none") forceSelectVisible();
-      }).observe(typeSelect, { attributes: true, attributeFilter: ["style"] });
+      typeSelect.style.display = "inline-block";
     }
 
     return element;
@@ -933,6 +1011,115 @@ const endpointRenderer = {
   },
 };
 
+// Transform's inline schema is a free-form JSON document, so it has no `type` in the config
+// schema and the library would render a text input and store whatever was typed as a string -
+// which the engine then refuses to start with ("schema must be a JSON object"). Edit it as JSON
+// and only ever write a parsed object.
+const transformSchemaRenderer = {
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    const store = context.store;
+    const storePath = toStorePath(dataPath);
+    const current = store.getPath(storePath);
+
+    const textarea = document.createElement("textarea");
+    textarea.className = rendererConfig.classes.input;
+    textarea.id = elementId;
+    textarea.rows = 10;
+    textarea.spellcheck = false;
+    textarea.style.fontFamily = "monospace";
+    textarea.placeholder = '{ "type": "object", "properties": { … } }';
+    textarea.value = current === undefined ? "" : JSON.stringify(current, null, 2);
+
+    const message = document.createElement("div");
+    message.className = "mqb-json-error";
+
+    const commit = () => {
+      const raw = textarea.value.trim();
+      let error = "";
+
+      if (raw === "") {
+        store.removePath ? store.removePath(storePath) : store.setPath(storePath, undefined);
+      } else {
+        try {
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            error = "The schema must be a JSON object.";
+          } else {
+            store.setPath(storePath, parsed);
+          }
+        } catch (parseError) {
+          error = `Invalid JSON: ${(parseError as Error).message}`;
+        }
+      }
+
+      message.textContent = error;
+      textarea.classList.toggle("mqb-json-invalid", Boolean(error));
+    };
+
+    // The library collects field values by element id through delegated listeners on the form
+    // container; left to bubble, they would store the raw text alongside the parsed value.
+    textarea.addEventListener("input", (event) => event.stopPropagation());
+    textarea.addEventListener("change", (event) => {
+      event.stopPropagation();
+      commit();
+    });
+
+    const field = domRenderer.renderFieldWrapper(node, elementId, textarea) as HTMLElement;
+    field.appendChild(message);
+    return field;
+  },
+};
+
+const transformMappingRenderer = {
+  render: (node: SchemaNode, _path: string, elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
+    const storePath = toStorePath(dataPath);
+    const currentValue = storePath.length > 0 && context.store.getPath(storePath);
+    const mapping = currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)
+      ? currentValue as Record<string, unknown>
+      : {};
+    const rows = Object.entries(mapping)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => ({
+        key,
+        originalKey: key,
+        value: typeof value === "string"
+          ? value
+          : String((value as Record<string, unknown> | null)?.path ?? ""),
+      }));
+
+    return renderSvelteNode(HeadersEditor, {
+      title: "Mapping",
+      sectionLabel: "",
+      description: formatDescription(node, elementId),
+      rows,
+      keyPlaceholder: "Output field",
+      valuePlaceholder: "Source path",
+      addLabel: "Add Mapping",
+      emptyLabel: "No mappings defined.",
+      deleteLabel: "Delete",
+      onChange: (nextRows: Array<{ key: string; originalKey?: string; value: string }>) => {
+        const nextMapping = Object.fromEntries(
+          nextRows
+            .filter((row) => row.key.trim().length > 0)
+            .map((row) => {
+              const key = row.key.trim();
+              // Renaming a row keeps its `default`/`required` siblings, which a
+              // lookup by the new key would silently drop.
+              const previous = mapping[row.originalKey ?? key];
+              return [
+                key,
+                previous && typeof previous === "object" && !Array.isArray(previous)
+                  ? { ...previous, path: row.value }
+                  : row.value,
+              ];
+            }),
+        );
+        context.store.setPath(storePath, nextMapping);
+      },
+    });
+  },
+};
+
 const CUSTOM_RENDERERS: Record<string, unknown> = {
   root: rootRenderer,
   AppConfig: rootRenderer,
@@ -947,6 +1134,8 @@ const CUSTOM_RENDERERS: Record<string, unknown> = {
   routes: routesRenderer,
   middlewares: middlewaresRenderer,
   description: descriptionRenderer,
+  "transform.mapping": transformMappingRenderer,
+  "transform.schema": transformSchemaRenderer,
   "root.endpoint": renderObject,
   "output.mode": { render: () => document.createDocumentFragment() },
   value: {

@@ -22,7 +22,7 @@ replaced by a file path, e.g. `sqlite:///var/data/app.db?table=orders`.
 **Full-table read (source), one-shot:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from postgres://user:pass@localhost/app?table=orders \
   --to null:
 ```
@@ -30,7 +30,7 @@ mq-bridge-app copy --drain \
 **Write with auto-created table (destination):**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from file:///data/orders.csv?format=csv \
   --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
@@ -38,7 +38,7 @@ mq-bridge-app copy --drain \
 **Resumable incremental read, keyed by a monotonic column, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres://user:pass@localhost/app?table=orders&cursor_column=id&cursor_id=orders_export' \
   --to kafka://kafka.local:9092?topic=orders
 ```
@@ -49,7 +49,7 @@ instead of re-copying from the start.
 **Custom multi-column insert, MySQL:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from postgres://user:pass@src/app?table=orders \
   --to 'mysql://user:pass@dst/app?table=orders&insert_query=INSERT+INTO+orders+%28id%2C+sku%2C+qty%29+VALUES+%28%24%7Bpayload%3Aid%7D%2C+%24%7Bpayload%3Asku%7D%2C+%24%7Bpayload%3Aqty%7D%29'
 ```
@@ -88,7 +88,7 @@ postgres-cdc://[user:pass@]host[:port]/database?publication=<name>&slot_name=<na
 **Stream changes from a publication into Kafka, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
   --to kafka://kafka.local:9092?topic=app-changes
 ```
@@ -96,7 +96,7 @@ mq-bridge-app copy \
 **Replicate a table into another PostgreSQL instance, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'postgres-cdc://user:pass@localhost/app?publication=mqb_pub&slot_name=mqb_slot' \
   --to 'postgres://user:pass@otherhost/replica?table=orders&auto_create_table=true'
 ```

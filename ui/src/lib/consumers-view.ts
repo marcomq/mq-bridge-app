@@ -8,7 +8,7 @@ import { createDefaultEndpoint, createPublisherEndpointFromConsumerEndpoint, ens
 import { buildConsumerTree } from "./consumer-grouping";
 import { consumersPanelState } from "./stores";
 import { buildConsumerConfigDocument, buildConsumerPublisherDocument, extractImportedRequests, type ConfigJsonVariant } from "./import-export";
-import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
+import { forceRefOnlyEndpoints, nameMappingRuleBranches, resolveRootArrayItemSchema } from "./schema-utils";
 import { applyEndpointSchemaDefaults } from "./routes";
 import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
 import { EMPTY_STORAGE_SECURITY } from "./storage-security";
@@ -536,6 +536,7 @@ function createConsumerFormSchema(): Record<string, unknown> {
   const itemSchema = resolveRootArrayItemSchema(activeSchema as Record<string, any>, "consumers");
   applyEndpointSchemaDefaults(itemSchema as any);
   forceRefOnlyEndpoints(itemSchema as any);
+  nameMappingRuleBranches(itemSchema as any);
   return itemSchema;
 }
 

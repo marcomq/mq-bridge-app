@@ -20,7 +20,7 @@ to `{stream}.>`, so prefix your subject accordingly.
 **Load a JSONL file into a JetStream subject, one-shot:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from file:///data/orders.jsonl?format=json \
   --to 'nats://localhost:4222?subject=orders&stream=ORDERS'
 ```
@@ -28,7 +28,7 @@ mq-bridge-app copy --drain \
 **Consume a durable JetStream stream into Postgres, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'nats://localhost:4222?subject=orders&stream=ORDERS' \
   --to 'postgres://user:pass@localhost/app?table=orders&auto_create_table=true'
 ```
@@ -36,7 +36,7 @@ mq-bridge-app copy \
 **Core NATS request/reply (no JetStream), continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from http://0.0.0.0:8080/rpc \
   --to 'nats://localhost:4222?subject=rpc.echo&no_jetstream=true&request_reply=true'
 ```

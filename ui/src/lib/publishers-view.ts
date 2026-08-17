@@ -1,6 +1,7 @@
 import { get } from "svelte/store";
 import { appShell, getAppState, switchMainTab } from "./app-shell";
 import { browserWindow, replaceHash } from "./browser";
+import { pickFilePath } from "./desktop-file-dialog";
 import { createLocalEntityId, getEntityDisplayLabel } from "./utils";
 import { buildPublisherTree } from "./publisher-grouping";
 import { PUBLISHER_TYPE_OPTIONS, REQUEST_BAR_LAYOUTS, formatEndpointTypeLabel, type RequestBarFieldDescriptor } from "./endpoint-metadata";
@@ -8,7 +9,7 @@ import { createConsumerEndpointFromPublisherEndpoint, createDefaultEndpoint, ens
 import { publishersPanelState } from "./stores";
 import { buildPublisherConfigDocument, buildPublisherConfigRouteDocument, extractImportedRequests, type ConfigJsonVariant } from "./import-export";
 import { applyEndpointSchemaDefaults } from "./routes";
-import { forceRefOnlyEndpoints, resolveRootArrayItemSchema } from "./schema-utils";
+import { forceRefOnlyEndpoints, nameMappingRuleBranches, resolveRootArrayItemSchema } from "./schema-utils";
 import { ensureWorkspaceCollections, sanitizePublisherHistory, type PublisherHistoryEntry, type PublisherHistoryStore } from "./workspace-config";
 import type { ConsumerConfig, PublisherConfig, PublisherResponseState, PublishersAppConfig, PublishersSchemaRoot } from "./panel-types";
 import type { PublishRequest } from "./generated/ui-types";
@@ -605,7 +606,7 @@ function createDefaultPublisherEndpoint(endpointType: string): Record<string, un
   if (endpointType === "static") {
     endpoint.static = "";
   }
-  endpoint.middlewares = endpointType === "static" ? [] : [{ retry: {} }];
+  endpoint.middlewares = [];
   return endpoint;
 }
 
@@ -614,7 +615,7 @@ function normalizePublisher(input: PublisherConfig): PublisherConfig {
   next.id = String(next.id || "").trim() || createLocalEntityId("publisher");
   next.name = String(next.name || "");
   next.comment = String(next.comment || "");
-  next.endpoint = normalizePublisherEndpoint(next.endpoint);
+  next.endpoint = normalizeEndpoint(next.endpoint);
   next.payload = String((next as any).payload || "{}");
   next.headers = Array.isArray(next.headers) ? next.headers.map((row) => ({
     key: String(row.key || ""),
@@ -770,6 +771,7 @@ function renderSelectedPublisher() {
     return;
   }
   const { endpointType, requestBar, values } = currentRequestBarValues(publisher);
+  const urlDescriptor = requestBar.fields?.find((field) => field.inputId === "pub-url");
   const responseState = getPublisherResponseState(publisher);
   const metadataRows = buildMetadataRows(publisher);
   const historyRows = currentHistoryEntries().map((entry, index) => ({
@@ -799,7 +801,10 @@ function renderSelectedPublisher() {
     methodValue: String((publisher.endpoint[endpointType] as Record<string, unknown>)?.method || "POST"),
     extraFieldOne: fieldStateFor(requestBar.fields?.find((field) => field.inputId === "pub-extra-1"), values["pub-extra-1"]),
     extraFieldTwo: fieldStateFor(requestBar.fields?.find((field) => field.inputId === "pub-extra-2"), values["pub-extra-2"]),
-    urlField: fieldStateFor(requestBar.fields?.find((field) => field.inputId === "pub-url"), values["pub-url"], "URL"),
+    urlField: {
+      ...fieldStateFor(urlDescriptor, values["pub-url"], "URL"),
+      browse: browsableFilePath(endpointType, urlDescriptor),
+    },
     requestPayload: readLocalPublisherState(publisher)?.payload || publisher.payload || "{}",
     metadataRows,
     responseVisible: responseState?.responseVisible ?? true,
@@ -824,6 +829,21 @@ function fieldStateFor(descriptor: RequestBarFieldDescriptor | undefined, value:
     value,
     visible: Boolean(descriptor),
   };
+}
+
+// A file publisher edits its path in the request bar, not in the definition form, so the
+// desktop picker has to be offered here rather than through the schema field renderer.
+function browsableFilePath(endpointType: string, descriptor: RequestBarFieldDescriptor | undefined) {
+  return appShell.isDesktop() && endpointType === "file" && descriptor?.field === "path";
+}
+
+export async function browsePublisherFilePath() {
+  const publisher = currentPublisher();
+  if (!publisher) return;
+  const { values } = currentRequestBarValues(publisher);
+  const selected = await pickFilePath("save", values["pub-url"]);
+  if (selected === null) return;
+  updatePublisherRequestField("pub-url", selected);
 }
 
 function refreshPublisherDirty() {
@@ -877,6 +897,7 @@ async function renderPublisherForm() {
   const schema = resolveRootArrayItemSchema(activeSchema as Record<string, any>, "publishers");
   applyEndpointSchemaDefaults(schema as any);
   forceRefOnlyEndpoints(schema as any);
+  nameMappingRuleBranches(schema as any);
   Object.entries(SCHEMA_CONFIG_ENDPOINT_TYPES).forEach(([defName, endpointType]) => {
     const endpointSchema = (schema as any).$defs?.[defName];
     if (!endpointSchema?.properties) return;
@@ -1307,21 +1328,6 @@ async function flushPendingFormDraft() {
     const existingDraft = formDrafts.get(idx) || currentPublisher() || {};
     formDrafts.set(idx, { ...deepClone(existingDraft as PublisherConfig), name: nameInput.value } as PublisherConfig);
   }
-}
-
-function normalizePublisherEndpoint(endpoint: unknown) {
-  const normalized = normalizeEndpoint(endpoint);
-  const endpointType = getEndpointType(normalized);
-  if (endpointType === "static" || endpointType === "ref") {
-    // Structural endpoints get no default middleware, but keep the ones the user configured:
-    // clearing them here made every edit normalize straight back to the saved value, so the
-    // publisher never became dirty and the middleware was gone again after a reload.
-    return normalized;
-  }
-  if (!Array.isArray(normalized.middlewares) || normalized.middlewares.length === 0) {
-    normalized.middlewares = [{ retry: {} }];
-  }
-  return normalized;
 }
 
 function composeHttpRequestUrl(endpointConfig: Record<string, unknown>) {

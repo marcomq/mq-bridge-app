@@ -82,7 +82,7 @@ corrupt frame is a permanent consumer error rather than an endlessly re-read poi
 From the `copy` CLI it is an inline middleware like any other:
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'nats://localhost:4222?stream=orders&subject=orders.in|compression?algorithm=zstd' \
   --to   'file:///tmp/orders.jsonl'
 ```
@@ -92,10 +92,10 @@ A compressed payload is binary, so a `file`/`object_store` sink that stores it m
 be read back. Verified round trip:
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from 'file:///tmp/in.jsonl?format=json' \
   --to   'file:///tmp/packed.bin?format=normal|compression?algorithm=zstd'
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from 'file:///tmp/packed.bin?format=normal|compression?algorithm=zstd' \
   --to   'file:///tmp/out.jsonl?format=json'
 ```

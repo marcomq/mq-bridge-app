@@ -69,11 +69,15 @@ class MqBridgeApp < Formula
   end
 
   def install
-    bin.install "mq-bridge-cli" => "mq-bridge-app"
+    # Both ship in the tarball: the real binary, plus the short \`mqb\` launcher
+    # that forwards to it.
+    bin.install "mq-bridge-app"
+    bin.install "mqb"
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/mq-bridge-app --version")
+    assert_match version.to_s, shell_output("#{bin}/mqb --version")
   end
 end
 RUBY

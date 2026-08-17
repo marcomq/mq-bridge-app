@@ -54,5 +54,7 @@ full API.
 ## See also
 
 - [Language bindings API](../reference/bindings.md) — the reference for this material.
+- [Writing endpoints & middleware](../engine/extending.md) — plugging your own endpoint or
+  middleware into the engine from Rust, Python, or Node.
 - [Core concepts](../getting-started/concepts.md) and [Learn the architecture](../engine/architecture.md) — the handler and message model.
 - [The three ways to run it](../getting-started/run-forms.md) — library vs CLI-server vs desktop.

@@ -41,7 +41,7 @@ if [[ "$n_bench" != "$ROWS" ]]; then
   seed_bench "$ROWS" 42
 fi
 
-# --- mq-bridge-app copy ---
+# --- mqb copy ---
 # Delegates to lib.sh's run_guarded, which escalates SIGTERM -> SIGKILL and
 # signals the whole process group. The TERM-only version this replaced could not
 # kill a wedged route — mq-bridge-app traps SIGTERM for graceful shutdown — so the
@@ -53,7 +53,7 @@ copy_guarded() {
 from="${PG_URL}?table=bench&cursor_column=id&sslmode=disable"
 to="file://${OUT_FILE}?format=raw"
 
-echo "-- mq-bridge-app copy: warmup"
+echo "-- mqb copy: warmup"
 rm -f "$OUT_FILE"
 copy_guarded --from "$from" --to "$to" --drain --batch-size 1024 --concurrency 1 || true
 

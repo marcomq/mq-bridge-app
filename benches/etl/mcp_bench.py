@@ -2,7 +2,7 @@
 """Benchmark the mq-bridge-app MCP server over its real stdio transport.
 
 This is deliberately a *client*, not a harness that pokes at internals: it spawns
-`mq-bridge-app mcp --transport stdio` and speaks JSON-RPC to it exactly the way
+`mqb mcp --transport stdio` and speaks JSON-RPC to it exactly the way
 Claude Code or any other MCP client does, so every number below includes the
 framing, serialization and process-boundary cost a real agent pays.
 

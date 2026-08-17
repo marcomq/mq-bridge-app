@@ -20,7 +20,7 @@ server URL.
 **Listen for WebSocket frames and forward them to Kafka, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from ws://0.0.0.0:9000 \
   --to kafka://kafka.local:9092?topic=ws-events
 ```
@@ -28,7 +28,7 @@ mq-bridge-app copy \
 **Only accept a specific path:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from ws://0.0.0.0:9000?path=/ingest \
   --to file:///data/ws.jsonl?format=json
 ```
@@ -36,7 +36,7 @@ mq-bridge-app copy \
 **Push a stream to a remote WebSocket server, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from redis://localhost:6379?stream=events \
   --to wss://feed.example.com/socket
 ```

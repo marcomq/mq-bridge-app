@@ -18,7 +18,7 @@ percent-encoded as `%2f` in the URL path, per the AMQP URI spec.
 **Consume a queue and forward each message to an HTTP endpoint, continuous:**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from rabbitmq://guest:guest@localhost:5672/%2f?queue=orders \
   --to http://internal-api.local/ingest?method=POST
 ```
@@ -26,7 +26,7 @@ mq-bridge-app copy \
 **Publish to an exchange instead of a default-exchange queue:**
 
 ```bash
-mq-bridge-app copy --drain \
+mqb copy --drain \
   --from file:///data/events.jsonl?format=json \
   --to 'amqp://guest:guest@localhost:5672/%2f?exchange=events&queue=events'
 ```
@@ -34,7 +34,7 @@ mq-bridge-app copy --drain \
 **Fan-out subscriber mode (ephemeral queue bound to the exchange):**
 
 ```bash
-mq-bridge-app copy \
+mqb copy \
   --from 'amqp://guest:guest@localhost:5672/%2f?exchange=events&subscribe_mode=true' \
   --to kafka://kafka.local:9092?topic=events
 ```

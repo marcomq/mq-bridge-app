@@ -22,35 +22,37 @@ serves in a browser — only the packaging differs.
 
 The UI is generated **dynamically from the Rust configuration structures**: the backend uses
 `schemars` to produce a JSON Schema for the `AppConfig` struct (exposed at `/schema.json`, also
-`mq-bridge-app --schema`), and the frontend renders a complete config form from that schema. So
+`mqb --schema <path>`), and the frontend renders a complete config form from that schema. So
 when a new middleware or option is added to the engine, the schema updates automatically and
 the UI reflects it with no frontend change.
 
 ## CLI / server
 
-The CLI (`mq-bridge-app`) is a headless binary that runs in three modes. They share the same
+The CLI (`mqb`) is a headless binary that runs in three modes. They share the same
 engine and config format but differ in how you drive them — and only **config mode** serves the
 browser UI:
 
 | Mode | Invocation | Serves web UI? | Best for |
 | --- | --- | --- | --- |
-| **Config mode** (default) | `mq-bridge-app [--config x.yml]` | **Yes** — the same UI as the desktop app, on the configured port | Long-lived bridge from a config file; Container/Kubernetes deployments |
-| **`copy`** | `mq-bridge-app copy --from … --to …` | No (headless) | Ad-hoc one-route job from two endpoint URIs, no config file; add `--drain` to exit once the source is empty |
-| **`mcp`** | `mq-bridge-app mcp` | No (headless) | Expose the bridge as MCP tools so an LLM agent can publish and route from natural language |
+| **Config mode** (default) | `mqb [--config x.yml]` | **Only when asked** — via `ui_addr` in the config, `--ui`, or a `y` at the prompt | Long-lived bridge from a config file; Container/Kubernetes deployments |
+| **`copy`** | `mqb copy --from … --to …` | No (headless) | Ad-hoc one-route job from two endpoint URIs, no config file; add `--drain` to exit once the source is empty |
+| **`mcp`** | `mqb mcp` | No (headless) | Expose the bridge as MCP tools so an LLM agent can publish and route from natural language |
 
 ```bash
 # Config mode: run a long-lived bridge from a file
-mq-bridge-app --config config.yml
+mqb --config config.yml
 
 # Seed config.yml from a template on first run only
-mq-bridge-app --config config.yml --init-config dev/config/file-to-http.yml
+mqb --config config.yml --init-config dev/config/file-to-http.yml
 
 # Start empty, then open the UI to build your config
-mq-bridge-app
+mqb --ui
 ```
 
-In config mode the CLI also **serves the browser UI** (the same UI as the desktop app) on the
-configured port. See the [CLI reference](../reference/cli.md) for every flag, and
+In config mode the CLI can also **serve the browser UI** (the same UI as the desktop app) on the
+configured port. It is never opened implicitly: set `ui_addr` in the config, pass `--ui`, or
+answer the prompt — an unattended run without `--ui` stays headless. See the
+[CLI reference](../reference/cli.md#starting-the-web-ui) for the full rule and every flag, and
 [Configuration grammar](../engine/configuration.md) for the config format.
 
 ### The configuration-first workflow

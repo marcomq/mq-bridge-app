@@ -75,7 +75,7 @@ function getRawEndpointType(endpoint: unknown) {
 
 function createDefaultRawPublisherEndpoint(endpointType: string) {
   const base: Record<string, unknown> = {
-    middlewares: endpointType === "static" || endpointType === "ref" ? [] : [{ retry: {} }],
+    middlewares: [],
   };
 
   const defaults: Record<string, unknown> = {

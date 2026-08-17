@@ -1,4 +1,4 @@
-//  mq-bridge-app — MCP server mode (`mq-bridge-app mcp`).
+//  mq-bridge-app — MCP server mode (`mqb mcp`).
 //
 //  A lean, protocol-agnostic MCP server built directly on the `mq_bridge`
 //  library. Unlike a fixed-config server, every tool takes the source/target
@@ -157,7 +157,7 @@ struct StartRouteArgs {
     #[serde(default)]
     concurrency: Option<usize>,
     /// Batch size. Overrides `batch_size` inside `route` if both are given; if
-    /// neither is given the app default (1024) applies, not the library's 1.
+    /// neither is given the app default (1024) applies, not the library's 512.
     #[serde(default)]
     batch_size: Option<usize>,
     /// Keep the last N messages that flow through this route, readable with
@@ -1248,7 +1248,7 @@ mod tool_tests {
         );
         assert_eq!(started["route"], "drain-lifecycle");
         assert_eq!(started["exit_on_empty"], true);
-        // Neither knob was written, so the app defaults apply, not the library's 1.
+        // Neither knob was written, so the app defaults apply, not the library's.
         assert_eq!(started["concurrency"], crate::DEFAULT_CONCURRENCY);
         assert_eq!(started["batch_size"], crate::DEFAULT_BATCH_SIZE);
 
@@ -1429,9 +1429,11 @@ mod tool_tests {
         );
     }
 
-    /// A failed route explains itself in `wait_route`, not only in `route_status`.
-    /// The CLI prints the cause of a permanent error, so a caller that only ever
-    /// waits must not be told `failed` and nothing more.
+    /// A route that discarded messages explains itself in `wait_route`, not only
+    /// in `route_status`. A permanent sink rejection with no DLQ configured is
+    /// dropped rather than retried forever, so the route still *finishes* — but
+    /// it must not report that finish as clean, or a caller that only ever waits
+    /// cannot tell a full delivery from a silently discarded one.
     #[tokio::test]
     async fn a_failed_route_reports_its_cause_to_wait_route() {
         let server = BridgeMcp::new();
@@ -1468,11 +1470,15 @@ mod tool_tests {
                 .expect("wait_route returns"),
         );
         assert_eq!(waited["finished"], true, "{waited}");
-        assert_eq!(waited["outcome"], "failed", "{waited}");
+        assert_eq!(waited["outcome"], "completed", "{waited}");
         let error = waited["error"].as_str().unwrap_or_default();
         assert!(
             error.contains("JSON format error"),
             "the failure cause reaches the caller: {waited}"
+        );
+        assert!(
+            error.contains("dropped"),
+            "the caller learns messages were discarded, not just that a send failed: {waited}"
         );
 
         server

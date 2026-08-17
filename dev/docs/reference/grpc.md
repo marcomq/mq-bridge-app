@@ -9,12 +9,19 @@ Query parameters recognised as config fields for this connector. The object-type
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `concurrency_limit_per_connection` | integer | no | `null` | Maximum number of concurrent requests handled per connection. **Server-mode only.** |
-| `http2_keepalive_interval_ms` | integer | no | `null` | HTTP/2 keepalive ping interval in milliseconds. **Server-mode only.** Default disabled |
-| `http2_keepalive_timeout_ms` | integer | no | `null` | Timeout for a keepalive ping acknowledgement in milliseconds. **Server-mode only.** |
-| `initial_connection_window_size` | integer | no | `null` | HTTP/2 connection-level initial window size in bytes. **Server-mode only.** |
-| `initial_stream_window_size` | integer | no | `null` | HTTP/2 stream-level initial window size in bytes. **Server-mode only.** |
-| `max_decoding_message_size` | integer | no | `null` | Maximum size of a decoded incoming message in bytes. **Server-mode only.** Default 4 MiB. |
+| `consumer_id` | string | no | `null` | For the built-in `mqbridge.Bridge` protocol, the stable subscription identity used for ACK tracking and redelivery. Defaults to a fresh id per consumer; set it to receive unacknowledged messages again on reconnect. Dynamic services use the remote API's own semantics. |
+| `descriptor_set_path` | string | no | `null` | Compiled protobuf FileDescriptorSet for dynamic client mode. |
+| `http2_keepalive_interval_ms` | integer | no | `null` | HTTP/2 keepalive ping interval in milliseconds. Applies in both modes. Default disabled |
+| `http2_keepalive_timeout_ms` | integer | no | `null` | Timeout for a keepalive ping acknowledgement in milliseconds. Applies in both modes. |
+| `initial_connection_window_size` | integer | no | `null` | HTTP/2 connection-level initial window size in bytes. Applies in both modes. |
+| `initial_stream_window_size` | integer | no | `null` | HTTP/2 stream-level initial window size in bytes. Applies in both modes. |
+| `max_decoding_message_size` | integer | no | `null` | Maximum size of a decoded incoming message in bytes. Applies in both modes. Default 4 MiB. |
+| `max_encoding_message_size` | integer | no | `null` | Maximum size of an encoded outgoing message in bytes. Default unlimited. |
+| `method_name` | string | no | `null` | RPC method name for dynamic client mode. |
+| `request` | any | no | `null` | JSON request mapped to the dynamic protobuf input message. |
 | `server_mode` | boolean | no | `false` | If `true`, start an embedded tonic gRPC server that accepts incoming `Publish` / `PublishBatch` RPCs. If `false` (the default), connect to a remote server as a client. |
+| `server_streaming` | boolean | no | `false` | Use a server-streaming dynamic RPC. False selects unary. |
+| `service_name` | string | no | `null` | Fully-qualified protobuf service name for dynamic client mode. |
 | `shared` | boolean | no | `true` | (Publisher only) Share one gRPC channel per connection (default: true); false forces a dedicated channel. |
 | `timeout_ms` | integer | no | — | Timeout in milliseconds. - Client mode: used as the connection timeout and per-request deadline. - Server mode: applied as the per-request deadline on the embedded server. |
 | `tls` | object | no | [see below](#tls) | TLS configuration. |
@@ -53,4 +60,3 @@ let tls = TlsConfig {
 | `cert_password` | string | no | — | Password for the private key (if encrypted). |
 | `key_file` | string | no | — | Path to the client private key file (PEM). |
 | `required` | boolean | no | `false` | If true, enable TLS/SSL. |
-

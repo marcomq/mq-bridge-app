@@ -14,9 +14,10 @@ mdbook serve dev/docs --open     # live-reload preview
 ```
 
 `dev/docs/engine/` and `dev/docs/book/` are build artifacts (git-ignored). The engine
-reference (`REFERENCE.md`, `CONFIGURATION.md`, `ARCHITECTURE.md`) is vendored from the
-sibling `mq-bridge` engine repo by `sync-engine-docs.sh` — **never edit those copies
-here; edit the source in `mq-bridge` and re-run the script.**
+reference (`REFERENCE.md`, `CONFIGURATION.md`, `ARCHITECTURE.md`, `DELIVERY.md`,
+`EXTENDING.md`, `PLUGINS.md`) is vendored from `mq-bridge/docs/` in the sibling engine
+repo by `sync-engine-docs.sh` — **never edit those copies here; edit the source in
+`mq-bridge` and re-run the script.**
 
 ## Key entry points
 
@@ -27,13 +28,13 @@ here; edit the source in `mq-bridge` and re-run the script.**
   practical examples, and a link to the full option list.
 - **[URL Parameter Reference](./reference/)** — every connector's recognised
   query parameters (name, type, default, required, description),
-  auto-generated from the JSON Schemas `mq-bridge-app copy` uses to parse
+  auto-generated from the JSON Schemas `mqb copy` uses to parse
   `--from`/`--to`. Regenerate with:
 
   ```bash
   cargo run -p mq-bridge-app --example gen_url_docs
   ```
-- **[MCP Server](./MCP.md)** — `mq-bridge-app mcp`: running the bridge as an
+- **[MCP Server](./MCP.md)** — `mqb mcp`: running the bridge as an
   MCP server, registering it with a client via `mcp install`, its five tools,
   endpoint/message shapes, and examples.
 
@@ -58,7 +59,7 @@ dev/docs/
 ├── reference/              cli/mcp/bindings/endpoints (hand-written) +
 │   │                       per-connector URL params (generated — do not edit by hand)
 │   └── README.md postgres.md clickhouse.md ...
-├── engine/                 vendored from mq-bridge repo (git-ignored artifact)
+├── engine/                 vendored from mq-bridge/docs/ (git-ignored artifact)
 └── book/                   mdbook output (git-ignored)
 ```
 

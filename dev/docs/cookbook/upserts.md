@@ -26,7 +26,7 @@ orders_to_mongo:
 The field's JSON type is preserved (a number stays a BSON integer). The payload must contain the
 field, otherwise the message is dead-lettered rather than written with a random `_id`. Use
 `id_field` on **sink** collections only — a business-key `_id` is incompatible with the
-`consumer`/`subscriber` competing-consumer modes, which require a UUID `_id`.
+`consumer` competing-consumer mode, which requires a UUID `_id`.
 
 ## SQL (`sqlx`) — `ON CONFLICT` / `ON DUPLICATE KEY`
 
@@ -100,6 +100,10 @@ orders_upsert_branch:
 ```
 
 `report_outcome` is sink-only and pairs with `id_field`. See also
-[Deduplication](deduplication.md) for the middleware-based complement, and the
-[Postgres CDC tutorial](../tutorials/postgres-cdc.md) for CDC-specific idempotency
-(`postgres.lsn` as the version to drop stale replays).
+[Deduplication](deduplication.md) for the middleware-based complement, the
+[Postgres CDC tutorial](../tutorials/postgres-cdc.md) for CDC-specific idempotency. When the
+same key can change more than once in a transaction, enable `source_metadata: true` and order by
+both `mqb.src.postgres_lsn` and `mqb.src.postgres_ordinal`; an LSN-only version cannot order those
+changes. The linked deduplication guide shows the complete predicate. Also see
+[Delivery guarantees](../engine/delivery.md) for which source/sink pairings add up to
+effectively-once.

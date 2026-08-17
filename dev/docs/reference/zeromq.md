@@ -8,10 +8,10 @@ Query parameters recognised as config fields for this connector. Unrecognised pa
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `backend` | `zmq` \| `omq` | no | `zmq` | Backend: `zmq` (default, the `zeromq` crate) or `omq` (the `omq-tokio` PoC — PUSH/PULL + PUB/SUB only). `omq` needs the `zeromq-omq` build feature. |
+| `backend` | `zmq` \| `omq` \| `try_omq` | no | `try_omq` | Backend: `try_omq` (default, prefer `omq` and fall back to `zmq`), `zmq` (the `zeromq` crate) or `omq` (the `omq-tokio` backend). `omq` needs the `zeromq-omq` build feature. |
 | `bind` | boolean | no | `false` | If true, bind to the address. If false, connect. |
-| `format` | `json` \| `raw` \| `raw_framed` | no | `json` | Wire format: `json` wraps the CanonicalMessage; `raw` sends payload bytes per frame; `raw_framed` adds a JSON metadata frame. Default `json`. |
-| `internal_buffer_size` | integer | no | `null` | Internal buffer size for the channel. Defaults to 128. |
+| `format` | `json` \| `raw` \| `raw_framed` | no | `raw_framed` | Wire format: `json` wraps the CanonicalMessage; `raw` sends payload bytes per frame; `raw_framed` adds a JSON metadata frame. Default `raw_framed`. REQ/REP replies are the exception: a REP peer always answers with a JSON array of canonical messages and a REQ publisher always decodes one, whatever `format` is set to. |
+| `internal_buffer_size` | integer | no | `null` | Internal buffer size for the channel. Defaults to 128. `zmq` backend only — `omq` applies HWM backpressure on the socket itself and ignores this. |
 | `request_timeout_ms` | integer | no | `null` | (REQ publisher only) Timeout in ms for one request/reply exchange before it is reported as failed. Defaults to 30000. |
 | `socket_type` | `push` \| `pull` \| `pub` \| `sub` \| `req` \| `rep` | no | `null` | The socket type (PUSH, PULL, PUB, SUB, REQ, REP). |
 | `topic` | string | no | — | (Consumer only) The ZeroMQ topic (for SUB sockets). |

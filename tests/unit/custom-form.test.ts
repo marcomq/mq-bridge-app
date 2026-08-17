@@ -2,6 +2,13 @@
 
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
+const dialogMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+  save: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => dialogMocks);
+
 type SchemaNode = Record<string, any>;
 
 function getPathValue(root: any, path: Array<string | number>) {
@@ -93,7 +100,8 @@ function createFakeForms() {
     })),
     hydrateNodeWithData: (node: SchemaNode) => node,
     renderNode: () => document.createElement("div"),
-    renderObject: (_context: any, _node: SchemaNode, _elementId: string, _isHeadless: boolean, dataPath: Array<string | number>) => {
+    renderObject: (_context: any, node: SchemaNode, _elementId: string, _isHeadless: boolean, dataPath: Array<string | number>) => {
+      forms.__lastRenderObjectNode = node;
       const output = document.createElement("div");
       output.dataset.path = dataPath.join(".");
       return output;
@@ -153,13 +161,21 @@ function createFakeForms() {
   return forms;
 }
 
-async function loadCustomForm() {
+async function loadCustomForm(desktop = false) {
   vi.resetModules();
   document.body.innerHTML = "";
   const forms = createFakeForms();
   (window as any).VanillaSchemaForms = forms;
+  (window as any).__MQB_DESKTOP__ = desktop;
   (window as any)._mqb_form_mode = "publisher";
   (window as any).appConfig = { publishers: [{ name: "pub-a" }, { name: "pub-b" }] };
+
+  // custom-form imports renderObject from the package rather than the window global,
+  // so route it through the fake too and keep the rest of the library intact.
+  vi.doMock("vanilla-schema-forms", async () => {
+    const actual = await vi.importActual<Record<string, any>>("vanilla-schema-forms");
+    return { ...actual, renderObject: (...args: any[]) => forms.renderObject(...args) };
+  });
 
   vi.doMock("../../ui/src/lib/forms/render-svelte", () => ({
     renderSvelteNode: (_component: unknown, props: Record<string, any>) => {
@@ -466,6 +482,8 @@ describe("custom form runtime", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    dialogMocks.open.mockReset();
+    dialogMocks.save.mockReset();
   });
 
   test("renders generic checkboxes with the app layout and writes changes back to the store", async () => {
@@ -493,6 +511,50 @@ describe("custom form runtime", () => {
     expect(store.getPath(["tls", "accept_invalid_certs"])).toBe(true);
   });
 
+  test("keeps batch size visible and hides the other route tuning knobs behind the advanced toggle", async () => {
+    const forms = await loadCustomForm();
+    const renderRoot = forms.customRenderers.root.render as Function;
+    const store = createStore({ name: "kafka-in", batch_size: 64, empty_batch_delay_ms: 50 });
+    forms.__activeStore = store;
+
+    const consumerNode = {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        endpoint: { type: "object" },
+        batch_size: { type: "integer" },
+        concurrency: { type: "integer" },
+        commit_concurrency_limit: { type: "integer" },
+        startup_timeout_ms: { type: "integer" },
+        reconnect_interval_ms: { type: "integer" },
+        empty_batch_delay_ms: { type: "integer" },
+        allow_fault_injection: { type: "boolean" },
+        exit_on_empty: { type: "boolean" },
+      },
+    };
+
+    const element = renderRoot(consumerNode, "", "root", [], { store, data: store.data }) as HTMLElement;
+    document.body.appendChild(element);
+
+    expect(Object.keys(forms.__lastRenderObjectNode.properties)).toEqual(["name", "endpoint", "batch_size"]);
+    expect(consumerNode.properties.empty_batch_delay_ms).toBeDefined();
+    expect(element.querySelector(".mqb-form-advanced-block")).toBeNull();
+
+    const toggle = element.querySelector(".mqb-form-toggle") as HTMLButtonElement | null;
+    expect(toggle?.textContent).toBe("Show advanced options");
+    toggle?.click();
+
+    const advanced = element.querySelector(".mqb-form-advanced-block") as HTMLElement | null;
+    expect(advanced).not.toBeNull();
+    expect(advanced?.querySelector("#root\\.batch_size")).toBeNull();
+
+    const delayInput = advanced?.querySelector("#root\\.empty_batch_delay_ms") as HTMLInputElement | null;
+    expect(delayInput?.value).toBe("50");
+
+    triggerTextInput(delayInput as HTMLInputElement, "250");
+    expect(store.getPath(["empty_batch_delay_ms"])).toBe("250");
+  });
+
   test("renders env vars as environment variables without advanced toggle", async () => {
     const forms = await loadCustomForm();
     const renderEnvVars = forms.customRenderers.env_vars.render as Function;
@@ -511,7 +573,7 @@ describe("custom form runtime", () => {
       },
       "",
       "root.env_vars",
-      ["env_vars"],
+      ["root", "env_vars"],
       { store },
     ) as HTMLElement;
 
@@ -644,5 +706,183 @@ describe("custom form runtime", () => {
     toggle?.click();
     expect(passwordInput?.type).toBe("password");
     expect(toggle?.textContent).toBe("Show");
+  });
+
+  test("adds a save-file picker to desktop publisher file paths", async () => {
+    const forms = await loadCustomForm(true);
+    dialogMocks.save.mockResolvedValueOnce("/tmp/output.jsonl");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "Publishers.endpoint.file.path";
+
+    const rendered = forms.domRenderer.renderFieldWrapper(
+      { type: "string", title: "Path", "mqb-file-path": true },
+      input.id,
+      input,
+      "",
+    ) as HTMLElement;
+    document.body.appendChild(rendered);
+
+    const browse = rendered.querySelector(".mqb-file-path-browse") as HTMLButtonElement | null;
+    expect(browse?.textContent).toBe("Browse…");
+    browse?.click();
+    await vi.waitFor(() => expect(input.value).toBe("/tmp/output.jsonl"));
+    expect(dialogMocks.save).toHaveBeenCalledWith({ defaultPath: "messages.jsonl" });
+    expect(dialogMocks.open).not.toHaveBeenCalled();
+  });
+
+  test("adds an open-file picker to desktop consumer file paths only", async () => {
+    const forms = await loadCustomForm(true);
+    (window as any)._mqb_form_mode = "consumer";
+    dialogMocks.open.mockResolvedValueOnce("/tmp/input.jsonl");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "Consumers.endpoint.file.path";
+
+    const rendered = forms.domRenderer.renderFieldWrapper(
+      { type: "string", title: "Path", "mqb-file-path": true },
+      input.id,
+      input,
+      "",
+    ) as HTMLElement;
+    document.body.appendChild(rendered);
+
+    (rendered.querySelector(".mqb-file-path-browse") as HTMLButtonElement | null)?.click();
+    await vi.waitFor(() => expect(input.value).toBe("/tmp/input.jsonl"));
+    expect(dialogMocks.open).toHaveBeenCalledWith({
+      multiple: false,
+      directory: false,
+      defaultPath: undefined,
+    });
+
+    const webForms = await loadCustomForm(false);
+    const webInput = document.createElement("input");
+    webInput.type = "text";
+    webInput.id = "Consumers.endpoint.file.path";
+    const webRendered = webForms.domRenderer.renderFieldWrapper(
+      { type: "string", title: "Path", "mqb-file-path": true },
+      webInput.id,
+      webInput,
+      "",
+    ) as HTMLElement;
+    expect(webRendered.querySelector(".mqb-file-path-browse")).toBeNull();
+  });
+
+  test("edits a transform schema as JSON and only stores parsed objects", async () => {
+    const forms = await loadCustomForm();
+    const renderTransformSchema = forms.customRenderers["transform.schema"].render as Function;
+    const store = createStore({
+      middlewares: [{ transform: { schema: { type: "object" } } }],
+    });
+    forms.__activeStore = store;
+    const dataPath = ["root", "middlewares", 0, "transform", "schema"];
+    const schemaPath = ["middlewares", 0, "transform", "schema"];
+
+    const element = renderTransformSchema(
+      { title: "Schema", description: "Inline JSON Schema subset." },
+      "",
+      "root.middlewares.0.transform.schema",
+      dataPath,
+      { store },
+    ) as HTMLElement;
+    document.body.appendChild(element);
+
+    const textarea = element.querySelector("textarea") as HTMLTextAreaElement;
+    expect(textarea.value).toBe(JSON.stringify({ type: "object" }, null, 2));
+
+    textarea.value = '{"type":"object","properties":{"id":{"type":"integer"}}}';
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(store.getPath(schemaPath)).toEqual({
+      type: "object",
+      properties: { id: { type: "integer" } },
+    });
+    expect(element.querySelector(".mqb-json-error")?.textContent).toBe("");
+
+    // A schema the engine would reject is refused here instead of being saved.
+    textarea.value = "{ not json";
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(store.getPath(schemaPath)).toEqual({
+      type: "object",
+      properties: { id: { type: "integer" } },
+    });
+    expect(textarea.classList.contains("mqb-json-invalid")).toBe(true);
+    expect(element.querySelector(".mqb-json-error")?.textContent).toContain("Invalid JSON");
+
+    textarea.value = '"a string schema"';
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(store.getPath(schemaPath)).toEqual({
+      type: "object",
+      properties: { id: { type: "integer" } },
+    });
+    expect(element.querySelector(".mqb-json-error")?.textContent).toBe("The schema must be a JSON object.");
+
+    textarea.value = "  ";
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(store.getPath(schemaPath)).toBeUndefined();
+    expect(textarea.classList.contains("mqb-json-invalid")).toBe(false);
+  });
+
+  test("stores new transform mappings and displays them after re-render", async () => {
+    const forms = await loadCustomForm();
+    const renderTransformMapping = forms.customRenderers["transform.mapping"].render as Function;
+    const store = createStore({ middlewares: [{ transform: { mapping: {} } }] });
+    const node = { type: "object", title: "Mapping", description: "Output field to source path." };
+    const args = [
+      node,
+      "",
+      "root.middlewares.0.transform.mapping",
+      ["root", "middlewares", 0, "transform", "mapping"],
+      { store },
+    ] as const;
+
+    const element = renderTransformMapping(...args) as HTMLElement;
+    expect(element.querySelector("select")).toBeNull();
+    const addButton = Array.from(element.querySelectorAll("button"))
+      .find((button) => button.textContent === "Add Mapping") as HTMLButtonElement;
+    addButton.click();
+
+    const keyInput = element.querySelector(".cons-response-header-key") as HTMLInputElement;
+    const pathInput = element.querySelector(".cons-response-header-value") as HTMLInputElement;
+    expect(keyInput.placeholder).toBe("Output field");
+    expect(pathInput.placeholder).toBe("Source path");
+    triggerTextInput(keyInput, "firstName");
+    triggerTextInput(pathInput, "$.first_name");
+
+    expect(store.getPath(["middlewares", 0, "transform", "mapping"])).toEqual({
+      firstName: "$.first_name",
+    });
+
+    const rerendered = renderTransformMapping(...args) as HTMLElement;
+    expect((rerendered.querySelector(".cons-response-header-key") as HTMLInputElement).value).toBe("firstName");
+    expect((rerendered.querySelector(".cons-response-header-value") as HTMLInputElement).value).toBe("$.first_name");
+  });
+
+  test("keeps advanced transform mapping options when editing their path", async () => {
+    const forms = await loadCustomForm();
+    const renderTransformMapping = forms.customRenderers["transform.mapping"].render as Function;
+    const store = createStore({
+      transform: {
+        mapping: {
+          userId: { path: "$.user.id", default: null, required: true },
+        },
+      },
+    });
+
+    const element = renderTransformMapping(
+      { type: "object", title: "Mapping" },
+      "",
+      "root.transform.mapping",
+      ["root", "transform", "mapping"],
+      { store },
+    ) as HTMLElement;
+    const pathInput = element.querySelector(".cons-response-header-value") as HTMLInputElement;
+    expect(pathInput.value).toBe("$.user.id");
+    triggerTextInput(pathInput, "$.account.id");
+
+    expect(store.getPath(["transform", "mapping", "userId"])).toEqual({
+      path: "$.account.id",
+      default: null,
+      required: true,
+    });
   });
 });
