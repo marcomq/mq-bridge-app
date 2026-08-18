@@ -2368,9 +2368,9 @@ dependencies = [
 
 [[package]]
 name = "fast-uuid-v7"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65d7a30239eba18ae6a60dc3c3df98af18f00bba69d2b1d5f2816a831e83bff3"
+checksum = "dc759201eb9b09178fb2174087a451d19fd46a8b8b4f5f6103de83b9f5949f52"
 dependencies = [
  "rand 0.10.2",
 ]
@@ -4368,9 +4368,9 @@ dependencies = [
 
 [[package]]
 name = "mq-bridge"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db3839e079fe925d11d2f94f70fe5bdf29f5a818b571fbddc0fa25136f57c79e"
+checksum = "c837b9200c64525bb0c9decbac030012965cbcd4d0572a1ebd742ed1be1b9567"
 dependencies = [
  "aes-gcm",
  "anyhow",
