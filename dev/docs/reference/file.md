@@ -14,7 +14,9 @@ Query parameters recognised as config fields for this connector. The object-type
 | `encryption` | object | no | `null` | At-rest AEAD encryption applied after compression. Requires the `encryption` feature. Publishers: always. Consumers: must match, and only the default `consume` mode reads it. |
 | `format` | `normal` \| `json` \| `text` \| `raw` \| `csv` | no | `normal` | The format for writing messages to the file (Publisher) or interpreting them (Consumer). Defaults to `normal`. |
 | `group_id` | string | no | — | The consumer group ID that is used for offset tracking. Should be unique. |
-| `idempotency` | boolean | no | `false` | Write replay-safe source ranges as immutable part files under this directory. Requires Kafka source metadata or postgres_cdc commit LSN plus transaction ordinal metadata. |
+| `idempotency` | boolean | no | — | Deprecated: use `name_by`. true = `source_position`, false = `write_time`; ignored when `name_by` is set. |
 | `mode` | `consume` \| `subscribe` \| `group_subscribe` | no | — |  |
-| `path` | string | yes | — | Path to the file, or to the directory holding the part files when `idempotency` is true. |
+| `name_by` | `auto` \| `source_position` \| `write_time` | no | `auto` | (Sink only) `write_time` (default here, appends to `path`) or `source_position` (replay-safe part files, `path` is their directory). |
+| `path` | string | yes | — | Path to the file, or to the directory holding the part files under `source_position` naming. |
 | `read_from_tail` | boolean | no | `false` | If true, starts reading from the end of the file if no offset is stored. If false, starts reading from the beginning. |
+| `source_metadata` | boolean | no | `false` | (Consumer only) Include authoritative `mqb.src.file_*` source positions; only `consume` mode reproduces them across restarts. Defaults to false. |

@@ -2159,7 +2159,14 @@ mod uri_tests {
     }
 
     #[test]
-    fn file_idempotency_is_a_scalar_flag() {
+    fn file_name_by_is_a_scalar_flag() {
+        let cfg = config("file:///var/lib/mqb/parts?name_by=source_position", "file");
+        assert_eq!(cfg["name_by"], "source_position");
+    }
+
+    /// `idempotency` is the deprecated spelling of `name_by`; v0.4.x URLs must keep working.
+    #[test]
+    fn file_idempotency_is_still_accepted() {
         let cfg = config("file:///var/lib/mqb/parts?idempotency=true", "file");
         assert_eq!(cfg["idempotency"], true);
     }
@@ -2458,7 +2465,14 @@ mod uri_tests {
     }
 
     #[test]
-    fn object_store_idempotency_is_a_scalar_flag() {
+    fn object_store_name_by_is_a_scalar_flag() {
+        let cfg = config("s3://my-bucket/events?name_by=source_position", "object_store");
+        assert_eq!(cfg["name_by"], "source_position");
+    }
+
+    /// `idempotency` is the deprecated spelling of `name_by`; v0.4.x URLs must keep working.
+    #[test]
+    fn object_store_idempotency_is_still_accepted() {
         let cfg = config("s3://my-bucket/events?idempotency=true", "object_store");
         assert_eq!(cfg["idempotency"], true);
     }

@@ -13,6 +13,8 @@ type MutableSchema = {
   enum?: unknown;
   const?: unknown;
   default?: unknown;
+  description?: string;
+  hidden?: boolean;
   ["wa-no-label"]?: boolean;
 };
 
@@ -37,6 +39,30 @@ export function nameMappingRuleBranches(itemSchema: MutableSchema): void {
     if (!branch || typeof branch !== "object" || branch.title) continue;
     if (branch.type === "string") branch.title = "Source path";
     else if (branch.$ref?.endsWith("/DetailedMappingRule")) branch.title = "Path with default";
+  }
+}
+
+// Schemars has no `deprecated` keyword, so the backend marks a superseded field by opening its
+// doc comment with "Deprecated:". Such a field is dropped from the form unless the config still
+// carries it — a legacy value stays visible and clearable, a new config only sees the replacement.
+export function hideUnusedDeprecatedProperties(itemSchema: MutableSchema, data: unknown): void {
+  const present = new Set<string>();
+  const collect = (value: unknown) => {
+    if (Array.isArray(value)) return value.forEach(collect);
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      present.add(key);
+      collect(child);
+    }
+  };
+  collect(data);
+
+  for (const def of Object.values(itemSchema.$defs || {})) {
+    for (const [name, property] of Object.entries(def?.properties || {})) {
+      if (!present.has(name) && property?.description?.startsWith("Deprecated:")) {
+        property.hidden = true;
+      }
+    }
   }
 }
 
