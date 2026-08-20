@@ -150,8 +150,33 @@ mqb copy \
 ```
 
 A true result continues to the destination. A false result is an intentional successful drop
-and advances the source acknowledgement/checkpoint. Invalid expressions, non-object JSON,
-missing fields, and referenced array/object fields are errors rather than silent mismatches.
+and advances the source acknowledgement/checkpoint. Invalid expressions and payloads that are
+not a JSON object are errors. A referenced field that is absent, null, or holds an array or
+object counts as *no match* instead, the way a SQL `WHERE` treats NULL, so one heterogeneous
+record does not end a copy that is otherwise running fine. The first such field is logged once
+as a warning, so a typo in the expression does not simply look like an empty source.
+
+#### Object naming under a filter
+
+An `object_store` sink names each object after the *contiguous* source range it covers whenever
+`name_by` resolves to `source_position` — which is what `auto` picks for any source that stamps
+a replay position. A filter leaves holes in every batch, and each hole starts another object:
+measured at 159,474 objects instead of 977 on a 1M-row copy, a ~220x drop in throughput.
+
+So when a row-dropping middleware is present — `--filter`, `deduplication`, `weak_join`, or a
+`transform` with `on_error: reject` on either endpoint — and the sink is still on `name_by: auto`,
+`copy` resolves it to `write_time` instead and warns that it did. That has two consequences
+worth knowing:
+
+- Objects are named by uuidv7 at write time, so at the default `--concurrency 4` their order is
+  the order batches finish encoding, not source order. Order *within* an object is unchanged.
+  Use `--concurrency 1` if order across objects matters.
+- The copy is no longer effectively-once at the sink: a crash mid-batch rewrites those rows
+  under fresh names rather than colliding harmlessly with identical ones.
+
+Pass `name_by=source_position` explicitly to keep replay-safe names and accept the
+fragmentation. An explicit setting — including the deprecated `idempotency` alias — is never
+overridden.
 
 ### URI grammar
 

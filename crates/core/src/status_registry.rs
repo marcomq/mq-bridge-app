@@ -223,6 +223,7 @@ pub fn workspace_identity(path: &str) -> (String, String) {
 
 /// A builder for owner-only directories, on the platforms that have a mode.
 fn private_dir_builder() -> fs::DirBuilder {
+    #[allow(unused_mut)]
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -264,6 +265,7 @@ impl LocalStatusRegistry {
         if let Some(parent) = directory.parent() {
             private_dir_builder().recursive(true).create(parent)?;
         }
+        #[allow(unused_variables)]
         let existed = match private_dir_builder().create(&directory) {
             Ok(()) => false,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => true,

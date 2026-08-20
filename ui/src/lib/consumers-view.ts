@@ -8,7 +8,7 @@ import { createDefaultEndpoint, createPublisherEndpointFromConsumerEndpoint, ens
 import { buildConsumerTree } from "./consumer-grouping";
 import { consumersPanelState } from "./stores";
 import { buildConsumerConfigDocument, buildConsumerPublisherDocument, extractImportedRequests, type ConfigJsonVariant } from "./import-export";
-import { forceRefOnlyEndpoints, nameMappingRuleBranches, resolveRootArrayItemSchema } from "./schema-utils";
+import { forceRefOnlyEndpoints, hideUnusedDeprecatedProperties, nameMappingRuleBranches, resolveRootArrayItemSchema } from "./schema-utils";
 import { applyEndpointSchemaDefaults } from "./routes";
 import { getStoredJson, setStoredJson } from "./encrypted-json-storage";
 import { EMPTY_STORAGE_SECURITY } from "./storage-security";
@@ -532,11 +532,12 @@ async function flushPendingFormDraft() {
   }
 }
 
-function createConsumerFormSchema(): Record<string, unknown> {
+function createConsumerFormSchema(consumer: ConsumerConfig): Record<string, unknown> {
   const itemSchema = resolveRootArrayItemSchema(activeSchema as Record<string, any>, "consumers");
   applyEndpointSchemaDefaults(itemSchema as any);
   forceRefOnlyEndpoints(itemSchema as any);
   nameMappingRuleBranches(itemSchema as any);
+  hideUnusedDeprecatedProperties(itemSchema as any, consumer);
   return itemSchema;
 }
 
@@ -552,7 +553,7 @@ async function renderConsumerForm() {
   const forms = appShell.forms() as any;
   getAppState().form_mode = "consumer";
   (window as any)._mqb_form_mode = "consumer";
-  await forms.init(container, createConsumerFormSchema(), deepClone(consumer), (updated: ConsumerConfig) => {
+  await forms.init(container, createConsumerFormSchema(consumer), deepClone(consumer), (updated: ConsumerConfig) => {
     formDrafts.set(get(consumersPanelState).selectedIndex, updated);
     const current = currentConsumer();
     if (!current) return;

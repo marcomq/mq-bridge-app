@@ -464,6 +464,32 @@ async function loadCustomForm(desktop = false) {
         return fieldset;
       }
 
+      if ("username" in props && "password" in props) {
+        const fieldset = document.createElement("fieldset");
+        fieldset.className = "ui_basic_auth mqb-inline-editor";
+
+        const legend = document.createElement("legend");
+        legend.textContent = String(props.title || "");
+        fieldset.appendChild(legend);
+
+        const username = document.createElement("input");
+        username.type = "text";
+        username.className = "field-input";
+        username.value = String(props.username || "");
+
+        const password = document.createElement("input");
+        password.type = "password";
+        password.className = "field-input";
+        password.value = String(props.password || "");
+
+        const commit = () => props.onChange({ username: username.value, password: password.value });
+        username.addEventListener("input", commit);
+        password.addEventListener("input", commit);
+
+        fieldset.append(username, password);
+        return fieldset;
+      }
+
       throw new Error(`Unhandled mocked Svelte render props: ${Object.keys(props).join(", ")}`);
     },
   }));
@@ -766,6 +792,37 @@ describe("custom form runtime", () => {
       "",
     ) as HTMLElement;
     expect(webRendered.querySelector(".mqb-file-path-browse")).toBeNull();
+  });
+
+  test("shows the configured basic auth and writes edits to the endpoint path", async () => {
+    const forms = await loadCustomForm();
+    const renderBasicAuth = forms.customRenderers.basic_auth.render as Function;
+    const store = createStore({ endpoint: { http: { basic_auth: ["alice", "secret1"] } } });
+    forms.__activeStore = store;
+    // Custom renderers receive the data path prefixed with the form root key; the
+    // store is addressed without it.
+    const dataPath = ["root", "endpoint", "http", "basic_auth"];
+    const storePath = ["endpoint", "http", "basic_auth"];
+
+    const element = renderBasicAuth(
+      { title: "Basic Auth" },
+      "",
+      "root.endpoint.http.basic_auth",
+      dataPath,
+      { store },
+    ) as HTMLElement;
+    document.body.appendChild(element);
+
+    const [username, password] = Array.from(element.querySelectorAll("input")) as HTMLInputElement[];
+    expect(username.value).toBe("alice");
+    expect(password.value).toBe("secret1");
+
+    triggerTextInput(username, "bob");
+    expect(store.getPath(storePath)).toEqual(["bob", "secret1"]);
+
+    triggerTextInput(username, "");
+    triggerTextInput(password, "");
+    expect(store.getPath(storePath)).toBeNull();
   });
 
   test("edits a transform schema as JSON and only stores parsed objects", async () => {
