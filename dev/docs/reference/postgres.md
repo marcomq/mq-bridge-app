@@ -28,6 +28,7 @@ Query parameters recognised as config fields for this connector. The object-type
 | `select_query` | string | no | — | (Consumer only) Optional. A custom SQL SELECT query to fetch messages. This is only supported for PostgreSQL and Microsoft SQL Server. The query must include a placeholder for the batch size (`$1` for PostgreSQL, `@p1` for SQL Server). The bridge will bind the route's `batch_size` to this placeholder. |
 | `shared` | boolean | no | `true` | Share one connection pool per connection (default: true); false forces a dedicated pool. |
 | `slot_name` | string | no | — | (Consumer only, CDC) Replication slot name; created if missing. Defaults to `mq_bridge_slot`. |
+| `source_metadata` | boolean | no | `false` | (Consumer only) Include authoritative `mqb.src.sqlx_*` source positions; `cursor_column` must then be a unique integer. Defaults to false. |
 | `table` | string | yes | — | The table to interact with. |
 | `test_before_acquire` | boolean | no | — | Ping each pooled connection before handing it out (default false). Costs a round-trip per acquire. |
 | `tls` | object | no | [see below](#tls) | TLS configuration for the database connection. |

@@ -83,7 +83,9 @@ jobs:
         with:
           tag_name: ${{ needs.metadata.outputs.release_tag }}
           name: Release ${{ needs.metadata.outputs.release_tag }}
-          body: See the project README for details on this release.
+          # No hardcoded body: it would overwrite notes written by hand on a
+          # pre-created release. Let GitHub generate notes when there are none.
+          generate_release_notes: true
           draft: false
           prerelease: ${{ needs.metadata.outputs.is_prerelease == 'true' }}
 

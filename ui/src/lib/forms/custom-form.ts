@@ -613,7 +613,8 @@ const tlsRenderer = {
 const basicAuthRenderer = {
   render: (_node: SchemaNode, _path: string, _elementId: string, dataPath: Array<string | number>, context: RendererContext) => {
     const store = context.store;
-    const currentValue = store.getPath(dataPath);
+    const storePath = toStorePath(dataPath);
+    const currentValue = store.getPath(storePath);
     const tuple = Array.isArray(currentValue) ? currentValue : ["", ""];
 
     return renderSvelteNode(BasicAuthEditor, {
@@ -624,7 +625,7 @@ const basicAuthRenderer = {
       onChange: ({ username, password }: { username: string; password: string }) => {
         const next = [username, password];
         const hasAnyValue = next.some((item) => item.trim().length > 0);
-        store.setPath(dataPath, hasAnyValue ? next : null);
+        store.setPath(storePath, hasAnyValue ? next : null);
       },
     });
   },

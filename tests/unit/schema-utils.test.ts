@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { forceRefOnlyEndpoints, nameMappingRuleBranches } from "../../ui/src/lib/schema-utils";
+import { forceRefOnlyEndpoints, hideUnusedDeprecatedProperties, nameMappingRuleBranches } from "../../ui/src/lib/schema-utils";
 
 describe("schema-utils", () => {
   test("forces nested endpoint schemas to ref-only configs", () => {
@@ -120,5 +120,70 @@ describe("schema-utils", () => {
     expect(schema).toEqual(once);
     expect(schema.$defs.MappingRule.anyOf[0].title).toBe("Kept");
     expect(schema.$defs.MappingRule.anyOf[1]).not.toHaveProperty("title");
+  });
+  test("hides a deprecated field the config does not set", () => {
+    const schema: any = {
+      $defs: {
+        ObjectStoreConfig: {
+          properties: {
+            name_by: { description: "(Sink only) `auto`, `write_time` or `source_position`." },
+            idempotency: { description: "Deprecated: use `name_by`. true = `source_position`." },
+          },
+        },
+      },
+    };
+
+    hideUnusedDeprecatedProperties(schema, { output: { object_store: { url: "s3://bucket/out" } } });
+
+    expect(schema.$defs.ObjectStoreConfig.properties.idempotency.hidden).toBe(true);
+    expect(schema.$defs.ObjectStoreConfig.properties.name_by).not.toHaveProperty("hidden");
+  });
+
+  test("keeps a deprecated field a legacy config still carries", () => {
+    const schema: any = {
+      $defs: {
+        ObjectStoreConfig: {
+          properties: {
+            idempotency: { description: "Deprecated: use `name_by`. true = `source_position`." },
+          },
+        },
+      },
+    };
+
+    hideUnusedDeprecatedProperties(schema, {
+      output: { object_store: { url: "s3://bucket/out", idempotency: true } },
+    });
+
+    expect(schema.$defs.ObjectStoreConfig.properties.idempotency).not.toHaveProperty("hidden");
+  });
+
+  test("keeps a deprecated field scoped to the endpoint that carries it", () => {
+    const deprecated = { description: "Deprecated: use `name_by`. true = `source_position`." };
+    const schema: any = {
+      $defs: {
+        Endpoint: {
+          oneOf: [
+            { properties: { file: { $ref: "#/$defs/FileConfig" } } },
+            { properties: { object_store: { $ref: "#/$defs/ObjectStoreConfig" } } },
+          ],
+        },
+        FileConfig: { properties: { idempotency: { ...deprecated } } },
+        ObjectStoreConfig: { properties: { idempotency: { ...deprecated } } },
+      },
+    };
+
+    hideUnusedDeprecatedProperties(schema, {
+      input: { file: { path: "in.jsonl", idempotency: true } },
+      output: { object_store: { url: "s3://bucket/out" } },
+    });
+
+    expect(schema.$defs.FileConfig.properties.idempotency).not.toHaveProperty("hidden");
+    expect(schema.$defs.ObjectStoreConfig.properties.idempotency.hidden).toBe(true);
+  });
+
+  test("tolerates an empty schema and a null config", () => {
+    const emptySchema: any = {};
+    expect(() => hideUnusedDeprecatedProperties(emptySchema, null)).not.toThrow();
+    expect(emptySchema).toEqual({});
   });
 });

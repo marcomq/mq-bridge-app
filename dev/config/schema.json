@@ -112,7 +112,7 @@
           "type": "string"
         },
         "concurrency": {
-          "description": "(Optional) Number of concurrent processing tasks for this route. While it improves throughput for high-latency\nhandlers, it adds synchronization overhead for ordered commits and may lead to out-of-order processing\nin the handler. Defaults to 1.",
+          "description": "(Optional) Number of concurrent processing tasks for this route. While it improves throughput for high-latency\nhandlers, it adds synchronization overhead for ordered commits and may lead to out-of-order processing\nin the handler. Above 1, whole batches may also reach the sink out of source order (rows keep their order\nwithin a batch) unless the sink declares itself order-sensitive, as `file` does.\nDefaults to 1.",
           "type": "integer",
           "format": "uint",
           "minimum": 1,
@@ -1664,13 +1664,20 @@
       "type": "object",
       "properties": {
         "path": {
-          "description": "Path to the file, or to the directory holding the part files when `idempotency` is true.",
+          "description": "Path to the file, or to the directory holding the part files under `source_position` naming.",
           "type": "string"
         },
+        "name_by": {
+          "description": "(Sink only) `write_time` (default here, appends to `path`) or `source_position` (replay-safe part files, `path` is their directory).",
+          "$ref": "#/$defs/NameBy",
+          "default": "auto"
+        },
         "idempotency": {
-          "description": "Write replay-safe source ranges as immutable part files under this directory.\nRequires Kafka source metadata or postgres_cdc commit LSN plus transaction ordinal metadata.",
-          "type": "boolean",
-          "default": false
+          "description": "Deprecated: use `name_by`. true = `source_position`, false = `write_time`; ignored when `name_by` is set.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "delimiter": {
           "description": "Optional delimiter for messages. Defaults to newline (\"\\n\").\nCan be a string or a hex sequence (e.g. \"0x00\").\nCurrently only single-byte delimiters are supported.",
@@ -1700,6 +1707,11 @@
             }
           ],
           "default": null
+        },
+        "source_metadata": {
+          "description": "(Consumer only) Include authoritative `mqb.src.file_*` source positions; only `consume` mode reproduces them across restarts. Defaults to false.",
+          "type": "boolean",
+          "default": false
         }
       },
       "required": [
@@ -1772,6 +1784,26 @@
         {}
       ]
     },
+    "NameBy": {
+      "description": "How a `file` or `object_store` sink names what it writes.\n\nThe name decides everything downstream: a name derived from the source position sorts by\nsource order and repeats exactly on a replay (so a re-write is a no-op), while a name\nderived from the write time sorts by write order and is unique per write.\n\n`auto` resolves against the input for `object_store` only. There the two schemes write the\nsame thing under a different name, so the choice is free; on `file` they are different sink\nstructures — one appended file versus a directory of part files — and deriving that from the\ninput would change what `path` means without the operator asking for it.",
+      "oneOf": [
+        {
+          "description": "object_store: `source_position` when the input carries one, else `write_time`. file: always `write_time`.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "`part-<source>-<start>-<end>.<ext>`. Needs a replayable input; on `file` this turns `path` into a directory.",
+          "type": "string",
+          "const": "source_position"
+        },
+        {
+          "description": "object_store: `<uuidv7>.<ext>` under an optional `YYYY/MM/DD/` prefix. file: appends to `path`.",
+          "type": "string",
+          "const": "write_time"
+        }
+      ]
+    },
     "FileFormat": {
       "description": "Format for messages written to or read from a file.",
       "oneOf": [
@@ -1810,10 +1842,17 @@
           "description": "Object-store URL, e.g. `s3://bucket/prefix`, `gs://bucket/prefix`,\n`az://account/container/prefix`. Credentials are resolved from the environment by\nthe `object_store` crate (same mechanism as the checkpoint backend); R2 uses\n`s3://` plus a custom `AWS_ENDPOINT_URL`.",
           "type": "string"
         },
+        "name_by": {
+          "description": "(Sink only) `auto`, `write_time` (uuidv7 name) or `source_position` (name carries the source range).",
+          "$ref": "#/$defs/NameBy",
+          "default": "auto"
+        },
         "idempotency": {
-          "description": "Write replay-safe source ranges as immutable objects instead of UUID-named objects.\nRequires Kafka source metadata or postgres_cdc commit LSN plus transaction ordinal metadata.",
-          "type": "boolean",
-          "default": false
+          "description": "Deprecated: use `name_by`. true = `source_position`, false = `write_time`; ignored when `name_by` is set.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "format": {
           "description": "Record encoding within an object, shared with the file endpoint. Defaults to\n`normal` (one JSON `CanonicalMessage` per line). CSV is supported for sources only.",
@@ -1860,9 +1899,12 @@
           "minimum": 0
         },
         "date_partition": {
-          "description": "(Sink only) Prepend a `YYYY/MM/DD/` path (write time, UTC) to each object key. Purely\nfor readability / lifecycle rules — the uuidv7 name already sorts by time. Default true.",
-          "type": "boolean",
-          "default": true
+          "description": "(Sink only) Prepend a `YYYY/MM/DD/` path (write time, UTC) to each object key. Applies to\n`write_time` naming only; defaults to on. Purely for readability / lifecycle rules.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
         },
         "extension": {
           "description": "(Sink only) Extension for written objects, without the dot. Defaults to a value derived\nfrom `format`, `compression` and `encryption` (e.g. `jsonl`, `csv`, `bin`, `jsonl.gz`,\n`jsonl.lz4`, `jsonl.gz.enc`); encrypted objects get a trailing `.enc` since they are\nciphertext, not a directly decompressible `.gz`.",
@@ -3391,6 +3433,11 @@
           "type": "boolean",
           "default": false
         },
+        "source_metadata": {
+          "description": "(Consumer only) Include authoritative `mqb.src.sqlx_*` source positions; `cursor_column` must then be a unique integer. Defaults to false.",
+          "type": "boolean",
+          "default": false
+        },
         "tls": {
           "description": "TLS configuration for the database connection.",
           "$ref": "#/$defs/TlsConfig",
@@ -3797,7 +3844,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "default": "01a000a4-ce56-78d1-9034-c32954cd1fea"
+          "default": "01a01af1-8c9f-7f93-9586-dad92d786e5a"
         },
         "name": {
           "type": "string",
@@ -3835,7 +3882,7 @@
           "type": "string"
         },
         "concurrency": {
-          "description": "(Optional) Number of concurrent processing tasks for this route. While it improves throughput for high-latency\nhandlers, it adds synchronization overhead for ordered commits and may lead to out-of-order processing\nin the handler. Defaults to 1.",
+          "description": "(Optional) Number of concurrent processing tasks for this route. While it improves throughput for high-latency\nhandlers, it adds synchronization overhead for ordered commits and may lead to out-of-order processing\nin the handler. Above 1, whole batches may also reach the sink out of source order (rows keep their order\nwithin a batch) unless the sink declares itself order-sensitive, as `file` does.\nDefaults to 1.",
           "type": "integer",
           "format": "uint",
           "minimum": 1,
@@ -3985,7 +4032,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "default": "01a000a4-ce56-78d1-9034-c33fdfeb062b"
+          "default": "01a01af1-8c9f-7f93-9586-dae8b807b3b6"
         },
         "name": {
           "type": "string",

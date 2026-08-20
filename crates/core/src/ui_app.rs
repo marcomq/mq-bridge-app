@@ -2465,12 +2465,8 @@ mod tests {
         let mut consumer = memory_consumer("double-start", "DoubleStart", "unused");
         consumer.endpoint = Endpoint::new(EndpointType::File(mq_bridge::models::FileConfig {
             path: source.to_string_lossy().to_string(),
-            delimiter: None,
             mode: None,
-            format: Default::default(),
-            compression: Default::default(),
-            encryption: None,
-            idempotency: Default::default(),
+            ..Default::default()
         }));
         let mut config = AppConfig::default();
         config.consumers.push(consumer);
@@ -2518,12 +2514,8 @@ mod tests {
         let mut consumer = memory_consumer("file-drain-test", "FileDrain", "file_drain_test_topic");
         consumer.endpoint = Endpoint::new(EndpointType::File(mq_bridge::models::FileConfig {
             path: source.to_string_lossy().to_string(),
-            delimiter: None,
             mode: None,
-            format: Default::default(),
-            compression: Default::default(),
-            encryption: None,
-            idempotency: Default::default(),
+            ..Default::default()
         }));
         consumer.options.exit_on_empty = true;
         let mut config = AppConfig::default();

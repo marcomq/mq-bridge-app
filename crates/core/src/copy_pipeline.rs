@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
 use mq_bridge::ReceivedBatch;
-use mq_bridge::models::{Endpoint, EndpointType, FileConsumerMode, Middleware, MongoConsume};
+use mq_bridge::models::{
+    Endpoint, EndpointType, FileConsumerMode, Middleware, MongoConsume, NameBy,
+    TransformErrorPolicy,
+};
 use mq_bridge::traits::{
     BatchCommitFunc, BoxFuture, ConsumerError, CustomMiddlewareFactory, EndpointStatus,
     MessageConsumer, MessageDisposition,
@@ -111,6 +114,73 @@ fn insert_before_buffer(input: &mut Endpoint, entry: Middleware) {
         Some(index) => input.middlewares.insert(index, entry),
         None => input.middlewares.push(entry),
     }
+}
+
+/// Names the middleware on `endpoint` that removes rows from a batch, if any.
+///
+/// Only middlewares that take a message out of the batch count, whether by
+/// dropping it outright or by folding it into another one. One that delays,
+/// retries or rewrites a message leaves the batch dense, which is what matters
+/// here.
+fn row_dropping_middleware(endpoint: &Endpoint) -> Option<&'static str> {
+    endpoint
+        .middlewares
+        .iter()
+        .find_map(|middleware| match middleware {
+            Middleware::Custom { name, .. } if name == FILTER_MIDDLEWARE_NAME => Some("--filter"),
+            Middleware::Deduplication(_) => Some("the deduplication middleware"),
+            // A join emits one message per group, carrying the first member's
+            // position, so what reaches the sink is as sparse as the groups are
+            // large. `on_timeout: discard` drops incomplete groups on top of that,
+            // but neither timeout policy leaves the batch dense.
+            Middleware::WeakJoin(_) => Some("the weak_join middleware"),
+            Middleware::Transform(config)
+                if config.on_error == TransformErrorPolicy::Reject
+                    && !(config.mapping.is_empty()
+                        && config.schema.is_none()
+                        && config.schema_file.is_none()) =>
+            {
+                Some("transform with on_error: reject")
+            }
+            _ => None,
+        })
+}
+
+/// Keeps a row-dropping copy off `source_position` object names.
+///
+/// `name_by: auto` resolves to `source_position` whenever the source stamps a
+/// replay position, naming each object after a *contiguous* source range. A
+/// batch with holes in it is therefore written as one object per surviving run:
+/// a filter keeping 80% of rows at random turns one PUT into roughly a hundred,
+/// which measured as a 220x slowdown. Renumbering the positions to close the
+/// holes would forge the replay identity the naming exists to provide, so the
+/// honest move is to stop claiming it.
+///
+/// Only `auto` is relaxed — an explicit `source_position` (or the deprecated
+/// `idempotency` alias) is a request for replay-safe names, holes and all. The
+/// `file` sink is untouched: its `auto` never resolves to `source_position`.
+///
+/// Both endpoints are searched. A rejecting `transform` on the *sink* drops its
+/// rejects from the batch it forwards, so the object-store producer beneath it
+/// sees the same holes; deduplication and weak_join are consumer-only, and the
+/// filter is only ever installed on the source.
+///
+/// Returns the line to tell the operator, so the caller decides how to say it.
+pub fn relax_object_naming(input: &Endpoint, output: &mut Endpoint) -> Option<String> {
+    let dropped_by = row_dropping_middleware(input).or_else(|| row_dropping_middleware(output))?;
+    let EndpointType::ObjectStore(config) = &mut output.endpoint_type else {
+        return None;
+    };
+    if config.name_by != NameBy::Auto || config.idempotency.is_some() {
+        return None;
+    }
+    config.name_by = NameBy::WriteTime;
+    Some(format!(
+        "{dropped_by} removes rows from each batch, which would leave the object names \
+         covering one contiguous source range each and split every batch into many small \
+         objects. Naming objects by write time instead; pass name_by=source_position to keep \
+         replay-safe names at that cost."
+    ))
 }
 
 /// Configures the source's existing durable resume mechanism and returns its kind.
@@ -865,7 +935,9 @@ mod tests {
     use super::*;
     use mq_bridge::CanonicalMessage;
     use mq_bridge::models::{
-        BufferMiddleware, KafkaConfig, MetricsMiddleware, MqttConfig, SqlxConfig,
+        BufferMiddleware, DeduplicationMiddleware, FileConfig, KafkaConfig, MetricsMiddleware,
+        MqttConfig, ObjectStoreConfig, SqlxConfig, TransformMiddleware, WeakJoinMiddleware,
+        WeakJoinTimeout,
     };
     use std::sync::Mutex;
 
@@ -997,6 +1069,199 @@ mod tests {
         configure_filter(&mut input, "amount > 10").unwrap();
 
         assert!(matches!(input.middlewares[1], Middleware::Custom { .. }));
+    }
+
+    fn object_store_sink(name_by: NameBy) -> Endpoint {
+        endpoint(EndpointType::ObjectStore(ObjectStoreConfig {
+            url: "s3://bucket/orders".to_string(),
+            name_by,
+            ..Default::default()
+        }))
+    }
+
+    fn filtered_source() -> Endpoint {
+        let mut input = endpoint(EndpointType::Kafka(KafkaConfig {
+            url: "kafka://localhost:9092".to_string(),
+            topic: Some("orders".to_string()),
+            ..Default::default()
+        }));
+        configure_filter(&mut input, "amount > 10").unwrap();
+        input
+    }
+
+    fn resolved_name_by(output: &Endpoint) -> NameBy {
+        match &output.endpoint_type {
+            EndpointType::ObjectStore(config) => config.name_by,
+            other => panic!("not an object-store sink: {other:?}"),
+        }
+    }
+
+    // The measured case: a filter leaves holes in every batch, and each hole
+    // would start another object under source-range names.
+    #[test]
+    fn a_filter_takes_an_auto_named_object_store_off_source_position() {
+        let input = filtered_source();
+        let mut output = object_store_sink(NameBy::Auto);
+
+        let reason = relax_object_naming(&input, &mut output).expect("naming relaxed");
+
+        assert!(reason.contains("--filter"), "names the cause: {reason}");
+        assert_eq!(resolved_name_by(&output), NameBy::WriteTime);
+    }
+
+    // `auto` is the only setting this may touch: an explicit source_position is
+    // a request for replay-safe names, and the fragmentation is its price.
+    #[test]
+    fn an_explicitly_named_sink_keeps_source_position_under_a_filter() {
+        let input = filtered_source();
+        let mut output = object_store_sink(NameBy::SourcePosition);
+
+        assert!(relax_object_naming(&input, &mut output).is_none());
+        assert_eq!(resolved_name_by(&output), NameBy::SourcePosition);
+    }
+
+    // `idempotency: true` is the deprecated spelling of the same explicit request.
+    #[test]
+    fn the_deprecated_idempotency_alias_counts_as_explicit() {
+        let input = filtered_source();
+        let mut output = endpoint(EndpointType::ObjectStore(ObjectStoreConfig {
+            url: "s3://bucket/orders".to_string(),
+            idempotency: Some(true),
+            ..Default::default()
+        }));
+
+        assert!(relax_object_naming(&input, &mut output).is_none());
+    }
+
+    // The filter is this app's own row-dropper, but the library ships two more
+    // that a copy URI can attach, and they fragment a batch identically.
+    #[test]
+    fn deduplication_and_a_rejecting_transform_relax_the_naming_too() {
+        let mut deduplicated = endpoint(EndpointType::Null);
+        deduplicated
+            .middlewares
+            .push(Middleware::Deduplication(DeduplicationMiddleware {
+                store: None,
+                sled_path: None,
+                ttl_seconds: 60,
+                key: None,
+            }));
+        let mut output = object_store_sink(NameBy::Auto);
+        assert!(relax_object_naming(&deduplicated, &mut output).is_some());
+        assert_eq!(resolved_name_by(&output), NameBy::WriteTime);
+
+        let mut transformed = endpoint(EndpointType::Null);
+        transformed
+            .middlewares
+            .push(Middleware::Transform(TransformMiddleware {
+                schema: Some(json!({"type": "object"})),
+                on_error: TransformErrorPolicy::Reject,
+                ..Default::default()
+            }));
+        let mut output = object_store_sink(NameBy::Auto);
+        assert!(relax_object_naming(&transformed, &mut output).is_some());
+        assert_eq!(resolved_name_by(&output), NameBy::WriteTime);
+    }
+
+    // A join replaces each group with a single message carrying the first
+    // member's position, so a group of four leaves three holes behind it —
+    // sparser than a filter, and true of both timeout policies.
+    #[test]
+    fn weak_join_relaxes_the_naming_under_either_timeout_policy() {
+        for on_timeout in [WeakJoinTimeout::Fire, WeakJoinTimeout::Discard] {
+            let mut input = endpoint(EndpointType::Null);
+            input
+                .middlewares
+                .push(Middleware::WeakJoin(WeakJoinMiddleware {
+                    group_by: "correlation_id".to_string(),
+                    expected_count: 4,
+                    timeout_ms: 1000,
+                    branch_by: None,
+                    required: Vec::new(),
+                    on_timeout,
+                }));
+            let mut output = object_store_sink(NameBy::Auto);
+
+            let reason = relax_object_naming(&input, &mut output).expect("naming relaxed");
+
+            assert!(reason.contains("weak_join"), "names the cause: {reason}");
+            assert_eq!(resolved_name_by(&output), NameBy::WriteTime);
+        }
+    }
+
+    // A rejecting transform on the destination drops its rejects from the batch
+    // it forwards, and the object-store producer it wraps is what writes the
+    // objects — so the holes arrive there just the same.
+    #[test]
+    fn a_rejecting_transform_on_the_sink_relaxes_the_naming_too() {
+        let input = endpoint(EndpointType::Null);
+        let mut output = object_store_sink(NameBy::Auto);
+        output
+            .middlewares
+            .push(Middleware::Transform(TransformMiddleware {
+                schema: Some(json!({"type": "object"})),
+                on_error: TransformErrorPolicy::Reject,
+                ..Default::default()
+            }));
+
+        let reason = relax_object_naming(&input, &mut output).expect("naming relaxed");
+
+        assert!(reason.contains("transform"), "names the cause: {reason}");
+        assert_eq!(resolved_name_by(&output), NameBy::WriteTime);
+    }
+
+    // A transform that rewrites nothing never rejects anything, and one set to
+    // pass through keeps the rejected row in the batch. Neither leaves a hole.
+    #[test]
+    fn a_transform_that_cannot_drop_a_row_leaves_the_naming_alone() {
+        for middleware in [
+            TransformMiddleware {
+                on_error: TransformErrorPolicy::Reject,
+                ..Default::default()
+            },
+            TransformMiddleware {
+                schema: Some(json!({"type": "object"})),
+                on_error: TransformErrorPolicy::PassThrough,
+                ..Default::default()
+            },
+        ] {
+            let mut input = endpoint(EndpointType::Null);
+            input.middlewares.push(Middleware::Transform(middleware));
+            let mut output = object_store_sink(NameBy::Auto);
+
+            assert!(relax_object_naming(&input, &mut output).is_none());
+            assert_eq!(resolved_name_by(&output), NameBy::Auto);
+        }
+    }
+
+    // An unfiltered copy is the fast, replay-safe path the default exists for.
+    #[test]
+    fn middlewares_that_keep_every_row_leave_source_position_naming_in_place() {
+        let mut input = endpoint(EndpointType::Null);
+        input
+            .middlewares
+            .push(Middleware::Metrics(MetricsMiddleware {}));
+        input.middlewares.push(Middleware::Buffer(BufferMiddleware {
+            max_messages: 100,
+            max_delay_ms: 10,
+        }));
+        let mut output = object_store_sink(NameBy::Auto);
+
+        assert!(relax_object_naming(&input, &mut output).is_none());
+        assert_eq!(resolved_name_by(&output), NameBy::Auto);
+    }
+
+    // The file sink resolves `auto` to write_time on its own, since the two
+    // schemes are different directory structures there. Nothing to relax.
+    #[test]
+    fn a_file_sink_is_left_untouched() {
+        let input = filtered_source();
+        let mut output = endpoint(EndpointType::File(FileConfig {
+            path: "/var/lib/mqb/orders.jsonl".to_string(),
+            ..Default::default()
+        }));
+
+        assert!(relax_object_naming(&input, &mut output).is_none());
     }
 
     #[test]

@@ -50,7 +50,7 @@ zeroize = "1.9"
 sha2 = "0.11"
 futures = "0.3.33"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-fast-uuid-v7 = "0.1.8"
+fast-uuid-v7 = "0.1.9"
 # Embeds the web UI (crates/core/static) into the binary so the UI is served
 # from a single `cargo install`ed executable. In debug builds it reads the
 # files from disk for live editing; in release builds it embeds them.

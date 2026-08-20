@@ -287,25 +287,30 @@ export type NatsDeliverPolicy = "all" | "last" | "new" | "last_per_subject";
 
 export interface FileConfig {
   path: string;
-  idempotency?: boolean;
+  name_by?: NameBy;
+  idempotency?: boolean | null;
   delimiter?: string | null;
   format?: FileFormat;
   compression?: Compression;
   encryption?: EncryptionConfig | null;
+  source_metadata?: boolean;
 }
+
+export type NameBy = "auto" | "source_position" | "write_time";
 
 export type FileFormat = "normal" | "json" | "text" | "raw" | "csv";
 
 export interface ObjectStoreConfig {
   url: string;
-  idempotency?: boolean;
+  name_by?: NameBy;
+  idempotency?: boolean | null;
   format?: FileFormat;
   delimiter?: string | null;
   checkpoint_store?: string | null;
   cursor_id?: string | null;
   polling_interval_ms?: number | null;
   max_object_bytes?: number | null;
-  date_partition?: boolean;
+  date_partition?: boolean | null;
   extension?: string | null;
   compression?: Compression;
   encryption?: EncryptionConfig | null;
@@ -532,6 +537,7 @@ export interface SqlxConfig {
   publication?: string | null;
   slot_name?: string | null;
   create_publication?: boolean;
+  source_metadata?: boolean;
   tls?: TlsConfig;
   max_connections?: number | null;
   min_connections?: number | null;

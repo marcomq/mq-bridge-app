@@ -714,7 +714,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     let to =
         copy_pipeline::expand_uri_variables(to).context("invalid copy destination endpoint")?;
     let mut input = endpoint_from_uri(&from).context("invalid copy source endpoint")?;
-    let output = endpoint_from_uri(&to).context("invalid copy destination endpoint")?;
+    let mut output = endpoint_from_uri(&to).context("invalid copy destination endpoint")?;
     let resume = if args.resume {
         Some(copy_pipeline::configure_resume(
             &mut input,
@@ -735,6 +735,13 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     // the destination without making the copy any slower, and rating the surviving
     // rows against the time spent reading every row reports that as a slowdown.
     let read = copy_pipeline::configure_counter(&mut input)?;
+    // After `configure_resume`, so the checkpoint identity is still derived from the
+    // destination the operator asked for: relaxing the naming must not invalidate a
+    // checkpoint written before this ran. After the filter too, since that is one of
+    // the middlewares it looks for.
+    if let Some(reason) = copy_pipeline::relax_object_naming(&input, &mut output) {
+        warn!("{reason}");
+    }
     let input_endpoint_label = endpoint_type_label(&input.endpoint_type);
     let output_endpoint_label = endpoint_type_label(&output.endpoint_type);
     let options = RouteOptions {
@@ -2159,7 +2166,14 @@ mod uri_tests {
     }
 
     #[test]
-    fn file_idempotency_is_a_scalar_flag() {
+    fn file_name_by_is_a_scalar_flag() {
+        let cfg = config("file:///var/lib/mqb/parts?name_by=source_position", "file");
+        assert_eq!(cfg["name_by"], "source_position");
+    }
+
+    /// `idempotency` is the deprecated spelling of `name_by`; v0.4.x URLs must keep working.
+    #[test]
+    fn file_idempotency_is_still_accepted() {
         let cfg = config("file:///var/lib/mqb/parts?idempotency=true", "file");
         assert_eq!(cfg["idempotency"], true);
     }
@@ -2458,7 +2472,17 @@ mod uri_tests {
     }
 
     #[test]
-    fn object_store_idempotency_is_a_scalar_flag() {
+    fn object_store_name_by_is_a_scalar_flag() {
+        let cfg = config(
+            "s3://my-bucket/events?name_by=source_position",
+            "object_store",
+        );
+        assert_eq!(cfg["name_by"], "source_position");
+    }
+
+    /// `idempotency` is the deprecated spelling of `name_by`; v0.4.x URLs must keep working.
+    #[test]
+    fn object_store_idempotency_is_still_accepted() {
         let cfg = config("s3://my-bucket/events?idempotency=true", "object_store");
         assert_eq!(cfg["idempotency"], true);
     }
