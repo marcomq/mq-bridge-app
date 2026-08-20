@@ -45,23 +45,44 @@ export function nameMappingRuleBranches(itemSchema: MutableSchema): void {
 // Schemars has no `deprecated` keyword, so the backend marks a superseded field by opening its
 // doc comment with "Deprecated:". Such a field is dropped from the form unless the config still
 // carries it — a legacy value stays visible and clearable, a new config only sees the replacement.
+//
+// Presence is matched against the property that owns the def, not against the bare field name:
+// `file` and `object_store` both declare a deprecated `idempotency`, and a legacy value on one
+// must not keep the other's visible. A def nothing refs by name falls back to the name alone.
 export function hideUnusedDeprecatedProperties(itemSchema: MutableSchema, data: unknown): void {
+  const owners = new Map<string, Set<string>>();
+  const collectOwners = (node: unknown) => {
+    if (Array.isArray(node)) return node.forEach(collectOwners);
+    if (!node || typeof node !== "object") return;
+    for (const [key, child] of Object.entries((node as MutableSchema).properties || {})) {
+      const def = child?.$ref?.startsWith("#/$defs/") ? child.$ref.slice("#/$defs/".length) : null;
+      if (!def) continue;
+      if (!owners.has(def)) owners.set(def, new Set());
+      owners.get(def)!.add(key);
+    }
+    Object.values(node as Record<string, unknown>).forEach(collectOwners);
+  };
+  collectOwners(itemSchema);
+
   const present = new Set<string>();
-  const collect = (value: unknown) => {
-    if (Array.isArray(value)) return value.forEach(collect);
+  const collect = (value: unknown, owner: string) => {
+    if (Array.isArray(value)) return value.forEach((item) => collect(item, owner));
     if (!value || typeof value !== "object") return;
     for (const [key, child] of Object.entries(value)) {
-      present.add(key);
-      collect(child);
+      present.add(`${owner}.${key}`);
+      collect(child, key);
     }
   };
-  collect(data);
+  collect(data, "");
 
-  for (const def of Object.values(itemSchema.$defs || {})) {
+  for (const [defName, def] of Object.entries(itemSchema.$defs || {})) {
     for (const [name, property] of Object.entries(def?.properties || {})) {
-      if (!present.has(name) && property?.description?.startsWith("Deprecated:")) {
-        property.hidden = true;
-      }
+      if (!property?.description?.startsWith("Deprecated:")) continue;
+      const ownerKeys = owners.get(defName);
+      const used = ownerKeys
+        ? [...ownerKeys].some((owner) => present.has(`${owner}.${name}`))
+        : [...present].some((entry) => entry.endsWith(`.${name}`));
+      if (!used) property.hidden = true;
     }
   }
 }

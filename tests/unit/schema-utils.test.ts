@@ -157,6 +157,30 @@ describe("schema-utils", () => {
     expect(schema.$defs.ObjectStoreConfig.properties.idempotency).not.toHaveProperty("hidden");
   });
 
+  test("keeps a deprecated field scoped to the endpoint that carries it", () => {
+    const deprecated = { description: "Deprecated: use `name_by`. true = `source_position`." };
+    const schema: any = {
+      $defs: {
+        Endpoint: {
+          oneOf: [
+            { properties: { file: { $ref: "#/$defs/FileConfig" } } },
+            { properties: { object_store: { $ref: "#/$defs/ObjectStoreConfig" } } },
+          ],
+        },
+        FileConfig: { properties: { idempotency: { ...deprecated } } },
+        ObjectStoreConfig: { properties: { idempotency: { ...deprecated } } },
+      },
+    };
+
+    hideUnusedDeprecatedProperties(schema, {
+      input: { file: { path: "in.jsonl", idempotency: true } },
+      output: { object_store: { url: "s3://bucket/out" } },
+    });
+
+    expect(schema.$defs.FileConfig.properties.idempotency).not.toHaveProperty("hidden");
+    expect(schema.$defs.ObjectStoreConfig.properties.idempotency.hidden).toBe(true);
+  });
+
   test("tolerates an empty schema and a null config", () => {
     const emptySchema: any = {};
     expect(() => hideUnusedDeprecatedProperties(emptySchema, null)).not.toThrow();

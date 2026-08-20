@@ -2473,7 +2473,10 @@ mod uri_tests {
 
     #[test]
     fn object_store_name_by_is_a_scalar_flag() {
-        let cfg = config("s3://my-bucket/events?name_by=source_position", "object_store");
+        let cfg = config(
+            "s3://my-bucket/events?name_by=source_position",
+            "object_store",
+        );
         assert_eq!(cfg["name_by"], "source_position");
     }
 

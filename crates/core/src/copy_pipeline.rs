@@ -116,17 +116,24 @@ fn insert_before_buffer(input: &mut Endpoint, entry: Middleware) {
     }
 }
 
-/// Names the middleware on `input` that removes rows from a batch, if any.
+/// Names the middleware on `endpoint` that removes rows from a batch, if any.
 ///
-/// Only middlewares that drop a message outright count. One that delays, retries
-/// or rewrites a message leaves the batch dense, which is what matters here.
-fn row_dropping_middleware(input: &Endpoint) -> Option<&'static str> {
-    input
+/// Only middlewares that take a message out of the batch count, whether by
+/// dropping it outright or by folding it into another one. One that delays,
+/// retries or rewrites a message leaves the batch dense, which is what matters
+/// here.
+fn row_dropping_middleware(endpoint: &Endpoint) -> Option<&'static str> {
+    endpoint
         .middlewares
         .iter()
         .find_map(|middleware| match middleware {
             Middleware::Custom { name, .. } if name == FILTER_MIDDLEWARE_NAME => Some("--filter"),
             Middleware::Deduplication(_) => Some("the deduplication middleware"),
+            // A join emits one message per group, carrying the first member's
+            // position, so what reaches the sink is as sparse as the groups are
+            // large. `on_timeout: discard` drops incomplete groups on top of that,
+            // but neither timeout policy leaves the batch dense.
+            Middleware::WeakJoin(_) => Some("the weak_join middleware"),
             Middleware::Transform(config)
                 if config.on_error == TransformErrorPolicy::Reject
                     && !(config.mapping.is_empty()
@@ -153,9 +160,14 @@ fn row_dropping_middleware(input: &Endpoint) -> Option<&'static str> {
 /// `idempotency` alias) is a request for replay-safe names, holes and all. The
 /// `file` sink is untouched: its `auto` never resolves to `source_position`.
 ///
+/// Both endpoints are searched. A rejecting `transform` on the *sink* drops its
+/// rejects from the batch it forwards, so the object-store producer beneath it
+/// sees the same holes; deduplication and weak_join are consumer-only, and the
+/// filter is only ever installed on the source.
+///
 /// Returns the line to tell the operator, so the caller decides how to say it.
 pub fn relax_object_naming(input: &Endpoint, output: &mut Endpoint) -> Option<String> {
-    let dropped_by = row_dropping_middleware(input)?;
+    let dropped_by = row_dropping_middleware(input).or_else(|| row_dropping_middleware(output))?;
     let EndpointType::ObjectStore(config) = &mut output.endpoint_type else {
         return None;
     };
@@ -924,7 +936,8 @@ mod tests {
     use mq_bridge::CanonicalMessage;
     use mq_bridge::models::{
         BufferMiddleware, DeduplicationMiddleware, FileConfig, KafkaConfig, MetricsMiddleware,
-        MqttConfig, ObjectStoreConfig, SqlxConfig, TransformMiddleware,
+        MqttConfig, ObjectStoreConfig, SqlxConfig, TransformMiddleware, WeakJoinMiddleware,
+        WeakJoinTimeout,
     };
     use std::sync::Mutex;
 
@@ -1147,6 +1160,53 @@ mod tests {
             }));
         let mut output = object_store_sink(NameBy::Auto);
         assert!(relax_object_naming(&transformed, &mut output).is_some());
+        assert_eq!(resolved_name_by(&output), NameBy::WriteTime);
+    }
+
+    // A join replaces each group with a single message carrying the first
+    // member's position, so a group of four leaves three holes behind it —
+    // sparser than a filter, and true of both timeout policies.
+    #[test]
+    fn weak_join_relaxes_the_naming_under_either_timeout_policy() {
+        for on_timeout in [WeakJoinTimeout::Fire, WeakJoinTimeout::Discard] {
+            let mut input = endpoint(EndpointType::Null);
+            input
+                .middlewares
+                .push(Middleware::WeakJoin(WeakJoinMiddleware {
+                    group_by: "correlation_id".to_string(),
+                    expected_count: 4,
+                    timeout_ms: 1000,
+                    branch_by: None,
+                    required: Vec::new(),
+                    on_timeout,
+                }));
+            let mut output = object_store_sink(NameBy::Auto);
+
+            let reason = relax_object_naming(&input, &mut output).expect("naming relaxed");
+
+            assert!(reason.contains("weak_join"), "names the cause: {reason}");
+            assert_eq!(resolved_name_by(&output), NameBy::WriteTime);
+        }
+    }
+
+    // A rejecting transform on the destination drops its rejects from the batch
+    // it forwards, and the object-store producer it wraps is what writes the
+    // objects — so the holes arrive there just the same.
+    #[test]
+    fn a_rejecting_transform_on_the_sink_relaxes_the_naming_too() {
+        let input = endpoint(EndpointType::Null);
+        let mut output = object_store_sink(NameBy::Auto);
+        output
+            .middlewares
+            .push(Middleware::Transform(TransformMiddleware {
+                schema: Some(json!({"type": "object"})),
+                on_error: TransformErrorPolicy::Reject,
+                ..Default::default()
+            }));
+
+        let reason = relax_object_naming(&input, &mut output).expect("naming relaxed");
+
+        assert!(reason.contains("transform"), "names the cause: {reason}");
         assert_eq!(resolved_name_by(&output), NameBy::WriteTime);
     }
 

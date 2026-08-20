@@ -24,9 +24,11 @@ mqb copy SOURCE TARGET [--filter EXPR] [--resume] [--drain]
 
 `--filter` evaluates a readable expression against each top-level JSON payload,
 for example `amount > 100` or `status == "paid"`. A false result intentionally
-drops and acknowledges the message; malformed JSON, missing fields, and invalid
-expressions are errors. It is an in-process filter and is not translated into a
-database query.
+drops and acknowledges the message; malformed JSON and invalid expressions are
+errors, while a field that is absent or not a scalar counts as no match and is
+warned about once. It is an in-process filter and is not translated into a
+database query. Filtering into cloud object storage also changes how the objects
+are named — see [Filtering](./reference/cli.md#filtering).
 
 `--resume` asks the source to use its native durable position and fails before
 the route starts when that is not safe. The generated state identity includes
