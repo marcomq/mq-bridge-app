@@ -58,6 +58,7 @@ pub async fn start_web_server(
     .with_instance_kind(InstanceKind::WebUi);
     let _status_guard = WebUiStatusGuard(app.clone());
     app.spawn_status_registry_publisher();
+    app.start_configured_consumers().await;
     let bound_to_loopback = bind_addr
         .to_socket_addrs()
         .map(|addresses| {

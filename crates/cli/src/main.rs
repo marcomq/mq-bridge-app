@@ -10,7 +10,7 @@ use mq_bridge_app::{
         InstanceKind, StatusEntity, StatusLease, StatusRoute, StatusSnapshot, StatusSummary,
         endpoint_type_label,
     },
-    ui_app::consumer_runtime_key,
+    ui_app::{UiApp, collector_route_name, consumer_runtime_key},
     web_ui,
 };
 
@@ -521,6 +521,10 @@ async fn main() -> anyhow::Result<()> {
         .flatten();
 
     // Start Web UI
+    // Headless, this owns the consumers it started: dropping the app stops their
+    // routes, so it has to live until shutdown. With a UI, `start_web_server`
+    // owns them for as long as it serves.
+    let mut headless_app = None;
     let web_ui_handle = if !config.ui_addr.is_empty() {
         let addr = &config.ui_addr;
         let socket_addr: SocketAddr = addr
@@ -555,6 +559,18 @@ async fn main() -> anyhow::Result<()> {
             r#"        Starting without UI server
 "#
         );
+        // No UI means no other owner for what the config describes, so the
+        // consumers are started here — otherwise a headless deployment loads a
+        // config and then runs nothing.
+        let app = UiApp::new_with_startup_plugins(
+            config.clone(),
+            prometheus_handle,
+            config_file_path,
+            &args.plugins,
+        )?
+        .with_instance_kind(InstanceKind::Cli);
+        app.start_configured_consumers().await;
+        headless_app = Some(app);
         None
     };
     if let Some(addr) = prom_addr {
@@ -562,7 +578,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if config.consumers.is_empty() {
-        warn!("No consumers configured. Waiting for configuration via Web UI.");
+        if config.ui_addr.is_empty() {
+            warn!("Nothing to run: this config defines no routes or consumers.");
+        } else {
+            warn!("No consumers configured. Waiting for configuration via Web UI.");
+        }
     }
 
     info!("Bridge running. Waiting for signal.");
@@ -577,6 +597,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     info!("Shutdown signal received. Broadcasting to all tasks...");
+
+    // Releases the headless consumers' routes; `stop_route` below then waits for
+    // each to end.
+    drop(headless_app);
 
     let shutdown_task = async {
         let routes = mq_bridge::list_routes();
@@ -630,7 +654,7 @@ fn cli_status_lease(workspace_path: String, config: AppConfig) -> Option<StatusL
                         .iter()
                         .map(|consumer| {
                             let id = consumer_runtime_key(consumer);
-                            let running = is_running(&id);
+                            let running = is_running(&collector_route_name(&id));
                             StatusEntity {
                                 label: consumer.name.clone(),
                                 endpoint: endpoint_type_label(&consumer.endpoint.endpoint_type)
@@ -714,6 +738,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     let to =
         copy_pipeline::expand_uri_variables(to).context("invalid copy destination endpoint")?;
     let mut input = endpoint_from_uri(&from).context("invalid copy source endpoint")?;
+    make_listen_address(&mut input).context("invalid copy source endpoint")?;
     let mut output = endpoint_from_uri(&to).context("invalid copy destination endpoint")?;
     let resume = if args.resume {
         Some(copy_pipeline::configure_resume(
@@ -1050,10 +1075,10 @@ fn copy_result(
 ///
 /// Query keys that match a *scalar* field of the target endpoint's config struct
 /// become endpoint config (e.g. `table`, `insert_query`, `subject`,
-/// `delete_after_read`); any other query params — including ones whose name
-/// matches an object-typed config field like `tls` — stay on the connection URL,
-/// so driver options such as `sslmode`, `replicaSet` or `tls=true` pass through
-/// unchanged. `file` URIs map the path to the `path` field. For `nats`, the
+/// `delete_after_read`), and an object-typed field like `tls` takes a JSON
+/// literal (`?tls={"required":true,...}`); any other query param stays on the
+/// connection URL, so driver options such as `sslmode`, `replicaSet` or
+/// `tls=true` pass through unchanged. `file` URIs map the path to the `path` field. For `nats`, the
 /// dominant target field `subject` may also be given as the URL path
 /// (`nats://host:4222/orders`) as an alternative to `?subject=orders` (the query
 /// form wins if both are present); redis is excluded because a redis URL path is
@@ -1076,6 +1101,12 @@ fn copy_result(
 /// `postgres://host/db?table=src|retry?max_attempts=5|metrics`.
 /// A literal `|` inside the URI itself (e.g. in a password) must be written
 /// percent-encoded as `%7C`.
+///
+/// Structural endpoints take their nested endpoints as query params that are
+/// themselves endpoint URIs — `fanout:?mirror=<uri>&to=<uri>`,
+/// `request:?to=<uri>&forward_to=<uri>`, `switch:?metadata_key=k&case.v=<uri>`,
+/// plus the argument-free `response:` and `null:`. A nested URI only needs
+/// percent-encoding when it carries `&`, `#` or `|` of its own.
 fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     let mut parts = uri.split('|');
     let base = parts.next().unwrap_or(uri);
@@ -1087,6 +1118,54 @@ fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
         );
     }
     Ok(endpoint)
+}
+
+fn nested_endpoint(
+    key: &str,
+    value: &str,
+    outer: &str,
+) -> anyhow::Result<mq_bridge::models::Endpoint> {
+    endpoint_from_uri(value)
+        .with_context(|| format!("invalid '{key}' endpoint '{value}' in '{outer}'"))
+}
+
+/// Wraps a branch so it can neither answer the caller nor fail the message for
+/// the other branches: `request` discards the response, and forwards the
+/// original rather than erroring when the branch is down.
+fn discarding_request(branch: mq_bridge::models::Endpoint) -> mq_bridge::models::Endpoint {
+    use mq_bridge::models::{Endpoint, EndpointType, RequestForwardConfig};
+
+    Endpoint::new(EndpointType::Request(RequestForwardConfig {
+        to: Box::new(branch),
+        forward_to: Box::new(Endpoint::new(EndpointType::Null)),
+    }))
+}
+
+/// An `http`/`websocket` **source** is a server, so its `url` is a listen
+/// address — but a URI needs a scheme to select the endpoint at all, and the
+/// driver rejects one as part of an address. `https` asks for a TLS listener;
+/// `wss` has nowhere to keep a certificate.
+fn make_listen_address(endpoint: &mut mq_bridge::models::Endpoint) -> anyhow::Result<()> {
+    use mq_bridge::models::EndpointType;
+
+    let (url, tls) = match &mut endpoint.endpoint_type {
+        EndpointType::Http(config) => (&mut config.url, Some(&mut config.tls)),
+        EndpointType::WebSocket(config) => (&mut config.url, None),
+        _ => return Ok(()),
+    };
+    if url.starts_with("wss://") {
+        anyhow::bail!("a 'wss://' source is not supported: websocket listeners have no TLS config");
+    }
+    for (prefix, secure) in [("https://", true), ("http://", false), ("ws://", false)] {
+        if let Some(rest) = url.strip_prefix(prefix) {
+            *url = rest.trim_end_matches('/').to_string();
+            if secure && let Some(tls) = tls {
+                tls.required = true;
+            }
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Builds a middleware from a `name` / `name?param=value&...` spec. Params are
@@ -1226,6 +1305,99 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
                 })?;
             return Ok(Endpoint::new(endpoint_type));
         }
+        // `response:` — replies to the caller; needs an input with a reply channel.
+        "response" => return Ok(Endpoint::new(EndpointType::Response(Default::default()))),
+        // `fanout:?mirror=<uri>&to=<uri>`, in the order written. Only a `to`
+        // branch can answer the caller.
+        "fanout" => {
+            let mut branches = Vec::new();
+            for (key, value) in parsed.query_pairs() {
+                let mirrored = match key.as_ref() {
+                    "to" => false,
+                    "mirror" => true,
+                    other => anyhow::bail!(
+                        "unsupported query param '{other}' in fanout URI '{uri}'. Use 'to=<uri>' for a branch that may answer, 'mirror=<uri>' for one whose response and failures are discarded"
+                    ),
+                };
+                let branch = nested_endpoint(&key, &value, uri)?;
+                branches.push(if mirrored {
+                    discarding_request(branch)
+                } else {
+                    branch
+                });
+            }
+            if branches.is_empty() {
+                anyhow::bail!(
+                    "fanout URI '{uri}' has no branches. Add at least one 'to=<uri>' or 'mirror=<uri>'"
+                );
+            }
+            return Ok(Endpoint::new(EndpointType::Fanout(branches)));
+        }
+        // `request:?to=<uri>&forward_to=<uri>`; without a `forward_to` the
+        // response is discarded.
+        "request" => {
+            let mut to = None;
+            let mut forward_to = None;
+            for (key, value) in parsed.query_pairs() {
+                let slot = match key.as_ref() {
+                    "to" => &mut to,
+                    "forward_to" => &mut forward_to,
+                    other => anyhow::bail!(
+                        "unsupported query param '{other}' in request URI '{uri}'. Supported: to, forward_to"
+                    ),
+                };
+                *slot = Some(Box::new(nested_endpoint(&key, &value, uri)?));
+            }
+            let Some(to) = to else {
+                anyhow::bail!("request URI '{uri}' needs a 'to=<uri>' endpoint to send to");
+            };
+            return Ok(Endpoint::new(EndpointType::Request(
+                mq_bridge::models::RequestForwardConfig {
+                    to,
+                    forward_to: forward_to
+                        .unwrap_or_else(|| Box::new(Endpoint::new(EndpointType::Null))),
+                },
+            )));
+        }
+        // `switch:?metadata_key=<key>&case.<value>=<uri>&default=<uri>`.
+        "switch" => {
+            let mut metadata_key = None;
+            let mut cases = std::collections::BTreeMap::new();
+            let mut default = None;
+            for (key, value) in parsed.query_pairs() {
+                if key == "metadata_key" {
+                    metadata_key = Some(value.into_owned());
+                    continue;
+                }
+                let case = match key.as_ref() {
+                    "default" => None,
+                    case if case.starts_with("case.") => Some(case["case.".len()..].to_string()),
+                    other => anyhow::bail!(
+                        "unsupported query param '{other}' in switch URI '{uri}'. Supported: metadata_key, case.<value>=<uri>, default=<uri>"
+                    ),
+                };
+                let endpoint = nested_endpoint(&key, &value, uri)?;
+                match case {
+                    Some(case) => {
+                        cases.insert(case, endpoint);
+                    }
+                    None => default = Some(endpoint),
+                }
+            }
+            let Some(metadata_key) = metadata_key else {
+                anyhow::bail!("switch URI '{uri}' needs a 'metadata_key=<key>' to branch on");
+            };
+            if cases.is_empty() {
+                anyhow::bail!("switch URI '{uri}' has no cases. Add 'case.<value>=<uri>'");
+            }
+            return Ok(Endpoint::new(EndpointType::Switch(
+                mq_bridge::models::SwitchConfig {
+                    metadata_key,
+                    cases: cases.into_iter().collect(),
+                    default: default.map(Box::new),
+                },
+            )));
+        }
         // In-process channel. Topic is the host (+path): `memory://my-topic`.
         // `?capacity=`, `?subscribe_mode=` are recognised; other params ignored.
         "memory" => {
@@ -1332,7 +1504,7 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
         "aws" | "aws-sqs" => ("aws", schema_fields(schemars::schema_for!(AwsConfig))),
         "zeromq" | "zmq" => ("zeromq", schema_fields(schemars::schema_for!(ZeroMqConfig))),
         other => bail!(
-            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq, s3, gs, az, abfs"
+            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq, s3, gs, az, abfs, and the structural null, static, fanout, request, switch, response"
         ),
     };
 
@@ -1973,8 +2145,8 @@ mod copy_result_tests {
 
 #[cfg(test)]
 mod uri_tests {
-    use super::endpoint_from_uri;
     use super::mq_bridge::models::{EndpointType, MongoConsume};
+    use super::{endpoint_from_uri, make_listen_address};
 
     fn config(uri: &str, tag: &str) -> serde_json::Value {
         let ep = endpoint_from_uri(uri).expect("uri should parse");
@@ -2379,6 +2551,88 @@ mod uri_tests {
             v["middlewares"][0]["dlq"]["endpoint"]["file"]["path"],
             "/tmp/failed.jsonl"
         );
+    }
+
+    // A `--from` http endpoint is a listener, and its driver takes a bare
+    // `host:port` — the scheme the URI needed to select the endpoint would
+    // otherwise reach it as part of the address.
+    #[test]
+    fn an_http_source_url_becomes_a_listen_address() {
+        let mut ep = endpoint_from_uri("http://0.0.0.0:8080?method=POST").expect("uri should parse");
+        make_listen_address(&mut ep).unwrap();
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(v["http"]["url"], "0.0.0.0:8080");
+        assert_eq!(v["http"]["method"], "POST");
+        assert_eq!(v["http"]["tls"]["required"], false);
+
+        // `https` asks for a TLS listener; the certificate still comes from `tls`.
+        let mut ep = endpoint_from_uri("https://0.0.0.0:8443").expect("uri should parse");
+        make_listen_address(&mut ep).unwrap();
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(v["http"]["url"], "0.0.0.0:8443");
+        assert_eq!(v["http"]["tls"]["required"], true);
+
+        // Endpoints that are never servers keep their connection URL.
+        let mut ep = endpoint_from_uri("kafka://broker:9092?topic=orders").expect("parses");
+        let before = serde_json::to_value(&ep).unwrap();
+        make_listen_address(&mut ep).unwrap();
+        assert_eq!(serde_json::to_value(&ep).unwrap(), before);
+
+        let err = make_listen_address(&mut endpoint_from_uri("wss://0.0.0.0:9000").unwrap())
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("wss"), "got: {err:#}");
+    }
+
+    // The mirror-proxy shape: every branch gets the message, and only the `to`
+    // branch is left able to answer the caller.
+    #[test]
+    fn fanout_mirrors_and_keeps_one_answering_branch() {
+        let ep = endpoint_from_uri("fanout:?mirror=http://staging.internal/&to=http://prod.internal/")
+            .expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        let branches = v["fanout"].as_array().expect("branches keep their order");
+        assert_eq!(branches.len(), 2);
+
+        // The mirror is wrapped so its response and its failures go nowhere.
+        assert_eq!(
+            branches[0]["request"]["to"]["http"]["url"],
+            "http://staging.internal/"
+        );
+        assert!(branches[0]["request"]["forward_to"].get("null").is_some());
+        assert_eq!(branches[1]["http"]["url"], "http://prod.internal/");
+    }
+
+    #[test]
+    fn structural_uris_nest_endpoints_and_name_their_mistakes() {
+        // A nested URI with its own query params is percent-encoded.
+        let ep = endpoint_from_uri("request:?to=http%3A%2F%2Fapi.internal%2F%3Fmethod%3DPUT")
+            .expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(v["request"]["to"]["http"]["method"], "PUT");
+        // Without a `forward_to` the response is discarded.
+        assert!(v["request"]["forward_to"].get("null").is_some());
+
+        let ep = endpoint_from_uri("switch:?metadata_key=http_status_code&case.200=null:&default=file%3A%2F%2F%2Ftmp%2Fother.jsonl")
+            .expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(v["switch"]["metadata_key"], "http_status_code");
+        assert!(v["switch"]["cases"]["200"].get("null").is_some());
+        assert_eq!(v["switch"]["default"]["file"]["path"], "/tmp/other.jsonl");
+
+        let ep = endpoint_from_uri("response:").expect("uri should parse");
+        assert!(serde_json::to_value(&ep).unwrap().get("response").is_some());
+
+        for (uri, expected) in [
+            ("fanout:", "no branches"),
+            // Named by the key, not by whatever its value fails to parse as.
+            ("fanout:?towards=bogus://x", "unsupported query param 'towards'"),
+            ("request:?forward_to=null:", "needs a 'to=<uri>'"),
+            ("switch:?case.200=null:", "needs a 'metadata_key=<key>'"),
+            ("fanout:?to=bogus://x", "unsupported endpoint scheme 'bogus'"),
+        ] {
+            let err = format!("{:#}", endpoint_from_uri(uri).unwrap_err());
+            assert!(err.contains(expected), "{uri}: got {err}");
+        }
     }
 
     // An unknown middleware name is rejected with the supported list.

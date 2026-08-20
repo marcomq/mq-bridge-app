@@ -21,6 +21,7 @@ export interface AppConfig {
 export interface ConsumerConfig {
   id?: string;
   name?: string;
+  enabled?: boolean;
   endpoint: Endpoint;
   comment?: string;
   response?: ConsumerResponseConfig | null;

@@ -232,10 +232,53 @@ mqb copy \
   `|weak-join?group_by=cid&expected_count=2&timeout_ms=1000&required=["a","b"]`.
 - A literal `|` inside the URI (e.g. in a password) must be written percent-encoded as `%7C`.
 
+### Structural endpoints in the URI
+
+Structural endpoints have no connection of their own — they arrange other endpoints. Their
+nested endpoints are query params that are themselves endpoint URIs:
+
+| URI | Meaning |
+|---|---|
+| `null:` | Discards everything. |
+| `static:?body=…&raw=true` | A fixed message: a constant source or a constant reply. |
+| `response:` | Replies to the caller; needs a source that carries a reply channel (`http`, `websocket`). |
+| `fanout:?to=<uri>&mirror=<uri>` | Sends every message to each branch, in the order written. |
+| `request:?to=<uri>&forward_to=<uri>` | Sends to a request-capable endpoint and forwards the response elsewhere; without `forward_to` the response is discarded. |
+| `switch:?metadata_key=<key>&case.<value>=<uri>&default=<uri>` | Picks one destination by a metadata value. |
+
+A nested URI only needs percent-encoding when it carries `&`, `#` or `|` of its own —
+`fanout:?to=http://prod.internal/` is fine as written, `?to=http%3A%2F%2Fprod.internal%2F%3Fmethod%3DPUT` is not.
+
+`fanout`'s two branch kinds differ in what may come back: a `to` branch is used as written, while
+a `mirror` branch has its response **and its failures** discarded, so it can neither answer the
+caller nor fail the message for the other branches. That makes the mirroring proxy one command —
+serve requests, copy each to staging, answer from production:
+
+```bash
+mqb copy \
+  --from 'http://0.0.0.0:8080' \
+  --to   'fanout:?mirror=http://staging.internal/&to=http://prod.internal/'
+```
+
+> The engine does not forward a branch's response through a fan-out yet, so the caller currently
+> gets `202 Accepted` rather than production's body. The mirroring half works today; a single
+> `--to http://prod.internal/` (no fan-out) does reply with the real response.
+
+An HTTP source is a listener, so `--from http://0.0.0.0:8080` binds that address, and `https://`
+makes it a TLS listener. Its certificate is the `tls` field, which takes a JSON literal:
+
+```bash
+mqb copy \
+  --from 'https://0.0.0.0:8443?tls={"required":true,"cert_file":"cert.pem","key_file":"key.pem"}' \
+  --to   'http://prod.internal/'
+```
+
 ### Escape hatch: full connection strings
 
 Any query parameter that isn't a recognised config field (e.g. `sslmode`, `replicaSet`) stays
-on the connection URL, so driver options just work — including object-typed fields like `tls`.
+on the connection URL, so driver options just work. That includes a name shared with an
+object-typed config field: `?tls=true` reaches the driver, while only an actual JSON literal —
+`?tls={"required":true,"ca_file":"ca.pem"}` — is read as endpoint config.
 If you already have a complete connection string, pass it verbatim with `?url=<url-encoded>`:
 
 ```bash

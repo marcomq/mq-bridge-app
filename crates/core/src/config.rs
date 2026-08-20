@@ -35,6 +35,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 fn default_route_migrated_capture() -> ConsumerMessageCaptureConfig {
     ConsumerMessageCaptureConfig {
         enabled: false,
@@ -160,6 +164,10 @@ pub struct ConsumerConfig {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    /// Whether this consumer starts at boot; carries a migrated route's `enabled`
+    /// flag. A disabled one still starts on demand from the UI.
+    #[serde(default = "default_route_enabled", skip_serializing_if = "is_true")]
+    pub enabled: bool,
     pub endpoint: Endpoint,
     #[serde(default)]
     pub comment: String,
@@ -365,6 +373,79 @@ fn source_from_str(
     Ok(config::File::from_str(&expanded, format).required(false))
 }
 
+/// Top-level keys that belong to the application rather than to a route.
+/// Everything else in a single-route config is the route.
+const APP_LEVEL_FIELDS: &[&str] = &[
+    "log_level",
+    "logger",
+    "ui_addr",
+    "metrics_addr",
+    "plugins",
+    "routes",
+    "consumers",
+    "publishers",
+    "history",
+    "env_vars",
+    "envVars",
+    "config_security",
+    "extract_secrets",
+    "default_tab",
+];
+
+/// The name a bare single-route config runs under.
+pub const SINGLE_ROUTE_NAME: &str = "route";
+
+/// Lifts routes written at the top level into the `routes:` map, so a config
+/// that is just a route needs neither the wrapper nor a name.
+///
+/// A bare `input:` becomes one route named [`SINGLE_ROUTE_NAME`] that takes every
+/// key which is not an application setting — so route options belong to it, and a
+/// misspelled one is rejected by name rather than ignored. Otherwise each
+/// top-level map holding an `input` is a route under its own key, the shape the
+/// engine's configuration guide uses. `None` when there is nothing to lift.
+fn lift_bare_routes(mut raw: serde_json::Value) -> Option<serde_json::Value> {
+    let map = raw.as_object_mut()?;
+    if map.contains_key("routes") {
+        return None;
+    }
+
+    let is_app_field = |key: &str| APP_LEVEL_FIELDS.contains(&key);
+
+    let routes = if map.contains_key("input") {
+        let keys = map.keys().filter(|key| !is_app_field(key)).cloned().collect();
+        serde_json::json!({ SINGLE_ROUTE_NAME: take_keys(map, keys) })
+    } else {
+        // A named route is recognised by what it holds, not by its key, so an
+        // unrelated top-level key stays where it is.
+        let keys: Vec<String> = map
+            .iter()
+            .filter(|(key, value)| {
+                !is_app_field(key)
+                    && value
+                        .as_object()
+                        .is_some_and(|route| route.contains_key("input"))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        if keys.is_empty() {
+            return None;
+        }
+        serde_json::Value::Object(take_keys(map, keys))
+    };
+
+    map.insert("routes".to_string(), routes);
+    Some(raw)
+}
+
+fn take_keys(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    keys: Vec<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    keys.into_iter()
+        .filter_map(|key| map.remove(&key).map(|value| (key, value)))
+        .collect()
+}
+
 fn load_config_internal(
     config_path: Option<String>,
     init_config_path: Option<String>,
@@ -481,9 +562,18 @@ fn load_config_internal(
 
     let settings = builder.build()?;
 
-    settings.clone().try_deserialize::<serde_json::Value>()?;
+    let raw = settings.clone().try_deserialize::<serde_json::Value>()?;
 
-    let mut config: AppConfig = settings.try_deserialize()?;
+    let mut config: AppConfig = match lift_bare_routes(raw) {
+        Some(lifted) => Config::builder()
+            .add_source(config::File::from_str(
+                &serde_json::to_string(&lifted)?,
+                config::FileFormat::Json,
+            ))
+            .build()?
+            .try_deserialize()?,
+        None => settings.try_deserialize()?,
+    };
     config.migrate_legacy_routes();
     Ok((config, persistent_file))
 }
@@ -688,6 +778,7 @@ impl AppConfig {
                 self.consumers.push(ConsumerConfig {
                     id: generate_config_id(),
                     name: consumer_name,
+                    enabled: route_config.enabled,
                     endpoint: route_config.route.input,
                     comment: String::new(),
                     response: None,
@@ -1256,6 +1347,102 @@ consumers:
         );
     }
 
+    // A config file that is nothing but one route: the `routes:` map and the
+    // route's name are what a single-route file should not have to invent.
+    #[test]
+    fn a_bare_input_output_config_becomes_one_named_route() {
+        let raw: serde_json::Value = serde_yaml_ng::from_str(
+            r#"
+log_level: debug
+input:
+  http: { url: "0.0.0.0:8443" }
+output:
+  http: { url: "https://upstream.internal/" }
+batch_size: 8
+"#,
+        )
+        .unwrap();
+
+        let lifted = lift_bare_routes(raw).expect("a top-level input is a single-route config");
+        let mut config: AppConfig = serde_json::from_value(lifted).unwrap();
+
+        assert_eq!(config.log_level, "debug");
+        let route = config
+            .routes
+            .get(SINGLE_ROUTE_NAME)
+            .expect("the route is named");
+        assert!(route.enabled);
+        // Route options belong to the route, not to the application.
+        assert_eq!(route.route.options.batch_size, 8);
+
+        config.migrate_legacy_routes();
+        assert_eq!(config.consumers.len(), 1);
+        assert_eq!(config.consumers[0].name, SINGLE_ROUTE_NAME);
+    }
+
+    #[test]
+    fn a_config_with_a_routes_map_is_left_alone() {
+        let raw: serde_json::Value = serde_yaml_ng::from_str(
+            r#"
+routes:
+  named:
+    input: { memory: { topic: "in" } }
+"#,
+        )
+        .unwrap();
+        assert!(lift_bare_routes(raw).is_none());
+
+        let raw: serde_json::Value = serde_yaml_ng::from_str("consumers: []").unwrap();
+        assert!(lift_bare_routes(raw).is_none());
+    }
+
+    // The shape the engine's own configuration guide is written in: route names
+    // at the top level, no `routes:` wrapper.
+    #[test]
+    fn top_level_named_routes_are_lifted_and_others_left_alone() {
+        let raw: serde_json::Value = serde_yaml_ng::from_str(
+            r#"
+ui_addr: "127.0.0.1:9091"
+kafka_to_nats:
+  input: { memory: { topic: "in" } }
+  output: { memory: { topic: "out" } }
+not_a_route:
+  something: else
+"#,
+        )
+        .unwrap();
+
+        let lifted = lift_bare_routes(raw).expect("a top-level route map is liftable");
+        assert!(
+            lifted.get("not_a_route").is_some(),
+            "a key that is not a route must stay where it is"
+        );
+
+        let config: AppConfig = serde_json::from_value(lifted).unwrap();
+        assert_eq!(config.ui_addr, "127.0.0.1:9091");
+        assert_eq!(config.routes.len(), 1);
+        assert!(config.routes.contains_key("kafka_to_nats"));
+    }
+
+    // A key that is neither an app setting nor a route field must be named, not
+    // silently dropped the way an unknown top-level key otherwise would be.
+    #[test]
+    fn a_misspelled_key_in_a_single_route_config_is_rejected() {
+        let raw: serde_json::Value = serde_yaml_ng::from_str(
+            r#"
+input: { memory: { topic: "in" } }
+batchsize: 8
+"#,
+        )
+        .unwrap();
+        let lifted = lift_bare_routes(raw).expect("a top-level input is a single-route config");
+        let error = serde_json::from_value::<AppConfig>(lifted).unwrap_err();
+        assert!(
+            error.to_string().contains("batchsize"),
+            "the error should name the key, got: {error}"
+        );
+    }
+
     #[test]
     fn test_config_deserializes_disabled_route() {
         let yaml_config = r#"
@@ -1275,6 +1462,9 @@ routes:
         assert!(config.routes.is_empty());
         let consumer = &config.consumers[0];
         assert_eq!(consumer.name, "paused_route");
+        // The flag has to survive the migration: without it the route would be
+        // started at boot like any other consumer.
+        assert!(!consumer.enabled);
         assert!(!consumer.message_capture.enabled);
         assert!(matches!(
             consumer.endpoint.endpoint_type,

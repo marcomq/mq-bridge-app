@@ -55,6 +55,37 @@ answer the prompt — an unattended run without `--ui` stays headless. See the
 [CLI reference](../reference/cli.md#starting-the-web-ui) for the full rule and every flag, and
 [Configuration grammar](../engine/configuration.md) for the config format.
 
+### What a config file has to contain
+
+Everything a config file defines is **started at boot**, in both headless and UI runs. A route
+can be held back with `enabled: false`; the UI starts it on demand.
+
+The full form is a `routes:` map alongside the application settings, which is what the UI writes
+out. Routes may also be written at the top level, so a file that is nothing but a route needs
+neither the wrapper nor a name — these three are the same bridge:
+
+```yaml
+# 1. the full form
+routes:
+  proxy:
+    input:  { http: { url: "0.0.0.0:8443" } }
+    output: { http: { url: "https://upstream.internal/" } }
+
+# 2. named at the top level, as in the Configuration grammar
+proxy:
+  input:  { http: { url: "0.0.0.0:8443" } }
+  output: { http: { url: "https://upstream.internal/" } }
+
+# 3. a single unnamed route — it runs as `route`
+input:  { http: { url: "0.0.0.0:8443" } }
+output: { http: { url: "https://upstream.internal/" } }
+```
+
+Application settings (`ui_addr`, `metrics_addr`, `log_level`, `plugins`, ...) stay at the top
+level in every form. In form 3 every other top-level key belongs to the route, so route options
+such as `batch_size` and `exit_on_empty` go there — and a misspelled one is reported by name
+rather than ignored.
+
 ### The configuration-first workflow
 
 The point of one shared config format is that you can **test connections and dial in a route in
