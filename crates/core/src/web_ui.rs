@@ -58,7 +58,6 @@ pub async fn start_web_server(
     .with_instance_kind(InstanceKind::WebUi);
     let _status_guard = WebUiStatusGuard(app.clone());
     app.spawn_status_registry_publisher();
-    app.start_configured_consumers().await;
     let bound_to_loopback = bind_addr
         .to_socket_addrs()
         .map(|addresses| {
@@ -92,6 +91,10 @@ pub async fn start_web_server(
     web_route.options.concurrency = 100;
 
     let handle = web_route.run("web_ui").await?;
+    let consumer_app = app.clone();
+    tokio::spawn(async move {
+        consumer_app.start_configured_consumers().await;
+    });
     let _ = handle.join().await;
 
     Ok(())

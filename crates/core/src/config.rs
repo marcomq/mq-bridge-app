@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use crate::encrypted_config::{
@@ -130,6 +131,7 @@ pub fn app_config_schema() -> serde_json::Value {
 
     schema["$defs"]["PulsarConfig"] = serde_json::json!({
         "type": "object",
+        "additionalProperties": false,
         "properties": {
             "url": { "type": "string" },
             "topic": { "type": "string" },
@@ -395,22 +397,22 @@ fn source_from_str(
 
 /// Top-level keys that belong to the application rather than to a route.
 /// Everything else in a single-route config is the route.
-const APP_LEVEL_FIELDS: &[&str] = &[
-    "log_level",
-    "logger",
-    "ui_addr",
-    "metrics_addr",
-    "plugins",
-    "routes",
-    "consumers",
-    "publishers",
-    "history",
-    "env_vars",
-    "envVars",
-    "config_security",
-    "extract_secrets",
-    "default_tab",
-];
+fn app_level_fields() -> &'static HashSet<String> {
+    static FIELDS: OnceLock<HashSet<String>> = OnceLock::new();
+    FIELDS.get_or_init(|| {
+        let mut fields: HashSet<String> = serde_json::to_value(AppConfig::default())
+            .expect("AppConfig default should serialize")
+            .as_object()
+            .expect("AppConfig should serialize as an object")
+            .keys()
+            .cloned()
+            .collect();
+        for field in ["envVars", "routes", "plugins", "history", "config_security"] {
+            fields.insert(field.to_string());
+        }
+        fields
+    })
+}
 
 /// The name a bare single-route config runs under.
 pub const SINGLE_ROUTE_NAME: &str = "route";
@@ -429,7 +431,7 @@ fn lift_bare_routes(mut raw: serde_json::Value) -> Option<serde_json::Value> {
         return None;
     }
 
-    let is_app_field = |key: &str| APP_LEVEL_FIELDS.contains(&key);
+    let is_app_field = |key: &str| app_level_fields().contains(key);
 
     let routes = if map.contains_key("input") {
         let keys = map
@@ -1337,6 +1339,10 @@ publishers:
         assert_eq!(
             schema.pointer("/$defs/PulsarConfig/required/0"),
             Some(&serde_json::json!("url"))
+        );
+        assert_eq!(
+            schema.pointer("/$defs/PulsarConfig/additionalProperties"),
+            Some(&serde_json::json!(false))
         );
         assert!(
             schema["$defs"]["Endpoint"]["oneOf"]

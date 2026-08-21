@@ -17,10 +17,22 @@ const POLLING_PATHS = ["/runtime-status", "/peer-status"];
 // Subtrees those pollers rewrite, excluded from the DOM signature.
 const VOLATILE_SELECTORS = ["#runtime-status", "#peer-status"];
 
+/** Open one of a panel's content tabs so the buttons in its pane become reachable. */
+const subtab = (target) => (page) => page.locator(`button.content-tab[data-target="${target}"]`).click();
+
+// One entry per reachable *state*, not per view: most buttons live in a tab that
+// is closed when the view first renders, and a sweep of the landing state alone
+// never sees them. `family` groups the states that share a view so a button
+// reachable from several of them is still only swept once.
 const VIEWS = [
-  { name: "publishers", hash: "#publishers:0" },
-  { name: "consumers", hash: "#consumers:0" },
-  { name: "config", hash: "#config" },
+  { family: "publishers", name: "publishers", hash: "#publishers:0" },
+  { family: "publishers", name: "publishers/definition", hash: "#publishers:0", seed: subtab("pub-config-pane") },
+  { family: "publishers", name: "publishers/headers", hash: "#publishers:0", seed: subtab("pub-meta-pane") },
+  { family: "publishers", name: "publishers/history", hash: "#publishers:0", seed: subtab("pub-history-pane") },
+  { family: "consumers", name: "consumers", hash: "#consumers:0" },
+  { family: "consumers", name: "consumers/definition", hash: "#consumers:0", seed: subtab("cons-def-panel") },
+  { family: "consumers", name: "consumers/output", hash: "#consumers:0", seed: subtab("cons-response-panel") },
+  { family: "config", name: "config", hash: "#config" },
 ];
 
 // Buttons whose effect is deliberately outside anything a browser can observe.
@@ -127,9 +139,40 @@ function isPolling(url) {
  * whatever dialog the previous button opened — and an open modal swallows the
  * clicks that follow. Routing through about:blank forces a real remount.
  */
-async function freshView(page, hash) {
+async function freshView(page, view) {
   await page.goto("about:blank");
-  await gotoView(page, hash);
+  await gotoView(page, view.hash);
+  await settle(page);
+  if (view.seed) {
+    await view.seed(page);
+    await settle(page);
+  }
+}
+
+/**
+ * gotoView returns once the shell is up, but the panels hydrate a tick later.
+ * Taking inventory before that hid the entire publisher detail pane — 18 of its
+ * buttons were reported "not visible" when they were merely not rendered yet.
+ * Wait until the count of visible buttons stops moving.
+ */
+async function settle(page) {
+  let previous = -1;
+  await expect
+    .poll(
+      async () => {
+        const count = await page.evaluate(
+          () =>
+            [...document.querySelectorAll("button, wa-button")].filter(
+              (element) => element.getClientRects().length > 0,
+            ).length,
+        );
+        const stable = count > 0 && count === previous;
+        previous = count;
+        return stable;
+      },
+      { timeout: 10_000, intervals: [100, 100, 200, 200, 400] },
+    )
+    .toBe(true);
 }
 
 test.describe("dead button sweep", () => {
@@ -162,38 +205,52 @@ test.describe("dead button sweep", () => {
 
     const findings = [];
     const skipped = [];
+    // Scenes in one family share a sidebar and a toolbar; without this the same
+    // button would be clicked once per scene for no extra coverage.
+    const sweptKeys = new Set();
+    // Reached anywhere counts as reached: the same button is invisible in every
+    // view but its own, so a per-family key would report it as a coverage gap.
+    const sweptLabels = new Set();
     let clicked = 0;
+    let deduped = 0;
 
     for (const view of VIEWS) {
       await resetConfig(page);
-      await freshView(page, view.hash);
+      await freshView(page, view);
       const inventory = (await page.evaluate(tagButtons)).filter((button) => {
         if (!button.visible) {
-          skipped.push(`${view.name}: "${button.label}" (not visible)`);
+          skipped.push({ view, button, reason: "not visible" });
           return false;
         }
         if (button.disabled) {
-          skipped.push(`${view.name}: "${button.label}" (disabled)`);
+          skipped.push({ view, button, reason: "disabled" });
           return false;
         }
         if (button.active) {
-          skipped.push(`${view.name}: "${button.label}" (already active)`);
+          skipped.push({ view, button, reason: "already active" });
           return false;
         }
         if (DRAG_HANDLE.test(button.label)) {
-          skipped.push(`${view.name}: "${button.label}" (drag handle)`);
+          skipped.push({ view, button, reason: "drag handle" });
           return false;
         }
+        const sweepId = `${view.family}:${button.key}`;
+        if (sweptKeys.has(sweepId)) {
+          deduped += 1;
+          return false;
+        }
+        sweptKeys.add(sweepId);
+        sweptLabels.add(button.label);
         return true;
       });
 
       for (const button of inventory) {
         await resetConfig(page);
-        await freshView(page, view.hash);
+        await freshView(page, view);
         const current = await page.evaluate(tagButtons);
         const match = current.find((entry) => entry.key === button.key);
         if (!match || !match.visible || match.disabled || match.active) {
-          skipped.push(`${view.name}: "${button.label}" (not reachable on reload)`);
+          skipped.push({ view, button, reason: "not reachable on reload" });
           continue;
         }
 
@@ -244,9 +301,36 @@ test.describe("dead button sweep", () => {
       }
     }
 
-    testInfo.attach("skipped-buttons", { body: skipped.join("\n"), contentType: "text/plain" });
-    console.log(`swept ${clicked} buttons, skipped ${skipped.length}`);
-    if (skipped.length > 0) console.log(`skipped:\n  ${skipped.join("\n  ")}`);
+    // Every view renders the whole app's DOM with the inactive panels display:none,
+    // so a raw skip count counts the same button once per state. What matters is
+    // the buttons no state reached at all.
+    // "disabled", "already active" and drag handles are deliberate exclusions, not
+    // gaps; a button that was never *visible* anywhere is the thing to report.
+    const neverReached = skipped.filter(
+      (entry) =>
+        !sweptLabels.has(entry.button.label) &&
+        (entry.reason === "not visible" || entry.reason === "not reachable on reload"),
+    );
+    const byLabel = new Map();
+    for (const entry of neverReached) {
+      const seen = byLabel.get(entry.button.label) || new Set();
+      seen.add(entry.reason);
+      byLabel.set(entry.button.label, seen);
+    }
+
+    testInfo.attach("skipped-buttons", {
+      body: skipped.map((entry) => `${entry.view.name}: "${entry.button.label}" (${entry.reason})`).join("\n"),
+      contentType: "text/plain",
+    });
+    console.log(
+      `swept ${clicked} buttons across ${VIEWS.length} states ` +
+        `(${deduped} reachable from more than one state, clicked once); ` +
+        `${byLabel.size} buttons never reached`,
+    );
+    if (byLabel.size > 0) {
+      const lines = [...byLabel].map(([label, reasons]) => `"${label}" (${[...reasons].join(", ")})`);
+      console.log(`never reached:\n  ${lines.join("\n  ")}`);
+    }
 
     expect(findings, `dead or broken buttons:\n  ${findings.join("\n  ")}`).toEqual([]);
   });

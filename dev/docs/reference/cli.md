@@ -254,7 +254,8 @@ nested endpoints are query params that are themselves endpoint URIs:
 | `switch:?when=<expression>&to=<uri>&default=<uri>` | Picks the first destination whose predicate matches. |
 
 A nested URI only needs percent-encoding when it carries `&`, `#` or `|` of its own —
-`fanout:?to=http://prod.internal/` is fine as written, `?to=http%3A%2F%2Fprod.internal%2F%3Fmethod%3DPUT` is not.
+`fanout:?to=http://prod.internal/?method=PUT` is fine as written, while an inner `&` must be encoded,
+as in `fanout:?to=http%3A%2F%2Fprod.internal%2F%3Fmethod%3DPUT%26timeout_ms%3D1000`.
 
 `switch` has the two modes the engine has, and takes one or the other, never both. Value lookup
 branches on a metadata value; predicate mode takes `when=<expression>` / `to=<uri>` pairs in the

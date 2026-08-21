@@ -108,8 +108,12 @@ test("Reset asks first and cancelling leaves the config untouched", async ({ pag
 test("Reset clears publishers and consumers once confirmed", async ({ page }) => {
   await gotoView(page, "#config");
 
+  // resetConfig() ends in window.location.reload(). Arm the wait before the
+  // click: otherwise that reload lands mid-`page.goto` below and aborts it.
+  const reloaded = page.waitForEvent("load", { timeout: 10_000 });
   await action(page, ACTIONS.reset).click();
   await mqbDialog(page).locator("wa-button", { hasText: "Continue" }).click();
+  await reloaded;
 
   await expect
     .poll(async () => (await readConfig(page)).publishers.length, { timeout: 10_000 })

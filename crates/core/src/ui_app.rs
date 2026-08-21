@@ -1069,9 +1069,9 @@ impl UiApp {
         }
     }
 
-    /// Starts every enabled consumer, as happens at boot. One that fails is
-    /// logged and skipped rather than aborting the rest — with a UI attached,
-    /// that UI is where the operator fixes it. Returns how many started.
+    /// Starts every enabled consumer, logging and skipping failures rather than
+    /// aborting the rest. Returns the number started so every caller can report
+    /// partial or complete startup failure appropriately.
     pub async fn start_configured_consumers(&self) -> usize {
         let consumers = {
             let config = self.config.read().await;
@@ -2512,6 +2512,8 @@ mod tests {
             !handles.contains_key("off"),
             "a disabled consumer must not be started at boot"
         );
+        drop(handles);
+        app.stop_consumer("on").await;
     }
 
     // A file source makes the duplicate unambiguous: each route reads the whole

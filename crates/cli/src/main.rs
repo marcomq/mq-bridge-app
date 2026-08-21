@@ -569,7 +569,18 @@ async fn main() -> anyhow::Result<()> {
             &args.plugins,
         )?
         .with_instance_kind(InstanceKind::Cli);
-        app.start_configured_consumers().await;
+        let enabled_consumers = config
+            .consumers
+            .iter()
+            .filter(|consumer| consumer.enabled)
+            .count();
+        let started_consumers = app.start_configured_consumers().await;
+        if started_consumers < enabled_consumers {
+            warn!("Started {started_consumers} of {enabled_consumers} enabled consumers");
+        }
+        if enabled_consumers > 0 && started_consumers == 0 {
+            anyhow::bail!("none of the {enabled_consumers} enabled consumers could be started");
+        }
         headless_app = Some(app);
         None
     };
@@ -598,8 +609,8 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Shutdown signal received. Broadcasting to all tasks...");
 
-    // Releases the headless consumers' routes; `stop_route` below then waits for
-    // each to end.
+    // Dropping the app releases its route handles without stopping the underlying
+    // routes; the `stop_route` loop below performs shutdown.
     drop(headless_app);
 
     let shutdown_task = async {
@@ -1301,7 +1312,14 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
             return Ok(Endpoint::new(endpoint_type));
         }
         // `response:` — replies to the caller; needs an input with a reply channel.
-        "response" => return Ok(Endpoint::new(EndpointType::Response(Default::default()))),
+        "response" => {
+            if let Some((key, _)) = parsed.query_pairs().next() {
+                anyhow::bail!(
+                    "unsupported query param '{key}' in response URI '{uri}'. Response takes no query parameters"
+                );
+            }
+            return Ok(Endpoint::new(EndpointType::Response(Default::default())));
+        }
         // `fanout:?mirror=<uri>&to=<uri>`, in the order written. Only a `to`
         // branch can answer the caller.
         "fanout" => {
@@ -1341,6 +1359,9 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
                         "unsupported query param '{other}' in request URI '{uri}'. Supported: to, forward_to"
                     ),
                 };
+                if slot.is_some() {
+                    anyhow::bail!("duplicate query param '{key}' in request URI '{uri}'");
+                }
                 *slot = Some(Box::new(nested_endpoint(&key, &value, uri)?));
             }
             let Some(to) = to else {
@@ -1536,7 +1557,7 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
         "aws" | "aws-sqs" => ("aws", schema_fields(schemars::schema_for!(AwsConfig))),
         "zeromq" | "zmq" => ("zeromq", schema_fields(schemars::schema_for!(ZeroMqConfig))),
         other => bail!(
-            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq, s3, gs, az, abfs, and the structural null, static, fanout, request, switch, response"
+            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq, s3, gs, az, abfs, and the structural memory, null, static, fanout, request, switch, response"
         ),
     };
 
@@ -2680,7 +2701,13 @@ mod uri_tests {
                 "fanout:?towards=bogus://x",
                 "unsupported query param 'towards'",
             ),
+            ("response:?to=null:", "unsupported query param 'to'"),
             ("request:?forward_to=null:", "needs a 'to=<uri>'"),
+            ("request:?to=null:&to=null:", "duplicate query param 'to'"),
+            (
+                "request:?to=null:&forward_to=null:&forward_to=null:",
+                "duplicate query param 'forward_to'",
+            ),
             ("switch:?case.200=null:", "needs a 'metadata_key=<key>'"),
             ("switch:?when=amount > 100", "with no 'to=<uri>' after it"),
             (

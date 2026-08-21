@@ -68,7 +68,12 @@ if [ ! -f "$WORK/cert.pem" ]; then
 fi
 cp "$HERE/post.lua" "$WORK/post.lua"
 
-cleanup() { pkill -f "nginx: master.*$WORK" 2>/dev/null; pkill -f "mq-bridge-app copy" 2>/dev/null; }
+MQB_PIDS=""
+MQB_PID=""
+cleanup() {
+  pkill -f "nginx: master.*$WORK" 2>/dev/null || true
+  for pid in $MQB_PIDS; do kill "$pid" 2>/dev/null || true; done
+}
 trap cleanup EXIT
 
 # ---- helpers ---------------------------------------------------------------
@@ -109,11 +114,24 @@ start_mqb() { # port to_uri concurrency logname
   "$MQB" copy \
     --from "http://0.0.0.0:$1?method=POST&workers=2&concurrency_limit=256" \
     --to "$2" --concurrency "$3" > "$WORK/logs/$4" 2>&1 &
+  MQB_PID=$!
+  MQB_PIDS="$MQB_PIDS $MQB_PID"
 }
 start_mqb_tls() { # port to_uri concurrency logname
   "$MQB" copy \
     --from "https://0.0.0.0:$1?method=POST&workers=2&concurrency_limit=256&tls={\"required\":true,\"cert_file\":\"$WORK/cert.pem\",\"key_file\":\"$WORK/key.pem\"}" \
     --to "$2" --concurrency "$3" > "$WORK/logs/$4" 2>&1 &
+  MQB_PID=$!
+  MQB_PIDS="$MQB_PIDS $MQB_PID"
+}
+stop_mqb() {
+  kill "$MQB_PID" 2>/dev/null || true
+  wait "$MQB_PID" 2>/dev/null || true
+  active_pids=""
+  for pid in $MQB_PIDS; do
+    [ "$pid" = "$MQB_PID" ] || active_pids="$active_pids $pid"
+  done
+  MQB_PIDS=$active_pids
 }
 wait_up() { for _ in $(seq 1 60); do curl -sk -m1 -X POST --data x "$1" >/dev/null 2>&1 && return 0; sleep 0.5; done; return 1; }
 
@@ -130,7 +148,7 @@ bench "upstream-direct" "http://127.0.0.1:9001/test"
 
 echo "--- 1. nginx ---"
 nginx -c "$WORK/proxy.conf" -p "$WORK" > "$WORK/logs/proxy-nginx.log" 2>&1 &
-wait_up "http://127.0.0.1:8080/plain" || { echo "nginx proxy failed"; cat "$WORK/logs/proxy-nginx.log"; }
+wait_up "http://127.0.0.1:8080/plain" || { echo "nginx proxy failed"; cat "$WORK/logs/proxy-nginx.log"; exit 1; }
 echo "  sanity: $(curl -sk -m2 -X POST --data x http://127.0.0.1:8080/plain) / $(curl -sk -m2 -X POST --data x http://127.0.0.1:8080/test) / $(curl -sk -m2 -X POST --data x https://127.0.0.1:8443/test)"
 bench "nginx-proxy"            "http://127.0.0.1:8080/plain"
 bench "nginx-proxy+mirror"     "http://127.0.0.1:8080/test"
@@ -139,24 +157,24 @@ pkill -f "nginx: master.*$WORK/proxy.conf"; sleep 1
 
 echo "--- 2. mq-bridge-app ---"
 start_mqb 8081 "$PROD" 64 mqb-plain.log
-wait_up "http://127.0.0.1:8081/plain" || { echo "mqb plain failed"; tail -20 "$WORK/logs/mqb-plain.log"; }
+wait_up "http://127.0.0.1:8081/plain" || { echo "mqb plain failed"; tail -20 "$WORK/logs/mqb-plain.log"; exit 1; }
 echo "  sanity: $(curl -s -m2 -X POST --data x http://127.0.0.1:8081/plain)"
 bench "mqb-proxy (conc=64)" "http://127.0.0.1:8081/plain"
-pkill -f "mq-bridge-app copy"; sleep 1
+stop_mqb; sleep 1
 
 start_mqb 8081 "$FANOUT" 64 mqb-mirror.log
-wait_up "http://127.0.0.1:8081/test" || { echo "mqb mirror failed"; tail -20 "$WORK/logs/mqb-mirror.log"; }
+wait_up "http://127.0.0.1:8081/test" || { echo "mqb mirror failed"; tail -20 "$WORK/logs/mqb-mirror.log"; exit 1; }
 echo "  sanity: $(curl -s -m2 -X POST --data x http://127.0.0.1:8081/test)"
 bench "mqb-proxy+mirror (conc=64)" "http://127.0.0.1:8081/test"
-pkill -f "mq-bridge-app copy"; sleep 1
+stop_mqb; sleep 1
 
 start_mqb 8081 "$FANOUT" 4 mqb-mirror-c4.log
-wait_up "http://127.0.0.1:8081/test" || echo "mqb mirror c4 failed"
+wait_up "http://127.0.0.1:8081/test" || { echo "mqb mirror c4 failed"; tail -20 "$WORK/logs/mqb-mirror-c4.log"; exit 1; }
 bench "mqb-proxy+mirror (conc=4 default)" "http://127.0.0.1:8081/test"
-pkill -f "mq-bridge-app copy"; sleep 1
+stop_mqb; sleep 1
 
 start_mqb_tls 8444 "$FANOUT" 64 mqb-mirror-tls.log
-wait_up "https://127.0.0.1:8444/test" || { echo "mqb tls failed"; tail -20 "$WORK/logs/mqb-mirror-tls.log"; }
+wait_up "https://127.0.0.1:8444/test" || { echo "mqb tls failed"; tail -20 "$WORK/logs/mqb-mirror-tls.log"; exit 1; }
 echo "  sanity: $(curl -sk -m2 -X POST --data x https://127.0.0.1:8444/test)"
 bench "mqb-proxy+mirror-tls (conc=64)" "https://127.0.0.1:8444/test"
 

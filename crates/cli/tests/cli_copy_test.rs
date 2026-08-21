@@ -2140,12 +2140,32 @@ fn a_request_without_forward_to_still_calls_and_discards_the_response() {
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("set fixture timeout");
+        let mut request = Vec::new();
         let mut buffer = [0_u8; 4096];
-        let read = stream.read(&mut buffer).unwrap_or_default();
+        loop {
+            let read = stream.read(&mut buffer).expect("read CLI request");
+            request.extend_from_slice(&buffer[..read]);
+            let header_end = request.windows(4).position(|bytes| bytes == b"\r\n\r\n");
+            if let Some(header_end) = header_end {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                    .unwrap_or_default();
+                if request.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+            assert_ne!(read, 0, "client closed before sending the full request");
+        }
         let _ = stream.write_all(
             b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         );
-        let _ = request_tx.send(String::from_utf8_lossy(&buffer[..read]).into_owned());
+        let _ = request_tx.send(String::from_utf8_lossy(&request).into_owned());
     });
 
     let result = copy(
