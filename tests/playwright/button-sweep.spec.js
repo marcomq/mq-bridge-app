@@ -20,6 +20,18 @@ const VOLATILE_SELECTORS = ["#runtime-status", "#peer-status"];
 /** Open one of a panel's content tabs so the buttons in its pane become reachable. */
 const subtab = (target) => (page) => page.locator(`button.content-tab[data-target="${target}"]`).click();
 
+/**
+ * Open a panel's JSON preview. The dialog carries its own Copy/Close buttons,
+ * which no view exposes until it is open. Both panels mount a dialog, so match
+ * on the open one: the wa-dialog host has no layout box, which rules out
+ * toBeVisible, and the bare class matches two elements.
+ */
+const jsonPreview = (paneTarget, triggerId) => async (page) => {
+  await subtab(paneTarget)(page);
+  await page.locator(`#${triggerId}`).click();
+  await expect(page.locator("wa-dialog.json-preview-dialog[open]")).toHaveCount(1);
+};
+
 // One entry per reachable *state*, not per view: most buttons live in a tab that
 // is closed when the view first renders, and a sweep of the landing state alone
 // never sees them. `family` groups the states that share a view so a button
@@ -29,9 +41,11 @@ const VIEWS = [
   { family: "publishers", name: "publishers/definition", hash: "#publishers:0", seed: subtab("pub-config-pane") },
   { family: "publishers", name: "publishers/headers", hash: "#publishers:0", seed: subtab("pub-meta-pane") },
   { family: "publishers", name: "publishers/history", hash: "#publishers:0", seed: subtab("pub-history-pane") },
+  { family: "publishers", name: "publishers/json", hash: "#publishers:0", seed: jsonPreview("pub-config-pane", "pub-export-config") },
   { family: "consumers", name: "consumers", hash: "#consumers:0" },
   { family: "consumers", name: "consumers/definition", hash: "#consumers:0", seed: subtab("cons-def-panel") },
   { family: "consumers", name: "consumers/output", hash: "#consumers:0", seed: subtab("cons-response-panel") },
+  { family: "consumers", name: "consumers/json", hash: "#consumers:0", seed: jsonPreview("cons-def-panel", "cons-export-config") },
   { family: "config", name: "config", hash: "#config" },
 ];
 
@@ -309,6 +323,7 @@ test.describe("dead button sweep", () => {
     const neverReached = skipped.filter(
       (entry) =>
         !sweptLabels.has(entry.button.label) &&
+        !DRAG_HANDLE.test(entry.button.label) &&
         (entry.reason === "not visible" || entry.reason === "not reachable on reload"),
     );
     const byLabel = new Map();
