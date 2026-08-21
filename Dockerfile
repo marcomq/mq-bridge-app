@@ -15,6 +15,7 @@ RUN dpkg --add-architecture arm64 && \
         pkg-config \
         curl \
         cmake \
+        protobuf-compiler \
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
         gcc \
