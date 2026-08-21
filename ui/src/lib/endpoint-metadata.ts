@@ -110,8 +110,18 @@ const ENDPOINT_KIND_OVERRIDES = {
     },
     responseCapable: true,
   },
-  mqtt: {
+  pulsar: {
     order: 7,
+    basicFields: ["url", "topic", "subscription"],
+    requestBar: {
+      fields: [
+        { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "persistent://public/default/events" },
+        { inputId: "pub-url", field: "url", label: "BROKER", placeholder: "pulsar://localhost:6650" },
+      ],
+    },
+  },
+  mqtt: {
+    order: 8,
     basicFields: ["url", "topic"],
     requestBar: {
       fields: [
@@ -122,7 +132,7 @@ const ENDPOINT_KIND_OVERRIDES = {
     responseCapable: true,
   },
   mongodb: {
-    order: 8,
+    order: 9,
     basicFields: ["url", "database", "collection", "change_stream"],
     requestBar: {
       fields: [
@@ -134,7 +144,7 @@ const ENDPOINT_KIND_OVERRIDES = {
     responseCapable: true,
   },
   sqlx: {
-    order: 9,
+    order: 10,
     basicFields: ["url", "table"],
     requestBar: {
       fields: [
@@ -144,7 +154,7 @@ const ENDPOINT_KIND_OVERRIDES = {
     },
   },
   zeromq: {
-    order: 10,
+    order: 11,
     basicFields: ["url", "topic"],
     requestBar: {
       fields: [

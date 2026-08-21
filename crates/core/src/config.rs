@@ -127,6 +127,26 @@ pub fn app_config_schema() -> serde_json::Value {
             .unwrap_or_else(|| panic!("AppConfig schema should contain {definition}.batch_size"))
             .insert("default".to_string(), default.clone());
     }
+
+    schema["$defs"]["PulsarConfig"] = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "url": { "type": "string" },
+            "topic": { "type": "string" },
+            "subscription": { "type": "string" }
+        },
+        "required": ["url"]
+    });
+    schema["$defs"]["Endpoint"]["oneOf"]
+        .as_array_mut()
+        .expect("AppConfig schema should contain Endpoint variants")
+        .push(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pulsar": { "$ref": "#/$defs/PulsarConfig" }
+            },
+            "required": ["pulsar"]
+        }));
     schema
 }
 
@@ -412,7 +432,11 @@ fn lift_bare_routes(mut raw: serde_json::Value) -> Option<serde_json::Value> {
     let is_app_field = |key: &str| APP_LEVEL_FIELDS.contains(&key);
 
     let routes = if map.contains_key("input") {
-        let keys = map.keys().filter(|key| !is_app_field(key)).cloned().collect();
+        let keys = map
+            .keys()
+            .filter(|key| !is_app_field(key))
+            .cloned()
+            .collect();
         serde_json::json!({ SINGLE_ROUTE_NAME: take_keys(map, keys) })
     } else {
         // A named route is recognised by what it holds, not by its key, so an
@@ -1305,6 +1329,22 @@ publishers:
             );
             assert_eq!(batch_size["minimum"], 1);
         }
+    }
+
+    #[test]
+    fn app_schema_includes_the_built_in_pulsar_endpoint() {
+        let schema = app_config_schema();
+        assert_eq!(
+            schema.pointer("/$defs/PulsarConfig/required/0"),
+            Some(&serde_json::json!("url"))
+        );
+        assert!(
+            schema["$defs"]["Endpoint"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|variant| variant["required"] == serde_json::json!(["pulsar"]))
+        );
     }
 
     #[test]

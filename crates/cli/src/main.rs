@@ -1400,7 +1400,9 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
                 }
             }
             if let Some(dangling) = condition {
-                anyhow::bail!("switch URI '{uri}' has 'when={dangling}' with no 'to=<uri>' after it");
+                anyhow::bail!(
+                    "switch URI '{uri}' has 'when={dangling}' with no 'to=<uri>' after it"
+                );
             }
             // The two modes differ in cost, not just spelling, so mixing them
             // would hide which one a message actually took.
@@ -1421,7 +1423,7 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
             }
             return Ok(Endpoint::new(EndpointType::Switch(
                 mq_bridge::models::SwitchConfig {
-                    metadata_key,
+                    metadata_key: metadata_key.unwrap_or_default(),
                     cases: cases.into_iter().collect(),
                     when,
                     default: default.map(Box::new),
@@ -2588,7 +2590,8 @@ mod uri_tests {
     // otherwise reach it as part of the address.
     #[test]
     fn an_http_source_url_becomes_a_listen_address() {
-        let mut ep = endpoint_from_uri("http://0.0.0.0:8080?method=POST").expect("uri should parse");
+        let mut ep =
+            endpoint_from_uri("http://0.0.0.0:8080?method=POST").expect("uri should parse");
         make_listen_address(&mut ep).unwrap();
         let v = serde_json::to_value(&ep).unwrap();
         assert_eq!(v["http"]["url"], "0.0.0.0:8080");
@@ -2608,8 +2611,8 @@ mod uri_tests {
         make_listen_address(&mut ep).unwrap();
         assert_eq!(serde_json::to_value(&ep).unwrap(), before);
 
-        let err = make_listen_address(&mut endpoint_from_uri("wss://0.0.0.0:9000").unwrap())
-            .unwrap_err();
+        let err =
+            make_listen_address(&mut endpoint_from_uri("wss://0.0.0.0:9000").unwrap()).unwrap_err();
         assert!(format!("{err:#}").contains("wss"), "got: {err:#}");
     }
 
@@ -2617,8 +2620,9 @@ mod uri_tests {
     // branch is left able to answer the caller.
     #[test]
     fn fanout_mirrors_and_keeps_one_answering_branch() {
-        let ep = endpoint_from_uri("fanout:?mirror=http://staging.internal/&to=http://prod.internal/")
-            .expect("uri should parse");
+        let ep =
+            endpoint_from_uri("fanout:?mirror=http://staging.internal/&to=http://prod.internal/")
+                .expect("uri should parse");
         let v = serde_json::to_value(&ep).unwrap();
         let branches = v["fanout"].as_array().expect("branches keep their order");
         assert_eq!(branches.len(), 2);
@@ -2659,9 +2663,12 @@ mod uri_tests {
         assert_eq!(v["switch"]["when"][0]["if"], "amount > 100");
         assert!(v["switch"]["when"][0]["to"].get("null").is_some());
         assert_eq!(v["switch"]["when"][1]["if"], "status == 'paid'");
-        assert_eq!(v["switch"]["when"][1]["to"]["file"]["path"], "/tmp/paid.jsonl");
+        assert_eq!(
+            v["switch"]["when"][1]["to"]["file"]["path"],
+            "/tmp/paid.jsonl"
+        );
         assert_eq!(v["switch"]["default"]["file"]["path"], "/tmp/rest.jsonl");
-        assert!(v["switch"]["metadata_key"].is_null());
+        assert_eq!(v["switch"]["metadata_key"], "");
 
         let ep = endpoint_from_uri("response:").expect("uri should parse");
         assert!(serde_json::to_value(&ep).unwrap().get("response").is_some());
@@ -2669,17 +2676,26 @@ mod uri_tests {
         for (uri, expected) in [
             ("fanout:", "no branches"),
             // Named by the key, not by whatever its value fails to parse as.
-            ("fanout:?towards=bogus://x", "unsupported query param 'towards'"),
+            (
+                "fanout:?towards=bogus://x",
+                "unsupported query param 'towards'",
+            ),
             ("request:?forward_to=null:", "needs a 'to=<uri>'"),
             ("switch:?case.200=null:", "needs a 'metadata_key=<key>'"),
             ("switch:?when=amount > 100", "with no 'to=<uri>' after it"),
-            ("switch:?when=a&when=b&to=null:", "with no 'to=<uri>' after it"),
+            (
+                "switch:?when=a&when=b&to=null:",
+                "with no 'to=<uri>' after it",
+            ),
             ("switch:?to=null:", "that no 'when=<expression>' precedes"),
             (
                 "switch:?metadata_key=k&case.1=null:&when=amount > 100&to=null:",
                 "mixes both modes",
             ),
-            ("fanout:?to=bogus://x", "unsupported endpoint scheme 'bogus'"),
+            (
+                "fanout:?to=bogus://x",
+                "unsupported endpoint scheme 'bogus'",
+            ),
         ] {
             let err = format!("{:#}", endpoint_from_uri(uri).unwrap_err());
             assert!(err.contains(expected), "{uri}: got {err}");

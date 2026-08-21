@@ -411,6 +411,7 @@ export interface HttpConfig {
   request_timeout_ms?: number | null;
   internal_buffer_size?: number | null;
   fire_and_forget?: boolean;
+  pass_through_status?: boolean;
   receive_streamable?: boolean;
   inline_response_fast_path?: boolean | null;
   server_protocol?: HttpServerProtocol;
@@ -593,7 +594,7 @@ export interface StreamBufferConfig {
 }
 
 export interface SwitchConfig {
-  metadata_key?: string | null;
+  metadata_key?: string;
   cases?: Record<string, Endpoint>;
   when?: SwitchCase[];
   default?: Endpoint | null;
@@ -634,6 +635,12 @@ export interface ConfigSecurity {
 }
 
 export type ConfigSecurityMode = "unencrypted" | "balanced" | "env_temporary_messages" | "temporary_messages" | "sensitive" | "durable";
+
+export interface PulsarConfig {
+  url: string;
+  topic?: string;
+  subscription?: string;
+}
 
 export interface ConsumerStatusSnapshot {
   running: boolean;

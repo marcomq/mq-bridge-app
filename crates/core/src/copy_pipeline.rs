@@ -722,5 +722,4 @@ mod tests {
         // The endpoint's own type tag is null-valued and must survive.
         assert!(definition["destination"].get("null").is_some());
     }
-
 }

@@ -36,6 +36,7 @@ const CONSUMER_ENDPOINT_DEFAULTS: Record<string, Record<string, unknown> | strin
   memory: { topic: "events" },
   amqp: { url: "amqp://guest:guest@localhost:5672/%2f", queue: "jobs" },
   kafka: { url: "kafka:9092", topic: "events" },
+  pulsar: { url: "pulsar://localhost:6650", topic: "persistent://public/default/events", subscription: "mq-bridge" },
   mqtt: { url: "tcp://localhost:1883", topic: "events/updates" },
   mongodb: { url: "mongodb://localhost:27017", database: "app", collection: "messages" },
   sqlx: { url: "postgres://user:pass@localhost/db", table: "events" },
