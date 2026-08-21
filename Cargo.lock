@@ -4384,6 +4384,8 @@ dependencies = [
 [[package]]
 name = "mq-bridge"
 version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5dc179044bac79dd4e44ed9c7d405fb746d422a7f899cddb7444f8db9b16585"
 dependencies = [
  "aes-gcm",
  "anyhow",
