@@ -81,6 +81,51 @@ describe("endpoint-utils", () => {
     expect(normalizedRef).toEqual({ ref: "publisher.orders", middlewares: [] });
   });
 
+  test("leaves a predicate switch in when mode instead of seeding value lookup", () => {
+    const normalized = ensureEndpointDefaults(
+      {
+        switch: {
+          when: [{ if: "amount > 100", to: "publisher.large" }],
+        },
+      },
+      ensureRefOnlyEndpointDefaults,
+    );
+
+    // Seeding `metadata_key` here would make the engine reject the endpoint for
+    // naming both modes at once.
+    expect(normalized).toEqual({
+      switch: {
+        when: [{ if: "amount > 100", to: { ref: "publisher.large", middlewares: [] } }],
+        default: { ref: "", middlewares: [] },
+      },
+      middlewares: [],
+    });
+  });
+
+  test("clears a leftover empty when list when the switch is in value-lookup mode", () => {
+    const normalized = ensureEndpointDefaults(
+      {
+        switch: {
+          metadata_key: "kind",
+          cases: { a: "publisher.a" },
+          when: [],
+        },
+      },
+      ensureRefOnlyEndpointDefaults,
+    );
+
+    // An empty `when` left behind by a mode switch in the form would travel to
+    // the engine as a second mode named alongside `metadata_key`.
+    expect(normalized).toEqual({
+      switch: {
+        metadata_key: "kind",
+        cases: { a: { ref: "publisher.a", middlewares: [] } },
+        default: { ref: "", middlewares: [] },
+      },
+      middlewares: [],
+    });
+  });
+
   test("drops an encryption block that only holds the form's seeded defaults", () => {
     const normalized = ensureEndpointDefaults(
       {

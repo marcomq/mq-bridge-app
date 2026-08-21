@@ -24,7 +24,6 @@ mq-bridge = { workspace = true, features = ["schema", "plugin"] }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-zen-expression = { workspace = true }
 hex = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }

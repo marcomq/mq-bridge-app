@@ -190,6 +190,7 @@ export interface CookieJarMiddleware {
 
 export interface TransformMiddleware {
   mapping?: Record<string, MappingRule>;
+  expression?: string | null;
   schema?: unknown;
   schema_file?: string | null;
   coerce?: boolean;
@@ -592,9 +593,15 @@ export interface StreamBufferConfig {
 }
 
 export interface SwitchConfig {
-  metadata_key: string;
-  cases: Record<string, Endpoint>;
+  metadata_key?: string | null;
+  cases?: Record<string, Endpoint>;
+  when?: SwitchCase[];
   default?: Endpoint | null;
+}
+
+export interface SwitchCase {
+  if: string;
+  to: Endpoint;
 }
 
 export type ResponseConfig = Record<string, never>;

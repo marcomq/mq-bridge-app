@@ -739,7 +739,7 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
         copy_pipeline::expand_uri_variables(to).context("invalid copy destination endpoint")?;
     let mut input = endpoint_from_uri(&from).context("invalid copy source endpoint")?;
     make_listen_address(&mut input).context("invalid copy source endpoint")?;
-    let mut output = endpoint_from_uri(&to).context("invalid copy destination endpoint")?;
+    let output = endpoint_from_uri(&to).context("invalid copy destination endpoint")?;
     let resume = if args.resume {
         Some(copy_pipeline::configure_resume(
             &mut input,
@@ -749,24 +749,18 @@ async fn run_copy(args: CopyArgs) -> anyhow::Result<()> {
     } else {
         None
     };
-    // Consumer middlewares apply outermost-first, so this one — added before the
-    // filter — sees only the messages the filter kept: what was copied.
-    let copied = copy_pipeline::configure_counter(&mut input)?;
+    // Attached outside every other source middleware, so it sees only what the
+    // whole chain let through — past the filter below and past any URI-configured
+    // `transform` that rejects rows: what was copied.
+    let copied = copy_pipeline::configure_delivered_counter(&mut input)?;
     if let Some(expression) = &args.filter {
-        copy_pipeline::configure_filter(&mut input, expression)?;
+        copy_pipeline::configure_filter(&mut input, expression);
     }
-    // Added after the filter, so it sits closer to the source and tallies what was
-    // read. The rate is derived from this: a selective filter reduces what lands at
-    // the destination without making the copy any slower, and rating the surviving
-    // rows against the time spent reading every row reports that as a slowdown.
+    // Innermost, so it tallies everything the source produced. The rate is derived
+    // from this: a selective filter reduces what lands at the destination without
+    // making the copy any slower, and rating the surviving rows against the time
+    // spent reading every row reports that as a slowdown.
     let read = copy_pipeline::configure_counter(&mut input)?;
-    // After `configure_resume`, so the checkpoint identity is still derived from the
-    // destination the operator asked for: relaxing the naming must not invalidate a
-    // checkpoint written before this ran. After the filter too, since that is one of
-    // the middlewares it looks for.
-    if let Some(reason) = copy_pipeline::relax_object_naming(&input, &mut output) {
-        warn!("{reason}");
-    }
     let input_endpoint_label = endpoint_type_label(&input.endpoint_type);
     let output_endpoint_label = endpoint_type_label(&output.endpoint_type);
     let options = RouteOptions {
@@ -1044,7 +1038,7 @@ fn copy_result(
 
     if matches!(outcome, Some(RouteOutcome::Failed)) {
         let cause = error.unwrap_or_else(|| "no error reported".to_string());
-        anyhow::bail!("copy failed after {} rows: {cause}", moved.rows_display());
+        anyhow::bail!("copy failed after {}: {cause}", moved.rows_display());
     }
     // Reported for a run that ended any other way, so the count above it is the
     // rows the copy *read*, not the rows that arrived — the cause says how many
@@ -1104,7 +1098,8 @@ fn copy_result(
 ///
 /// Structural endpoints take their nested endpoints as query params that are
 /// themselves endpoint URIs — `fanout:?mirror=<uri>&to=<uri>`,
-/// `request:?to=<uri>&forward_to=<uri>`, `switch:?metadata_key=k&case.v=<uri>`,
+/// `request:?to=<uri>&forward_to=<uri>`, `switch:?metadata_key=k&case.v=<uri>`
+/// or `switch:?when=<expr>&to=<uri>`,
 /// plus the argument-free `response:` and `null:`. A nested URI only needs
 /// percent-encoding when it carries `&`, `#` or `|` of its own.
 fn endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
@@ -1359,41 +1354,76 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
                 },
             )));
         }
-        // `switch:?metadata_key=<key>&case.<value>=<uri>&default=<uri>`.
+        // Value lookup: `switch:?metadata_key=<key>&case.<value>=<uri>&default=<uri>`.
+        // Predicates:   `switch:?when=<expression>&to=<uri>&…&default=<uri>`, first
+        // match wins, so `when`/`to` pairs keep the order they were written in. An
+        // expression goes in the *value*, where an `=` needs no escaping — but a
+        // literal `&` still splits the query, so write `and`/`or` rather than
+        // `&&`/`||` (the engine accepts both spellings anyway).
         "switch" => {
             let mut metadata_key = None;
             let mut cases = std::collections::BTreeMap::new();
+            let mut when: Vec<mq_bridge::models::SwitchCase> = Vec::new();
+            let mut condition: Option<String> = None;
             let mut default = None;
             for (key, value) in parsed.query_pairs() {
-                if key == "metadata_key" {
-                    metadata_key = Some(value.into_owned());
-                    continue;
-                }
-                let case = match key.as_ref() {
-                    "default" => None,
-                    case if case.starts_with("case.") => Some(case["case.".len()..].to_string()),
-                    other => anyhow::bail!(
-                        "unsupported query param '{other}' in switch URI '{uri}'. Supported: metadata_key, case.<value>=<uri>, default=<uri>"
-                    ),
-                };
-                let endpoint = nested_endpoint(&key, &value, uri)?;
-                match case {
-                    Some(case) => {
-                        cases.insert(case, endpoint);
+                match key.as_ref() {
+                    "metadata_key" => metadata_key = Some(value.into_owned()),
+                    "when" => {
+                        if let Some(previous) = condition.replace(value.into_owned()) {
+                            anyhow::bail!(
+                                "switch URI '{uri}' has 'when={previous}' with no 'to=<uri>' after it"
+                            );
+                        }
                     }
-                    None => default = Some(endpoint),
+                    "to" => {
+                        let Some(condition) = condition.take() else {
+                            anyhow::bail!(
+                                "switch URI '{uri}' has a 'to={value}' that no 'when=<expression>' precedes"
+                            );
+                        };
+                        when.push(mq_bridge::models::SwitchCase {
+                            condition,
+                            to: nested_endpoint(&key, &value, uri)?,
+                        });
+                    }
+                    "default" => default = Some(nested_endpoint(&key, &value, uri)?),
+                    case if case.starts_with("case.") => {
+                        cases.insert(
+                            case["case.".len()..].to_string(),
+                            nested_endpoint(&key, &value, uri)?,
+                        );
+                    }
+                    other => anyhow::bail!(
+                        "unsupported query param '{other}' in switch URI '{uri}'. Supported: metadata_key, case.<value>=<uri>, when=<expression> with to=<uri>, default=<uri>"
+                    ),
                 }
             }
-            let Some(metadata_key) = metadata_key else {
-                anyhow::bail!("switch URI '{uri}' needs a 'metadata_key=<key>' to branch on");
-            };
-            if cases.is_empty() {
-                anyhow::bail!("switch URI '{uri}' has no cases. Add 'case.<value>=<uri>'");
+            if let Some(dangling) = condition {
+                anyhow::bail!("switch URI '{uri}' has 'when={dangling}' with no 'to=<uri>' after it");
+            }
+            // The two modes differ in cost, not just spelling, so mixing them
+            // would hide which one a message actually took.
+            if !when.is_empty() && (metadata_key.is_some() || !cases.is_empty()) {
+                anyhow::bail!(
+                    "switch URI '{uri}' mixes both modes. Use either 'metadata_key=<key>' with 'case.<value>=<uri>', or 'when=<expression>' with 'to=<uri>'"
+                );
+            }
+            if when.is_empty() {
+                if metadata_key.is_none() {
+                    anyhow::bail!(
+                        "switch URI '{uri}' needs a 'metadata_key=<key>' to branch on, or 'when=<expression>&to=<uri>' predicates"
+                    );
+                }
+                if cases.is_empty() {
+                    anyhow::bail!("switch URI '{uri}' has no cases. Add 'case.<value>=<uri>'");
+                }
             }
             return Ok(Endpoint::new(EndpointType::Switch(
                 mq_bridge::models::SwitchConfig {
                     metadata_key,
                     cases: cases.into_iter().collect(),
+                    when,
                     default: default.map(Box::new),
                 },
             )));
@@ -2619,6 +2649,20 @@ mod uri_tests {
         assert!(v["switch"]["cases"]["200"].get("null").is_some());
         assert_eq!(v["switch"]["default"]["file"]["path"], "/tmp/other.jsonl");
 
+        // Predicate mode: `when`/`to` pairs keep their order, and an expression
+        // needs no escaping for its `=` because it travels as a query *value*.
+        let ep = endpoint_from_uri(
+            "switch:?when=amount > 100&to=null:&when=status == 'paid'&to=file%3A%2F%2F%2Ftmp%2Fpaid.jsonl&default=file%3A%2F%2F%2Ftmp%2Frest.jsonl",
+        )
+        .expect("uri should parse");
+        let v = serde_json::to_value(&ep).unwrap();
+        assert_eq!(v["switch"]["when"][0]["if"], "amount > 100");
+        assert!(v["switch"]["when"][0]["to"].get("null").is_some());
+        assert_eq!(v["switch"]["when"][1]["if"], "status == 'paid'");
+        assert_eq!(v["switch"]["when"][1]["to"]["file"]["path"], "/tmp/paid.jsonl");
+        assert_eq!(v["switch"]["default"]["file"]["path"], "/tmp/rest.jsonl");
+        assert!(v["switch"]["metadata_key"].is_null());
+
         let ep = endpoint_from_uri("response:").expect("uri should parse");
         assert!(serde_json::to_value(&ep).unwrap().get("response").is_some());
 
@@ -2628,6 +2672,13 @@ mod uri_tests {
             ("fanout:?towards=bogus://x", "unsupported query param 'towards'"),
             ("request:?forward_to=null:", "needs a 'to=<uri>'"),
             ("switch:?case.200=null:", "needs a 'metadata_key=<key>'"),
+            ("switch:?when=amount > 100", "with no 'to=<uri>' after it"),
+            ("switch:?when=a&when=b&to=null:", "with no 'to=<uri>' after it"),
+            ("switch:?to=null:", "that no 'when=<expression>' precedes"),
+            (
+                "switch:?metadata_key=k&case.1=null:&when=amount > 100&to=null:",
+                "mixes both modes",
+            ),
             ("fanout:?to=bogus://x", "unsupported endpoint scheme 'bogus'"),
         ] {
             let err = format!("{:#}", endpoint_from_uri(uri).unwrap_err());

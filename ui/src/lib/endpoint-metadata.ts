@@ -227,7 +227,7 @@ const ENDPOINT_KIND_OVERRIDES = {
   // schema's `format: "structural_endpoint"` marker.
   static: { order: 12, basicFields: ["static"], structural: true, consumer: true },
   ref: { order: 13, basicFields: ["ref"], structural: true, publisher: false, consumer: false },
-  switch: { order: 16, basicFields: ["metadata_key", "default", "cases"], structural: true, consumer: false },
+  switch: { order: 16, basicFields: ["metadata_key", "default", "cases", "when"], structural: true, consumer: false },
   fanout: { order: 17, basicFields: ["endpoints"], structural: true, consumer: false },
   // Usable in both directions: publishers omit `correlation_id`, consumers require it.
   stream_buffer: { order: 18, basicFields: ["topic", "correlation_id", "capacity"], structural: true, consumer: true },

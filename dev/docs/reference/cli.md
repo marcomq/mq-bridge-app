@@ -149,6 +149,10 @@ mqb copy \
   --resume
 ```
 
+An expression reads payload fields by bare name, including nested paths (`order.status`), and
+message metadata under the reserved `meta.` prefix (`meta.kind`). Metadata is always text, so a
+numeric comparison there needs a cast: `number(meta.retry_count) < 3`.
+
 A true result continues to the destination. A false result is an intentional successful drop
 and advances the source acknowledgement/checkpoint. Invalid expressions and payloads that are
 not a JSON object are errors. A referenced field that is absent, null, or holds an array or
@@ -165,7 +169,9 @@ measured at 159,474 objects instead of 977 on a 1M-row copy, a ~220x drop in thr
 
 So when a row-dropping middleware is present — `--filter`, `deduplication`, `weak_join`, or a
 `transform` with `on_error: reject` on either endpoint — and the sink is still on `name_by: auto`,
-`copy` resolves it to `write_time` instead and warns that it did. That has two consequences
+the route resolves it to `write_time` instead and warns that it did. mq-bridge applies this to
+every route, so a `switch` in `when` mode with no `default` and a config-defined route get the
+same treatment. That has two consequences
 worth knowing:
 
 - Objects are named by uuidv7 at write time, so at the default `--concurrency 4` their order is
@@ -245,9 +251,25 @@ nested endpoints are query params that are themselves endpoint URIs:
 | `fanout:?to=<uri>&mirror=<uri>` | Sends every message to each branch, in the order written. |
 | `request:?to=<uri>&forward_to=<uri>` | Sends to a request-capable endpoint and forwards the response elsewhere; without `forward_to` the response is discarded. |
 | `switch:?metadata_key=<key>&case.<value>=<uri>&default=<uri>` | Picks one destination by a metadata value. |
+| `switch:?when=<expression>&to=<uri>&default=<uri>` | Picks the first destination whose predicate matches. |
 
 A nested URI only needs percent-encoding when it carries `&`, `#` or `|` of its own —
 `fanout:?to=http://prod.internal/` is fine as written, `?to=http%3A%2F%2Fprod.internal%2F%3Fmethod%3DPUT` is not.
+
+`switch` has the two modes the engine has, and takes one or the other, never both. Value lookup
+branches on a metadata value; predicate mode takes `when=<expression>` / `to=<uri>` pairs in the
+order written, first match wins, using the same expression language as [`--filter`](#filtering):
+
+```bash
+mqb copy \
+  'kafka://localhost:9092?topic=orders' \
+  'switch:?when=amount > 1000&to=kafka%3A%2F%2Flocalhost%3A9092%3Ftopic%3Dlarge&when=true&to=file%3A%2F%2F%2Fdata%2Frest.jsonl'
+```
+
+An expression travels as a query *value*, so its `==` needs no escaping. A literal `&` would
+split the query, so write `and` / `or` rather than `&&` / `||` — the engine accepts both
+spellings. A message matching no predicate goes to `default`, and without a `default` it is
+dropped.
 
 `fanout`'s two branch kinds differ in what may come back: a `to` branch is used as written, while
 a `mirror` branch has its response **and its failures** discarded, so it can neither answer the
