@@ -2931,9 +2931,13 @@ fn the_transform_option_matrix_covers_every_combination() {
     let untouched = serde_json::json!({"id": "1"});
     let invalid = serde_json::json!({"tier": "pro"});
 
-    // (coerce, apply_defaults, on_error, the payloads that reach the sink and
-    // whether each carries a transform error in its metadata)
-    let cases: Vec<(bool, bool, &str, Vec<(serde_json::Value, bool)>)> = vec![
+    // A payload that reaches the sink and whether it carries a transform error
+    // in its metadata.
+    type Delivered = (serde_json::Value, bool);
+    // (coerce, apply_defaults, on_error, the payloads that reach the sink)
+    type Case<'a> = (bool, bool, &'a str, Vec<Delivered>);
+
+    let cases: Vec<Case> = vec![
         (true, true, "reject", vec![(coerced.clone(), false)]),
         (
             true,
@@ -2980,7 +2984,7 @@ fn the_transform_option_matrix_covers_every_combination() {
         );
 
         assert_success(&result, &case);
-        let delivered: Vec<(serde_json::Value, bool)> = read_json_rows(&destination)
+        let delivered: Vec<Delivered> = read_json_rows(&destination)
             .into_iter()
             .map(|row| {
                 let failed = row["metadata"]["mqb.transform_error"].is_string();

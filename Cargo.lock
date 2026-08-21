@@ -4546,9 +4546,9 @@ dependencies = [
 
 [[package]]
 name = "mq-bridge-pulsar"
-version = "0.1.0"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5c0a79c2f76aee3c2d8d13518468161c8cdbb8e8776f5e92941ad92cd2caf15"
+checksum = "2acaa7a6eef8781b2164a089f3ed42c85e0e7e6dc59149ee85aae0738789f7da"
 dependencies = [
  "anyhow",
  "async-trait",
