@@ -1,0 +1,6 @@
+# `cross` builds inside a container that has no protoc, which the `pulsar`
+# build script requires. Mirrors the protobuf-compiler line in ci.yml.
+[build]
+pre-build = [
+    "apt-get update && apt-get install -y protobuf-compiler",
+]

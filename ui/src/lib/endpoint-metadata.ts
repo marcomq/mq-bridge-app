@@ -110,8 +110,18 @@ const ENDPOINT_KIND_OVERRIDES = {
     },
     responseCapable: true,
   },
-  mqtt: {
+  pulsar: {
     order: 7,
+    basicFields: ["url", "topic", "subscription"],
+    requestBar: {
+      fields: [
+        { inputId: "pub-extra-1", field: "topic", label: "TOPIC", placeholder: "persistent://public/default/events" },
+        { inputId: "pub-url", field: "url", label: "BROKER", placeholder: "pulsar://localhost:6650" },
+      ],
+    },
+  },
+  mqtt: {
+    order: 8,
     basicFields: ["url", "topic"],
     requestBar: {
       fields: [
@@ -122,7 +132,7 @@ const ENDPOINT_KIND_OVERRIDES = {
     responseCapable: true,
   },
   mongodb: {
-    order: 8,
+    order: 9,
     basicFields: ["url", "database", "collection", "change_stream"],
     requestBar: {
       fields: [
@@ -134,7 +144,7 @@ const ENDPOINT_KIND_OVERRIDES = {
     responseCapable: true,
   },
   sqlx: {
-    order: 9,
+    order: 10,
     basicFields: ["url", "table"],
     requestBar: {
       fields: [
@@ -144,7 +154,7 @@ const ENDPOINT_KIND_OVERRIDES = {
     },
   },
   zeromq: {
-    order: 10,
+    order: 11,
     basicFields: ["url", "topic"],
     requestBar: {
       fields: [
@@ -155,14 +165,14 @@ const ENDPOINT_KIND_OVERRIDES = {
     responseCapable: true,
   },
   file: {
-    order: 11,
+    order: 12,
     basicFields: ["path", "mode"],
     requestBar: {
       fields: [{ inputId: "pub-url", field: "path", label: "PATH", placeholder: "/tmp/messages.jsonl" }],
     },
   },
   sled: {
-    order: 14,
+    order: 15,
     basicFields: ["path", "tree"],
     requestBar: {
       fields: [
@@ -172,7 +182,7 @@ const ENDPOINT_KIND_OVERRIDES = {
     },
   },
   ibmmq: {
-    order: 15,
+    order: 16,
     basicFields: ["url", "queue_manager", "channel", "queue", "topic", "username", "password"],
     requestBar: {
       fields: [
@@ -184,11 +194,11 @@ const ENDPOINT_KIND_OVERRIDES = {
     requiresFeature: "ibm_mq",
   },
   aws: {
-    order: 22,
+    order: 23,
     basicFields: ["region", "queue_url", "topic_arn", "access_key", "secret_key"],
   },
   redis_streams: {
-    order: 23,
+    order: 24,
     basicFields: ["url", "stream", "group"],
     requestBar: {
       fields: [
@@ -199,7 +209,7 @@ const ENDPOINT_KIND_OVERRIDES = {
     requiresFeature: "redis_streams",
   },
   object_store: {
-    order: 24,
+    order: 25,
     basicFields: ["url", "format"],
     requestBar: {
       fields: [{ inputId: "pub-url", field: "url", label: "URL", placeholder: "s3://bucket/prefix" }],
@@ -207,13 +217,13 @@ const ENDPOINT_KIND_OVERRIDES = {
     requiresFeature: "object_store",
   },
   postgres_cdc: {
-    order: 25,
+    order: 26,
     basicFields: ["url", "publication", "slot_name", "publication_tables"],
     // Source only: mq-bridge has no postgres_cdc publisher.
     publisher: false,
   },
   clickhouse: {
-    order: 26,
+    order: 27,
     basicFields: ["url", "table", "database"],
     requestBar: {
       fields: [
@@ -225,18 +235,18 @@ const ENDPOINT_KIND_OVERRIDES = {
 
   // Structural kinds. `structural` here is only the offline fallback for the
   // schema's `format: "structural_endpoint"` marker.
-  static: { order: 12, basicFields: ["static"], structural: true, consumer: true },
-  ref: { order: 13, basicFields: ["ref"], structural: true, publisher: false, consumer: false },
-  switch: { order: 16, basicFields: ["metadata_key", "default", "cases"], structural: true, consumer: false },
-  fanout: { order: 17, basicFields: ["endpoints"], structural: true, consumer: false },
+  static: { order: 13, basicFields: ["static"], structural: true, consumer: true },
+  ref: { order: 14, basicFields: ["ref"], structural: true, publisher: false, consumer: false },
+  switch: { order: 17, basicFields: ["metadata_key", "default", "cases", "when"], structural: true, consumer: false },
+  fanout: { order: 18, basicFields: ["endpoints"], structural: true, consumer: false },
   // Usable in both directions: publishers omit `correlation_id`, consumers require it.
-  stream_buffer: { order: 18, basicFields: ["topic", "correlation_id", "capacity"], structural: true, consumer: true },
-  request: { order: 19, basicFields: ["to", "forward_to"], structural: true, consumer: false },
-  reader: { order: 20, basicFields: [], structural: true, publisher: false, consumer: false },
-  response: { order: 21, basicFields: [], structural: true, publisher: false, consumer: false },
-  custom: { order: 27, basicFields: [], structural: true, publisher: false, consumer: false },
+  stream_buffer: { order: 19, basicFields: ["topic", "correlation_id", "capacity"], structural: true, consumer: true },
+  request: { order: 20, basicFields: ["to", "forward_to"], structural: true, consumer: false },
+  reader: { order: 21, basicFields: [], structural: true, publisher: false, consumer: false },
+  response: { order: 22, basicFields: [], structural: true, publisher: false, consumer: false },
+  custom: { order: 28, basicFields: [], structural: true, publisher: false, consumer: false },
   // `null` carries no structural marker in the schema, but it is one.
-  null: { order: 28, basicFields: [], structural: true, publisher: false, consumer: false },
+  null: { order: 29, basicFields: [], structural: true, publisher: false, consumer: false },
 } as const satisfies Record<string, EndpointKindOverride>;
 
 /** The curated kinds only — schema-derived kinds are appended at runtime and

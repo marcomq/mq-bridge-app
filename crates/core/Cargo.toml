@@ -19,12 +19,12 @@ path = "src/lib.rs"
 # `plugin` is not optional: native plugin loading is a runtime setting, so every
 # build must be able to honour a `plugins:` entry. It only adds `libloading`.
 mq-bridge = { workspace = true, features = ["schema", "plugin"] }
+mq-bridge-pulsar = { workspace = true }
 # For local engine development, patch the workspace dependency to ../mq-bridge
 # with Cargo's `patch.crates-io` configuration instead of changing this manifest.
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-zen-expression = { workspace = true }
 hex = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }

@@ -38,6 +38,9 @@ describe('endpoint kind registry', () => {
   it('starts from the curated kinds before a schema is registered', () => {
     expect(KNOWN_ENDPOINT_ROOT_KEYS).toContain('http');
     expect(PUBLISHER_TYPE_OPTIONS).toContain('kafka');
+    expect(PUBLISHER_TYPE_OPTIONS).toContain('pulsar');
+    expect(CONSUMER_TYPE_OPTIONS).toContain('pulsar');
+    expect(BASIC_ENDPOINT_FIELDS.pulsar).toEqual(['url', 'topic', 'subscription']);
     expect(CONSUMER_TYPE_OPTIONS).toContain('postgres_cdc');
     expect(PUBLISHER_TYPE_OPTIONS).not.toContain('postgres_cdc');
     expect(STRUCTURAL_ENDPOINT_KINDS.has('stream_buffer')).toBe(true);

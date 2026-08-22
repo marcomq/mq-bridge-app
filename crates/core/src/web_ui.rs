@@ -91,6 +91,10 @@ pub async fn start_web_server(
     web_route.options.concurrency = 100;
 
     let handle = web_route.run("web_ui").await?;
+    let consumer_app = app.clone();
+    tokio::spawn(async move {
+        consumer_app.start_configured_consumers().await;
+    });
     let _ = handle.join().await;
 
     Ok(())

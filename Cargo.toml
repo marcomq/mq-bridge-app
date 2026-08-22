@@ -4,7 +4,7 @@ default-members = ["crates/cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.94"
 
@@ -15,15 +15,14 @@ rust-version = "1.94"
 # it a lean build such as `cargo build -p mq-bridge-app --no-default-features
 # --features bench` is silently widened back to the full endpoint set. The binary
 # crates re-enable what they need through their own `full` feature.
-mq_bridge_app = { version = "0.3.1", path = "crates/core", package = "mq-bridge-app-core", default-features = false }
-mq-bridge = { version = "0.4.5", default-features = false }
-# mq-bridge = { path = "../mq-bridge", version = "0.4.5", features = ["schema", "plugin"] } # keep for debugging / dev
+mq_bridge_app = { version = "0.3.2", path = "crates/core", package = "mq-bridge-app-core", default-features = false }
+mq-bridge = { version = "0.4.7", default-features = false }
+mq-bridge-pulsar = { version = "0.1.4", default-features = false }
 
 # Shared third-party deps. Members opt in with `{ workspace = true }` and may add
 # extra `features` on top (they are additive) — see e.g. tokio in the CLI crate.
 anyhow = "1.0.104"
 async-trait = "0.1.92"
-zen-expression = { version = "0.55.1", default-features = false, features = ["regex-lite"] }
 hex = "0.4.3"
 metrics = "0.24.6"
 # `default-features = false` drops the unused `push-gateway` feature, which pulls
@@ -60,3 +59,8 @@ strip = "symbols"
 inherits = "release"
 lto = true
 strip = true
+
+# Local development against the sibling engine 
+# [patch.crates-io]
+# mq-bridge = { path = "../mq-bridge" }
+# mq-bridge-pulsar = { path = "../mq-bridge-pulsar" }

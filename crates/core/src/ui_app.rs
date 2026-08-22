@@ -506,7 +506,9 @@ fn decode_collector_route_key(encoded: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-fn collector_route_name(consumer_key: &str) -> String {
+/// The mq-bridge route name a consumer runs under, which is what
+/// [`mq_bridge::list_routes`] reports — not the consumer key itself.
+pub fn collector_route_name(consumer_key: &str) -> String {
     format!(
         "ui_collector_route_{}",
         encode_collector_route_key(consumer_key)
@@ -1065,6 +1067,40 @@ impl UiApp {
         } else {
             Ok(false)
         }
+    }
+
+    /// Starts every enabled consumer, logging and skipping failures rather than
+    /// aborting the rest. Returns the number started so every caller can report
+    /// partial or complete startup failure appropriately.
+    pub async fn start_configured_consumers(&self) -> usize {
+        let consumers = {
+            let config = self.config.read().await;
+            config
+                .consumers
+                .iter()
+                .filter(|consumer| consumer.enabled)
+                .cloned()
+                .map(|consumer| (consumer, config.publishers.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let mut started = 0;
+        for entry in &consumers {
+            match self
+                .start_ui_collector_routes(std::slice::from_ref(entry))
+                .await
+            {
+                Ok(()) => started += 1,
+                Err(e) => tracing::error!("Consumer '{}' failed to start: {:#}", entry.0.name, e),
+            }
+        }
+        if !consumers.is_empty() {
+            tracing::info!(
+                "Started {started} of {} configured consumer(s)",
+                consumers.len()
+            );
+        }
+        started
     }
 
     pub async fn stop_consumer(&self, consumer_key: &str) -> bool {
@@ -2263,6 +2299,7 @@ mod tests {
         crate::config::ConsumerConfig {
             id: id.to_string(),
             name: name.to_string(),
+            enabled: true,
             endpoint: Endpoint::new(EndpointType::Memory(MemoryConfig::new(topic, Some(8)))),
             comment: String::new(),
             response: None,
@@ -2454,6 +2491,31 @@ mod tests {
     // route kept running, consuming the same source, invisible to the UI and
     // impossible to stop, while every message it handled was counted again.
     //
+    // What a config file describes has to actually run at boot, and a consumer
+    // the operator turned off has to stay off.
+    #[tokio::test]
+    async fn boot_starts_the_enabled_consumers_only() {
+        let mut config = AppConfig::default();
+        config
+            .consumers
+            .push(memory_consumer("on", "On", "boot-enabled"));
+        let mut paused = memory_consumer("off", "Off", "boot-disabled");
+        paused.enabled = false;
+        config.consumers.push(paused);
+
+        let app = test_app(config);
+        assert_eq!(app.start_configured_consumers().await, 1);
+
+        let handles = app.ui_handles.read().await;
+        assert!(handles.contains_key("on"));
+        assert!(
+            !handles.contains_key("off"),
+            "a disabled consumer must not be started at boot"
+        );
+        drop(handles);
+        app.stop_consumer("on").await;
+    }
+
     // A file source makes the duplicate unambiguous: each route reads the whole
     // file, so a second one doubles the message count instead of merely sharing
     // a queue with the first.

@@ -78,6 +78,19 @@ fn assert_failure_contains(output: &Output, case: &str, expected: &str) {
     );
 }
 
+/// Everything the run wrote, both streams.
+///
+/// The tracing layer writes to **stdout** — warnings and per-row rejections
+/// included — while only the final `Error:` reaches stderr. A log assertion
+/// that reads one stream sees half the run.
+fn logged(output: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
 struct TestDir(PathBuf);
 
 impl TestDir {
@@ -743,6 +756,13 @@ fn copy_filter_on_a_text_typed_source_names_the_numeric_cast() {
     );
 
     assert_failure_contains(&result, "text-typed filter", "number(amount)");
+    // A route that failed reports how far it got. The count already carries its
+    // own unit, so the sentence around it must not add a second one.
+    let reported = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        reported.contains("copy failed after 0 of 1 rows:"),
+        "the failure has to name the rows read, once: {reported}"
+    );
 }
 
 #[test]
@@ -1723,5 +1743,1434 @@ fn a_resumable_sql_copy_moves_each_row_exactly_once_across_runs() {
         read_rows(&archive).len(),
         5,
         "a new destination must start from the beginning, not from the other copy's cursor"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Structural endpoints: `fanout`, `switch`, `request`.
+//
+// Each takes its branches as query params that are themselves endpoint URIs.
+// `main.rs` unit-tests the parser; what follows runs the endpoints those URIs
+// build against real sinks, so a branch that parses but never receives a row
+// fails here instead of passing there.
+// ---------------------------------------------------------------------------
+
+/// A nested endpoint URI, escaped to travel as a query value.
+///
+/// The inner URI's own `?`, `&` and `%` would otherwise split the outer query.
+/// Form encoding is what the parser reads the query back with, so the `+` it
+/// writes for a space round-trips.
+fn nested(uri: &str) -> String {
+    url::form_urlencoded::byte_serialize(uri.as_bytes()).collect()
+}
+
+fn json_uri(path: impl AsRef<Path>) -> String {
+    format!("file://{}?format=json", path.as_ref().display())
+}
+
+/// Seeds a `format=json` file: one whole canonical message per line.
+///
+/// This is how a file source carries **metadata** into a route, which is what a
+/// `switch` in value-lookup mode branches on and what `meta.<key>` reads. A
+/// `format=raw` source has a payload and nothing else.
+fn seed_canonical(
+    dir: &TestDir,
+    name: &str,
+    rows: &[(serde_json::Value, serde_json::Value)],
+) -> PathBuf {
+    let path = dir.path().join(name);
+    let body: String = rows
+        .iter()
+        .map(|(payload, metadata)| {
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "message_id": uuid::Uuid::new_v4(),
+                    "payload": payload,
+                    "metadata": metadata,
+                })
+            )
+        })
+        .collect();
+    std::fs::write(&path, body).expect("seed canonical message source");
+    path
+}
+
+/// The rows of a destination, parsed, so an assertion compares documents rather
+/// than a serializer's key order.
+fn read_json_rows(path: impl AsRef<Path>) -> Vec<serde_json::Value> {
+    read_rows(path)
+        .iter()
+        .map(|line| serde_json::from_str(line).expect("each copied row is JSON"))
+        .collect()
+}
+
+fn ids(rows: &[serde_json::Value]) -> Vec<u64> {
+    let mut ids: Vec<u64> = rows
+        .iter()
+        .map(|row| row["id"].as_u64().expect("each row carries an id"))
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn a_fanout_delivers_every_row_to_every_branch() {
+    let dir = TestDir::new();
+    let rows = numbered_rows(25);
+    let source = raw_uri(seed_rows(&dir, "fanout-source.jsonl", &rows));
+    let branch = dir.path().join("fanout-branch.jsonl");
+    let mirror = dir.path().join("fanout-mirror.jsonl");
+
+    let result = copy(
+        &source,
+        &format!(
+            "fanout:?to={}&mirror={}",
+            nested(&raw_uri(&branch)),
+            nested(&raw_uri(&mirror))
+        ),
+    );
+
+    assert_success(&result, "fanout copy");
+    assert_rows_eq(&sorted(&read_rows(&branch)), &sorted(&rows), "fanout `to`");
+    assert_rows_eq(
+        &sorted(&read_rows(&mirror)),
+        &sorted(&rows),
+        "fanout `mirror`",
+    );
+}
+
+/// A `mirror` branch has its response **and its failures** discarded. An
+/// unreachable mirror therefore has to leave both the copy and the `to` branch
+/// intact — otherwise the mirroring proxy the branch kind exists for would make
+/// production depend on the copy of it.
+#[test]
+fn a_failing_mirror_branch_neither_fails_the_copy_nor_the_other_branch() {
+    let dir = TestDir::new();
+    let rows = numbered_rows(3);
+    let source = raw_uri(seed_rows(&dir, "mirror-failure-source.jsonl", &rows));
+    let branch = dir.path().join("mirror-failure-branch.jsonl");
+    // Port 1 is privileged and unbound, so the connection is refused rather
+    // than left to time out.
+    let unreachable = nested("http://127.0.0.1:1/unreachable");
+
+    let result = copy_with_options(
+        &source,
+        &format!(
+            "fanout:?to={}&mirror={unreachable}",
+            nested(&raw_uri(&branch))
+        ),
+        &["--concurrency", "1"],
+    );
+
+    assert_success(&result, "fanout with an unreachable mirror");
+    assert_rows_eq(&read_rows(&branch), &rows, "the surviving fanout branch");
+}
+
+#[test]
+fn a_switch_sends_each_row_to_the_case_its_metadata_names() {
+    let dir = TestDir::new();
+    let source = seed_canonical(
+        &dir,
+        "switch-source.json",
+        &[
+            (
+                serde_json::json!({"id": 1}),
+                serde_json::json!({"kind": "a"}),
+            ),
+            (
+                serde_json::json!({"id": 2}),
+                serde_json::json!({"kind": "b"}),
+            ),
+            (
+                serde_json::json!({"id": 3}),
+                serde_json::json!({"kind": "unlisted"}),
+            ),
+            (serde_json::json!({"id": 4}), serde_json::json!({})),
+        ],
+    );
+    let case_a = dir.path().join("switch-a.jsonl");
+    let case_b = dir.path().join("switch-b.jsonl");
+    let fallback = dir.path().join("switch-default.jsonl");
+
+    let result = copy(
+        &json_uri(&source),
+        &format!(
+            "switch:?metadata_key=kind&case.a={}&case.b={}&default={}",
+            nested(&raw_uri(&case_a)),
+            nested(&raw_uri(&case_b)),
+            nested(&raw_uri(&fallback))
+        ),
+    );
+
+    assert_success(&result, "switch on metadata");
+    assert_eq!(ids(&read_json_rows(&case_a)), vec![1], "case.a");
+    assert_eq!(ids(&read_json_rows(&case_b)), vec![2], "case.b");
+    // An unmatched value and an absent key both fall through to `default`.
+    assert_eq!(ids(&read_json_rows(&fallback)), vec![3, 4], "default");
+}
+
+/// Without a `default` an unmatched message is **dropped**. Silence would make
+/// that indistinguishable from a source that never had those rows, so the drop
+/// has to be reported.
+#[test]
+fn a_switch_without_a_default_drops_unmatched_rows_and_says_how_many() {
+    let dir = TestDir::new();
+    let source = seed_canonical(
+        &dir,
+        "switch-no-default-source.json",
+        &[
+            (
+                serde_json::json!({"id": 1}),
+                serde_json::json!({"kind": "a"}),
+            ),
+            (
+                serde_json::json!({"id": 2}),
+                serde_json::json!({"kind": "unlisted"}),
+            ),
+            (serde_json::json!({"id": 3}), serde_json::json!({})),
+        ],
+    );
+    let case_a = dir.path().join("switch-no-default-a.jsonl");
+
+    let result = copy(
+        &json_uri(&source),
+        &format!(
+            "switch:?metadata_key=kind&case.a={}",
+            nested(&raw_uri(&case_a))
+        ),
+    );
+
+    assert_success(&result, "switch without a default");
+    assert_eq!(ids(&read_json_rows(&case_a)), vec![1]);
+    let logged = logged(&result);
+    assert!(
+        logged.contains("dropped 2 messages"),
+        "the dropped rows must be reported: {logged}"
+    );
+}
+
+/// `when` mode: an ordered list of predicates, **first match wins**. Row 2
+/// satisfies both predicates, so the branch it lands in is what pins the order.
+#[test]
+fn switch_predicates_take_the_first_match_in_the_order_written() {
+    let dir = TestDir::new();
+    let rows = [
+        r#"{"id":1,"amount":25,"order":{"status":"new"}}"#,
+        r#"{"id":2,"amount":12500,"order":{"status":"refunded"}}"#,
+        r#"{"id":3,"amount":50,"order":{"status":"refunded"}}"#,
+    ]
+    .map(str::to_string);
+    let source = raw_uri(seed_rows(&dir, "switch-when-source.jsonl", &rows));
+    let large = dir.path().join("switch-when-large.jsonl");
+    let refunded = dir.path().join("switch-when-refunded.jsonl");
+    let fallback = dir.path().join("switch-when-rest.jsonl");
+
+    // The expression travels as a query *value*, so its `>` and `==` need no
+    // escaping; only the nested URIs do.
+    let result = copy(
+        &source,
+        &format!(
+            "switch:?when=amount > 1000&to={}&when=order.status == 'refunded'&to={}&default={}",
+            nested(&raw_uri(&large)),
+            nested(&raw_uri(&refunded)),
+            nested(&raw_uri(&fallback))
+        ),
+    );
+
+    assert_success(&result, "switch on predicates");
+    assert_eq!(
+        ids(&read_json_rows(&large)),
+        vec![2],
+        "row 2 matches both predicates and must take the first"
+    );
+    assert_eq!(ids(&read_json_rows(&refunded)), vec![3], "second predicate");
+    assert_eq!(ids(&read_json_rows(&fallback)), vec![1], "no predicate");
+}
+
+/// A predicate reads metadata under the reserved `meta.` prefix, the same way
+/// `--filter` does — so `when` covers value lookup's ground without needing the
+/// payload field promoted into metadata first.
+#[test]
+fn a_switch_predicate_reads_metadata_under_the_meta_prefix() {
+    let dir = TestDir::new();
+    let source = seed_canonical(
+        &dir,
+        "switch-meta-source.json",
+        &[
+            (
+                serde_json::json!({"id": 1}),
+                serde_json::json!({"kind": "b", "retry_count": "9"}),
+            ),
+            (
+                serde_json::json!({"id": 2}),
+                serde_json::json!({"kind": "a", "retry_count": "1"}),
+            ),
+            (
+                serde_json::json!({"id": 3}),
+                serde_json::json!({"kind": "a", "retry_count": "9"}),
+            ),
+        ],
+    );
+    let matched = dir.path().join("switch-meta-matched.jsonl");
+    let fallback = dir.path().join("switch-meta-rest.jsonl");
+
+    // `and`, not `&&`: a literal `&` would split the query. Metadata is always
+    // text, so the numeric half needs the cast.
+    let result = copy(
+        &json_uri(&source),
+        &format!(
+            "switch:?when=meta.kind == 'a' and number(meta.retry_count) > 3&to={}&default={}",
+            nested(&raw_uri(&matched)),
+            nested(&raw_uri(&fallback))
+        ),
+    );
+
+    assert_success(&result, "switch on a metadata predicate");
+    assert_eq!(ids(&read_json_rows(&matched)), vec![3]);
+    assert_eq!(ids(&read_json_rows(&fallback)), vec![1, 2]);
+}
+
+/// Structural endpoints nest: a `fanout` branch may itself be a `switch`. The
+/// inner URI is escaped twice, once per level, which is the part worth pinning.
+#[test]
+fn structural_endpoints_nest_inside_one_another() {
+    let dir = TestDir::new();
+    let rows = [
+        r#"{"id":1,"amount":25}"#,
+        r#"{"id":2,"amount":12500}"#,
+        r#"{"id":3,"amount":50}"#,
+    ]
+    .map(str::to_string);
+    let source = raw_uri(seed_rows(&dir, "nested-source.jsonl", &rows));
+    let large = dir.path().join("nested-large.jsonl");
+    let small = dir.path().join("nested-small.jsonl");
+    let archive = dir.path().join("nested-archive.jsonl");
+
+    let inner = format!(
+        "switch:?when=amount > 1000&to={}&default={}",
+        nested(&raw_uri(&large)),
+        nested(&raw_uri(&small))
+    );
+    let result = copy(
+        &source,
+        &format!(
+            "fanout:?to={}&to={}",
+            nested(&inner),
+            nested(&raw_uri(&archive))
+        ),
+    );
+
+    assert_success(&result, "fanout wrapping a switch");
+    assert_eq!(ids(&read_json_rows(&large)), vec![2]);
+    assert_eq!(ids(&read_json_rows(&small)), vec![1, 3]);
+    assert_eq!(
+        ids(&read_json_rows(&archive)),
+        vec![1, 2, 3],
+        "the sibling branch still sees every row"
+    );
+}
+
+/// `request:?to=…&forward_to=…` — the response is what continues, carrying the
+/// call's status as metadata. That status is what makes the documented
+/// `request` → `switch` pairing possible, so it is asserted rather than assumed.
+#[test]
+fn a_request_forwards_the_response_and_its_status_metadata() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "request-source.json", br#"{"id":1}"#);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP fixture");
+    let address = listener.local_addr().expect("fixture address");
+
+    let fixture = std::thread::spawn(move || {
+        let mut stream = accept_within(&listener, Duration::from_secs(180));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set fixture timeout");
+        let mut buffer = [0_u8; 4096];
+        let _ = stream.read(&mut buffer);
+        let body = br#"{"accepted":true}"#;
+        let _ = stream.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        );
+        let _ = stream.write_all(body);
+    });
+
+    let forwarded = dir.path().join("request-response.json");
+    let result = copy(
+        &source,
+        &format!(
+            "request:?to={}&forward_to={}",
+            nested(&format!("http://{address}/ingest")),
+            nested(&json_uri(&forwarded))
+        ),
+    );
+
+    assert_success(&result, "request with forward_to");
+    fixture.join().expect("join HTTP fixture");
+
+    let rows = read_json_rows(&forwarded);
+    assert_eq!(rows.len(), 1, "one response per request: {rows:?}");
+    assert_eq!(
+        rows[0]["payload"],
+        serde_json::json!({"accepted": true}),
+        "the response body is what continues, not the request"
+    );
+    assert_eq!(
+        rows[0]["metadata"]["http_status_code"], "200",
+        "the status a following switch would branch on: {rows:?}"
+    );
+}
+
+/// Without a `forward_to` the response is discarded — the call still has to
+/// happen, which is what makes `request` usable as a fire-and-forget sink.
+#[test]
+fn a_request_without_forward_to_still_calls_and_discards_the_response() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "request-discard-source.json", br#"{"id":1}"#);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP fixture");
+    let address = listener.local_addr().expect("fixture address");
+    let (request_tx, request_rx) = mpsc::channel();
+
+    let fixture = std::thread::spawn(move || {
+        let mut stream = accept_within(&listener, Duration::from_secs(180));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set fixture timeout");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).expect("read CLI request");
+            request.extend_from_slice(&buffer[..read]);
+            let header_end = request.windows(4).position(|bytes| bytes == b"\r\n\r\n");
+            if let Some(header_end) = header_end {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                    .unwrap_or_default();
+                if request.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+            assert_ne!(read, 0, "client closed before sending the full request");
+        }
+        let _ = stream.write_all(
+            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let _ = request_tx.send(String::from_utf8_lossy(&request).into_owned());
+    });
+
+    let result = copy(
+        &source,
+        &format!(
+            "request:?to={}",
+            nested(&format!("http://{address}/ingest"))
+        ),
+    );
+
+    assert_success(&result, "request without forward_to");
+    fixture.join().expect("join HTTP fixture");
+    let request = request_rx.recv().expect("captured request");
+    assert!(
+        request.contains(r#"{"id":1}"#),
+        "the request still carries the payload: {request}"
+    );
+}
+
+/// A structural URI that cannot be built has to say so before any row moves,
+/// naming the param that is wrong — a branch silently dropped from a `fanout`
+/// or a `switch` would look like data loss much later.
+#[test]
+fn invalid_structural_endpoint_uris_fail_before_copying() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "structural-invalid-source.json", br#"{"id":1}"#);
+    let cases = [
+        ("fanout without branches", "fanout:", "has no branches"),
+        (
+            "fanout with an unknown param",
+            "fanout:?towards=null:",
+            "unsupported query param 'towards'",
+        ),
+        (
+            "fanout branch with an unknown scheme",
+            "fanout:?to=bogus%3A%2F%2Fx",
+            "unsupported endpoint scheme 'bogus'",
+        ),
+        (
+            "request without a target",
+            "request:?forward_to=null:",
+            "needs a 'to=<uri>'",
+        ),
+        (
+            "switch without a mode",
+            "switch:?case.a=null:",
+            "needs a 'metadata_key=<key>'",
+        ),
+        (
+            "switch without cases",
+            "switch:?metadata_key=kind",
+            "has no cases",
+        ),
+        (
+            "switch predicate with no target",
+            "switch:?when=amount > 100",
+            "with no 'to=<uri>' after it",
+        ),
+        (
+            "switch target with no predicate",
+            "switch:?to=null:",
+            "that no 'when=<expression>' precedes",
+        ),
+        (
+            "switch mixing both modes",
+            "switch:?metadata_key=kind&case.a=null:&when=amount > 100&to=null:",
+            "mixes both modes",
+        ),
+    ];
+
+    for (case, destination, expected) in cases {
+        let result = copy(&source, destination);
+        assert_failure_contains(&result, case, expected);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `transform` driven by a schema **file**.
+//
+// The inline `schema=` form is percent-encoded JSON, which is how the matrix
+// above spells it; a real pipeline keeps the schema in a file and points at it,
+// and that file is read once at startup rather than per message. What follows
+// exercises the file form: coercion, defaults, rejection, and the switches that
+// turn each of those off.
+// ---------------------------------------------------------------------------
+
+/// Writes a JSON Schema and returns the `transform?schema_file=` spec for it.
+fn schema_file(dir: &TestDir, name: &str, schema: serde_json::Value) -> String {
+    let path = dir.path().join(name);
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&schema).expect("serialize schema"),
+    )
+    .expect("write schema file");
+    format!("|transform?schema_file={}", path.display())
+}
+
+/// The order schema: every field a CSV source delivers as text, plus a default
+/// the source never carries.
+fn order_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "integer" },
+            "amount": { "type": "number" },
+            "active": { "type": "boolean" },
+            "tier": { "type": "string", "default": "standard" },
+        },
+        "required": ["id", "amount"],
+    })
+}
+
+/// CSV delivers every column as a string, so a schema file is the whole reason
+/// the destination sees numbers and booleans at all — and `default` fills the
+/// column the source does not have.
+#[test]
+fn a_transform_schema_file_types_every_row_and_fills_in_defaults() {
+    let dir = TestDir::new();
+    let source = dir.path().join("schema-file-source.csv");
+    std::fs::write(&source, b"id,amount,active\n1,2.5,true\n2,7,false\n").expect("seed CSV source");
+    let destination = dir.path().join("schema-file-typed.jsonl");
+
+    let result = copy_with_options(
+        &format!(
+            "file://{}?format=csv{}",
+            source.display(),
+            schema_file(&dir, "orders.schema.json", order_schema())
+        ),
+        &raw_uri(&destination),
+        &["--concurrency", "1"],
+    );
+
+    assert_success(&result, "transform with a schema file");
+    assert_eq!(
+        read_json_rows(&destination),
+        vec![
+            serde_json::json!({"id": 1, "amount": 2.5, "active": true, "tier": "standard"}),
+            serde_json::json!({"id": 2, "amount": 7.0, "active": false, "tier": "standard"}),
+        ]
+    );
+}
+
+/// The default `on_error: reject` drops a row that does not fit and names why,
+/// per row. A rejection reported without the field and the reason is a schema
+/// change nobody can act on.
+#[test]
+fn a_transform_schema_file_rejects_the_rows_that_do_not_fit_and_names_the_reason() {
+    let dir = TestDir::new();
+    let rows = [
+        r#"{"id":"1","amount":"2.5"}"#,
+        r#"{"amount":"9"}"#,
+        r#"{"id":"3","amount":"not-a-number"}"#,
+    ]
+    .map(str::to_string);
+    let source = raw_uri(seed_rows(&dir, "schema-file-reject-source.jsonl", &rows));
+    let destination = dir.path().join("schema-file-kept.jsonl");
+
+    let result = copy(
+        &format!(
+            "{source}{}",
+            schema_file(&dir, "reject.schema.json", order_schema())
+        ),
+        &raw_uri(&destination),
+    );
+
+    assert_success(&result, "transform rejecting invalid rows");
+    assert_eq!(
+        read_json_rows(&destination),
+        vec![serde_json::json!({"id": 1, "amount": 2.5, "tier": "standard"})],
+        "only the row that fits the schema is kept"
+    );
+    let logged = logged(&result);
+    assert!(
+        logged.contains("$.id [missing_required]"),
+        "the missing required field must be named: {logged}"
+    );
+    assert!(
+        logged.contains("$.amount [coercion]"),
+        "the field that could not be coerced must be named: {logged}"
+    );
+}
+
+/// `on_error: pass_through` keeps the row and records the failure in metadata
+/// instead — the shape a pipeline needs when the invalid rows are the ones it
+/// most wants to see.
+#[test]
+fn a_transform_pass_through_keeps_the_bad_rows_and_records_why() {
+    let dir = TestDir::new();
+    let rows = [r#"{"id":"1","amount":"2.5"}"#, r#"{"amount":"9"}"#].map(str::to_string);
+    let source = raw_uri(seed_rows(&dir, "pass-through-source.jsonl", &rows));
+    let destination = dir.path().join("pass-through.json");
+    let spec = schema_file(&dir, "pass-through.schema.json", order_schema());
+
+    let result = copy_with_options(
+        &format!("{source}{spec}&on_error=pass_through"),
+        &json_uri(&destination),
+        &["--concurrency", "1"],
+    );
+
+    assert_success(&result, "transform with pass_through");
+    let copied = read_json_rows(&destination);
+    assert_eq!(copied.len(), 2, "no row is dropped: {copied:?}");
+    assert_eq!(
+        copied[0]["payload"],
+        serde_json::json!({"id": 1, "amount": 2.5, "tier": "standard"}),
+        "the valid row is still transformed"
+    );
+    assert_eq!(
+        copied[1]["payload"],
+        serde_json::json!({"amount": "9"}),
+        "the invalid row is forwarded untouched"
+    );
+    assert!(
+        copied[1]["metadata"]["mqb.transform_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("missing_required")),
+        "the failure has to travel with the row: {copied:?}"
+    );
+}
+
+/// `coerce` and `apply_defaults` are the two behaviours a schema file brings for
+/// free, and both are meant to be switchable. Off, the same schema and the same
+/// rows have to produce a strict type check and an untouched document.
+#[test]
+fn coercion_and_defaults_can_each_be_turned_off() {
+    let dir = TestDir::new();
+    let source = dir.path().join("schema-switches-source.csv");
+    std::fs::write(&source, b"id,amount,active\n1,2.5,true\n").expect("seed CSV source");
+    let spec = schema_file(&dir, "switches.schema.json", order_schema());
+    let csv = format!("file://{}?format=csv{spec}", source.display());
+
+    // `coerce=false`: CSV's text `1` is no longer an integer, so the row that
+    // passed above is now a type mismatch.
+    let strict = dir.path().join("schema-switches-strict.jsonl");
+    let rejected = copy(&format!("{csv}&coerce=false"), &raw_uri(&strict));
+    assert_success(&rejected, "transform without coercion");
+    assert!(
+        read_rows(&strict).is_empty(),
+        "an uncoerced text column cannot satisfy a typed schema"
+    );
+    assert!(
+        logged(&rejected).contains("type_mismatch"),
+        "the rejection has to name the type mismatch: {}",
+        logged(&rejected)
+    );
+
+    // `apply_defaults=false`: the row still types, but `tier` stays absent.
+    let bare = dir.path().join("schema-switches-bare.jsonl");
+    let result = copy(&format!("{csv}&apply_defaults=false"), &raw_uri(&bare));
+    assert_success(&result, "transform without defaults");
+    assert_eq!(
+        read_json_rows(&bare),
+        vec![serde_json::json!({"id": 1, "amount": 2.5, "active": true})],
+        "no default may be inserted"
+    );
+}
+
+/// `mapping` reshapes the document and the schema file then types the result —
+/// the two halves have to run in that order, or the schema would be checking
+/// field names the mapping has not produced yet.
+#[test]
+fn a_mapping_reshapes_the_payload_before_the_schema_file_types_it() {
+    let dir = TestDir::new();
+    let source = raw_uri(seed_rows(
+        &dir,
+        "mapping-source.jsonl",
+        &[r#"{"customer_id":"42","order":{"total":"19.99"}}"#.to_string()],
+    ));
+    let spec = schema_file(
+        &dir,
+        "mapping.schema.json",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "customerId": { "type": "integer" },
+                "total": { "type": "number" },
+                "currency": { "type": "string", "default": "EUR" },
+            },
+            "required": ["customerId"],
+        }),
+    );
+    let mapping = nested(r#"{"customerId":"$.customer_id","total":"$.order.total"}"#);
+    let destination = dir.path().join("mapped.jsonl");
+
+    let result = copy(
+        &format!("{source}{spec}&mapping={mapping}"),
+        &raw_uri(&destination),
+    );
+
+    assert_success(&result, "transform with a mapping and a schema file");
+    assert_eq!(
+        read_json_rows(&destination),
+        vec![serde_json::json!({"customerId": 42, "total": 19.99, "currency": "EUR"})]
+    );
+}
+
+/// The schema file is read once at startup, so a path that is wrong has to fail
+/// there — not on the first message, halfway through a copy.
+#[test]
+fn a_missing_transform_schema_file_fails_before_copying() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "missing-schema-source.json", br#"{"id":1}"#);
+    let missing = dir.path().join("not-written.schema.json");
+
+    let result = copy(
+        &format!("{source}|transform?schema_file={}", missing.display()),
+        "null:",
+    );
+
+    assert_failure_contains(&result, "missing schema file", "cannot read schema file");
+}
+
+// ---------------------------------------------------------------------------
+// `--filter`.
+//
+// The expression reads payload fields by bare name including nested paths, and
+// metadata under the reserved `meta.` prefix. A false result is a successful
+// drop; a payload the expression cannot read at all is an error.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_filter_reads_nested_payload_paths_and_combines_terms() {
+    let dir = TestDir::new();
+    let rows = [
+        r#"{"id":1,"amount":25,"order":{"status":"new"}}"#,
+        r#"{"id":2,"amount":12500,"order":{"status":"new"}}"#,
+        r#"{"id":3,"amount":12500,"order":{"status":"refunded"}}"#,
+    ]
+    .map(str::to_string);
+    let source = raw_uri(seed_rows(&dir, "filter-nested-source.jsonl", &rows));
+    let destination = dir.path().join("filter-nested.jsonl");
+
+    let result = copy_with_options(
+        &source,
+        &raw_uri(&destination),
+        &["--filter", "amount > 1000 and order.status == 'new'"],
+    );
+
+    assert_success(&result, "filter over a nested path");
+    assert_eq!(ids(&read_json_rows(&destination)), vec![2]);
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("copied 1 of 3 rows"),
+        "the summary reports what was kept out of what was read: {}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+}
+
+/// Metadata is always text, so a numeric comparison against it needs a cast —
+/// and `meta.` shadows a payload field of the same name, which is what makes
+/// the two namespaces unambiguous.
+#[test]
+fn a_filter_reads_metadata_under_the_meta_prefix_and_casts_it() {
+    let dir = TestDir::new();
+    let source = seed_canonical(
+        &dir,
+        "filter-meta-source.json",
+        &[
+            (
+                serde_json::json!({"id": 1, "retry_count": 99}),
+                serde_json::json!({"retry_count": "1"}),
+            ),
+            (
+                serde_json::json!({"id": 2, "retry_count": 0}),
+                serde_json::json!({"retry_count": "9"}),
+            ),
+        ],
+    );
+    let destination = dir.path().join("filter-meta.jsonl");
+
+    let result = copy_with_options(
+        &json_uri(&source),
+        &raw_uri(&destination),
+        &["--filter", "number(meta.retry_count) > 3"],
+    );
+
+    assert_success(&result, "filter over metadata");
+    assert_eq!(
+        ids(&read_json_rows(&destination)),
+        vec![2],
+        "`meta.` has to read metadata, not the payload field of the same name"
+    );
+}
+
+/// A field that is never usable drops every message, which on its own is
+/// indistinguishable from an empty source. A typo in the expression has to be
+/// visible in the log.
+#[test]
+fn a_filter_on_an_absent_field_matches_nothing_and_warns_once() {
+    let dir = TestDir::new();
+    let source = raw_uri(seed_rows(
+        &dir,
+        "filter-absent-source.jsonl",
+        &numbered_rows(3),
+    ));
+    let destination = dir.path().join("filter-absent.jsonl");
+
+    let result = copy_with_options(&source, &raw_uri(&destination), &["--filter", "amuont > 1"]);
+
+    assert_success(&result, "filter on a misspelt field");
+    assert!(read_rows(&destination).is_empty(), "nothing may match");
+    let logged = logged(&result);
+    assert!(
+        logged.contains("amuont"),
+        "the unusable field has to be named: {logged}"
+    );
+}
+
+/// A payload the filter cannot read at all is a copy pointed at the wrong data.
+/// Dropping every row silently would look like a filter that simply matched
+/// nothing, so it has to fail instead.
+#[test]
+fn a_filter_over_a_non_json_payload_fails_the_copy() {
+    let dir = TestDir::new();
+    let source = raw_file_uri(&dir, "filter-not-json.txt", b"plain text, not a document");
+
+    let result = copy_with_options(&source, "null:", &["--filter", "amount > 1"]);
+
+    assert_failure_contains(
+        &result,
+        "filter over a non-JSON payload",
+        "filter requires a structured JSON object payload",
+    );
+}
+
+/// A filter that keeps nothing still succeeds: an intentional drop advances the
+/// source acknowledgement, and is not the same failure as a sink that took no
+/// rows (see `a_copy_whose_sink_dropped_every_row_fails_instead_of_reporting_success`).
+#[test]
+fn a_filter_that_keeps_nothing_is_a_success_not_a_failure() {
+    let dir = TestDir::new();
+    let source = raw_uri(seed_rows(
+        &dir,
+        "filter-empty-source.jsonl",
+        &numbered_rows(5),
+    ));
+    let destination = dir.path().join("filter-empty.jsonl");
+
+    let result = copy_with_options(
+        &source,
+        &raw_uri(&destination),
+        &["--filter", "amount > 1000000"],
+    );
+
+    assert_success(&result, "a filter that matches nothing");
+    assert!(read_rows(&destination).is_empty());
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("copied 0 of 5 rows"),
+        "the summary has to show the rows were read and dropped: {}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+}
+
+/// The filter runs on the source, the `switch` on the sink, so the two compose:
+/// the filter decides what is copied at all and the switch decides where each
+/// surviving row lands.
+#[test]
+fn a_filter_narrows_what_a_switch_then_splits() {
+    let dir = TestDir::new();
+    let rows = [
+        r#"{"id":1,"amount":25,"order":{"status":"new"}}"#,
+        r#"{"id":2,"amount":12500,"order":{"status":"new"}}"#,
+        r#"{"id":3,"amount":12500,"order":{"status":"refunded"}}"#,
+    ]
+    .map(str::to_string);
+    let source = raw_uri(seed_rows(&dir, "filter-switch-source.jsonl", &rows));
+    let large = dir.path().join("filter-switch-large.jsonl");
+    let fallback = dir.path().join("filter-switch-rest.jsonl");
+
+    let result = copy_with_options(
+        &source,
+        &format!(
+            "switch:?when=amount > 1000&to={}&default={}",
+            nested(&raw_uri(&large)),
+            nested(&raw_uri(&fallback))
+        ),
+        &["--filter", "order.status == 'new'"],
+    );
+
+    assert_success(&result, "filter feeding a switch");
+    assert_eq!(ids(&read_json_rows(&large)), vec![2]);
+    assert_eq!(ids(&read_json_rows(&fallback)), vec![1]);
+    assert!(
+        read_rows(&large)
+            .iter()
+            .chain(read_rows(&fallback).iter())
+            .all(|row| !row.contains("refunded")),
+        "the filtered row must not reach either branch"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Matrices.
+//
+// One table per contract, so a behaviour that changes shows up as a row rather
+// than as a new test — and so the gaps in a table are visible while reading it.
+// ---------------------------------------------------------------------------
+
+/// The rows every expression matrix runs against: one per outcome the tables
+/// need to tell apart, carrying a number, text, a boolean, a null, an array, a
+/// nested object, and metadata.
+fn expression_rows(dir: &TestDir, name: &str) -> PathBuf {
+    seed_canonical(
+        dir,
+        name,
+        &[
+            (
+                serde_json::json!({
+                    "id": 1, "amount": 25, "tier": "free", "tags": ["a", "b"],
+                    "active": true, "note": null, "order": {"status": "new"},
+                }),
+                serde_json::json!({"kind": "a", "retry_count": "1"}),
+            ),
+            (
+                serde_json::json!({
+                    "id": 2, "amount": 12500, "tier": "pro", "tags": ["b"],
+                    "active": false, "note": "urgent", "order": {"status": "refunded"},
+                }),
+                serde_json::json!({"kind": "b", "retry_count": "9"}),
+            ),
+            (
+                serde_json::json!({
+                    "id": 3, "amount": 50, "tier": "pro", "tags": [],
+                    "active": true, "note": "later", "order": {"status": "new"},
+                }),
+                serde_json::json!({"kind": "a", "retry_count": "5"}),
+            ),
+        ],
+    )
+}
+
+/// `--filter` and a `switch`'s `when` are documented as the same expression
+/// language over the same document. Running each expression through both and
+/// comparing is what makes that one claim rather than two: an operator wired
+/// into only one of them would pass a table that checked either alone.
+///
+/// A field that is absent, null, or not a scalar does not stop the expression —
+/// it is evaluated anyway, and only a *failed* evaluation is turned into "does
+/// not match". That is why `note == null` and `len(tags) > 1` are rows here.
+#[test]
+fn the_expression_matrix_selects_the_same_rows_through_filter_and_switch() {
+    let dir = TestDir::new();
+    let source = json_uri(expression_rows(&dir, "expression-matrix.json"));
+
+    // (expression, the ids it selects out of 1, 2, 3)
+    let cases: &[(&str, &[u64])] = &[
+        ("amount > 100", &[2]),
+        ("amount >= 50", &[2, 3]),
+        ("amount > 20 and amount < 100", &[1, 3]),
+        ("tier == 'pro'", &[2, 3]),
+        ("tier != 'pro'", &[1]),
+        ("tier in ['free','pro']", &[1, 2, 3]),
+        ("startsWith(tier, 'p')", &[2, 3]),
+        ("contains(note, 'urgen')", &[2]),
+        ("note == null", &[1]),
+        ("active", &[1, 3]),
+        ("not active", &[2]),
+        ("len(tags) > 1", &[1]),
+        ("order.status == 'new'", &[1, 3]),
+        ("amount > 100 or tier == 'free'", &[1, 2]),
+        ("meta.kind == 'a'", &[1, 3]),
+        ("number(meta.retry_count) >= 5", &[2, 3]),
+    ];
+
+    for (index, (expression, selected)) in cases.iter().enumerate() {
+        let filtered = dir
+            .path()
+            .join(format!("expression-{index}-filtered.jsonl"));
+        let result = copy_with_options(&source, &raw_uri(&filtered), &["--filter", expression]);
+        assert_success(&result, &format!("--filter {expression}"));
+        assert_eq!(
+            ids(&read_json_rows(&filtered)),
+            *selected,
+            "--filter {expression}"
+        );
+
+        let matched = dir.path().join(format!("expression-{index}-matched.jsonl"));
+        let rest = dir.path().join(format!("expression-{index}-rest.jsonl"));
+        let result = copy(
+            &source,
+            &format!(
+                "switch:?when={expression}&to={}&default={}",
+                nested(&raw_uri(&matched)),
+                nested(&raw_uri(&rest))
+            ),
+        );
+        assert_success(&result, &format!("switch when {expression}"));
+        assert_eq!(
+            ids(&read_json_rows(&matched)),
+            *selected,
+            "switch when {expression}"
+        );
+        // The complement has to land in `default`: a row that matched neither
+        // branch would be lost without either assertion noticing.
+        let unmatched: Vec<u64> = (1..=3).filter(|id| !selected.contains(id)).collect();
+        assert_eq!(
+            ids(&read_json_rows(&rest)),
+            unmatched,
+            "switch default for {expression}"
+        );
+    }
+}
+
+/// One property, one value, one outcome — the table a `transform` schema exists
+/// to enforce. A coercion that quietly widened (`7.0` taken as an integer) or a
+/// rejection that stopped naming its reason shows up here as a changed row.
+#[test]
+fn the_transform_schema_type_matrix_coerces_or_rejects_each_value() {
+    let dir = TestDir::new();
+
+    // (case, the schema for `value`, the payload, either the transformed
+    // document or the reason tag the rejection has to carry)
+    let cases: Vec<(
+        &str,
+        serde_json::Value,
+        &str,
+        Result<serde_json::Value, &str>,
+    )> = vec![
+        (
+            "integer from text",
+            serde_json::json!({"type": "integer"}),
+            r#"{"value":"7"}"#,
+            Ok(serde_json::json!({"value": 7})),
+        ),
+        (
+            "integer from a fractional string",
+            serde_json::json!({"type": "integer"}),
+            r#"{"value":"7.5"}"#,
+            Err("[coercion]"),
+        ),
+        (
+            "integer from a float",
+            serde_json::json!({"type": "integer"}),
+            r#"{"value":7.0}"#,
+            Err("[coercion]"),
+        ),
+        (
+            "number from text",
+            serde_json::json!({"type": "number"}),
+            r#"{"value":"2.5"}"#,
+            Ok(serde_json::json!({"value": 2.5})),
+        ),
+        (
+            "boolean from text",
+            serde_json::json!({"type": "boolean"}),
+            r#"{"value":"true"}"#,
+            Ok(serde_json::json!({"value": true})),
+        ),
+        (
+            "boolean from a one",
+            serde_json::json!({"type": "boolean"}),
+            r#"{"value":"1"}"#,
+            Ok(serde_json::json!({"value": true})),
+        ),
+        (
+            "boolean from a word that is not one",
+            serde_json::json!({"type": "boolean"}),
+            r#"{"value":"yes"}"#,
+            Err("[coercion]"),
+        ),
+        (
+            "string from a number",
+            serde_json::json!({"type": "string"}),
+            r#"{"value":7}"#,
+            Ok(serde_json::json!({"value": "7"})),
+        ),
+        (
+            "string from a boolean",
+            serde_json::json!({"type": "string"}),
+            r#"{"value":true}"#,
+            Err("[coercion]"),
+        ),
+        (
+            "a listed enum value",
+            serde_json::json!({"type": "string", "enum": ["a", "b"]}),
+            r#"{"value":"a"}"#,
+            Ok(serde_json::json!({"value": "a"})),
+        ),
+        (
+            "an unlisted enum value",
+            serde_json::json!({"type": "string", "enum": ["a", "b"]}),
+            r#"{"value":"c"}"#,
+            Err("[enum]"),
+        ),
+        (
+            "an array coerced element-wise",
+            serde_json::json!({"type": "array", "items": {"type": "integer"}}),
+            r#"{"value":["1","2"]}"#,
+            Ok(serde_json::json!({"value": [1, 2]})),
+        ),
+        (
+            "null in a nullable field",
+            serde_json::json!({"type": "integer", "nullable": true}),
+            r#"{"value":null}"#,
+            Ok(serde_json::json!({"value": null})),
+        ),
+        (
+            "null in a field that is not nullable",
+            serde_json::json!({"type": "integer"}),
+            r#"{"value":null}"#,
+            Err("[type_mismatch]"),
+        ),
+        (
+            "a required field that is absent",
+            serde_json::json!({"type": "integer"}),
+            r#"{"other":1}"#,
+            Err("[missing_required]"),
+        ),
+    ];
+
+    for (index, (case, property, payload, expected)) in cases.iter().enumerate() {
+        let spec = schema_file(
+            &dir,
+            &format!("type-matrix-{index}.schema.json"),
+            serde_json::json!({
+                "type": "object",
+                "properties": { "value": property },
+                "required": ["value"],
+            }),
+        );
+        let source = raw_file_uri(
+            &dir,
+            &format!("type-matrix-{index}.json"),
+            payload.as_bytes(),
+        );
+        let destination = dir.path().join(format!("type-matrix-{index}-out.jsonl"));
+
+        let result = copy(&format!("{source}{spec}"), &raw_uri(&destination));
+        // A rejected row is dropped from the batch, which is not a copy failure.
+        assert_success(&result, case);
+
+        match expected {
+            Ok(document) => assert_eq!(
+                read_json_rows(&destination),
+                vec![document.clone()],
+                "{case}"
+            ),
+            Err(reason) => {
+                assert!(
+                    read_rows(&destination).is_empty(),
+                    "{case}: a rejected row must not reach the destination"
+                );
+                let logged = logged(&result);
+                assert!(
+                    logged.contains("$.value") || logged.contains("$.other"),
+                    "{case}: the rejection must name the field: {logged}"
+                );
+                assert!(
+                    logged.contains(reason),
+                    "{case}: the rejection must carry {reason}: {logged}"
+                );
+            }
+        }
+    }
+}
+
+/// `coerce`, `apply_defaults` and `on_error` are independent, so the honest
+/// shape of the contract is all eight combinations rather than one test each.
+/// The same two rows go through every one: `{"id":"1"}` needs coercion to fit,
+/// `{"tier":"pro"}` cannot fit at all.
+#[test]
+fn the_transform_option_matrix_covers_every_combination() {
+    let dir = TestDir::new();
+    let source = raw_uri(seed_rows(
+        &dir,
+        "option-matrix-source.jsonl",
+        &[r#"{"id":"1"}"#.to_string(), r#"{"tier":"pro"}"#.to_string()],
+    ));
+    let spec = schema_file(
+        &dir,
+        "option-matrix.schema.json",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "integer" },
+                "tier": { "type": "string", "default": "standard" },
+            },
+            "required": ["id"],
+        }),
+    );
+
+    let coerced = serde_json::json!({"id": 1, "tier": "standard"});
+    let coerced_bare = serde_json::json!({"id": 1});
+    let untouched = serde_json::json!({"id": "1"});
+    let invalid = serde_json::json!({"tier": "pro"});
+
+    // A payload that reaches the sink and whether it carries a transform error
+    // in its metadata.
+    type Delivered = (serde_json::Value, bool);
+    // (coerce, apply_defaults, on_error, the payloads that reach the sink)
+    type Case<'a> = (bool, bool, &'a str, Vec<Delivered>);
+
+    let cases: Vec<Case> = vec![
+        (true, true, "reject", vec![(coerced.clone(), false)]),
+        (
+            true,
+            true,
+            "pass_through",
+            vec![(coerced, false), (invalid.clone(), true)],
+        ),
+        (true, false, "reject", vec![(coerced_bare.clone(), false)]),
+        (
+            true,
+            false,
+            "pass_through",
+            vec![(coerced_bare, false), (invalid.clone(), true)],
+        ),
+        // Without coercion the text `id` no longer fits the typed schema, so the
+        // row that passed above is rejected too and nothing survives.
+        (false, true, "reject", vec![]),
+        (
+            false,
+            true,
+            "pass_through",
+            vec![(untouched.clone(), true), (invalid.clone(), true)],
+        ),
+        (false, false, "reject", vec![]),
+        (
+            false,
+            false,
+            "pass_through",
+            vec![(untouched, true), (invalid, true)],
+        ),
+    ];
+
+    for (index, (coerce, apply_defaults, on_error, expected)) in cases.iter().enumerate() {
+        let case = format!("coerce={coerce} apply_defaults={apply_defaults} on_error={on_error}");
+        let destination = dir.path().join(format!("option-matrix-{index}.json"));
+
+        let result = copy_with_options(
+            &format!(
+                "{source}{spec}&coerce={coerce}&apply_defaults={apply_defaults}&on_error={on_error}"
+            ),
+            &json_uri(&destination),
+            // Order is part of the expectation, so only one writer.
+            &["--concurrency", "1"],
+        );
+
+        assert_success(&result, &case);
+        let delivered: Vec<Delivered> = read_json_rows(&destination)
+            .into_iter()
+            .map(|row| {
+                let failed = row["metadata"]["mqb.transform_error"].is_string();
+                (row["payload"].clone(), failed)
+            })
+            .collect();
+        assert_eq!(delivered, *expected, "{case}");
+    }
+}
+
+/// Every structural shape has to account for every row. Counting the union of
+/// the branches rather than each one alone is what catches a row that went to
+/// both legs of a `switch`, or to neither leg of a `fanout`.
+#[test]
+fn the_structural_endpoint_matrix_accounts_for_every_row() {
+    let dir = TestDir::new();
+    // `amount` runs 0, 10, … 50, so `amount >= 30` splits the six rows in half.
+    let rows = numbered_rows(6);
+    let source = raw_uri(seed_rows(&dir, "structural-matrix-source.jsonl", &rows));
+    let branch = |name: &str| dir.path().join(format!("structural-{name}.jsonl"));
+
+    let (first, second) = (branch("fanout-a"), branch("fanout-b"));
+    let (kept, mirrored) = (branch("mirror-kept"), branch("mirror-copy"));
+    let (large, small) = (branch("switch-large"), branch("switch-small"));
+    let (nested_large, nested_small, archive) = (
+        branch("nested-large"),
+        branch("nested-small"),
+        branch("nested-archive"),
+    );
+    let inner = format!(
+        "switch:?when=amount >= 30&to={}&default={}",
+        nested(&raw_uri(&nested_large)),
+        nested(&raw_uri(&nested_small))
+    );
+
+    // (case, the branches to collect from, the destination, copies per source row)
+    let cases: &[(&str, &[PathBuf], String, usize)] = &[
+        (
+            "fanout to two branches",
+            &[first.clone(), second.clone()],
+            format!(
+                "fanout:?to={}&to={}",
+                nested(&raw_uri(&first)),
+                nested(&raw_uri(&second))
+            ),
+            2,
+        ),
+        (
+            "fanout with a mirrored branch",
+            &[kept.clone(), mirrored.clone()],
+            format!(
+                "fanout:?to={}&mirror={}",
+                nested(&raw_uri(&kept)),
+                nested(&raw_uri(&mirrored))
+            ),
+            2,
+        ),
+        (
+            "switch on a predicate",
+            &[large.clone(), small.clone()],
+            format!(
+                "switch:?when=amount >= 30&to={}&default={}",
+                nested(&raw_uri(&large)),
+                nested(&raw_uri(&small))
+            ),
+            1,
+        ),
+        (
+            "a switch inside a fanout",
+            &[nested_large.clone(), nested_small.clone(), archive.clone()],
+            format!(
+                "fanout:?to={}&to={}",
+                nested(&inner),
+                nested(&raw_uri(&archive))
+            ),
+            2,
+        ),
+    ];
+
+    for (case, files, destination, copies) in cases {
+        let result = copy(&source, destination);
+        assert_success(&result, case);
+
+        let delivered = sorted(&files.iter().flat_map(read_rows).collect::<Vec<_>>());
+        let expected = sorted(
+            &rows
+                .iter()
+                .flat_map(|row| std::iter::repeat_n(row.clone(), *copies))
+                .collect::<Vec<_>>(),
+        );
+        assert_rows_eq(&delivered, &expected, case);
+    }
+}
+
+/// A rejecting `transform` drops rows from the batch exactly as `--filter`
+/// does, so the summary has to report it the same way. The counter that feeds
+/// "copied" therefore has to sit outside every source middleware: inside one it
+/// tallies rows that middleware is about to throw away, and the line then claims
+/// rows the destination never received.
+#[test]
+fn the_summary_reports_transform_rejections_as_rows_not_copied() {
+    let dir = TestDir::new();
+    let rows = [
+        r#"{"id":"1","amount":"2.5"}"#,
+        r#"{"amount":"9"}"#,
+        r#"{"id":"3","amount":"not-a-number"}"#,
+    ]
+    .map(str::to_string);
+    let source = raw_uri(seed_rows(&dir, "summary-reject-source.jsonl", &rows));
+    let destination = dir.path().join("summary-reject.jsonl");
+    let spec = schema_file(&dir, "summary-reject.schema.json", order_schema());
+
+    let result = copy(&format!("{source}{spec}"), &raw_uri(&destination));
+
+    assert_success(&result, "transform rejecting two of three rows");
+    assert_eq!(
+        read_rows(&destination).len(),
+        1,
+        "only one row fits the schema"
+    );
+    let summary = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        summary.contains("copied 1 of 3 rows"),
+        "the summary must count the rejected rows as read but not copied: {summary}"
+    );
+}
+
+/// The same split through `--filter` and through a rejecting `transform` has to
+/// produce the same summary — the two differ in why a row was dropped, not in
+/// whether it counts as copied.
+#[test]
+fn filter_and_transform_rejections_report_the_same_summary() {
+    let dir = TestDir::new();
+    let rows = [
+        r#"{"id":"1","amount":"2.5"}"#,
+        r#"{"amount":"9"}"#,
+        r#"{"id":"3","amount":"not-a-number"}"#,
+    ]
+    .map(str::to_string);
+    let source = raw_uri(seed_rows(&dir, "summary-parity-source.jsonl", &rows));
+    let spec = schema_file(&dir, "summary-parity.schema.json", order_schema());
+
+    let rejected = copy(
+        &format!("{source}{spec}"),
+        &raw_uri(dir.path().join("summary-parity-transform.jsonl")),
+    );
+    assert_success(&rejected, "transform rejection summary");
+
+    // `id` is absent on row 2 and text on the others, so this keeps exactly the
+    // one row the schema keeps.
+    let filtered = copy_with_options(
+        &source,
+        &raw_uri(dir.path().join("summary-parity-filter.jsonl")),
+        &["--filter", "id == '1'"],
+    );
+    assert_success(&filtered, "filter summary");
+
+    let summary_of = |output: &Output| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|line| line.split_once(" in ").map(|(head, _)| head.to_string()))
+            .expect("the run prints a summary line")
+    };
+    assert_eq!(
+        summary_of(&rejected),
+        summary_of(&filtered),
+        "a row dropped by a transform and one dropped by a filter must count alike"
     );
 }

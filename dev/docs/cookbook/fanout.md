@@ -35,3 +35,9 @@ output:
         - dlq: { endpoint: { file: { path: "audit-failed.jsonl" } } }
       http: { url: "https://audit.internal/ingest", method: "POST" }
 ```
+
+## From the CLI
+
+`copy` can build a fan-out too — `fanout:?to=<uri>&mirror=<uri>`, where a `mirror` branch's
+response and failures are discarded. See
+[Structural endpoints in the URI](../reference/cli.md#structural-endpoints-in-the-uri).

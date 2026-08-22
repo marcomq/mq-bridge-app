@@ -21,6 +21,7 @@ export interface AppConfig {
 export interface ConsumerConfig {
   id?: string;
   name?: string;
+  enabled?: boolean;
   endpoint: Endpoint;
   comment?: string;
   response?: ConsumerResponseConfig | null;
@@ -189,6 +190,7 @@ export interface CookieJarMiddleware {
 
 export interface TransformMiddleware {
   mapping?: Record<string, MappingRule>;
+  expression?: string | null;
   schema?: unknown;
   schema_file?: string | null;
   coerce?: boolean;
@@ -409,6 +411,7 @@ export interface HttpConfig {
   request_timeout_ms?: number | null;
   internal_buffer_size?: number | null;
   fire_and_forget?: boolean;
+  pass_through_status?: boolean;
   receive_streamable?: boolean;
   inline_response_fast_path?: boolean | null;
   server_protocol?: HttpServerProtocol;
@@ -591,9 +594,15 @@ export interface StreamBufferConfig {
 }
 
 export interface SwitchConfig {
-  metadata_key: string;
-  cases: Record<string, Endpoint>;
+  metadata_key?: string;
+  cases?: Record<string, Endpoint>;
+  when?: SwitchCase[];
   default?: Endpoint | null;
+}
+
+export interface SwitchCase {
+  if: string;
+  to: Endpoint;
 }
 
 export type ResponseConfig = Record<string, never>;
@@ -626,6 +635,12 @@ export interface ConfigSecurity {
 }
 
 export type ConfigSecurityMode = "unencrypted" | "balanced" | "env_temporary_messages" | "temporary_messages" | "sensitive" | "durable";
+
+export interface PulsarConfig {
+  url: string;
+  topic?: string;
+  subscription?: string;
+}
 
 export interface ConsumerStatusSnapshot {
   running: boolean;

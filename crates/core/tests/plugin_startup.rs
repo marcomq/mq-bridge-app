@@ -16,6 +16,7 @@ fn plugin_consumer() -> ConsumerConfig {
     ConsumerConfig {
         id: "plugin-consumer".to_string(),
         name: "Plugin consumer".to_string(),
+        enabled: true,
         endpoint: Endpoint::new(EndpointType::Custom {
             name: "startup-fixture".to_string(),
             config: serde_json::Value::Null,

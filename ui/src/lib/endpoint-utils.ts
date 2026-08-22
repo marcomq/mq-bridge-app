@@ -124,17 +124,32 @@ export function ensureEndpointDefaults(
     const nextSwitch = normalized.switch;
     if (nextSwitch && typeof nextSwitch === "object" && !Array.isArray(nextSwitch)) {
       const switchRecord = nextSwitch as Record<string, unknown>;
-      if (!switchRecord.metadata_key) {
-        switchRecord.metadata_key = "type";
-      }
-      const rawCases = switchRecord.cases;
-      const normalizedCases: Record<string, EndpointRecord> = {};
-      if (rawCases && typeof rawCases === "object" && !Array.isArray(rawCases)) {
-        for (const [key, value] of Object.entries(rawCases as Record<string, unknown>)) {
-          normalizedCases[key] = recurse(value);
+      const rawWhen = switchRecord.when;
+      const predicateMode = Array.isArray(rawWhen) && rawWhen.length > 0;
+      // The engine takes `metadata_key` + `cases` or `when`, never both, so
+      // filling the value-lookup defaults in would make a predicate switch
+      // invalid the moment it is opened.
+      if (predicateMode) {
+        switchRecord.when = (rawWhen as unknown[]).map((entry) => {
+          const record = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
+          return { ...record, to: recurse(record.to) };
+        });
+        delete switchRecord.metadata_key;
+        delete switchRecord.cases;
+      } else {
+        delete switchRecord.when;
+        if (!switchRecord.metadata_key) {
+          switchRecord.metadata_key = "type";
         }
+        const rawCases = switchRecord.cases;
+        const normalizedCases: Record<string, EndpointRecord> = {};
+        if (rawCases && typeof rawCases === "object" && !Array.isArray(rawCases)) {
+          for (const [key, value] of Object.entries(rawCases as Record<string, unknown>)) {
+            normalizedCases[key] = recurse(value);
+          }
+        }
+        switchRecord.cases = normalizedCases;
       }
-      switchRecord.cases = normalizedCases;
       switchRecord.default = recurse(switchRecord.default ?? { ref: "" });
     }
   } else if (endpointType === "fanout") {

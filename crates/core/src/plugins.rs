@@ -30,8 +30,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use anyhow::Context;
+
+/// Registers endpoints that ship with mq-bridge-app but are maintained as
+/// separate crates. Cache the result because startup has several entry paths.
+pub fn register_builtin_endpoints() -> anyhow::Result<()> {
+    static RESULT: OnceLock<Result<(), String>> = OnceLock::new();
+    RESULT
+        .get_or_init(|| mq_bridge_pulsar::register().map_err(|error| format!("{error:#}")))
+        .clone()
+        .map_err(anyhow::Error::msg)
+}
 
 fn resolved_plugin_paths(
     paths: &[String],
@@ -76,6 +87,7 @@ pub fn load_trusted_plugins(
     paths: &[String],
     env_vars: &HashMap<String, String>,
 ) -> anyhow::Result<Vec<mq_bridge::plugin::PluginInfo>> {
+    register_builtin_endpoints().context("failed to register built-in endpoints")?;
     let paths = resolved_plugin_paths(paths, env_vars)?;
     let mut plugins = Vec::with_capacity(paths.len());
     for path in paths {
@@ -102,6 +114,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        assert!(mq_bridge::extensions::get_endpoint_factory("pulsar").is_some());
     }
 
     #[test]

@@ -15,6 +15,7 @@ RUN dpkg --add-architecture arm64 && \
         pkg-config \
         curl \
         cmake \
+        protobuf-compiler \
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
         gcc \
@@ -97,7 +98,8 @@ WORKDIR /opt/mqm
 RUN set -e; \
     if [ "$TARGETARCH" = "amd64" ] && [ "$ENABLE_IBM_MQ" = "true" ]; then \
         if [ -z "$IBM_MQ_SHA256" ]; then echo "Error: IBM_MQ_SHA256 is required" >&2; exit 1; fi; \
-        curl -Lo /tmp/ibm-mq.tgz https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqdev/redist/9.4.5.0-IBM-MQC-Redist-LinuxX64.tar.gz \
+        curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 \
+            -o /tmp/ibm-mq.tgz https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqdev/redist/9.4.5.0-IBM-MQC-Redist-LinuxX64.tar.gz \
         && echo "${IBM_MQ_SHA256}  /tmp/ibm-mq.tgz" | sha256sum -c - \
         && tar -xzf /tmp/ibm-mq.tgz \
         && rm /tmp/ibm-mq.tgz; \

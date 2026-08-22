@@ -1,3 +1,4 @@
+pub mod cli_command;
 pub mod config;
 pub mod copy_pipeline;
 pub mod encrypted_config;
