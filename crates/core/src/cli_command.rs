@@ -53,6 +53,42 @@ mod tests {
     }
 
     #[test]
+    fn command_does_not_embed_publisher_header_credentials() {
+        let config: AppConfig = serde_yaml_ng::from_str(
+            r#"
+publishers:
+  - id: "pub-1"
+    name: "orders"
+    endpoint:
+      http:
+        url: "https://example.test/orders"
+    headers:
+      - key: "Authorization"
+        value: "Bearer super-secret"
+      - key: "Content-Type"
+        value: "application/json"
+"#,
+        )
+        .unwrap();
+
+        let export = inline_config_command(&config).unwrap();
+
+        assert!(!export.command.contains("super-secret"));
+        // Non-credential headers stay inline; only the secret one moves to the env.
+        assert!(export.command.contains("application/json"));
+        assert!(
+            export
+                .required_env
+                .contains(&"MQB__PUBLISHERS__ORDERS__HEADERS__AUTHORIZATION".to_string())
+        );
+        assert!(
+            export
+                .required_env
+                .contains(&"MQB__PUBLISHERS__PUB_1__HEADERS__AUTHORIZATION".to_string())
+        );
+    }
+
+    #[test]
     fn command_does_not_embed_inline_environment_values() {
         let mut config = AppConfig::default();
         config

@@ -86,18 +86,39 @@ function installProbe() {
 }
 
 /**
- * Tag light-DOM buttons so a click can address exactly the element we measured.
+ * Tag buttons so a click can address exactly the element we measured.
  * Playwright locators pierce shadow roots; querySelectorAll does not, so tagging
- * here keeps `wa-button`'s inner button out of the enumeration.
+ * here keeps `wa-button`'s inner button out of the enumeration — with one
+ * deliberate exception: `wa-dialog` renders its own close control in its shadow
+ * root, and it is a real button of the app that no light-DOM query reaches.
  *
  * The key is label + occurrence rather than a document-wide index: indices shift
  * whenever a panel renders a different number of buttons, which previously made
- * most of the inventory unmatchable on the second load.
+ * most of the inventory unmatchable on the second load. Occurrences are counted
+ * over the whole document even when `scope` narrows the returned inventory, so
+ * one control keeps one key in every state — that is what lets the two JSON
+ * dialogs' identically labelled Copy/Close buttons stay distinct.
  */
 function tagButtons(scope) {
-  const buttons = document.querySelectorAll(
-    scope ? `${scope} button, ${scope} wa-button` : "button, wa-button",
-  );
+  const closeControl = (dialog) => dialog.shadowRoot?.querySelector('[part~="close-button"]') || null;
+
+  const buttons = [];
+  document.querySelectorAll("button, wa-button, wa-dialog").forEach((element) => {
+    if (element.localName === "wa-dialog") {
+      const close = closeControl(element);
+      if (close) buttons.push(close);
+      return;
+    }
+    buttons.push(element);
+  });
+
+  const inScope = scope
+    ? new Set([
+        ...document.querySelectorAll(`${scope} button, ${scope} wa-button`),
+        ...[...document.querySelectorAll(scope)].map(closeControl).filter(Boolean),
+      ])
+    : null;
+
   const seen = [];
   const labelCounts = new Map();
   buttons.forEach((element) => {
@@ -112,6 +133,7 @@ function tagButtons(scope) {
     labelCounts.set(label, occurrence);
     const key = `${label}#${occurrence}`;
     element.setAttribute("data-sweep-key", key);
+    if (inScope && !inScope.has(element)) return;
     seen.push({
       key,
       label,
@@ -233,7 +255,9 @@ test.describe("dead button sweep", () => {
     const sweptKeys = new Set();
     // Reached anywhere counts as reached: the same button is invisible in every
     // view but its own, so a per-family key would report it as a coverage gap.
-    const sweptLabels = new Set();
+    // The key is still per *button*, not per label — the two JSON dialogs each
+    // carry a "Copy" and a "Close", and one must not account for the other.
+    const sweptIds = new Set();
     let clicked = 0;
     let deduped = 0;
 
@@ -263,7 +287,7 @@ test.describe("dead button sweep", () => {
           return false;
         }
         sweptKeys.add(sweepId);
-        sweptLabels.add(button.label);
+        sweptIds.add(button.key);
         return true;
       });
 
@@ -329,16 +353,18 @@ test.describe("dead button sweep", () => {
     // the buttons no state reached at all.
     // "disabled", "already active" and drag handles are deliberate exclusions, not
     // gaps; a button that was never *visible* anywhere is the thing to report.
-    const accounted = new Set(sweptLabels);
+    const accounted = new Set(sweptIds);
     for (const entry of skipped) {
-      if (entry.reason === "already active" || entry.reason === "disabled") accounted.add(entry.button.label);
+      if (entry.reason === "already active" || entry.reason === "disabled") accounted.add(entry.button.key);
     }
     const neverReached = skipped.filter(
       (entry) =>
-        !accounted.has(entry.button.label) &&
+        !accounted.has(entry.button.key) &&
         !DRAG_HANDLE.test(entry.button.label) &&
         (entry.reason === "not visible" || entry.reason === "not reachable on reload"),
     );
+    // Counting is per button; the lines are grouped by label only to read well.
+    const neverReachedKeys = new Set(neverReached.map((entry) => entry.button.key));
     const byLabel = new Map();
     for (const entry of neverReached) {
       const seen = byLabel.get(entry.button.label) || new Set();
@@ -353,9 +379,9 @@ test.describe("dead button sweep", () => {
     console.log(
       `swept ${clicked} buttons across ${VIEWS.length} states ` +
         `(${deduped} reachable from more than one state, clicked once); ` +
-        `${byLabel.size} buttons never reached`,
+        `${neverReachedKeys.size} buttons never reached`,
     );
-    if (byLabel.size > 0) {
+    if (neverReachedKeys.size > 0) {
       const lines = [...byLabel].map(([label, reasons]) => `"${label}" (${[...reasons].join(", ")})`);
       console.log(`never reached:\n  ${lines.join("\n  ")}`);
     }

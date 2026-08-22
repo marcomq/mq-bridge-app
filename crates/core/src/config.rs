@@ -407,7 +407,16 @@ fn app_level_fields() -> &'static HashSet<String> {
             .keys()
             .cloned()
             .collect();
-        for field in ["envVars", "routes", "plugins", "history", "config_security"] {
+        // Fields that `AppConfig::default()` skips when serializing, so they are
+        // absent from the set above and would otherwise be lifted into the route.
+        for field in [
+            "envVars",
+            "routes",
+            "plugins",
+            "history",
+            "config_security",
+            "extract_secrets",
+        ] {
             fields.insert(field.to_string());
         }
         fields
@@ -930,8 +939,33 @@ impl AppConfig {
                 &mut publisher.endpoint,
                 &mut all_secrets,
             );
+            Self::extract_publisher_header_secrets(publisher, &mut all_secrets);
         }
         all_secrets
+    }
+
+    /// A publisher's request headers are rows beside the endpoint, not inside it,
+    /// so `extract_secrets_to_all` never reaches them. Without this an
+    /// `Authorization: Bearer …` row is exported verbatim by
+    /// [`crate::cli_command::inline_config_command`].
+    fn extract_publisher_header_secrets(
+        publisher: &mut PublisherClient,
+        all_secrets: &mut HashMap<String, String>,
+    ) {
+        let name_part = sanitize_name_for_env(&publisher.name);
+        let id_part = sanitize_id_for_env(&publisher.id);
+        for header in &mut publisher.headers {
+            if header.value.is_empty() || !is_sensitive_http_header(&header.key) {
+                continue;
+            }
+            let suffix = publisher_header_env_suffix(&header.key);
+            let value = std::mem::take(&mut header.value);
+            all_secrets.insert(
+                format!("MQB__PUBLISHERS__{name_part}{suffix}"),
+                value.clone(),
+            );
+            all_secrets.insert(format!("MQB__PUBLISHERS__{id_part}{suffix}"), value);
+        }
     }
 
     pub fn referenced_secret_keys(&self) -> SecretReferenceSummary {
@@ -964,12 +998,14 @@ impl AppConfig {
 
         let mut publishers = HashMap::new();
         for publisher in &self.publishers {
-            let keys = self.get_referenced_keys_for_entity(
+            let mut keys = self.get_referenced_keys_for_entity(
                 &publisher.name,
                 &publisher.id,
                 "PUBLISHERS",
                 &publisher.endpoint,
             );
+            keys.extend(Self::publisher_header_secret_keys(publisher));
+            keys.sort();
             if !keys.is_empty() {
                 publishers.insert(publisher.name.clone(), keys);
             }
@@ -1005,6 +1041,26 @@ impl AppConfig {
         keys.sort();
         keys
     }
+
+    /// The env keys [`Self::extract_publisher_header_secrets`] would produce.
+    fn publisher_header_secret_keys(publisher: &PublisherClient) -> Vec<String> {
+        let name_part = sanitize_name_for_env(&publisher.name);
+        let id_part = sanitize_id_for_env(&publisher.id);
+        let mut keys = Vec::new();
+        for header in &publisher.headers {
+            if header.value.is_empty() || !is_sensitive_http_header(&header.key) {
+                continue;
+            }
+            let suffix = publisher_header_env_suffix(&header.key);
+            keys.push(format!("MQB__PUBLISHERS__{name_part}{suffix}"));
+            keys.push(format!("MQB__PUBLISHERS__{id_part}{suffix}"));
+        }
+        keys
+    }
+}
+
+fn publisher_header_env_suffix(key: &str) -> String {
+    format!("__HEADERS__{}", key.trim().replace('-', "_").to_uppercase())
 }
 
 fn is_sensitive_http_header(key: &str) -> bool {
@@ -1424,6 +1480,35 @@ batch_size: 8
         config.migrate_legacy_routes();
         assert_eq!(config.consumers.len(), 1);
         assert_eq!(config.consumers[0].name, SINGLE_ROUTE_NAME);
+    }
+
+    // `extract_secrets` is skipped when false, so it is absent from the serialized
+    // default that seeds `app_level_fields` — it has to be named explicitly or a
+    // bare route swallows it and route deserialization rejects the unknown key.
+    #[test]
+    fn a_bare_route_keeps_extract_secrets_at_application_level() {
+        let raw: serde_json::Value = serde_yaml_ng::from_str(
+            r#"
+extract_secrets: true
+input:
+  memory: { topic: "in" }
+output:
+  memory: { topic: "out" }
+"#,
+        )
+        .unwrap();
+
+        let lifted = lift_bare_routes(raw).expect("a top-level input is a single-route config");
+        let route = &lifted["routes"][SINGLE_ROUTE_NAME];
+        assert!(route.get("extract_secrets").is_none());
+        assert!(route.get("input").is_some());
+
+        let mut config: AppConfig = serde_json::from_value(lifted).unwrap();
+        assert!(config.extract_secrets);
+
+        // And the legacy flag still migrates rather than being lost in the route.
+        config.migrate_legacy_routes();
+        assert_eq!(config.security_mode(), ConfigSecurityMode::Balanced);
     }
 
     #[test]
