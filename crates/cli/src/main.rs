@@ -168,6 +168,10 @@ enum Command {
     /// language: publish messages to any endpoint and run routes between any two
     /// endpoints, all supplied ad hoc as endpoint JSON. No web UI is started.
     Mcp(McpArgs),
+
+    /// Print a copyable, self-contained command for the loaded YAML/JSON config.
+    /// Credential values are replaced by environment-variable placeholders.
+    ToCli,
 }
 
 #[derive(clap::Args, Debug)]
@@ -398,6 +402,24 @@ async fn main() -> anyhow::Result<()> {
                 workspace_path,
             )
             .await;
+        }
+        Some(Command::ToCli) => {
+            let (config, _) = load_config(
+                args.config,
+                args.init_config,
+                args.init_config_str,
+                args.config_str,
+            )
+            .context("Failed to load configuration")?;
+            let export = mq_bridge_app::cli_command::inline_config_command(&config)?;
+            println!("{}", export.command);
+            if !export.required_env.is_empty() {
+                eprintln!(
+                    "Required environment variables: {}",
+                    export.required_env.join(", ")
+                );
+            }
+            return Ok(());
         }
         None => {}
     }
@@ -1254,6 +1276,41 @@ fn middleware_from_spec(spec: &str) -> anyhow::Result<mq_bridge::models::Middlew
         .with_context(|| format!("could not build a '{tag}' middleware from '{spec}'"))
 }
 
+/// Builds a `custom` endpoint for a scheme that names a registered factory.
+///
+/// The factory owns its config shape and the CLI has no schema for it, so the
+/// mapping stays literal: `url` is the URI up to the query (the plugin defined
+/// that format, so it is passed through rather than normalised) and every query
+/// param becomes a string field. A `?url=` param overrides the derived one.
+/// Values stay strings — guessing types here would silently turn an id like
+/// `0123` into a number; a factory needing typed fields takes them from config.
+fn custom_endpoint_from_uri(
+    name: &str,
+    parsed: &url::Url,
+    uri: &str,
+) -> anyhow::Result<mq_bridge::models::Endpoint> {
+    use mq_bridge::models::{Endpoint, EndpointType};
+
+    let mut config = serde_json::Map::new();
+    let mut url = uri.split('?').next().unwrap_or(uri).to_string();
+    for (key, value) in parsed.query_pairs() {
+        if key == "url" {
+            url = value.into_owned();
+        } else {
+            config.insert(
+                key.into_owned(),
+                serde_json::Value::String(value.into_owned()),
+            );
+        }
+    }
+    config.insert("url".into(), serde_json::Value::String(url));
+
+    Ok(Endpoint::new(EndpointType::Custom {
+        name: name.to_string(),
+        config: serde_json::Value::Object(config),
+    }))
+}
+
 fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoint> {
     use anyhow::bail;
     use mq_bridge::models::{
@@ -1556,8 +1613,14 @@ fn base_endpoint_from_uri(uri: &str) -> anyhow::Result<mq_bridge::models::Endpoi
         // authority is just a placeholder (e.g. `aws://_/?queue_url=...`).
         "aws" | "aws-sqs" => ("aws", schema_fields(schemars::schema_for!(AwsConfig))),
         "zeromq" | "zmq" => ("zeromq", schema_fields(schemars::schema_for!(ZeroMqConfig))),
+        // A scheme naming a registered endpoint — one compiled in as an extension
+        // (`pulsar`) or loaded with `--plugin` — is that endpoint. This mirrors the
+        // config path, where an unknown single key falls back to `custom`.
+        other if mq_bridge::extensions::get_endpoint_factory(other).is_some() => {
+            return custom_endpoint_from_uri(other, &parsed, uri);
+        }
         other => bail!(
-            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq, s3, gs, az, abfs, and the structural memory, null, static, fanout, request, switch, response"
+            "unsupported endpoint scheme '{other}' in URI '{uri}'. Supported schemes: postgres, postgresql, mysql, mariadb, sqlite, nats, mongodb, redis, file, kafka, mqtt, mqtts, amqp, amqps, rabbitmq, rabbitmqs, http, https, clickhouse, clickhouses, ws, wss, grpc, grpcs, ibmmq, aws, zeromq, zmq, s3, gs, az, abfs, and the structural memory, null, static, fanout, request, switch, response. A scheme may also name an endpoint registered by an extension (pulsar) or loaded with --plugin"
         ),
     };
 
@@ -2735,6 +2798,54 @@ mod uri_tests {
         let err = endpoint_from_uri("null:|bogus").unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("unsupported middleware 'bogus'"), "got: {msg}");
+    }
+
+    // A scheme naming a registered endpoint builds `custom`, so `copy` can
+    // address an extension or `--plugin` endpoint the URI parser knows nothing
+    // about. `pulsar` is compiled in, so registering it is enough to exercise it.
+    #[test]
+    fn registered_endpoint_scheme_builds_a_custom_endpoint() {
+        mq_bridge_app::plugins::register_builtin_endpoints().unwrap();
+
+        let endpoint = endpoint_from_uri(
+            "pulsar://localhost:6650?topic=persistent://public/default/orders&subscription=workers",
+        )
+        .unwrap();
+
+        let EndpointType::Custom { name, config } = endpoint.endpoint_type else {
+            panic!(
+                "expected a custom endpoint, got {:?}",
+                endpoint.endpoint_type
+            );
+        };
+        assert_eq!(name, "pulsar");
+        assert_eq!(config["url"], "pulsar://localhost:6650");
+        assert_eq!(config["topic"], "persistent://public/default/orders");
+        assert_eq!(config["subscription"], "workers");
+    }
+
+    #[test]
+    fn registered_endpoint_url_preserves_a_trailing_slash() {
+        mq_bridge_app::plugins::register_builtin_endpoints().unwrap();
+
+        let endpoint = endpoint_from_uri("pulsar://localhost:6650/?topic=orders").unwrap();
+
+        let EndpointType::Custom { config, .. } = endpoint.endpoint_type else {
+            panic!("expected a custom endpoint");
+        };
+        assert_eq!(config["url"], "pulsar://localhost:6650/");
+    }
+
+    // An unregistered scheme still fails fast rather than becoming a `custom`
+    // endpoint that would only break later with "no factory named ...".
+    #[test]
+    fn unregistered_scheme_still_fails_fast() {
+        let err = endpoint_from_uri("kafkaa://broker:9092").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("unsupported endpoint scheme 'kafkaa'"),
+            "got: {msg}"
+        );
     }
 
     // `kafka://` selects the Kafka endpoint; the scheme is stripped so `url`

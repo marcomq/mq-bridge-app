@@ -906,7 +906,7 @@ impl AppConfig {
         }
     }
 
-    fn extract_secrets(&mut self) -> HashMap<String, String> {
+    pub(crate) fn extract_secrets(&mut self) -> HashMap<String, String> {
         let mut all_secrets = HashMap::new();
         for (name, route) in &mut self.routes {
             let prefix = format!("MQB__ROUTES__{}__", sanitize_name_for_env(name));

@@ -168,6 +168,22 @@ struct StartRouteArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct GenerateCliCommandArgs {
+    /// Optional route name in the generated configuration.
+    #[serde(default)]
+    name: Option<String>,
+    /// The same route JSON accepted by `start_route`.
+    #[schemars(with = "Route")]
+    route: RouteArg,
+    /// Route concurrency. Overrides a value inside `route`.
+    #[serde(default)]
+    concurrency: Option<usize>,
+    /// Batch size. Overrides a value inside `route`.
+    #[serde(default)]
+    batch_size: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct RouteNameArg {
     /// The route name.
     name: String,
@@ -275,6 +291,7 @@ fn route_entry_json(
     messages_per_second: f64,
     timing: Option<RouteTiming>,
 ) -> serde_json::Value {
+    let (elapsed_s, average_messages_per_second) = elapsed_and_average(messages, timing);
     serde_json::json!({
         "name": name,
         "source": "mcp",
@@ -283,13 +300,30 @@ fn route_entry_json(
         "outcome": route_outcome(handle),
         "messages": messages,
         "messages_per_second": round2(messages_per_second),
-        "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
-        "average_messages_per_second": timing.map(|t| round2(t.average_throughput)),
+        "elapsed_s": elapsed_s,
+        // Averaged over the authoritative counter rather than `t.average_throughput`,
+        // whose numerator is the sampler's own total. A route that finishes between
+        // two sampler ticks leaves that total at 0 while `elapsed` is already set,
+        // which reported 0.0 rows/s for a job that had just moved 100.
+        "average_messages_per_second": average_messages_per_second,
     })
 }
 
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
+}
+
+fn elapsed_and_average(messages: u64, timing: Option<RouteTiming>) -> (Option<f64>, Option<f64>) {
+    let elapsed_s = timing.map(|timing| round2(timing.elapsed.as_secs_f64()));
+    let average_messages_per_second = timing.map(|timing| {
+        let seconds = timing.elapsed.as_secs_f64();
+        round2(if seconds > 0.0 {
+            messages as f64 / seconds
+        } else {
+            0.0
+        })
+    });
+    (elapsed_s, average_messages_per_second)
 }
 
 /// Renders one captured message in the same shape the web UI's `/messages`
@@ -631,6 +665,54 @@ impl BridgeMcp {
     }
 
     #[tool(
+        description = "Generate a copyable, headless `mqb` command for a route. Accepts the same \
+            route JSON and tuning overrides as `start_route`, but does not start anything. The \
+            command embeds canonical JSON with POSIX shell quoting so fields that have no compact \
+            copy-URI representation are preserved. Credential values are replaced by environment \
+            variable placeholders and the required variable names are returned separately.",
+        annotations(read_only_hint = true)
+    )]
+    async fn generate_cli_command(
+        &self,
+        Parameters(args): Parameters<GenerateCliCommandArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let name = args
+            .name
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "route".to_string());
+        let RouteArg {
+            mut route,
+            concurrency: in_route_concurrency,
+            batch_size: in_route_batch_size,
+        } = args.route;
+        route.options.concurrency = args
+            .concurrency
+            .or(in_route_concurrency)
+            .unwrap_or(crate::DEFAULT_CONCURRENCY);
+        route.options.batch_size = args
+            .batch_size
+            .or(in_route_batch_size)
+            .unwrap_or(crate::DEFAULT_BATCH_SIZE);
+
+        let mut route = serde_json::to_value(route)
+            .map_err(|error| internal(format!("failed to serialize route: {error}")))?;
+        route
+            .as_object_mut()
+            .ok_or_else(|| internal("serialized route is not an object"))?
+            .insert("enabled".to_string(), serde_json::Value::Bool(true));
+        let config: mq_bridge_app::config::AppConfig =
+            serde_json::from_value(serde_json::json!({ "routes": { (name): route } }))
+                .map_err(|error| internal(format!("failed to build route config: {error}")))?;
+        let export = mq_bridge_app::cli_command::inline_config_command(&config)
+            .map_err(|error| internal(error.to_string()))?;
+        Ok(ok_json(serde_json::json!({
+            "command": export.command,
+            "required_env": export.required_env,
+        })))
+    }
+
+    #[tool(
         description = "Create and run a route that moves messages from its `input` (source) \
             endpoint to its `output` (sink) endpoint, each keyed by connector type. Supports \
             route options like `concurrency`, `batch_size`, and `exit_on_empty` (drain the source \
@@ -877,16 +959,18 @@ impl BridgeMcp {
                 .await;
         };
 
+        let messages = self.metrics.sequence(&args.name).await;
         let timing = self.metrics.timing(&args.name).await;
+        let (elapsed_s, average_messages_per_second) = elapsed_and_average(messages, timing);
         Ok(ok_json(serde_json::json!({
             "route": args.name,
             "finished": outcome.is_some(),
             "outcome": outcome,
             "error": error,
             "waited_ms": started.elapsed().as_millis() as u64,
-            "messages": self.metrics.sequence(&args.name).await,
-            "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
-            "average_messages_per_second": timing.map(|t| round2(t.average_throughput)),
+            "messages": messages,
+            "elapsed_s": elapsed_s,
+            "average_messages_per_second": average_messages_per_second,
         })))
     }
 
@@ -936,6 +1020,8 @@ impl BridgeMcp {
                 // Read the timing before forgetting the route: this is the last
                 // chance to report what it achieved.
                 let timing = self.metrics.timing(&args.name).await;
+                let (elapsed_s, average_messages_per_second) =
+                    elapsed_and_average(messages, timing);
                 self.metrics.forget(&args.name).await;
                 // Capture buffers live in a process-global registry keyed by
                 // topic and outlive the route, so anything still buffered would
@@ -947,8 +1033,8 @@ impl BridgeMcp {
                 Ok(ok_json(serde_json::json!({
                     "stopped": args.name,
                     "messages": messages,
-                    "elapsed_s": timing.map(|t| round2(t.elapsed.as_secs_f64())),
-                    "average_messages_per_second": timing.map(|t| round2(t.average_throughput)),
+                    "elapsed_s": elapsed_s,
+                    "average_messages_per_second": average_messages_per_second,
                     "discarded_captured_messages": dropped,
                 })))
             }
@@ -1003,7 +1089,12 @@ impl ServerHandler for BridgeMcp {
              `wait_route` over polling `route_status` for a drain-then-exit job: it is one call \
              however long the job runs. Either endpoint may carry a `middlewares` array (retry, \
              dlq, deduplication, limiter, transform, compression, encryption, ...) to add delivery \
-             behaviour without changing the route.",
+             behaviour without changing the route. Apache Pulsar is available too, but is not one \
+             of the endpoint variants in the tool schema: address it as {\"custom\": {\"name\": \
+             \"pulsar\", \"config\": {\"url\": \"pulsar://host:6650\", \"topic\": \"...\", \
+             \"subscription\": \"...\", \"initial_position\": \"earliest\"}}}. A source needs \
+             `initial_position: earliest` to read a topic's existing backlog; the default \
+             (`latest`) only sees messages published after the subscription is created.",
         )
     }
 }
@@ -1130,6 +1221,30 @@ mod tests {
 
     fn parse(route: serde_json::Value) -> RouteArg {
         serde_json::from_value(route).expect("route parses")
+    }
+
+    #[test]
+    fn elapsed_and_average_uses_the_authoritative_message_count() {
+        let timing = RouteTiming {
+            messages: 0,
+            elapsed: Duration::from_secs_f64(2.005),
+            average_throughput: 0.0,
+        };
+
+        assert_eq!(
+            elapsed_and_average(5, Some(timing)),
+            (Some(2.01), Some(2.49))
+        );
+        assert_eq!(
+            elapsed_and_average(
+                5,
+                Some(RouteTiming {
+                    elapsed: Duration::ZERO,
+                    ..timing
+                })
+            ),
+            (Some(0.0), Some(0.0))
+        );
     }
 
     /// The two tuning knobs may be written inside `route` or as a top-level
