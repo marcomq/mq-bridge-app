@@ -26,10 +26,12 @@ const subtab = (target) => (page) => page.locator(`button.content-tab[data-targe
  * on the open one: the wa-dialog host has no layout box, which rules out
  * toBeVisible, and the bare class matches two elements.
  */
+const DIALOG = "wa-dialog.json-preview-dialog[open]";
+
 const jsonPreview = (paneTarget, triggerId) => async (page) => {
   await subtab(paneTarget)(page);
   await page.locator(`#${triggerId}`).click();
-  await expect(page.locator("wa-dialog.json-preview-dialog[open]")).toHaveCount(1);
+  await expect(page.locator(DIALOG)).toHaveCount(1);
 };
 
 // One entry per reachable *state*, not per view: most buttons live in a tab that
@@ -41,11 +43,11 @@ const VIEWS = [
   { family: "publishers", name: "publishers/definition", hash: "#publishers:0", seed: subtab("pub-config-pane") },
   { family: "publishers", name: "publishers/headers", hash: "#publishers:0", seed: subtab("pub-meta-pane") },
   { family: "publishers", name: "publishers/history", hash: "#publishers:0", seed: subtab("pub-history-pane") },
-  { family: "publishers", name: "publishers/json", hash: "#publishers:0", seed: jsonPreview("pub-config-pane", "pub-export-config") },
+  { family: "publishers", name: "publishers/json", hash: "#publishers:0", seed: jsonPreview("pub-config-pane", "pub-export-config"), scope: DIALOG },
   { family: "consumers", name: "consumers", hash: "#consumers:0" },
   { family: "consumers", name: "consumers/definition", hash: "#consumers:0", seed: subtab("cons-def-panel") },
   { family: "consumers", name: "consumers/output", hash: "#consumers:0", seed: subtab("cons-response-panel") },
-  { family: "consumers", name: "consumers/json", hash: "#consumers:0", seed: jsonPreview("cons-def-panel", "cons-export-config") },
+  { family: "consumers", name: "consumers/json", hash: "#consumers:0", seed: jsonPreview("cons-def-panel", "cons-export-config"), scope: DIALOG },
   { family: "config", name: "config", hash: "#config" },
 ];
 
@@ -92,8 +94,10 @@ function installProbe() {
  * whenever a panel renders a different number of buttons, which previously made
  * most of the inventory unmatchable on the second load.
  */
-function tagButtons() {
-  const buttons = document.querySelectorAll("button, wa-button");
+function tagButtons(scope) {
+  const buttons = document.querySelectorAll(
+    scope ? `${scope} button, ${scope} wa-button` : "button, wa-button",
+  );
   const seen = [];
   const labelCounts = new Map();
   buttons.forEach((element) => {
@@ -122,7 +126,10 @@ function tagButtons() {
       active:
         element.classList.contains("active") ||
         element.getAttribute("aria-selected") === "true" ||
-        element.getAttribute("aria-pressed") === "true",
+        element.getAttribute("aria-pressed") === "true" ||
+        // wa-button marks the chosen item of a group by rendering it filled;
+        // the JSON preview's format chips are the only such group.
+        element.getAttribute("appearance") === "filled",
     });
   });
   return seen;
@@ -191,7 +198,9 @@ async function settle(page) {
 
 test.describe("dead button sweep", () => {
   test("every visible button does something when clicked", async ({ page }, testInfo) => {
-    testInfo.setTimeout(600_000);
+    // Ten states, each button clicked from its own reload. The budget is sized
+    // for a loaded runner, not for the ~3min this takes on an idle one.
+    testInfo.setTimeout(900_000);
 
     await page.addInitScript(installProbe);
 
@@ -231,7 +240,7 @@ test.describe("dead button sweep", () => {
     for (const view of VIEWS) {
       await resetConfig(page);
       await freshView(page, view);
-      const inventory = (await page.evaluate(tagButtons)).filter((button) => {
+      const inventory = (await page.evaluate(tagButtons, view.scope)).filter((button) => {
         if (!button.visible) {
           skipped.push({ view, button, reason: "not visible" });
           return false;
@@ -261,7 +270,7 @@ test.describe("dead button sweep", () => {
       for (const button of inventory) {
         await resetConfig(page);
         await freshView(page, view);
-        const current = await page.evaluate(tagButtons);
+        const current = await page.evaluate(tagButtons, view.scope);
         const match = current.find((entry) => entry.key === button.key);
         if (!match || !match.visible || match.disabled || match.active) {
           skipped.push({ view, button, reason: "not reachable on reload" });
@@ -320,9 +329,13 @@ test.describe("dead button sweep", () => {
     // the buttons no state reached at all.
     // "disabled", "already active" and drag handles are deliberate exclusions, not
     // gaps; a button that was never *visible* anywhere is the thing to report.
+    const accounted = new Set(sweptLabels);
+    for (const entry of skipped) {
+      if (entry.reason === "already active" || entry.reason === "disabled") accounted.add(entry.button.label);
+    }
     const neverReached = skipped.filter(
       (entry) =>
-        !sweptLabels.has(entry.button.label) &&
+        !accounted.has(entry.button.label) &&
         !DRAG_HANDLE.test(entry.button.label) &&
         (entry.reason === "not visible" || entry.reason === "not reachable on reload"),
     );
